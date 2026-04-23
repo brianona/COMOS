@@ -38,7 +38,9 @@ import {
   Pause,
   ChevronLeft,
   Shield,
-  ShieldAlert
+  ShieldAlert,
+  Compass,
+  Navigation
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isBefore, addDays, parseISO } from 'date-fns';
@@ -534,7 +536,7 @@ const ChangePasswordModal: React.FC<{
 };
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'admin' | 'slideshow'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow'>('dashboard');
   const [certs, setCerts] = useState<Certificate[]>([]);
   const [vessels, setVessels] = useState<Vessel[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
@@ -572,6 +574,65 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     message: '',
     onConfirm: () => {},
   });
+
+  const [routingForm, setRoutingForm] = useState<Record<number, Partial<Vessel>>>({});
+  const [isSavingAll, setIsSavingAll] = useState(false);
+
+  useEffect(() => {
+    // Correctly initialize routing form when vessels change
+    const initialForm: Record<number, Partial<Vessel>> = {};
+    vessels.forEach(v => {
+      initialForm[v.id] = {
+        next_port: v.next_port || '',
+        route_status: v.route_status || '',
+        eta_atb: v.eta_atb || '',
+        etd_atd: v.etd_atd || '',
+        cargo: v.cargo || ''
+      };
+    });
+    setRoutingForm(initialForm);
+  }, [vessels]);
+
+  const handleUpdateRoutingRow = (vesselId: number, field: string, value: string) => {
+    setRoutingForm(prev => ({
+      ...prev,
+      [vesselId]: {
+        ...prev[vesselId],
+        [field]: value
+      }
+    }));
+  };
+
+  const handleSaveAllRouting = async () => {
+    setIsSavingAll(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    const savePromises = Object.entries(routingForm).map(async ([id, data]) => {
+      try {
+        const res = await fetch(`/api/vessels/${id}/route`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(data),
+        });
+        if (res.ok) successCount++;
+        else failCount++;
+      } catch (err) {
+        failCount++;
+      }
+    });
+
+    await Promise.all(savePromises);
+    
+    if (successCount > 0) {
+      notify('success', `Updated ${successCount} vessels successfully`);
+      fetchData();
+    }
+    if (failCount > 0) {
+      notify('error', `Failed to update ${failCount} vessels`);
+    }
+    setIsSavingAll(false);
+  };
 
   const notesEndRef = useRef<HTMLDivElement>(null);
 
@@ -870,6 +931,17 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               )}
             >
               <Ship className="w-4 h-4" /> Vessels
+            </button>
+          )}
+          {user.role !== 'user' && (
+            <button 
+              onClick={() => setView('routing')}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+              )}
+            >
+              <Compass className="w-4 h-4" /> Vessel Routing
             </button>
           )}
           {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
@@ -1206,6 +1278,120 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               onRefresh={fetchData} 
               notify={notify} 
             />
+          )}
+
+          {view === 'routing' && (
+            <div className="space-y-8">
+              <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Vessel Routing</h1>
+                  <p className="text-slate-500">Update destination, status, and ETA for all assigned vessels in one place.</p>
+                </div>
+                <button 
+                  onClick={handleSaveAllRouting}
+                  disabled={isSavingAll}
+                  className="flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 disabled:opacity-50"
+                >
+                  {isSavingAll ? (
+                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <Save className="w-4 h-4" />
+                  )}
+                  Save All Changes
+                </button>
+              </header>
+
+              <div className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="bg-blue-50/30 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                        <th className="px-6 py-4">Vessel</th>
+                        <th className="px-6 py-4">Destination / Next Port</th>
+                        <th className="px-6 py-4 w-40">Status</th>
+                        <th className="px-6 py-4 w-48">ETA / ATB (UTC)</th>
+                        <th className="px-6 py-4 w-48">ETD / ATD (UTC)</th>
+                        <th className="px-6 py-4">Cargo</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-blue-50">
+                      {vessels.map(v => {
+                        const form = routingForm[v.id] || {};
+                        return (
+                          <tr key={v.id} className="hover:bg-blue-50/20 transition-colors">
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-3">
+                                {v.has_photo ? (
+                                  <div className="w-8 h-8 rounded-lg overflow-hidden border border-blue-100 shrink-0">
+                                    <img 
+                                      src={`/api/vessels/${v.id}/photo?token=${token}&t=${Date.now()}`} 
+                                      alt={v.name}
+                                      className="w-full h-full object-cover"
+                                      referrerPolicy="no-referrer"
+                                    />
+                                  </div>
+                                ) : (
+                                  <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+                                    <Ship className="w-4 h-4 text-blue-600" />
+                                  </div>
+                                )}
+                                <div>
+                                  <p className="text-sm font-bold text-slate-900 leading-tight">{v.name}</p>
+                                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{v.team_name}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <input 
+                                type="text"
+                                value={form.next_port || ''}
+                                onChange={e => handleUpdateRoutingRow(v.id, 'next_port', e.target.value)}
+                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                placeholder="Next Port"
+                              />
+                            </td>
+                            <td className="px-6 py-4">
+                              <input 
+                                type="text"
+                                value={form.route_status || ''}
+                                onChange={e => handleUpdateRoutingRow(v.id, 'route_status', e.target.value)}
+                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                placeholder="Status"
+                              />
+                            </td>
+                            <td className="px-6 py-4">
+                              <input 
+                                type="datetime-local"
+                                value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
+                                onChange={e => handleUpdateRoutingRow(v.id, 'eta_atb', e.target.value.replace('T', ' '))}
+                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                              />
+                            </td>
+                            <td className="px-6 py-4">
+                              <input 
+                                type="datetime-local"
+                                value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
+                                onChange={e => handleUpdateRoutingRow(v.id, 'etd_atd', e.target.value.replace('T', ' '))}
+                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                              />
+                            </td>
+                            <td className="px-6 py-4">
+                              <input 
+                                type="text"
+                                value={form.cargo || ''}
+                                onChange={e => handleUpdateRoutingRow(v.id, 'cargo', e.target.value)}
+                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                placeholder="Cargo"
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           )}
 
           {view === 'slideshow' && (
