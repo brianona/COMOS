@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --import tsx server.ts",
     "build": "vite build",
+    "start": "node --import tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
@@ -23,6 +24,8 @@
     "date-fns": "^4.1.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "google-auth-library": "^10.6.2",
+    "googleapis": "^171.4.0",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",

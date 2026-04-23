@@ -2116,6 +2116,7 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [isTestingSmtp, setIsTestingSmtp] = useState(false);
+  const [isGeneratingGuide, setIsGeneratingGuide] = useState(false);
   const [vesselSearch, setVesselSearch] = useState('');
   const [vesselSortField, setVesselSortField] = useState<'name' | 'team' | 'owner'>('name');
   const [vesselSortOrder, setVesselSortOrder] = useState<'asc' | 'desc'>('asc');
@@ -2220,6 +2221,59 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
       console.error('Failed to fetch users:', err);
     }
   }, [token]);
+
+  const handleGenerateGuide = useCallback(async (tokens: any) => {
+    setIsGeneratingGuide(true);
+    try {
+      const res = await fetch('/api/google/generate-guide', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ tokens })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        notify('success', 'User Guide generated successfully!');
+        window.open(data.url, '_blank');
+      } else {
+        const data = await res.json();
+        notify('error', `Failed to generate guide: ${data.error}`);
+      }
+    } catch (err) {
+      notify('error', 'Connection error while generating guide');
+    } finally {
+      setIsGeneratingGuide(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'GOOGLE_AUTH_SUCCESS') {
+        handleGenerateGuide(event.data.tokens);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [handleGenerateGuide]);
+
+  const initiateGoogleAuth = async () => {
+    try {
+      const res = await fetch('/api/auth/google/url', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const { url } = await res.json();
+        window.open(url, 'google_auth', 'width=600,height=700');
+      } else {
+        const data = await res.json();
+        notify('error', data.error || 'Failed to initiate Google Auth');
+      }
+    } catch (err) {
+      notify('error', 'Connection error while initiating auth');
+    }
+  };
 
   useEffect(() => {
     fetchUsers();
@@ -3107,6 +3161,37 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
             </div>
             
             <div className="space-y-8">
+              <div className="p-6 bg-blue-50/50 rounded-2xl border border-blue-100">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-blue-900 mb-1 flex items-center gap-2">
+                       <FileText className="w-4 h-4" /> Application Documentation
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Create a comprehensive User Guide directly in your Google Drive. 
+                      This will generate a Google Doc with system instructions.
+                    </p>
+                  </div>
+                  <button 
+                    onClick={initiateGoogleAuth}
+                    disabled={isGeneratingGuide}
+                    className="shrink-0 px-6 py-2.5 bg-white text-blue-600 border border-blue-200 rounded-xl text-sm font-bold hover:bg-blue-50 transition-colors shadow-sm flex items-center gap-2 disabled:opacity-50"
+                  >
+                    {isGeneratingGuide ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-blue-600/20 border-t-blue-600 rounded-full animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4" />
+                        Create Google Doc Guide
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
               <div>
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4">SMTP Email Settings</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

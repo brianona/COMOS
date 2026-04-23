@@ -11,6 +11,7 @@ import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import { addDays, isBefore, format } from 'date-fns';
 import net from 'net';
+import { google } from 'googleapis';
 
 const __dirname = path.resolve();
 const PORT = 3000;
@@ -920,6 +921,154 @@ async function startServer() {
       res.json(logs);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Google Docs User Guide Integration
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+
+  app.get('/api/auth/google/url', authenticate, (req, res) => {
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      return res.status(500).json({ error: 'Google OAuth not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in settings.' });
+    }
+
+    // Automatically construct redirect URI if not provided
+    const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+
+    const auth = new google.auth.OAuth2(
+      GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET,
+      redirectUri
+    );
+
+    const url = auth.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/drive.file'],
+      prompt: 'consent'
+    });
+    res.json({ url });
+  });
+
+  app.get('/api/auth/google/callback', async (req, res) => {
+    const { code } = req.query;
+    try {
+      const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+      const auth = new google.auth.OAuth2(
+        GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET,
+        redirectUri
+      );
+
+      const { tokens } = await auth.getToken(code as string);
+      res.send(`
+        <html>
+          <body style="font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f8fafc;">
+            <div style="text-align: center; padding: 2rem; background: white; border-radius: 1rem; shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+              <h2 style="color: #1e3a8a; margin-bottom: 0.5rem;">Authentication Successful</h2>
+              <p style="color: #64748b;">You can close this window now.</p>
+              <script>
+                if (window.opener) {
+                  window.opener.postMessage({ 
+                    type: 'GOOGLE_AUTH_SUCCESS', 
+                    tokens: ${JSON.stringify(tokens)} 
+                  }, '*');
+                  setTimeout(() => window.close(), 1000);
+                }
+              </script>
+            </div>
+          </body>
+        </html>
+      `);
+    } catch (e: any) {
+      res.status(500).send(`Authentication failed: ${e.message}`);
+    }
+  });
+
+  app.post('/api/google/generate-guide', authenticate, async (req: any, res) => {
+    const { tokens } = req.body;
+    if (!tokens) return res.status(400).json({ error: 'Tokens required' });
+
+    try {
+      const auth = new google.auth.OAuth2();
+      auth.setCredentials(tokens);
+      const docs = google.docs({ version: 'v1', auth });
+
+      const title = `COMOS Vessel Manager - User Guide (${format(new Date(), 'MMM dd, yyyy')})`;
+      const doc = await docs.documents.create({
+        requestBody: { title }
+      });
+
+      const documentId = doc.data.documentId;
+      const content = `COMOS Vessel Manager
+USER GUIDE
+
+1. OVERVIEW
+COMOS (Cleanocean Monitoring System) is a professional vessel certificate management application. It helps ensure compliance by tracking expirations, managing documents, and facilitating communication between the office and the vessel.
+
+2. DASHBOARD
+The Dashboard provides a high-level overview of your fleet's compliance status. 
+- Analytics: View total vessels, active certificates, and critical alerts.
+- Compliance Gauges: Visual indicators of "Safe," "Expiring Soon," and "Critical/Expired" documents.
+
+3. VESSEL LIST
+- Filter & Search: Quickly find vessels by name or assigned Team.
+- Vessel Health: Color-coded icons show the status of the most critical certificate for each vessel.
+- Port Tracking: Real-time tracking of Next Port and ETA for all vessels.
+
+4. CERTIFICATE TRACKING
+- Detail View: Click any vessel to see its full list of certificates.
+- Statuses: 
+  * Blue: Active (valid)
+  * Orange: Expiring Soon (30-90 days)
+  * Red: Expired or Critical (<30 days)
+- Pinned Notes: Use the chat interface within each certificate to log correspondence or specific instructions.
+
+5. COMMUNICATION (CHAT)
+- Each certificate features a "Messaging" area. 
+- This replaces fragmented email threads, keeping all certificate-related discussion in one auditable place.
+- Notes are auto-scrolled to the latest entry to feel like a modern chat app.
+
+6. SLIDESHOW (KIOSK MODE)
+- Designed for office displays or bridge monitors.
+- Automatically cycles through vessels, highlighting their most critical expiring certificates.
+- Images are preloaded for smooth transitions.
+
+7. AUTOMATED EMAIL ALERTS
+- The system automatically scans for expiring certificates daily.
+- It sends consolidated reports to IT and Team PICs based on the schedule configured in Admin Settings.
+
+8. ADMINISTRATION
+- User Roles: 
+  * Admin: Full system control.
+  * Team PIC: Manages vessels assigned to their team(s).
+  * User: Read-only access to office documents.
+  * Vessel: Access to certificates for their specific ship only.
+- Audit Logs: Track every change made in the system for accountability.
+
+--------------------------------------------------
+Generated by COMOS System
+`;
+
+      await docs.documents.batchUpdate({
+        documentId: documentId!,
+        requestBody: {
+          requests: [
+            {
+              insertText: {
+                location: { index: 1 },
+                text: content
+              }
+            }
+          ]
+        }
+      });
+
+      await logAudit(req.user.id, req.user.username, 'GENERATE_GUIDE', `Generated Google Doc User Guide: ${documentId}`);
+      res.json({ success: true, documentId, url: `https://docs.google.com/document/d/${documentId}/edit` });
+    } catch (e: any) {
+      console.error('Failed to generate guide:', e);
+      res.status(500).json({ error: e.message });
     }
   });
 
