@@ -1,0 +1,5 @@
+{
+  "name": "COMOS Cleanocean Monitoring System",
+  "description": "A comprehensive vessel certificate management system with automated expiration alerts, team-based vessel assignments, and document tracking.",
+  "requestFramePermissions": []
+}
