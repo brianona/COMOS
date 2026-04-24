@@ -2406,6 +2406,8 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
   const [adminTab, setAdminTab] = useState<'fleet' | 'users' | 'settings' | 'audit'>('fleet');
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [auditPage, setAuditPage] = useState(1);
+  const itemsPerPage = 100;
   const [isTestingSmtp, setIsTestingSmtp] = useState(false);
   const [isGeneratingGuide, setIsGeneratingGuide] = useState(false);
   const [vesselSearch, setVesselSearch] = useState('');
@@ -2458,6 +2460,7 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
       const res = await fetch('/api/admin/audit-logs', { headers: { Authorization: `Bearer ${token}` } });
       if (res.ok) {
         setAuditLogs(await res.json());
+        setAuditPage(1);
       }
     } catch (err) {
       console.error('Failed to fetch audit logs:', err);
@@ -3795,7 +3798,7 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
                     <td colSpan={4} className="px-6 py-12 text-center text-slate-400 italic">No audit logs found.</td>
                   </tr>
                 ) : (
-                  auditLogs.map(log => (
+                  auditLogs.slice((auditPage - 1) * itemsPerPage, auditPage * itemsPerPage).map(log => (
                     <tr key={log.id} className="hover:bg-blue-50/30 transition-colors">
                       <td className="px-6 py-4 text-xs text-slate-500 font-mono whitespace-nowrap">
                         {new Date(log.created_at).toLocaleString()}
@@ -3823,6 +3826,32 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
               </tbody>
             </table>
           </div>
+          {auditLogs.length > itemsPerPage && (
+            <div className="px-6 py-4 border-t border-blue-50 flex items-center justify-between bg-white">
+              <div className="text-xs text-slate-400">
+                Showing {((auditPage - 1) * itemsPerPage) + 1} to {Math.min(auditPage * itemsPerPage, auditLogs.length)} of {auditLogs.length} entries
+              </div>
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setAuditPage(prev => Math.max(1, prev - 1))}
+                  disabled={auditPage === 1}
+                  className="px-3 py-1.5 text-xs font-bold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-50 transition-colors"
+                >
+                  Previous
+                </button>
+                <div className="flex items-center px-4 text-xs font-bold text-blue-600 bg-blue-50 rounded-lg">
+                  Page {auditPage} of {Math.ceil(auditLogs.length / itemsPerPage)}
+                </div>
+                <button 
+                  onClick={() => setAuditPage(prev => Math.min(Math.ceil(auditLogs.length / itemsPerPage), prev + 1))}
+                  disabled={auditPage >= Math.ceil(auditLogs.length / itemsPerPage)}
+                  className="px-3 py-1.5 text-xs font-bold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-50 transition-colors"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
