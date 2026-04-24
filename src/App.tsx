@@ -698,17 +698,15 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             <Ship className="w-4 h-4" /> Vessels
           </button>
         )}
-        {user.role !== 'user' && (
-          <button 
-            onClick={() => { setView('routing'); setIsSidebarOpen(false); }}
-            className={cn(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-              view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-            )}
-          >
-            <Compass className="w-4 h-4" /> Vessel Routing
-          </button>
-        )}
+        <button 
+          onClick={() => { setView('routing'); setIsSidebarOpen(false); }}
+          className={cn(
+            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+            view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+          )}
+        >
+          <Compass className="w-4 h-4" /> Vessel Routing
+        </button>
         {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
           <button 
             onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
@@ -1411,12 +1409,12 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       <table className="w-full text-left">
                         <thead>
                           <tr className="bg-blue-50/10 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                            <th className="px-6 py-3">Vessel</th>
-                            <th className="px-6 py-3">Destination / Next Port</th>
-                            <th className="px-6 py-3 w-40">Status</th>
-                            <th className="px-6 py-3 w-48">ETA / ATB (UTC)</th>
-                            <th className="px-6 py-3 w-48">ETD / ATD (UTC)</th>
-                            <th className="px-6 py-3">Cargo</th>
+                            <th className="px-6 py-3 min-w-[200px]">Vessel</th>
+                            <th className="px-6 py-3 min-w-[200px]">Destination / Next Port</th>
+                            <th className="px-6 py-3 w-36">Status</th>
+                            <th className="px-6 py-3 w-44">ETA / ATB (UTC)</th>
+                            <th className="px-6 py-3 w-44">ETD / ATD (UTC)</th>
+                            <th className="px-6 py-3 min-w-[350px]">Cargo</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-blue-50">
