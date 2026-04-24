@@ -18,6 +18,7 @@ import {
   Trash2,
   File,
   X,
+  Menu,
   Edit2,
   Settings,
   ArrowUp,
@@ -154,8 +155,9 @@ const Logo = ({ className }: { className?: string }) => (
   />
 );
 
-const LogoContainer = ({ size = 'md', className, iconClassName }: { size?: 'sm' | 'md' | 'lg', className?: string, iconClassName?: string }) => {
+const LogoContainer = ({ size = 'md', className, iconClassName }: { size?: 'sm' | 'md' | 'lg' | 'xs', className?: string, iconClassName?: string }) => {
   const sizes = {
+    xs: "w-8 h-8 p-1",
     sm: "w-12 h-12 p-1.5",
     md: "w-16 h-16 p-2",
     lg: "w-24 h-24 p-3"
@@ -172,7 +174,7 @@ const LogoContainer = ({ size = 'md', className, iconClassName }: { size?: 'sm' 
       <div className="logo-fallback hidden">
         <Ship className={cn(
           iconClassName || "text-blue-600", 
-          size === 'sm' ? "w-6 h-6" : size === 'md' ? "w-8 h-8" : "w-12 h-12"
+          size === 'xs' ? "w-4 h-4" : size === 'sm' ? "w-6 h-6" : size === 'md' ? "w-8 h-8" : "w-12 h-12"
         )} />
       </div>
     </div>
@@ -350,9 +352,7 @@ const Login = ({ onLogin, dbStatus }: { onLogin: (token: string, user: User) => 
             Sign In
           </button>
         </form>
-        <p className="mt-6 text-center text-sm text-gray-400">
-          Default: admin / admin123
-        </p>
+      
       </motion.div>
     </div>
   );
@@ -552,6 +552,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [vesselSortField, setVesselSortField] = useState<'name' | 'team' | 'owner'>('name');
   const [vesselSortOrder, setVesselSortOrder] = useState<'asc' | 'desc'>('asc');
   const [previewFile, setPreviewFile] = useState<FileData | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isEditingRoute, setIsEditingRoute] = useState(false);
   const [routeForm, setRouteForm] = useState({
@@ -634,7 +635,125 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     setIsSavingAll(false);
   };
 
+  const groupedVessels = React.useMemo(() => {
+    const groups: Record<string, Vessel[]> = {};
+    vessels.forEach(v => {
+      const owner = v.owner || 'Other';
+      if (!groups[owner]) groups[owner] = [];
+      groups[owner].push(v);
+    });
+
+    const sortedOwners = Object.keys(groups).sort((a, b) => {
+      // Prioritize Nissen and Goodwill if they exist
+      const priority = { 'Nissen': 1, 'Goodwill': 2 };
+      const pA = priority[a as keyof typeof priority] || 99;
+      const pB = priority[b as keyof typeof priority] || 99;
+      if (pA !== pB) return pA - pB;
+      return a.localeCompare(b);
+    });
+
+    sortedOwners.forEach(owner => {
+      groups[owner].sort((a, b) => {
+        const teamA = a.team_name || '';
+        const teamB = b.team_name || '';
+        const teamComp = teamA.localeCompare(teamB);
+        if (teamComp !== 0) return teamComp;
+        return a.name.localeCompare(b.name);
+      });
+    });
+
+    return { sortedOwners, groups };
+  }, [vessels]);
+
   const notesEndRef = useRef<HTMLDivElement>(null);
+
+  const SidebarContent = () => (
+    <>
+      <button 
+        onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
+        className="p-6 flex items-center gap-3 hover:opacity-80 transition-opacity text-left w-full"
+      >
+        <LogoContainer size="sm" className="border-none shadow-none" />
+        <span className="font-bold text-lg tracking-tight text-blue-900">COMOS</span>
+      </button>
+      
+      <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
+        <button 
+          onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
+          className={cn(
+            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+            view === 'dashboard' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+          )}
+        >
+          <Clock className="w-4 h-4" /> Dashboard
+        </button>
+        {user.role !== 'vessel' && (
+          <button 
+            onClick={() => { setView('vessels'); setIsSidebarOpen(false); }}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view === 'vessels' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <Ship className="w-4 h-4" /> Vessels
+          </button>
+        )}
+        {user.role !== 'user' && (
+          <button 
+            onClick={() => { setView('routing'); setIsSidebarOpen(false); }}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <Compass className="w-4 h-4" /> Vessel Routing
+          </button>
+        )}
+        {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
+          <button 
+            onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view === 'admin' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <Users className="w-4 h-4" /> Admin Panel
+          </button>
+        ) : null}
+        <button 
+          onClick={() => { setView('slideshow'); setIsSidebarOpen(false); }}
+          className={cn(
+            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+            view === 'slideshow' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+          )}
+        >
+          <Monitor className="w-4 h-4" /> Slideshow
+        </button>
+      </nav>
+
+      <div className="p-4 border-t border-blue-50">
+        <button 
+          onClick={() => { setIsChangePasswordOpen(true); setIsSidebarOpen(false); }}
+          className="w-full flex items-center gap-3 px-4 py-3 mb-2 rounded-xl hover:bg-blue-50 transition-colors text-left group"
+        >
+          <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 group-hover:bg-blue-200 transition-colors">
+            {user.username[0].toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold truncate">{user.username}</p>
+            <p className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">{user.role}</p>
+          </div>
+          <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
+        </button>
+        <button 
+          onClick={onLogout}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-500 hover:bg-red-50 transition-colors"
+        >
+          <LogOut className="w-4 h-4" /> Logout
+        </button>
+      </div>
+    </>
+  );
 
   const scrollToBottom = () => {
     notesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -901,97 +1020,70 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const expiringCerts = certs.filter(c => getStatus(c.expiration_date) !== 'active');
 
   return (
-    <div className="min-h-screen bg-slate-50 flex">
-      {/* Sidebar */}
-      <div className="w-64 bg-white border-r border-blue-100 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row relative">
+      {/* Mobile Top Bar */}
+      <div className="lg:hidden bg-white border-b border-blue-100 p-4 flex items-center justify-between sticky top-0 z-40">
         <button 
           onClick={() => setView('dashboard')}
-          className="p-6 flex items-center gap-3 hover:opacity-80 transition-opacity text-left w-full"
+          className="flex items-center gap-2"
         >
-          <LogoContainer size="sm" className="border-none shadow-none" />
-          <span className="font-bold text-lg tracking-tight text-blue-900">COMOS</span>
+          <LogoContainer size="xs" className="border-none shadow-none" />
+          <span className="font-bold text-blue-900 tracking-tight">COMOS</span>
         </button>
-        
-        <nav className="flex-1 px-4 space-y-1">
-          <button 
-            onClick={() => setView('dashboard')}
-            className={cn(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-              view === 'dashboard' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-            )}
-          >
-            <Clock className="w-4 h-4" /> Dashboard
-          </button>
-          {user.role !== 'vessel' && (
-            <button 
-              onClick={() => setView('vessels')}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                view === 'vessels' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-              )}
-            >
-              <Ship className="w-4 h-4" /> Vessels
-            </button>
-          )}
-          {user.role !== 'user' && (
-            <button 
-              onClick={() => setView('routing')}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-              )}
-            >
-              <Compass className="w-4 h-4" /> Vessel Routing
-            </button>
-          )}
-          {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
-            <button 
-              onClick={() => setView('admin')}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                view === 'admin' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-              )}
-            >
-              <Users className="w-4 h-4" /> Admin Panel
-            </button>
-          ) : null}
-          <button 
-            onClick={() => setView('slideshow')}
-            className={cn(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-              view === 'slideshow' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-            )}
-          >
-            <Monitor className="w-4 h-4" /> Slideshow
-          </button>
-        </nav>
-
-        <div className="p-4 border-t border-blue-50">
-          <button 
-            onClick={() => setIsChangePasswordOpen(true)}
-            className="w-full flex items-center gap-3 px-4 py-3 mb-2 rounded-xl hover:bg-blue-50 transition-colors text-left group"
-          >
-            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 group-hover:bg-blue-200 transition-colors">
-              {user.username[0].toUpperCase()}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold truncate">{user.username}</p>
-              <p className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">{user.role}</p>
-            </div>
-            <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
-          </button>
-          <button 
-            onClick={onLogout}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-500 hover:bg-red-50 transition-colors"
-          >
-            <LogOut className="w-4 h-4" /> Logout
-          </button>
-        </div>
+        <button 
+          onClick={() => setIsSidebarOpen(true)}
+          className="p-2 text-slate-500 hover:bg-blue-50 rounded-lg transition-colors"
+        >
+          <Menu className="w-6 h-6" />
+        </button>
       </div>
 
+      {/* Desktop Sidebar */}
+      <aside className="hidden lg:flex w-64 bg-white border-r border-blue-100 flex-col h-screen sticky top-0">
+        <SidebarContent />
+      </aside>
+
+      {/* Mobile Sidebar Overlay */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsSidebarOpen(false)}
+              className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 lg:hidden"
+            />
+            <motion.aside 
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed inset-y-0 left-0 w-72 bg-white z-50 shadow-2xl lg:hidden flex flex-col"
+            >
+              <div className="flex items-center justify-between p-4 border-b border-blue-50">
+                <div className="flex items-center gap-2">
+                  <LogoContainer size="xs" />
+                  <span className="font-bold text-blue-900">Navigation</span>
+                </div>
+                <button 
+                  onClick={() => setIsSidebarOpen(false)}
+                  className="p-2 text-slate-400 hover:bg-slate-50 rounded-lg"
+                >
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <div className="flex-1 flex flex-col min-h-0 bg-white">
+                <SidebarContent />
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
       {/* Main Content */}
-      <main className="flex-1 overflow-auto">
-        <div className="p-8 max-w-7xl mx-auto">
+      <main className="flex-1 min-w-0">
+        <div className="p-4 md:p-8 max-w-7xl mx-auto">
           {view === 'dashboard' && (
             <div className="space-y-8">
               <header>
@@ -1301,95 +1393,110 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 </button>
               </header>
 
-              <div className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
-                    <thead>
-                      <tr className="bg-blue-50/30 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                        <th className="px-6 py-4">Vessel</th>
-                        <th className="px-6 py-4">Destination / Next Port</th>
-                        <th className="px-6 py-4 w-40">Status</th>
-                        <th className="px-6 py-4 w-48">ETA / ATB (UTC)</th>
-                        <th className="px-6 py-4 w-48">ETD / ATD (UTC)</th>
-                        <th className="px-6 py-4">Cargo</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-blue-50">
-                      {vessels.map(v => {
-                        const form = routingForm[v.id] || {};
-                        return (
-                          <tr key={v.id} className="hover:bg-blue-50/20 transition-colors">
-                            <td className="px-6 py-4">
-                              <div className="flex items-center gap-3">
-                                {v.has_photo ? (
-                                  <div className="w-8 h-8 rounded-lg overflow-hidden border border-blue-100 shrink-0">
-                                    <img 
-                                      src={`/api/vessels/${v.id}/photo?token=${token}&t=${Date.now()}`} 
-                                      alt={v.name}
-                                      className="w-full h-full object-cover"
-                                      referrerPolicy="no-referrer"
-                                    />
-                                  </div>
-                                ) : (
-                                  <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
-                                    <Ship className="w-4 h-4 text-blue-600" />
-                                  </div>
-                                )}
-                                <div>
-                                  <p className="text-sm font-bold text-slate-900 leading-tight">{v.name}</p>
-                                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{v.team_name}</p>
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-6 py-4">
-                              <input 
-                                type="text"
-                                value={form.next_port || ''}
-                                onChange={e => handleUpdateRoutingRow(v.id, 'next_port', e.target.value)}
-                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                placeholder="Next Port"
-                              />
-                            </td>
-                            <td className="px-6 py-4">
-                              <input 
-                                type="text"
-                                value={form.route_status || ''}
-                                onChange={e => handleUpdateRoutingRow(v.id, 'route_status', e.target.value)}
-                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                placeholder="Status"
-                              />
-                            </td>
-                            <td className="px-6 py-4">
-                              <input 
-                                type="datetime-local"
-                                value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
-                                onChange={e => handleUpdateRoutingRow(v.id, 'eta_atb', e.target.value.replace('T', ' '))}
-                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                              />
-                            </td>
-                            <td className="px-6 py-4">
-                              <input 
-                                type="datetime-local"
-                                value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
-                                onChange={e => handleUpdateRoutingRow(v.id, 'etd_atd', e.target.value.replace('T', ' '))}
-                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                              />
-                            </td>
-                            <td className="px-6 py-4">
-                              <input 
-                                type="text"
-                                value={form.cargo || ''}
-                                onChange={e => handleUpdateRoutingRow(v.id, 'cargo', e.target.value)}
-                                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                placeholder="Cargo"
-                              />
-                            </td>
+              <div className="space-y-6">
+                {groupedVessels.sortedOwners.map(owner => (
+                  <div key={owner} className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
+                    <div className="px-6 py-4 bg-slate-50 border-b border-blue-100 flex items-center justify-between">
+                      <h2 className={cn(
+                        "text-sm font-black uppercase tracking-widest",
+                        owner === 'Nissen' ? "text-purple-600" : "text-orange-600"
+                      )}>
+                        {owner}
+                      </h2>
+                      <span className="text-[10px] font-bold text-slate-400 bg-white px-3 py-1 rounded-full shadow-sm border border-blue-50">
+                        {groupedVessels.groups[owner].length} Vessels
+                      </span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-blue-50/10 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                            <th className="px-6 py-3">Vessel</th>
+                            <th className="px-6 py-3">Destination / Next Port</th>
+                            <th className="px-6 py-3 w-40">Status</th>
+                            <th className="px-6 py-3 w-48">ETA / ATB (UTC)</th>
+                            <th className="px-6 py-3 w-48">ETD / ATD (UTC)</th>
+                            <th className="px-6 py-3">Cargo</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                        </thead>
+                        <tbody className="divide-y divide-blue-50">
+                          {groupedVessels.groups[owner].map(v => {
+                            const form = routingForm[v.id] || {};
+                            return (
+                              <tr key={v.id} className="hover:bg-blue-50/20 transition-colors">
+                                <td className="px-6 py-4">
+                                  <div className="flex items-center gap-3">
+                                    {v.has_photo ? (
+                                      <div className="w-8 h-8 rounded-lg overflow-hidden border border-blue-100 shrink-0">
+                                        <img 
+                                          src={`/api/vessels/${v.id}/photo?token=${token}&t=${Date.now()}`} 
+                                          alt={v.name}
+                                          className="w-full h-full object-cover"
+                                          referrerPolicy="no-referrer"
+                                        />
+                                      </div>
+                                    ) : (
+                                      <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+                                        <Ship className="w-4 h-4 text-blue-600" />
+                                      </div>
+                                    )}
+                                    <div>
+                                      <p className="text-sm font-bold text-slate-900 leading-tight">{v.name}</p>
+                                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{v.team_name}</p>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-6 py-4">
+                                  <input 
+                                    type="text"
+                                    value={form.next_port || ''}
+                                    onChange={e => handleUpdateRoutingRow(v.id, 'next_port', e.target.value)}
+                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                    placeholder="Next Port"
+                                  />
+                                </td>
+                                <td className="px-6 py-4">
+                                  <input 
+                                    type="text"
+                                    value={form.route_status || ''}
+                                    onChange={e => handleUpdateRoutingRow(v.id, 'route_status', e.target.value)}
+                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                    placeholder="Status"
+                                  />
+                                </td>
+                                <td className="px-6 py-4">
+                                  <input 
+                                    type="datetime-local"
+                                    value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
+                                    onChange={e => handleUpdateRoutingRow(v.id, 'eta_atb', e.target.value.replace('T', ' '))}
+                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                  />
+                                </td>
+                                <td className="px-6 py-4">
+                                  <input 
+                                    type="datetime-local"
+                                    value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
+                                    onChange={e => handleUpdateRoutingRow(v.id, 'etd_atd', e.target.value.replace('T', ' '))}
+                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                  />
+                                </td>
+                                <td className="px-6 py-4">
+                                  <input 
+                                    type="text"
+                                    value={form.cargo || ''}
+                                    onChange={e => handleUpdateRoutingRow(v.id, 'cargo', e.target.value)}
+                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                    placeholder="Cargo"
+                                  />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
