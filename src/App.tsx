@@ -705,7 +705,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
           )}
         >
-          <Compass className="w-4 h-4" /> Vessel Routing
+          <Compass className="w-4 h-4" /> {user.role === 'vessel' ? 'Noon Report' : 'Vessel Routing'}
         </button>
         {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
           <button 
@@ -1374,8 +1374,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             <div className="space-y-8">
               <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Vessel Routing</h1>
-                  <p className="text-slate-500">Update destination, status, and ETA for all assigned vessels in one place.</p>
+                  <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">{user.role === 'vessel' ? 'Noon Report' : 'Vessel Routing'}</h1>
+                  <p className="text-slate-500">{user.role === 'vessel' ? 'Update your current destination, status, and ETA.' : 'Update destination, status, and ETA for all assigned vessels in one place.'}</p>
                 </div>
                 <button 
                   onClick={handleSaveAllRouting}
