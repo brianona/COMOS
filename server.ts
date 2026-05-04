@@ -274,6 +274,147 @@ async function startServer() {
       )
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS departure_attachments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        mimetype VARCHAR(255),
+        data LONGBLOB,
+        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS departure_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        user_id INT NOT NULL,
+        voyage_number VARCHAR(100),
+        utc_date_time DATETIME NOT NULL,
+        departure_port VARCHAR(255) NOT NULL,
+        eu_uk_status VARCHAR(50),
+        position_long VARCHAR(50),
+        position_lat VARCHAR(50),
+        operation_type VARCHAR(100),
+        cargo_status VARCHAR(50),
+        rob_type VARCHAR(50),
+        rob_hsfo DECIMAL(10, 2),
+        rob_lsfo DECIMAL(10, 2),
+        rob_mgo DECIMAL(10, 2),
+        rob_mdo DECIMAL(10, 2),
+        rob_fw DECIMAL(10, 2),
+        foc_port_hsfo DECIMAL(10, 2),
+        foc_port_lsfo DECIMAL(10, 2),
+        foc_port_mgo DECIMAL(10, 2),
+        foc_port_mdo DECIMAL(10, 2),
+        attachment_id INT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (attachment_id) REFERENCES departure_attachments(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS arrival_attachments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        mimetype VARCHAR(255),
+        data LONGBLOB,
+        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS noon_attachments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        mimetype VARCHAR(100) NOT NULL,
+        data LONGBLOB NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS arrival_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        user_id INT NOT NULL,
+        voyage_number VARCHAR(100),
+        utc_date_time DATETIME NOT NULL,
+        arrival_port VARCHAR(255) NOT NULL,
+        eu_uk_status VARCHAR(50),
+        position_long VARCHAR(50),
+        position_lat VARCHAR(50),
+        operation_type VARCHAR(100),
+        cargo_status VARCHAR(50),
+        total_time_at_sea VARCHAR(50),
+        total_distance VARCHAR(50),
+        rob_type VARCHAR(50),
+        rob_hsfo DECIMAL(10, 2),
+        rob_lsfo DECIMAL(10, 2),
+        rob_mgo DECIMAL(10, 2),
+        rob_mdo DECIMAL(10, 2),
+        rob_fw DECIMAL(10, 2),
+        foc_sea_hsfo DECIMAL(10, 2),
+        foc_sea_lsfo DECIMAL(10, 2),
+        foc_sea_mgo DECIMAL(10, 2),
+        foc_sea_mdo DECIMAL(10, 2),
+        agent_detail TEXT,
+        attachment_id INT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (attachment_id) REFERENCES arrival_attachments(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS noon_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        user_id INT NOT NULL,
+        voyage_number VARCHAR(100),
+        utc_date_time DATETIME NOT NULL,
+        position_long VARCHAR(50),
+        position_lat VARCHAR(50),
+        distance_to_go VARCHAR(50),
+        cargo_status VARCHAR(50),
+        rob_hsfo DECIMAL(10, 2),
+        rob_lsfo DECIMAL(10, 2),
+        rob_mgo DECIMAL(10, 2),
+        rob_mdo DECIMAL(10, 2),
+        foc_hsfo DECIMAL(10, 2),
+        foc_lsfo DECIMAL(10, 2),
+        foc_mgo DECIMAL(10, 2),
+        foc_mdo DECIMAL(10, 2),
+        attachment_id INT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (attachment_id) REFERENCES noon_attachments(id) ON DELETE SET NULL
+      )
+    `);
+
+    try {
+      await pool.query('ALTER TABLE departure_reports ADD COLUMN voyage_number VARCHAR(100)');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE arrival_reports ADD COLUMN voyage_number VARCHAR(100)');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN voyage_number VARCHAR(100)');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN attachment_id INT, ADD FOREIGN KEY (attachment_id) REFERENCES noon_attachments(id) ON DELETE SET NULL');
+    } catch (e) {}
+
     // Migration for existing databases: ensure new keys exist
       const newKeys = [
         ['ALERT_SCHEDULE_TYPE', 'interval'],
@@ -1147,6 +1288,487 @@ Generated by COMOS System
       await logAudit(req.user.id, req.user.username, 'DELETE_FILE', `Deleted file ID ${req.params.id}`);
       res.json({ success: true });
     } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Departure Reports Routes
+  app.get('/api/departure-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT dr.*, v.name as vessel_name, da.original_name as attachment_name
+        FROM departure_reports dr
+        JOIN vessels v ON dr.vessel_id = v.id
+        LEFT JOIN departure_attachments da ON dr.attachment_id = da.id
+      `;
+      let params: any[] = [];
+
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' WHERE dr.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic') {
+        query += ' WHERE v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+
+      query += ' ORDER BY dr.utc_date_time DESC';
+      const [reports] = await pool.execute(query, params);
+      res.json(reports);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/departure-reports', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      let attachmentId = null;
+      if (req.file) {
+        const [result]: any = await pool.execute(
+          'INSERT INTO departure_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, req.file.buffer]
+        );
+        attachmentId = result.insertId;
+      }
+
+      const {
+        vessel_id,
+        voyage_number,
+        utc_date_time,
+        departure_port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_port_hsfo,
+        foc_port_lsfo,
+        foc_port_mgo,
+        foc_port_mdo
+      } = req.body;
+
+      await pool.execute(`
+        INSERT INTO departure_reports (
+          vessel_id, user_id, voyage_number, utc_date_time, departure_port, eu_uk_status,
+          position_long, position_lat, operation_type, cargo_status, rob_type,
+          rob_hsfo, rob_lsfo, rob_mgo, rob_mdo, rob_fw,
+          foc_port_hsfo, foc_port_lsfo, foc_port_mgo, foc_port_mdo,
+          attachment_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        vessel_id, req.user.id, voyage_number, utc_date_time, departure_port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_port_hsfo || 0, foc_port_lsfo || 0, foc_port_mgo || 0, foc_port_mdo || 0,
+        attachmentId
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_DEPARTURE_REPORT', `Created departure report for vessel ID ${vessel_id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to create departure report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/departure-reports/:id', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      let attachmentId = req.body.attachment_id || null;
+
+      if (req.file) {
+        const [result]: any = await pool.execute(
+          'INSERT INTO departure_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, req.file.buffer]
+        );
+        attachmentId = result.insertId;
+      }
+
+      const {
+        voyage_number,
+        utc_date_time,
+        departure_port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_port_hsfo,
+        foc_port_lsfo,
+        foc_port_mgo,
+        foc_port_mdo
+      } = req.body;
+
+      await pool.execute(`
+        UPDATE departure_reports SET
+          voyage_number = ?, utc_date_time = ?, departure_port = ?, eu_uk_status = ?,
+          position_long = ?, position_lat = ?, operation_type = ?, cargo_status = ?, rob_type = ?,
+          rob_hsfo = ?, rob_lsfo = ?, rob_mgo = ?, rob_mdo = ?, rob_fw = ?,
+          foc_port_hsfo = ?, foc_port_lsfo = ?, foc_port_mgo = ?, foc_port_mdo = ?,
+          attachment_id = ?
+        WHERE id = ?
+      `, [
+        voyage_number, utc_date_time, departure_port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_port_hsfo || 0, foc_port_lsfo || 0, foc_port_mgo || 0, foc_port_mdo || 0,
+        attachmentId, id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_DEPARTURE_REPORT', `Updated departure report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to update departure report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/departure-attachments/:id', authenticate, async (req, res) => {
+    try {
+      const [attachments]: any = await pool.execute('SELECT * FROM departure_attachments WHERE id = ?', [req.params.id]);
+      if (attachments.length > 0 && attachments[0].data) {
+        const file = attachments[0];
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.original_name}"`);
+        res.send(file.data);
+      } else {
+        res.status(404).json({ error: 'Attachment not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/arrival-attachments/:id', authenticate, async (req, res) => {
+    try {
+      const [attachments]: any = await pool.execute('SELECT * FROM arrival_attachments WHERE id = ?', [req.params.id]);
+      if (attachments.length > 0 && attachments[0].data) {
+        const file = attachments[0];
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.original_name}"`);
+        res.send(file.data);
+      } else {
+        res.status(404).json({ error: 'Attachment not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/noon-attachments/:id', authenticate, async (req, res) => {
+    try {
+      const [attachments]: any = await pool.execute('SELECT * FROM noon_attachments WHERE id = ?', [req.params.id]);
+      if (attachments.length > 0 && attachments[0].data) {
+        const file = attachments[0];
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.original_name}"`);
+        res.send(file.data);
+      } else {
+        res.status(404).json({ error: 'Attachment not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Arrival Reports Routes
+  app.get('/api/arrival-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT ar.*, v.name as vessel_name, aa.original_name as attachment_name
+        FROM arrival_reports ar
+        JOIN vessels v ON ar.vessel_id = v.id
+        LEFT JOIN arrival_attachments aa ON ar.attachment_id = aa.id
+      `;
+      let params: any[] = [];
+
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' WHERE ar.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic') {
+        query += ' WHERE v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+
+      query += ' ORDER BY ar.utc_date_time DESC';
+      const [reports] = await pool.execute(query, params);
+      res.json(reports);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/arrival-reports', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      let attachmentId = null;
+      if (req.file) {
+        const [result]: any = await pool.execute(
+          'INSERT INTO arrival_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, req.file.buffer]
+        );
+        attachmentId = result.insertId;
+      }
+
+      const {
+        vessel_id,
+        voyage_number,
+        utc_date_time,
+        arrival_port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        total_time_at_sea,
+        total_distance,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_sea_hsfo,
+        foc_sea_lsfo,
+        foc_sea_mgo,
+        foc_sea_mdo,
+        agent_detail
+      } = req.body;
+
+      await pool.execute(`
+        INSERT INTO arrival_reports (
+          vessel_id, user_id, voyage_number, utc_date_time, arrival_port, eu_uk_status,
+          position_long, position_lat, operation_type, cargo_status,
+          total_time_at_sea, total_distance, rob_type,
+          rob_hsfo, rob_lsfo, rob_mgo, rob_mdo, rob_fw,
+          foc_sea_hsfo, foc_sea_lsfo, foc_sea_mgo, foc_sea_mdo,
+          agent_detail, attachment_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        vessel_id, req.user.id, voyage_number, utc_date_time, arrival_port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status,
+        total_time_at_sea, total_distance, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_sea_hsfo || 0, foc_sea_lsfo || 0, foc_sea_mgo || 0, foc_sea_mdo || 0,
+        agent_detail, attachmentId
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_ARRIVAL_REPORT', `Created arrival report for vessel ID ${vessel_id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to create arrival report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/arrival-reports/:id', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      let attachmentId = req.body.attachment_id || null;
+
+      if (req.file) {
+        const [result]: any = await pool.execute(
+          'INSERT INTO arrival_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, req.file.buffer]
+        );
+        attachmentId = result.insertId;
+      }
+
+      const {
+        voyage_number,
+        utc_date_time,
+        arrival_port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        total_time_at_sea,
+        total_distance,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_sea_hsfo,
+        foc_sea_lsfo,
+        foc_sea_mgo,
+        foc_sea_mdo,
+        agent_detail
+      } = req.body;
+
+      await pool.execute(`
+        UPDATE arrival_reports SET
+          voyage_number = ?, utc_date_time = ?, arrival_port = ?, eu_uk_status = ?,
+          position_long = ?, position_lat = ?, operation_type = ?, cargo_status = ?,
+          total_time_at_sea = ?, total_distance = ?, rob_type = ?,
+          rob_hsfo = ?, rob_lsfo = ?, rob_mgo = ?, rob_mdo = ?, rob_fw = ?,
+          foc_sea_hsfo = ?, foc_sea_lsfo = ?, foc_sea_mgo = ?, foc_sea_mdo = ?,
+          agent_detail = ?, attachment_id = ?
+        WHERE id = ?
+      `, [
+        voyage_number, utc_date_time, arrival_port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status,
+        total_time_at_sea, total_distance, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_sea_hsfo || 0, foc_sea_lsfo || 0, foc_sea_mgo || 0, foc_sea_mdo || 0,
+        agent_detail, attachmentId, id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_ARRIVAL_REPORT', `Updated arrival report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to update arrival report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Noon Reports Routes
+  app.get('/api/noon-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT nr.*, v.name as vessel_name, na.original_name as attachment_name
+        FROM noon_reports nr
+        JOIN vessels v ON nr.vessel_id = v.id
+        LEFT JOIN noon_attachments na ON nr.attachment_id = na.id
+      `;
+      let params: any[] = [];
+
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' WHERE nr.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic') {
+        query += ' WHERE v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+
+      query += ' ORDER BY nr.utc_date_time DESC';
+      const [reports] = await pool.execute(query, params);
+      res.json(reports);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/noon-reports', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      console.log('Received noon report submission:', req.body);
+      const {
+        vessel_id,
+        voyage_number,
+        utc_date_time,
+        position_long,
+        position_lat,
+        distance_to_go,
+        cargo_status,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        foc_hsfo,
+        foc_lsfo,
+        foc_mgo,
+        foc_mdo
+      } = req.body;
+
+      if (!vessel_id) {
+        return res.status(400).json({ error: 'Vessel ID is required' });
+      }
+
+      let attachmentId = null;
+      if (req.file) {
+        console.log('Processing attachment for noon report:', req.file.originalname);
+        const [result]: any = await pool.execute(
+          'INSERT INTO noon_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, req.file.buffer]
+        );
+        attachmentId = result.insertId;
+      }
+
+      await pool.execute(`
+        INSERT INTO noon_reports (
+          vessel_id, user_id, voyage_number, utc_date_time, position_long, position_lat,
+          distance_to_go, cargo_status, rob_hsfo, rob_lsfo, rob_mgo, rob_mdo,
+          foc_hsfo, foc_lsfo, foc_mgo, foc_mdo, attachment_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        vessel_id, req.user.id, voyage_number, utc_date_time, position_long, position_lat,
+        distance_to_go, cargo_status, 
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0,
+        foc_hsfo || 0, foc_lsfo || 0, foc_mgo || 0, foc_mdo || 0,
+        attachmentId
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_NOON_REPORT', `Created noon report for vessel ID ${vessel_id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to create noon report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/noon-reports/:id', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const {
+        voyage_number,
+        utc_date_time,
+        position_long,
+        position_lat,
+        distance_to_go,
+        cargo_status,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        foc_hsfo,
+        foc_lsfo,
+        foc_mgo,
+        foc_mdo
+      } = req.body;
+
+      let attachmentId = null;
+      if (req.file) {
+        const [result]: any = await pool.execute(
+          'INSERT INTO noon_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, req.file.buffer]
+        );
+        attachmentId = result.insertId;
+      } else {
+        const [old]: any = await pool.execute('SELECT attachment_id FROM noon_reports WHERE id = ?', [id]);
+        if (old.length > 0) attachmentId = old[0].attachment_id;
+      }
+
+      await pool.execute(`
+        UPDATE noon_reports SET
+          voyage_number = ?, utc_date_time = ?, position_long = ?, position_lat = ?,
+          distance_to_go = ?, cargo_status = ?, rob_hsfo = ?, rob_lsfo = ?,
+          rob_mgo = ?, rob_mdo = ?, foc_hsfo = ?, foc_lsfo = ?,
+          foc_mgo = ?, foc_mdo = ?, attachment_id = ?
+        WHERE id = ?
+      `, [
+        voyage_number, utc_date_time, position_long, position_lat,
+        distance_to_go, cargo_status, 
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0,
+        foc_hsfo || 0, foc_lsfo || 0, foc_mgo || 0, foc_mdo || 0,
+        attachmentId, id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_NOON_REPORT', `Updated noon report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to update noon report:', e);
       res.status(500).json({ error: e.message });
     }
   });

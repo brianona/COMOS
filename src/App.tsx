@@ -30,6 +30,7 @@ import {
   History,
   RefreshCw,
   MapPin,
+  Map as MapIcon,
   Activity,
   Anchor,
   Package,
@@ -93,6 +94,89 @@ interface Certificate {
   expiration_date: string;
   access_type: 'office' | 'vessel' | 'any';
   has_file?: boolean;
+}
+
+interface DepartureReport {
+  id: number;
+  vessel_id: number;
+  user_id: number;
+  voyage_number: string;
+  utc_date_time: string;
+  departure_port: string;
+  eu_uk_status: string;
+  position_long: string;
+  position_lat: string;
+  operation_type: string;
+  cargo_status: string;
+  rob_type: string;
+  rob_hsfo: number;
+  rob_lsfo: number;
+  rob_mgo: number;
+  rob_mdo: number;
+  rob_fw: number;
+  foc_port_hsfo: number;
+  foc_port_lsfo: number;
+  foc_port_mgo: number;
+  foc_port_mdo: number;
+  attachment_id?: number | null;
+  created_at: string;
+  vessel_name?: string;
+  attachment_name?: string;
+}
+
+interface ArrivalReport {
+  id: number;
+  vessel_id: number;
+  user_id: number;
+  voyage_number: string;
+  utc_date_time: string;
+  arrival_port: string;
+  eu_uk_status: string;
+  position_long: string;
+  position_lat: string;
+  operation_type: string;
+  cargo_status: string;
+  total_time_at_sea: string;
+  total_distance: string;
+  rob_type: string;
+  rob_hsfo: number;
+  rob_lsfo: number;
+  rob_mgo: number;
+  rob_mdo: number;
+  rob_fw: number;
+  foc_sea_hsfo: number;
+  foc_sea_lsfo: number;
+  foc_sea_mgo: number;
+  foc_sea_mdo: number;
+  agent_detail: string;
+  attachment_id?: number | null;
+  created_at: string;
+  vessel_name?: string;
+  attachment_name?: string;
+}
+
+interface NoonReport {
+  id: number;
+  vessel_id: number;
+  user_id: number;
+  voyage_number: string;
+  utc_date_time: string;
+  position_long: string;
+  position_lat: string;
+  distance_to_go: string;
+  cargo_status: string;
+  rob_hsfo: number;
+  rob_lsfo: number;
+  rob_mgo: number;
+  rob_mdo: number;
+  foc_hsfo: number;
+  foc_lsfo: number;
+  foc_mgo: number;
+  foc_mdo: number;
+  created_at: string;
+  vessel_name?: string;
+  attachment_id?: number;
+  attachment_name?: string;
 }
 
 const getStatus = (date: string) => {
@@ -536,9 +620,12 @@ const ChangePasswordModal: React.FC<{
 };
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption'>('dashboard');
   const [certs, setCerts] = useState<Certificate[]>([]);
   const [vessels, setVessels] = useState<Vessel[]>([]);
+  const [departureReports, setDepartureReports] = useState<DepartureReport[]>([]);
+  const [arrivalReports, setArrivalReports] = useState<ArrivalReport[]>([]);
+  const [noonReports, setNoonReports] = useState<NoonReport[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [selectedCert, setSelectedCert] = useState<Certificate | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
@@ -705,8 +792,50 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
           )}
         >
-          <Compass className="w-4 h-4" /> {user.role === 'vessel' ? 'Noon Report' : 'Vessel Routing'}
+          <Compass className="w-4 h-4" /> Vessel Routing
         </button>
+        {user.role === 'vessel' && (
+          <>
+            <button 
+              onClick={() => { setView('departure'); setIsSidebarOpen(false); }}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                view === 'departure' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+              )}
+            >
+              <Navigation className="w-4 h-4" /> Departure
+            </button>
+            <button 
+              onClick={() => { setView('arrival'); setIsSidebarOpen(false); }}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                view === 'arrival' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+              )}
+            >
+              <MapIcon className="w-4 h-4" /> Arrival
+            </button>
+            <button 
+              onClick={() => { setView('noon_to_noon'); setIsSidebarOpen(false); }}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                view === 'noon_to_noon' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+              )}
+            >
+              <Clock className="w-4 h-4" /> Noon to Noon
+            </button>
+            {user.role !== 'vessel' && (
+              <button 
+                onClick={() => { setView('fuel_consumption'); setIsSidebarOpen(false); }}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                  view === 'fuel_consumption' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                )}
+              >
+                <Activity className="w-4 h-4" /> Fuel Consumption
+              </button>
+            )}
+          </>
+        )}
         {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
           <button 
             onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
@@ -1016,6 +1145,58 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   };
 
   const expiringCerts = certs.filter(c => getStatus(c.expiration_date) !== 'active');
+
+  const fetchDepartureReports = useCallback(async () => {
+    const headers = { Authorization: `Bearer ${token}` };
+    try {
+      const res = await fetch('/api/departure-reports', { headers });
+      if (res.ok) {
+        setDepartureReports(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch departure reports:', err);
+    }
+  }, [token]);
+
+  const fetchArrivalReports = useCallback(async () => {
+    const headers = { Authorization: `Bearer ${token}` };
+    try {
+      const res = await fetch('/api/arrival-reports', { headers });
+      if (res.ok) {
+        setArrivalReports(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch arrival reports:', err);
+    }
+  }, [token]);
+
+  const fetchNoonReports = useCallback(async () => {
+    const headers = { Authorization: `Bearer ${token}` };
+    try {
+      const res = await fetch('/api/noon-reports', { headers });
+      if (res.ok) {
+        setNoonReports(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch noon reports:', err);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (view === 'departure') {
+      fetchDepartureReports();
+    }
+    if (view === 'arrival') {
+      fetchArrivalReports();
+    }
+    if (view === 'noon_to_noon') {
+      fetchNoonReports();
+    }
+    if (view === 'fuel_consumption') {
+      fetchDepartureReports();
+      fetchArrivalReports();
+    }
+  }, [view, fetchDepartureReports, fetchArrivalReports, fetchNoonReports]);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row relative">
@@ -1370,12 +1551,54 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             />
           )}
 
+          {view === 'departure' && (
+            <DepartureView
+              user={user}
+              token={token}
+              vessels={vessels}
+              reports={departureReports}
+              onRefresh={fetchDepartureReports}
+              notify={notify}
+            />
+          )}
+
+          {view === 'arrival' && (
+            <ArrivalView
+              user={user}
+              token={token}
+              vessels={vessels}
+              reports={arrivalReports}
+              departureReports={departureReports}
+              onRefresh={fetchArrivalReports}
+              notify={notify}
+            />
+          )}
+
+          {view === 'noon_to_noon' && (
+            <NoonToNoonView
+              user={user}
+              token={token}
+              vessels={vessels}
+              reports={noonReports}
+              onRefresh={fetchNoonReports}
+              notify={notify}
+            />
+          )}
+
+          {view === 'fuel_consumption' && (
+            <FuelConsumptionView
+              vessels={vessels}
+              departureReports={departureReports}
+              arrivalReports={arrivalReports}
+            />
+          )}
+
           {view === 'routing' && (
             <div className="space-y-8">
               <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">{user.role === 'vessel' ? 'Noon Report' : 'Vessel Routing'}</h1>
-                  <p className="text-slate-500">{user.role === 'vessel' ? 'Update your current destination, status, and ETA.' : 'Update destination, status, and ETA for all assigned vessels in one place.'}</p>
+                  <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Vessel Routing</h1>
+                  <p className="text-slate-500">Update destination, status, and ETA for all assigned vessels in one place.</p>
                 </div>
                 <button 
                   onClick={handleSaveAllRouting}
@@ -2375,6 +2598,1528 @@ const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Ce
           className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]"
         />
       </div>
+    </div>
+  );
+};
+
+const FuelConsumptionView = ({ vessels, departureReports, arrivalReports }: { 
+  vessels: Vessel[], 
+  departureReports: DepartureReport[],
+  arrivalReports: ArrivalReport[]
+}) => {
+  const consumptionData = React.useMemo(() => {
+    return vessels.map(vessel => {
+      const vDepartures = departureReports.filter(r => r.vessel_id === vessel.id);
+      const vArrivals = arrivalReports.filter(r => r.vessel_id === vessel.id);
+
+      const totalPortHsfo = vDepartures.reduce((acc, r) => acc + (r.foc_port_hsfo || 0), 0);
+      const totalPortLsfo = vDepartures.reduce((acc, r) => acc + (r.foc_port_lsfo || 0), 0);
+      const totalPortMgo = vDepartures.reduce((acc, r) => acc + (r.foc_port_mgo || 0), 0);
+      const totalPortMdo = vDepartures.reduce((acc, r) => acc + (r.foc_port_mdo || 0), 0);
+
+      const totalSeaHsfo = vArrivals.reduce((acc, r) => acc + (r.foc_sea_hsfo || 0), 0);
+      const totalSeaLsfo = vArrivals.reduce((acc, r) => acc + (r.foc_sea_lsfo || 0), 0);
+      const totalSeaMgo = vArrivals.reduce((acc, r) => acc + (r.foc_sea_mgo || 0), 0);
+      const totalSeaMdo = vArrivals.reduce((acc, r) => acc + (r.foc_sea_mdo || 0), 0);
+
+      return {
+        vesselName: vessel.name,
+        hsfo: (totalPortHsfo + totalSeaHsfo).toFixed(2),
+        lsfo: (totalPortLsfo + totalSeaLsfo).toFixed(2),
+        mgo: (totalPortMgo + totalSeaMgo).toFixed(2),
+        mdo: (totalPortMdo + totalSeaMdo).toFixed(2),
+        total: (totalPortHsfo + totalSeaHsfo + totalPortLsfo + totalSeaLsfo + totalPortMgo + totalSeaMgo + totalPortMdo + totalSeaMdo).toFixed(2)
+      };
+    });
+  }, [vessels, departureReports, arrivalReports]);
+
+  return (
+    <div className="space-y-8">
+      <header>
+        <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Fuel Consumption</h1>
+        <p className="text-slate-500">Aggregated fuel consumption data from all reports.</p>
+      </header>
+
+      <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                <th className="px-6 py-4">Vessel Name</th>
+                <th className="px-6 py-4 text-right">Total HSFO (mt)</th>
+                <th className="px-6 py-4 text-right">Total LSFO (mt)</th>
+                <th className="px-6 py-4 text-right">Total MGO (mt)</th>
+                <th className="px-6 py-4 text-right">Total MDO (mt)</th>
+                <th className="px-6 py-4 text-right">Grand Total (mt)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {consumptionData.map((data, idx) => (
+                <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
+                  <td className="px-6 py-4 font-bold text-slate-900">{data.vesselName}</td>
+                  <td className="px-6 py-4 font-mono text-sm text-right">{data.hsfo}</td>
+                  <td className="px-6 py-4 font-mono text-sm text-right">{data.lsfo}</td>
+                  <td className="px-6 py-4 font-mono text-sm text-right">{data.mgo}</td>
+                  <td className="px-6 py-4 font-mono text-sm text-right">{data.mdo}</td>
+                  <td className="px-6 py-4 font-mono text-sm font-bold text-blue-600 text-right">{data.total}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: { 
+  user: User, 
+  token: string, 
+  vessels: Vessel[], 
+  reports: NoonReport[],
+  onRefresh: () => void,
+  notify: (type: 'success' | 'error', message: string) => void
+}) => {
+  const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const defaultForm = {
+    vessel_id: String(user.vessel_id || ''),
+    utc_date_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
+    position_long: '',
+    position_lat: '',
+    distance_to_go: '',
+    cargo_status: 'ballast',
+    rob_hsfo: '0',
+    rob_lsfo: '0',
+    rob_mgo: '0',
+    rob_mdo: '0',
+    voyage_number: ''
+  };
+  const [form, setForm] = useState(defaultForm);
+  const [file, setFile] = useState<File | null>(null);
+  const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+
+  const foc_computation = React.useMemo(() => {
+    // If no reports yet, we can't auto compute FOC relative to previous ROB
+    if (reports.length === 0) return { hsfo: '0.00', lsfo: '0.00', mgo: '0.00', mdo: '0.00' };
+    
+    // Sort reports by date to find the previous one for THIS vessel
+    const vesselReports = reports
+      .filter(r => String(r.vessel_id) === String(form.vessel_id) && r.id !== editingId)
+      .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
+    
+    if (vesselReports.length === 0) return { hsfo: '0.00', lsfo: '0.00', mgo: '0.00', mdo: '0.00' };
+    
+    const prev = vesselReports[0]; // Most recent
+    const current = {
+      hsfo: parseFloat(form.rob_hsfo) || 0,
+      lsfo: parseFloat(form.rob_lsfo) || 0,
+      mgo: parseFloat(form.rob_mgo) || 0,
+      mdo: parseFloat(form.rob_mdo) || 0,
+    };
+    
+    return {
+      hsfo: Math.max(0, prev.rob_hsfo - current.hsfo).toFixed(2),
+      lsfo: Math.max(0, prev.rob_lsfo - current.lsfo).toFixed(2),
+      mgo: Math.max(0, prev.rob_mgo - current.mgo).toFixed(2),
+      mdo: Math.max(0, prev.rob_mdo - current.mdo).toFixed(2),
+    };
+  }, [form, reports, editingId]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const url = editingId ? `/api/noon-reports/${editingId}` : '/api/noon-reports';
+      const method = editingId ? 'PUT' : 'POST';
+
+      if (!file && !editingId) {
+        notify('error', 'Please attach the scanned ROB report');
+        setLoading(false);
+        return;
+      }
+
+      const formData = new FormData();
+      Object.entries(form).forEach(([key, val]) => {
+        if (key === 'utc_date_time') {
+          formData.append(key, String(val).replace('T', ' '));
+        } else {
+          formData.append(key, String(val));
+        }
+      });
+      
+      formData.append('foc_hsfo', foc_computation.hsfo);
+      formData.append('foc_lsfo', foc_computation.lsfo);
+      formData.append('foc_mgo', foc_computation.mgo);
+      formData.append('foc_mdo', foc_computation.mdo);
+
+      if (file) {
+        formData.append('report_file', file);
+      }
+
+      const res = await fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData
+      });
+
+      if (res.ok) {
+        notify('success', `Noon report ${editingId ? 'updated' : 'submitted'} successfully`);
+        setForm(defaultForm);
+        setFile(null);
+        setEditingId(null);
+        onRefresh();
+        setActiveTab('history');
+      } else {
+        const error = await res.json();
+        notify('error', error.error || `Failed to ${editingId ? 'update' : 'submit'} report`);
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEdit = (report: NoonReport) => {
+    setEditingId(report.id);
+    setForm({
+      vessel_id: String(report.vessel_id),
+      voyage_number: report.voyage_number || '',
+      utc_date_time: report.utc_date_time.slice(0, 16),
+      position_long: report.position_long,
+      position_lat: report.position_lat,
+      distance_to_go: report.distance_to_go,
+      cargo_status: report.cargo_status,
+      rob_hsfo: String(report.rob_hsfo),
+      rob_lsfo: String(report.rob_lsfo),
+      rob_mgo: String(report.rob_mgo),
+      rob_mdo: String(report.rob_mdo)
+    });
+    setActiveTab('form');
+  };
+
+  const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
+
+  return (
+    <div className="space-y-8">
+      <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Noon to Noon</h1>
+          <p className="text-slate-500">Track daily vessel position and fuel consumption.</p>
+        </div>
+        <div className="flex bg-slate-100 p-1.5 rounded-xl border border-slate-200">
+          <button 
+            onClick={() => { setActiveTab('form'); setEditingId(null); setForm(defaultForm); }}
+            className={cn(
+              "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+              activeTab === 'form' && !editingId
+                ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+            )}
+          >
+            New Report
+          </button>
+          {editingId && (
+            <div className="px-5 py-2.5 rounded-lg text-sm font-bold bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700 mx-1">
+              Editing: {editingId}
+            </div>
+          )}
+          <button 
+            onClick={() => setActiveTab('history')}
+            className={cn(
+              "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+              activeTab === 'history' 
+                ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+            )}
+          >
+            History
+          </button>
+        </div>
+      </header>
+
+      {activeTab === 'form' ? (
+        <form onSubmit={handleSubmit} className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+          <div className="p-8 space-y-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Vessel</label>
+                    {user.role === 'vessel' && user.vessel_id ? (
+                      <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
+                        {selectedVesselName}
+                      </div>
+                    ) : (
+                      <select
+                        value={form.vessel_id}
+                        onChange={(e) => setForm({ ...form, vessel_id: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      >
+                        <option value="">Select Vessel</option>
+                        {vessels.map(v => (
+                          <option key={v.id} value={String(v.id)}>{v.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Voyage Number</label>
+                    <input 
+                      type="text" 
+                      required
+                      placeholder="e.g. V-001"
+                      value={form.voyage_number}
+                      onChange={(e) => setForm({ ...form, voyage_number: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">UTC Date & Time</label>
+                    <input 
+                      type="datetime-local" 
+                      required
+                      value={form.utc_date_time}
+                      onChange={(e) => setForm({ ...form, utc_date_time: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Cargo Status</label>
+                    <select 
+                      value={form.cargo_status}
+                      onChange={(e) => setForm({ ...form, cargo_status: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="ballast">Ballast</option>
+                      <option value="laden">Laden</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 121.0 E"
+                      value={form.position_long}
+                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 14.5 N"
+                      value={form.position_lat}
+                      onChange={(e) => setForm({ ...form, position_lat: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Distance to Go (nm)</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 500"
+                      value={form.distance_to_go}
+                      onChange={(e) => setForm({ ...form, distance_to_go: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Cargo Status</label>
+                    <select 
+                      value={form.cargo_status}
+                      onChange={(e) => setForm({ ...form, cargo_status: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="ballast">BALLAST</option>
+                      <option value="laden">LADEN</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Scanned ROB Report</label>
+                  <div className="flex items-center gap-3">
+                    <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
+                      <Upload className="w-4 h-4 text-blue-600" />
+                      <span className="text-sm font-bold text-blue-700">{file ? file.name : 'Upload Report'}</span>
+                      <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                    </label>
+                    {file && (
+                      <button onClick={() => setFile(null)} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="bg-blue-50/30 p-6 rounded-2xl border border-blue-100">
+                  <h4 className="text-sm font-bold text-blue-900 mb-4 flex items-center gap-2">
+                    <Activity className="w-4 h-4" />
+                    Fuel Statistics & Consumption (Noon-to-Noon)
+                  </h4>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
+                      <span>Fuel Type</span>
+                      <span>Current ROB / FOC (Auto Computed)</span>
+                    </div>
+                    {[
+                      { key: 'hsfo', label: 'HSFO', rob: 'rob_hsfo' },
+                      { key: 'lsfo', label: 'LSFO', rob: 'rob_lsfo' },
+                      { key: 'mgo', label: 'MGO', rob: 'rob_mgo' },
+                      { key: 'mdo', label: 'MDO', rob: 'rob_mdo' },
+                    ].map(f => (
+                      <div key={f.key} className="grid grid-cols-2 gap-4 items-center">
+                        <span className="text-sm font-bold text-slate-700">{f.label}</span>
+                        <div className="flex gap-2">
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            value={(form as any)[f.rob]}
+                            onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
+                            className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
+                          />
+                          <div className="w-24 px-2 py-1.5 bg-blue-100 text-blue-700 text-xs font-bold rounded-lg flex items-center justify-center" title="Consumption based on previous report ROB">
+                            {(foc_computation as any)[f.key]}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="text-[10px] text-slate-400 italic px-2">
+                      * FOC is auto-computed based on previous report's ROB.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-8 border-t border-slate-100">
+              <button 
+                type="submit"
+                disabled={loading}
+                className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3 rounded-2xl text-base font-bold hover:bg-blue-800 transition-all shadow-xl shadow-blue-200 disabled:opacity-50"
+              >
+                {loading ? (
+                  <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-5 h-5" />
+                )}
+                Submit Noon Report
+              </button>
+            </div>
+          </div>
+        </form>
+      ) : (
+        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                  <th className="px-6 py-4">Date & Time (UTC)</th>
+                  <th className="px-6 py-4">Vessel</th>
+                  <th className="px-6 py-4">Voyage</th>
+                  <th className="px-6 py-4">Position</th>
+                  <th className="px-6 py-4">DTG</th>
+                  <th className="px-6 py-4">Cargo</th>
+                  <th className="px-6 py-4">HSFO ROB</th>
+                  <th className="px-6 py-4">Daily FOC (HSFO)</th>
+                  <th className="px-6 py-4">Attachment</th>
+                  <th className="px-6 py-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-blue-50 text-sm">
+                {reports.map(report => (
+                  <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
+                    <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
+                    <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
+                    <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
+                    <td className="px-6 py-4 font-mono text-xs">{report.position_lat} / {report.position_long}</td>
+                    <td className="px-6 py-4">{report.distance_to_go} nm</td>
+                    <td className="px-6 py-4 uppercase text-[10px] font-bold text-slate-500">{report.cargo_status}</td>
+                    <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
+                    <td className="px-6 py-4 font-mono text-blue-600">-{report.foc_hsfo}</td>
+                    <td className="px-6 py-4">
+                      {report.attachment_id && (
+                        <a 
+                          href={`/api/noon-attachments/${report.attachment_id}?token=${token}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1.5 text-blue-600 hover:underline font-bold"
+                        >
+                          <FileText className="w-4 h-4" />
+                          {report.attachment_name || 'View Report'}
+                        </a>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <button 
+                        onClick={() => handleEdit(report)}
+                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        title="Edit Report"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {reports.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-6 py-12 text-center text-slate-400 font-medium">
+                      No noon reports found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefresh, notify }: { 
+  user: User, 
+  token: string, 
+  vessels: Vessel[], 
+  reports: ArrivalReport[],
+  departureReports: DepartureReport[],
+  onRefresh: () => void,
+  notify: (type: 'success' | 'error', message: string) => void
+}) => {
+  const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const defaultForm = {
+    vessel_id: String(user.vessel_id || ''),
+    voyage_number: '',
+    utc_date_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
+    arrival_port: '',
+    eu_uk_status: 'No',
+    position_long: '',
+    position_lat: '',
+    operation_type: 'LOADING',
+    cargo_status: 'ballast',
+    total_time_at_sea: '',
+    total_distance: '',
+    rob_type: 'EOSP',
+    rob_hsfo: '0',
+    rob_lsfo: '0',
+    rob_mgo: '0',
+    rob_mdo: '0',
+    rob_fw: '0',
+    departure_hsfo: '0',
+    departure_lsfo: '0',
+    departure_mgo: '0',
+    departure_mdo: '0',
+    agent_detail: 'FILLIN'
+  };
+  const [form, setForm] = useState(defaultForm);
+  const [file, setFile] = useState<File | null>(null);
+  const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+
+  useEffect(() => {
+    if (departureReports && form.vessel_id && !editingId) {
+      const vesselDepartures = departureReports
+        .filter(r => String(r.vessel_id) === String(form.vessel_id))
+        .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
+
+      if (vesselDepartures.length > 0) {
+        const latest = vesselDepartures[0];
+        
+        let timeAtSea = "";
+        try {
+          const departureDate = new Date(latest.utc_date_time);
+          const arrivalDate = new Date(form.utc_date_time);
+          
+          if (!isNaN(departureDate.getTime()) && !isNaN(arrivalDate.getTime())) {
+            const diffMs = arrivalDate.getTime() - departureDate.getTime();
+            if (diffMs > 0) {
+              const decimalHours = diffMs / (1000 * 60 * 60);
+              timeAtSea = `${decimalHours.toFixed(1)}h`;
+            }
+          }
+        } catch (e) {
+          console.error("Error computing time at sea:", e);
+        }
+
+        setForm(prev => ({
+          ...prev,
+          departure_hsfo: String(latest.rob_hsfo),
+          departure_lsfo: String(latest.rob_lsfo),
+          departure_mgo: String(latest.rob_mgo),
+          departure_mdo: String(latest.rob_mdo),
+          total_time_at_sea: timeAtSea || prev.total_time_at_sea
+        }));
+      }
+    }
+  }, [form.vessel_id, form.utc_date_time, departureReports, editingId]);
+
+  const foc_computation = React.useMemo(() => {
+    const departure = {
+      hsfo: parseFloat(form.departure_hsfo) || 0,
+      lsfo: parseFloat(form.departure_lsfo) || 0,
+      mgo: parseFloat(form.departure_mgo) || 0,
+      mdo: parseFloat(form.departure_mdo) || 0,
+    };
+    const arrival = {
+      hsfo: parseFloat(form.rob_hsfo) || 0,
+      lsfo: parseFloat(form.rob_lsfo) || 0,
+      mgo: parseFloat(form.rob_mgo) || 0,
+      mdo: parseFloat(form.rob_mdo) || 0,
+    };
+    return {
+      hsfo: Math.max(0, departure.hsfo - arrival.hsfo).toFixed(2),
+      lsfo: Math.max(0, departure.lsfo - arrival.lsfo).toFixed(2),
+      mgo: Math.max(0, departure.mgo - arrival.mgo).toFixed(2),
+      mdo: Math.max(0, departure.mdo - arrival.mdo).toFixed(2),
+    };
+  }, [form]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const url = editingId ? `/api/arrival-reports/${editingId}` : '/api/arrival-reports';
+      const method = editingId ? 'PUT' : 'POST';
+      
+      if (!file && !editingId) {
+        notify('error', 'Please attach the scanned ROB report');
+        setLoading(false);
+        return;
+      }
+      
+      const formData = new FormData();
+      Object.entries(form).forEach(([key, val]) => {
+        if (key === 'utc_date_time') {
+          formData.append(key, String(val).replace('T', ' '));
+        } else {
+          formData.append(key, String(val));
+        }
+      });
+      
+      formData.append('foc_sea_hsfo', foc_computation.hsfo);
+      formData.append('foc_sea_lsfo', foc_computation.lsfo);
+      formData.append('foc_sea_mgo', foc_computation.mgo);
+      formData.append('foc_sea_mdo', foc_computation.mdo);
+
+      if (file) {
+        formData.append('report_file', file);
+      }
+
+      const res = await fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData
+      });
+
+      if (res.ok) {
+        notify('success', `Arrival report ${editingId ? 'updated' : 'submitted'} successfully`);
+        setForm(defaultForm);
+        setFile(null);
+        setEditingId(null);
+        onRefresh();
+        setActiveTab('history');
+      } else {
+        const error = await res.json();
+        notify('error', error.error || `Failed to ${editingId ? 'update' : 'submit'} report`);
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEdit = (report: ArrivalReport) => {
+    setEditingId(report.id);
+    setForm({
+      vessel_id: String(report.vessel_id),
+      voyage_number: report.voyage_number || '',
+      utc_date_time: report.utc_date_time.slice(0, 16),
+      arrival_port: report.arrival_port,
+      eu_uk_status: report.eu_uk_status,
+      position_long: report.position_long,
+      position_lat: report.position_lat,
+      operation_type: report.operation_type,
+      cargo_status: report.cargo_status,
+      total_time_at_sea: report.total_time_at_sea,
+      total_distance: report.total_distance,
+      rob_type: report.rob_type,
+      rob_hsfo: String(report.rob_hsfo),
+      rob_lsfo: String(report.rob_lsfo),
+      rob_mgo: String(report.rob_mgo),
+      rob_mdo: String(report.rob_mdo),
+      rob_fw: String(report.rob_fw),
+      departure_hsfo: String(report.rob_hsfo + report.foc_sea_hsfo), // Approx from report
+      departure_lsfo: String(report.rob_lsfo + report.foc_sea_lsfo),
+      departure_mgo: String(report.rob_mgo + report.foc_sea_mgo),
+      departure_mdo: String(report.rob_mdo + report.foc_sea_mdo),
+      agent_detail: report.agent_detail
+    });
+    setActiveTab('form');
+  };
+
+  const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
+
+  return (
+    <div className="space-y-8">
+      <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Arrival</h1>
+          <p className="text-slate-500">Submit and track vessel arrival reports.</p>
+        </div>
+        <div className="flex bg-slate-100 p-1.5 rounded-xl border border-slate-200">
+          <button 
+            onClick={() => { setActiveTab('form'); setEditingId(null); setForm(defaultForm); }}
+            className={cn(
+              "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+              activeTab === 'form' && !editingId
+                ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+            )}
+          >
+            New Report
+          </button>
+          {editingId && (
+            <div className="px-5 py-2.5 rounded-lg text-sm font-bold bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700 mx-1">
+              Editing: {editingId}
+            </div>
+          )}
+          <button 
+            onClick={() => setActiveTab('history')}
+            className={cn(
+              "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+              activeTab === 'history' 
+                ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+            )}
+          >
+            History
+          </button>
+        </div>
+      </header>
+
+      {activeTab === 'form' ? (
+        <form onSubmit={handleSubmit} className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+          <div className="p-8 space-y-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Vessel</label>
+                    <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
+                      {selectedVesselName}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Voyage Number</label>
+                    <input 
+                      type="text" 
+                      required
+                      placeholder="e.g. V-001"
+                      value={form.voyage_number}
+                      onChange={(e) => setForm({ ...form, voyage_number: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">UTC Date & Time</label>
+                    <input 
+                      type="datetime-local" 
+                      required
+                      value={form.utc_date_time}
+                      onChange={(e) => setForm({ ...form, utc_date_time: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Arrival Port</label>
+                    <input 
+                      type="text" 
+                      required
+                      placeholder="Enter port name"
+                      value={form.arrival_port}
+                      onChange={(e) => setForm({ ...form, arrival_port: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 121.0 E"
+                      value={form.position_long}
+                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 14.5 N"
+                      value={form.position_lat}
+                      onChange={(e) => setForm({ ...form, position_lat: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">EU/UK Status</label>
+                    <select 
+                      value={form.eu_uk_status}
+                      onChange={(e) => setForm({ ...form, eu_uk_status: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="No">No</option>
+                      <option value="EU">EU</option>
+                      <option value="UK">UK</option>
+                      <option value="Both">Both</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Operation Type</label>
+                    <select 
+                      value={form.operation_type}
+                      onChange={(e) => setForm({ ...form, operation_type: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="LOADING">LOADING</option>
+                      <option value="DISCHARGING">DISCHARGING</option>
+                      <option value="BUNKERING">BUNKERING</option>
+                      <option value="ship-to-ship cargo operation">SHIP-TO-SHIP CARGO OPERATION</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Cargo Status</label>
+                    <select 
+                      value={form.cargo_status}
+                      onChange={(e) => setForm({ ...form, cargo_status: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="ballast">BALLAST</option>
+                      <option value="laden">LADEN</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Total Time at Sea</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 12d 5h"
+                      value={form.total_time_at_sea}
+                      onChange={(e) => setForm({ ...form, total_time_at_sea: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Total Distance (nm)</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 3500"
+                      value={form.total_distance}
+                      onChange={(e) => setForm({ ...form, total_distance: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Agent Detail Status</label>
+                  <select 
+                    value={form.agent_detail === 'TBA' ? 'TBA' : 'FILLIN'}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setForm({ ...form, agent_detail: val === 'TBA' ? 'TBA' : '' });
+                    }}
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  >
+                    <option value="FILLIN">FILLIN (Enter Details)</option>
+                    <option value="TBA">TBA</option>
+                  </select>
+                </div>
+
+                {form.agent_detail !== 'TBA' && (
+                  <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Agent Details</label>
+                    <textarea 
+                      placeholder="Paste agent contact details here..."
+                      value={form.agent_detail === 'FILLIN' ? '' : form.agent_detail}
+                      onChange={(e) => setForm({ ...form, agent_detail: e.target.value })}
+                      rows={4}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none resize-none"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">ROB Event Type</label>
+                  <select 
+                    value={form.rob_type}
+                    onChange={(e) => setForm({ ...form, rob_type: e.target.value })}
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  >
+                    <option value="EOSP">EOSP</option>
+                    <option value="dropanchore">DROP ANCHOR</option>
+                    <option value="fistline">FIRST LINE</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Scanned ROB Report</label>
+                  <div className="flex items-center gap-3">
+                    <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
+                      <Upload className="w-4 h-4 text-blue-600" />
+                      <span className="text-sm font-bold text-blue-700">{file ? file.name : 'Upload Report'}</span>
+                      <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                    </label>
+                    {file && (
+                      <button onClick={() => setFile(null)} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-blue-50/30 p-6 rounded-2xl border border-blue-100">
+                  <h4 className="text-sm font-bold text-blue-900 mb-4 flex items-center gap-2">
+                    <Activity className="w-4 h-4" />
+                    Fuel Statistics & Consumption (At Sea)
+                  </h4>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
+                      <span>Fuel Type</span>
+                      <span>Dep. ROB</span>
+                      <span>Arr. ROB / FOC</span>
+                    </div>
+                    {[
+                      { key: 'hsfo', label: 'HSFO', departure: 'departure_hsfo', rob: 'rob_hsfo' },
+                      { key: 'lsfo', label: 'LSFO', departure: 'departure_lsfo', rob: 'rob_lsfo' },
+                      { key: 'mgo', label: 'MGO', departure: 'departure_mgo', rob: 'rob_mgo' },
+                      { key: 'mdo', label: 'MDO', departure: 'departure_mdo', rob: 'rob_mdo' },
+                    ].map(f => (
+                      <div key={f.key} className="grid grid-cols-3 gap-4 items-center">
+                        <span className="text-sm font-bold text-slate-700">{f.label}</span>
+                        <input 
+                          type="number" 
+                          step="0.01"
+                          value={(form as any)[f.departure]}
+                          onChange={(e) => setForm({ ...form, [f.departure]: e.target.value })}
+                          className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                        />
+                        <div className="flex gap-2">
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            value={(form as any)[f.rob]}
+                            onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
+                            className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
+                          />
+                          <div className="w-20 px-2 py-1.5 bg-blue-100 text-blue-700 text-xs font-bold rounded-lg flex items-center justify-center">
+                            {(foc_computation as any)[f.key]}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="grid grid-cols-3 gap-4 items-center pt-2 border-t border-blue-100">
+                      <span className="text-sm font-bold text-slate-700">FW</span>
+                      <div />
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        value={form.rob_fw}
+                        onChange={(e) => setForm({ ...form, rob_fw: e.target.value })}
+                        className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-8 border-t border-slate-100">
+              <button 
+                type="submit"
+                disabled={loading}
+                className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3 rounded-2xl text-base font-bold hover:bg-blue-800 transition-all shadow-xl shadow-blue-200 disabled:opacity-50"
+              >
+                {loading ? (
+                  <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-5 h-5" />
+                )}
+                Submit Arrival Report
+              </button>
+            </div>
+          </div>
+        </form>
+      ) : (
+        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                  <th className="px-6 py-4">Date & Time (UTC)</th>
+                  <th className="px-6 py-4">Vessel</th>
+                  <th className="px-6 py-4">Voyage</th>
+                  <th className="px-6 py-4">Port</th>
+                  <th className="px-6 py-4">Sea Time</th>
+                  <th className="px-6 py-4">Distance</th>
+                  <th className="px-6 py-4">HSFO Arrival</th>
+                  <th className="px-6 py-4">FOC Sea</th>
+                  <th className="px-6 py-4">Agent Detail</th>
+                  <th className="px-6 py-4">Attachment</th>
+                  <th className="px-6 py-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-blue-50 text-sm">
+                {reports.map(report => (
+                  <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
+                    <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
+                    <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
+                    <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
+                    <td className="px-6 py-4">{report.arrival_port}</td>
+                    <td className="px-6 py-4">{report.total_time_at_sea}</td>
+                    <td className="px-6 py-4">{report.total_distance} nm</td>
+                    <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
+                    <td className="px-6 py-4 font-mono text-blue-600">-{report.foc_sea_hsfo}</td>
+                    <td className="px-6 py-4">
+                      <span className="truncate max-w-[150px] block" title={report.agent_detail}>
+                        {report.agent_detail}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      {report.attachment_id && (
+                        <a 
+                          href={`/api/arrival-attachments/${report.attachment_id}?token=${token}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1.5 text-blue-600 hover:underline font-bold"
+                        >
+                          <FileText className="w-4 h-4" />
+                          {report.attachment_name || 'View Report'}
+                        </a>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <button 
+                        onClick={() => handleEdit(report)}
+                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        title="Edit Report"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {reports.length === 0 && (
+                  <tr>
+                    <td colSpan={10} className="px-6 py-12 text-center text-slate-400 font-medium">
+                      No arrival reports found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: { 
+  user: User, 
+  token: string, 
+  vessels: Vessel[], 
+  reports: DepartureReport[],
+  onRefresh: () => void,
+  notify: (type: 'success' | 'error', message: string) => void
+}) => {
+  const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const defaultForm = {
+    vessel_id: String(user.vessel_id || ''),
+    voyage_number: '',
+    utc_date_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
+    departure_port: '',
+    eu_uk_status: 'No',
+    position_long: '',
+    position_lat: '',
+    operation_type: 'LOADING',
+    cargo_status: 'ballast',
+    rob_type: 'lastline',
+    rob_hsfo: '0',
+    rob_lsfo: '0',
+    rob_mgo: '0',
+    rob_mdo: '0',
+    rob_fw: '0',
+    arrival_hsfo: '0',
+    arrival_lsfo: '0',
+    arrival_mgo: '0',
+    arrival_mdo: '0'
+  };
+  const [form, setForm] = useState(defaultForm);
+  const [file, setFile] = useState<File | null>(null);
+  const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+
+  const foc_computation = React.useMemo(() => {
+    const arrival = {
+      hsfo: parseFloat(form.arrival_hsfo) || 0,
+      lsfo: parseFloat(form.arrival_lsfo) || 0,
+      mgo: parseFloat(form.arrival_mgo) || 0,
+      mdo: parseFloat(form.arrival_mdo) || 0,
+    };
+    const departure = {
+      hsfo: parseFloat(form.rob_hsfo) || 0,
+      lsfo: parseFloat(form.rob_lsfo) || 0,
+      mgo: parseFloat(form.rob_mgo) || 0,
+      mdo: parseFloat(form.rob_mdo) || 0,
+    };
+    return {
+      hsfo: Math.max(0, arrival.hsfo - departure.hsfo).toFixed(2),
+      lsfo: Math.max(0, arrival.lsfo - departure.lsfo).toFixed(2),
+      mgo: Math.max(0, arrival.mgo - departure.mgo).toFixed(2),
+      mdo: Math.max(0, arrival.mdo - departure.mdo).toFixed(2),
+    };
+  }, [form]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const url = editingId ? `/api/departure-reports/${editingId}` : '/api/departure-reports';
+      const method = editingId ? 'PUT' : 'POST';
+
+      if (!file && !editingId) {
+        notify('error', 'Please attach the scanned ROB report');
+        setLoading(false);
+        return;
+      }
+
+      const formData = new FormData();
+      Object.entries(form).forEach(([key, val]) => {
+        if (key === 'utc_date_time') {
+          formData.append(key, String(val).replace('T', ' '));
+        } else {
+          formData.append(key, String(val));
+        }
+      });
+      
+      // Append computed values as well
+      formData.append('foc_port_hsfo', foc_computation.hsfo);
+      formData.append('foc_port_lsfo', foc_computation.lsfo);
+      formData.append('foc_port_mgo', foc_computation.mgo);
+      formData.append('foc_port_mdo', foc_computation.mdo);
+
+      if (file) {
+        formData.append('report_file', file);
+      }
+
+      const res = await fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData
+      });
+
+      if (res.ok) {
+        notify('success', `Departure report ${editingId ? 'updated' : 'submitted'} successfully`);
+        setForm(defaultForm);
+        setFile(null);
+        setEditingId(null);
+        onRefresh();
+        setActiveTab('history');
+      } else {
+        const error = await res.json();
+        notify('error', error.error || `Failed to ${editingId ? 'update' : 'submit'} report`);
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEdit = (report: DepartureReport) => {
+    setEditingId(report.id);
+    setForm({
+      vessel_id: String(report.vessel_id),
+      voyage_number: report.voyage_number || '',
+      utc_date_time: report.utc_date_time.slice(0, 16),
+      departure_port: report.departure_port,
+      eu_uk_status: report.eu_uk_status,
+      position_long: report.position_long,
+      position_lat: report.position_lat,
+      operation_type: report.operation_type,
+      cargo_status: report.cargo_status,
+      rob_type: report.rob_type,
+      rob_hsfo: String(report.rob_hsfo),
+      rob_lsfo: String(report.rob_lsfo),
+      rob_mgo: String(report.rob_mgo),
+      rob_mdo: String(report.rob_mdo),
+      rob_fw: String(report.rob_fw),
+      arrival_hsfo: String(report.rob_hsfo + report.foc_port_hsfo), // Approx
+      arrival_lsfo: String(report.rob_lsfo + report.foc_port_lsfo),
+      arrival_mgo: String(report.rob_mgo + report.foc_port_mgo),
+      arrival_mdo: String(report.rob_mdo + report.foc_port_mdo)
+    });
+    setActiveTab('form');
+  };
+
+  const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
+
+  return (
+    <div className="space-y-8">
+      <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Departure</h1>
+          <p className="text-slate-500">Submit and track vessel departure reports.</p>
+        </div>
+        <div className="flex bg-slate-100 p-1.5 rounded-xl border border-slate-200">
+          <button 
+            onClick={() => { setActiveTab('form'); setEditingId(null); setForm(defaultForm); }}
+            className={cn(
+              "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+              activeTab === 'form' && !editingId
+                ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+            )}
+          >
+            New Report
+          </button>
+          {editingId && (
+            <div className="px-5 py-2.5 rounded-lg text-sm font-bold bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700 mx-1">
+              Editing: {editingId}
+            </div>
+          )}
+          <button 
+            onClick={() => setActiveTab('history')}
+            className={cn(
+              "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+              activeTab === 'history' 
+                ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+            )}
+          >
+            History
+          </button>
+        </div>
+      </header>
+
+      {activeTab === 'form' ? (
+        <form onSubmit={handleSubmit} className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+          <div className="p-8 space-y-8">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Vessel</label>
+                    <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
+                      {selectedVesselName}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Voyage Number</label>
+                    <input 
+                      type="text" 
+                      required
+                      placeholder="e.g. V-001"
+                      value={form.voyage_number}
+                      onChange={(e) => setForm({ ...form, voyage_number: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">UTC Date & Time</label>
+                    <input 
+                      type="datetime-local" 
+                      required
+                      value={form.utc_date_time}
+                      onChange={(e) => setForm({ ...form, utc_date_time: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Departure Port</label>
+                    <input 
+                      type="text" 
+                      required
+                      placeholder="Enter port name"
+                      value={form.departure_port}
+                      onChange={(e) => setForm({ ...form, departure_port: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 121.0 E"
+                      value={form.position_long}
+                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 14.5 N"
+                      value={form.position_lat}
+                      onChange={(e) => setForm({ ...form, position_lat: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">EU/UK Status</label>
+                    <select 
+                      value={form.eu_uk_status}
+                      onChange={(e) => setForm({ ...form, eu_uk_status: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="No">No</option>
+                      <option value="EU">EU</option>
+                      <option value="UK">UK</option>
+                      <option value="Both">Both</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Operation Type</label>
+                    <select 
+                      value={form.operation_type}
+                      onChange={(e) => setForm({ ...form, operation_type: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="LOADING">LOADING</option>
+                      <option value="DISCHARGING">DISCHARGING</option>
+                      <option value="BUNKERING">BUNKERING</option>
+                      <option value="ship-to-ship cargo operation">SHIP-TO-SHIP CARGO OPERATION</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Cargo Status</label>
+                    <select 
+                      value={form.cargo_status}
+                      onChange={(e) => setForm({ ...form, cargo_status: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    >
+                      <option value="ballast">BALLAST</option>
+                      <option value="laden">LADEN</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">ROB Event Type</label>
+                  <select 
+                    value={form.rob_type}
+                    onChange={(e) => setForm({ ...form, rob_type: e.target.value })}
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  >
+                    <option value="lastline">LAST LINE</option>
+                    <option value="anchoraweigh">ANCHOR AWEIGH</option>
+                    <option value="sosp">SOSP</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Scanned ROB Report</label>
+                  <div className="flex items-center gap-3">
+                    <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
+                      <Upload className="w-4 h-4 text-blue-600" />
+                      <span className="text-sm font-bold text-blue-700">{file ? file.name : 'Upload Report'}</span>
+                      <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                    </label>
+                    {file && (
+                      <button onClick={() => setFile(null)} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="bg-blue-50/30 p-6 rounded-2xl border border-blue-100">
+                  <h4 className="text-sm font-bold text-blue-900 mb-4 flex items-center gap-2">
+                    <Activity className="w-4 h-4" />
+                    Fuel Statistics & Consumption
+                  </h4>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
+                      <span>Fuel Type</span>
+                      <span>Arrival ROB</span>
+                      <span>Dep. ROB / FOC</span>
+                    </div>
+                    {[
+                      { key: 'hsfo', label: 'HSFO', arrival: 'arrival_hsfo', rob: 'rob_hsfo' },
+                      { key: 'lsfo', label: 'LSFO', arrival: 'arrival_lsfo', rob: 'rob_lsfo' },
+                      { key: 'mgo', label: 'MGO', arrival: 'arrival_mgo', rob: 'rob_mgo' },
+                      { key: 'mdo', label: 'MDO', arrival: 'arrival_mdo', rob: 'rob_mdo' },
+                    ].map(f => (
+                      <div key={f.key} className="grid grid-cols-3 gap-4 items-center">
+                        <span className="text-sm font-bold text-slate-700">{f.label}</span>
+                        <input 
+                          type="number" 
+                          step="0.01"
+                          value={(form as any)[f.arrival]}
+                          onChange={(e) => setForm({ ...form, [f.arrival]: e.target.value })}
+                          className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                        />
+                        <div className="flex gap-2">
+                          <input 
+                            type="number" 
+                            step="0.01"
+                            value={(form as any)[f.rob]}
+                            onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
+                            className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
+                          />
+                          <div className="w-20 px-2 py-1.5 bg-blue-100 text-blue-700 text-xs font-bold rounded-lg flex items-center justify-center">
+                            {(foc_computation as any)[f.key]}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="grid grid-cols-3 gap-4 items-center pt-2 border-t border-blue-100">
+                      <span className="text-sm font-bold text-slate-700">FW</span>
+                      <div />
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        value={form.rob_fw}
+                        onChange={(e) => setForm({ ...form, rob_fw: e.target.value })}
+                        className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-8 border-t border-slate-100">
+              <button 
+                type="submit"
+                disabled={loading}
+                className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3 rounded-2xl text-base font-bold hover:bg-blue-800 transition-all shadow-xl shadow-blue-200 disabled:opacity-50"
+              >
+                {loading ? (
+                  <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-5 h-5" />
+                )}
+                Submit Departure Report
+              </button>
+            </div>
+          </div>
+        </form>
+      ) : (
+        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                  <th className="px-6 py-4">Date & Time (UTC)</th>
+                  <th className="px-6 py-4">Vessel</th>
+                  <th className="px-6 py-4">Voyage</th>
+                  <th className="px-6 py-4">Port</th>
+                  <th className="px-6 py-4">Operation</th>
+                  <th className="px-6 py-4">HSFO Departure</th>
+                  <th className="px-6 py-4">FOC Port</th>
+                  <th className="px-6 py-4">Attachment</th>
+                  <th className="px-6 py-4">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-blue-50 text-sm">
+                {reports.map(report => (
+                  <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
+                    <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
+                    <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
+                    <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
+                    <td className="px-6 py-4">{report.departure_port}</td>
+                    <td className="px-6 py-4">
+                      <span className="px-2 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-full uppercase">
+                        {report.operation_type}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
+                    <td className="px-6 py-4 font-mono text-blue-600">-{report.foc_port_hsfo}</td>
+                    <td className="px-6 py-4">
+                      {report.attachment_id && (
+                        <a 
+                          href={`/api/departure-attachments/${report.attachment_id}?token=${token}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1.5 text-blue-600 hover:underline font-bold"
+                        >
+                          <FileText className="w-4 h-4" />
+                          {report.attachment_name || 'View Report'}
+                        </a>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <button 
+                        onClick={() => handleEdit(report)}
+                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        title="Edit Report"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {reports.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="px-6 py-12 text-center text-slate-400 font-medium">
+                      No departure reports found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
