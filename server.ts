@@ -1,6 +1,7 @@
 import 'dotenv/config';
 process.env.TZ = 'Asia/Manila';
 import express from 'express';
+import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
@@ -327,7 +328,9 @@ async function startServer() {
     next();
   });
 
+  app.use(cors());
   app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
 
   // Database availability middleware
   app.use('/api', (req, res, next) => {
