@@ -15,7 +15,7 @@ import net from 'net';
 import { google } from 'googleapis';
 
 const __dirname = path.resolve();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'vessel-cert-secret-key';
 
 async function startServer() {
@@ -187,6 +187,12 @@ async function startServer() {
         // Explicitly update existing ones to 'office'
         await pool.query("UPDATE certificates SET access_type = 'office'");
         console.log('Existing certificates tagged as office only.');
+      }
+
+      if (!columnNames.includes('certificate_number')) {
+        console.log('Migrating certificates table: Adding certificate_number and date_issued...');
+        await pool.query("ALTER TABLE certificates ADD COLUMN certificate_number VARCHAR(255)");
+        await pool.query("ALTER TABLE certificates ADD COLUMN date_issued DATE");
       }
     } catch (e: any) {
       console.error('Error during certificates table migration:', e.message);
@@ -628,26 +634,64 @@ async function startServer() {
 
   app.post('/api/admin/test-smtp', authenticate, isAdmin, async (req, res) => {
     const { host, port, user, pass, from } = req.body;
+    console.log(`Testing SMTP: ${host}:${port} as ${user}`);
+    
+    // Quick TCP check to see if the port is even reachable
+    try {
+      await new Promise((resolve, reject) => {
+        const socket = new net.Socket();
+        socket.setTimeout(5000);
+        socket.on('connect', () => { socket.destroy(); resolve(true); });
+        socket.on('timeout', () => { socket.destroy(); reject(new Error('Connection timed out while checking SMTP port availability (5000ms). This often happens if the hosting provider (like Render) blocks outbound ports like 25, 465, or 587.')); });
+        socket.on('error', (err) => { socket.destroy(); reject(new Error(`Failed to reach SMTP host: ${err.message}`)); });
+        socket.connect(Number(port), host);
+      });
+    } catch (tcpErr: any) {
+      console.error('SMTP Port Check Failed:', tcpErr.message);
+      return res.status(500).json({ error: tcpErr.message });
+    }
+
     const testTransporter = nodemailer.createTransport({
       host,
       port: Number(port),
       secure: Number(port) === 465,
       auth: { user, pass },
-      tls: { rejectUnauthorized: false }
+      tls: { rejectUnauthorized: false },
+      connectionTimeout: 10000, // 10 seconds
+      greetingTimeout: 10000,
+      socketTimeout: 10000
     });
 
     try {
+      console.log('Verifying SMTP transporter...');
       await testTransporter.verify();
+      console.log('SMTP verification succeeded. Attempting to send test mail...');
+      
       const currentUser = (req as any).user;
+      // Use setting from as fallback, then user, then destination email
+      const fromEmail = from || user;
+      const toEmail = currentUser.email || (currentUser.username.includes('@') ? currentUser.username : user);
+      
+      if (!toEmail || !toEmail.includes('@')) {
+        throw new Error(`Invalid recipient email address: "${toEmail}". Please ensure your user profile has a valid email address.`);
+      }
+
       await testTransporter.sendMail({
-        from: `"COMOS Test" <${from || user}>`,
-        to: currentUser.username.includes('@') ? currentUser.username : user,
+        from: `"COMOS Test" <${fromEmail}>`,
+        to: toEmail,
         subject: 'SMTP Connection Test',
         text: 'If you are reading this, your SMTP settings are working correctly!'
       });
+      
+      console.log('Test email sent successfully to:', toEmail);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.error('SMTP Test Failed Detailed Error:', e);
+      res.status(500).json({ 
+        error: e.message || 'Unknown SMTP error',
+        code: e.code,
+        command: e.command
+      });
     }
   });
 
@@ -897,7 +941,10 @@ async function startServer() {
   // Certificate Routes
   app.get('/api/certificates', authenticate, async (req: any, res) => {
     let query = `
-      SELECT c.*, DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as expiration_date, v.name as vessel_name, v.owner, t.name as team_name,
+      SELECT c.*, 
+      DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as expiration_date, 
+      DATE_FORMAT(c.date_issued, '%Y-%m-%d') as date_issued,
+      v.name as vessel_name, v.owner, t.name as team_name,
       (SELECT COUNT(*) FROM files f WHERE f.certificate_id = c.id) > 0 as has_file
       FROM certificates c 
       LEFT JOIN vessels v ON c.vessel_id = v.id
@@ -921,7 +968,7 @@ async function startServer() {
   });
 
   app.post('/api/certificates', authenticate, canAddCertificate, upload.single('file'), async (req: any, res) => {
-    const { vessel_id, team_id, name, expiration_date, access_type } = req.body;
+    const { vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type } = req.body;
     try {
       if (req.user.role === 'vessel') {
         if (Number(vessel_id) !== req.user.vessel_id) {
@@ -941,6 +988,8 @@ async function startServer() {
         if (vessel_id === 'all') return res.status(403).json({ error: 'Team PIC cannot add certificates to all vessels' });
       }
       const finalAccessType = access_type || 'office';
+      const finalDateIssued = date_issued || null;
+      const finalCertNumber = certificate_number || null;
       
       const saveFile = async (certId: number) => {
         if (req.file) {
@@ -954,7 +1003,7 @@ async function startServer() {
       if (vessel_id === 'all') {
         const [vessels]: any = await pool.query('SELECT id, team_id FROM vessels');
         for (const v of vessels) {
-          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, expiration_date, access_type) VALUES (?, ?, ?, ?, ?)', [v.id, v.team_id, name, expiration_date, finalAccessType]);
+          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
           await saveFile(result.insertId);
         }
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for ALL vessels`);
@@ -965,12 +1014,12 @@ async function startServer() {
           const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
-        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, expiration_date, access_type) VALUES (?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, expiration_date, finalAccessType]);
+        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
         await saveFile(result.insertId);
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for vessel ID ${vessel_id}`);
       } else {
         // Non-vessel related
-        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, expiration_date, access_type) VALUES (?, ?, ?, ?, ?)', [null, team_id, name, expiration_date, finalAccessType]);
+        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
         await saveFile(result.insertId);
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for team ID ${team_id}`);
       }
@@ -981,7 +1030,7 @@ async function startServer() {
   });
 
   app.put('/api/certificates/:id', authenticate, async (req: any, res) => {
-    const { name, vessel_id, team_id, expiration_date, access_type } = req.body;
+    const { name, vessel_id, team_id, expiration_date, date_issued, certificate_number, access_type } = req.body;
     try {
       const [certs]: any = await pool.execute('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
       if (certs.length === 0) return res.status(404).json({ error: 'Certificate not found' });
@@ -991,6 +1040,8 @@ async function startServer() {
         const finalName = name !== undefined ? name : cert.name;
         const finalVesselId = vessel_id !== undefined ? vessel_id : cert.vessel_id;
         const finalExpirationDate = expiration_date !== undefined ? expiration_date : cert.expiration_date;
+        const finalDateIssued = date_issued !== undefined ? date_issued : cert.date_issued;
+        const finalCertNumber = certificate_number !== undefined ? certificate_number : cert.certificate_number;
         const finalAccessType = access_type !== undefined ? access_type : cert.access_type;
         
         let finalTeamId = team_id !== undefined ? team_id : cert.team_id;
@@ -999,25 +1050,27 @@ async function startServer() {
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
 
-        await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, access_type = ? WHERE id = ?', 
-          [finalName, finalVesselId || null, finalTeamId, finalExpirationDate, finalAccessType, req.params.id]);
+        await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, date_issued = ?, certificate_number = ?, access_type = ? WHERE id = ?', 
+          [finalName, finalVesselId || null, finalTeamId, finalExpirationDate, finalDateIssued, finalCertNumber, finalAccessType, req.params.id]);
         await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE', `Updated certificate ID ${req.params.id}: ${finalName}`);
       } else {
-        // Non-admins can only update expiration date
-        if (expiration_date === undefined) return res.status(400).json({ error: 'expiration_date is required' });
+        // Non-admins can update expiration date, date issued, and certificate number
+        const finalExpirationDate = expiration_date !== undefined ? expiration_date : cert.expiration_date;
+        const finalDateIssued = date_issued !== undefined ? date_issued : cert.date_issued;
+        const finalCertNumber = certificate_number !== undefined ? certificate_number : cert.certificate_number;
 
         if (req.user.role === 'vessel') {
           if (cert.vessel_id !== req.user.vessel_id || !['vessel', 'any'].includes(cert.access_type)) {
             return res.status(403).json({ error: 'Forbidden' });
           }
-        } else if (req.user.role === 'user') {
+        } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
           if (!req.user.team_ids.includes(cert.team_id) || !['office', 'vessel', 'any'].includes(cert.access_type)) {
             return res.status(403).json({ error: 'Forbidden' });
           }
         }
 
-        await pool.execute('UPDATE certificates SET expiration_date = ? WHERE id = ?', [expiration_date, req.params.id]);
-        await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_EXP', `Updated expiration date for certificate: ${cert.name} (ID: ${req.params.id})`);
+        await pool.execute('UPDATE certificates SET expiration_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', [finalExpirationDate, finalDateIssued, finalCertNumber, req.params.id]);
+        await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_FIELDS', `Updated fields for certificate: ${cert.name} (ID: ${req.params.id})`);
       }
       res.json({ success: true });
     } catch (e: any) {
@@ -1243,12 +1296,19 @@ Generated by COMOS System
   app.post('/api/certificates/:id/files', authenticate, upload.single('file'), async (req: any, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     try {
-      await pool.execute(
+      const [insertResult]: any = await pool.execute(
         'INSERT INTO files (certificate_id, filename, original_name, mimetype, data) VALUES (?, ?, ?, ?, ?)', 
         [req.params.id, req.file.originalname, req.file.originalname, req.file.mimetype, req.file.buffer]
       );
       await logAudit(req.user.id, req.user.username, 'UPLOAD_FILE', `Uploaded file: ${req.file.originalname} to certificate ID ${req.params.id}`);
-      res.json({ success: true });
+      res.json({ 
+        id: insertResult.insertId,
+        certificate_id: Number(req.params.id),
+        filename: req.file.originalname,
+        original_name: req.file.originalname,
+        mimetype: req.file.mimetype,
+        upload_date: new Date().toISOString()
+      });
     } catch (err: any) {
       console.error('File upload failed:', err);
       res.status(500).json({ error: 'Failed to save file to database' });

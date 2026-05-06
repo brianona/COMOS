@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { GoogleGenAI, Type } from "@google/genai";
 import { 
   Ship, 
   FileText, 
@@ -18,6 +19,7 @@ import {
   Trash2,
   File,
   X,
+  Eye,
   Menu,
   Edit2,
   Settings,
@@ -49,6 +51,7 @@ import { format, isBefore, addDays, parseISO } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
+import { OCRHighlightOverlay } from './components/OCRHighlightOverlay';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -92,6 +95,8 @@ interface Certificate {
   owner?: 'Nissen' | 'Goodwill' | null;
   name: string;
   expiration_date: string;
+  date_issued?: string | null;
+  certificate_number?: string | null;
   access_type: 'office' | 'vessel' | 'any';
   has_file?: boolean;
 }
@@ -210,7 +215,7 @@ interface FileData {
 
 interface Notification {
   id: number;
-  type: 'success' | 'error';
+  type: 'success' | 'error' | 'info';
   message: string;
 }
 
@@ -265,6 +270,146 @@ const LogoContainer = ({ size = 'md', className, iconClassName }: { size?: 'sm' 
   );
 };
 
+const isGeminiSupportedMimeType = (mimeType: string) => {
+  const supported = [
+    'image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif',
+    'application/pdf'
+  ];
+  return supported.includes(mimeType);
+};
+
+const fileToDataPart = async (file: File) => {
+  return new Promise<{ inlineData: { data: string, mimeType: string } }>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(',')[1];
+      resolve({
+        inlineData: {
+          data: base64,
+          mimeType: file.type,
+        },
+      });
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+};
+
+const recognizeCertText = async (file: File) => {
+  if (!isGeminiSupportedMimeType(file.type)) {
+    console.warn(`OCR skipped: MIME type ${file.type} is not supported by Gemini multimodal input.`);
+    return {};
+  }
+  const ai = new GoogleGenAI({ apiKey: (process.env as any).GEMINI_API_KEY });
+  const dataPart = await fileToDataPart(file);
+  
+  const response = await ai.models.generateContent({
+    model: "gemini-1.5-flash",
+    contents: {
+      parts: [
+        dataPart,
+        { text: `Extract certificate information with high precision for spatial alignment.
+          For each field, return the extracted "value" and a "rect" object.
+          
+          SPATIAL COORDINATE RULES (0-1000 scale):
+          - "rect": {"ymin": int, "xmin": int, "ymax": int, "xmax": int}
+          - 0 is TOP, 1000 is BOTTOM. 0 is LEFT, 1000 is RIGHT.
+          - CRITICAL: The rect MUST be a tight bounding box that matches the exact visual position of the text segments extracted as the "value".
+          - Do NOT include labels (e.g., skip the "Name:" label and only rect the actual name content).
+          - Vertical alignment: Ensure ymin and ymax tightly hug the text characters.
+          
+          FIELDS:
+          - vessel_name: The official Vessel Name found on the document (e.g. "LIGNUM NETWORK").
+          - cert_type: The title or type of the certificate (e.g. "Safety Management Certificate", "Class Certificate").
+          - certificate_number: The unique certificate number.
+          - date_issued: Issue date (YYYY-MM-DD).
+          - expiration_date: Expiration date (YYYY-MM-DD).
+
+          If a field is missing, return null for both value and rect.` }
+      ]
+    },
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          vessel_name: { type: Type.STRING, nullable: true },
+          vessel_rect: { 
+            type: Type.OBJECT, 
+            properties: {
+              ymin: { type: Type.NUMBER },
+              xmin: { type: Type.NUMBER },
+              ymax: { type: Type.NUMBER },
+              xmax: { type: Type.NUMBER }
+            },
+            description: "Bounding box of the vessel name value", 
+            nullable: true 
+          },
+          cert_type: { type: Type.STRING, nullable: true },
+          cert_type_rect: { 
+            type: Type.OBJECT, 
+            properties: {
+              ymin: { type: Type.NUMBER },
+              xmin: { type: Type.NUMBER },
+              ymax: { type: Type.NUMBER },
+              xmax: { type: Type.NUMBER }
+            },
+            description: "Bounding box of the certificate title", 
+            nullable: true 
+          },
+          certificate_number: { type: Type.STRING, nullable: true },
+          number_rect: { 
+            type: Type.OBJECT, 
+            properties: {
+              ymin: { type: Type.NUMBER },
+              xmin: { type: Type.NUMBER },
+              ymax: { type: Type.NUMBER },
+              xmax: { type: Type.NUMBER }
+            },
+            description: "Bounding box of the certificate number value", 
+            nullable: true 
+          },
+          date_issued: { type: Type.STRING, description: "YYYY-MM-DD", nullable: true },
+          issued_rect: { 
+            type: Type.OBJECT, 
+            properties: {
+              ymin: { type: Type.NUMBER },
+              xmin: { type: Type.NUMBER },
+              ymax: { type: Type.NUMBER },
+              xmax: { type: Type.NUMBER }
+            },
+            description: "Bounding box of the issue date value", 
+            nullable: true 
+          },
+          expiration_date: { type: Type.STRING, description: "YYYY-MM-DD", nullable: true },
+          expiration_rect: { 
+            type: Type.OBJECT, 
+            properties: {
+              ymin: { type: Type.NUMBER },
+              xmin: { type: Type.NUMBER },
+              ymax: { type: Type.NUMBER },
+              xmax: { type: Type.NUMBER }
+            },
+            description: "Bounding box of the expiration date value", 
+            nullable: true 
+          }
+        }
+      }
+    }
+  });
+  
+  try {
+    const text = response.text || '';
+    const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    const data = JSON.parse(jsonStr);
+    console.log("Gemini OCR Result:", data);
+    return data;
+  } catch (e) {
+    console.error("Failed to parse Gemini response:", e, response.text);
+    return {};
+  }
+};
+
 // --- Components ---
 
 const NotificationToast: React.FC<{ notification: Notification, onClose: (id: number) => void }> = ({ notification, onClose }) => {
@@ -282,11 +427,15 @@ const NotificationToast: React.FC<{ notification: Notification, onClose: (id: nu
         "pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-2xl shadow-2xl border min-w-[300px] mb-3",
         notification.type === 'success' 
           ? "bg-white border-blue-100 text-blue-800" 
-          : "bg-white border-red-100 text-red-800"
+          : notification.type === 'info'
+            ? "bg-white border-slate-100 text-slate-800"
+            : "bg-white border-red-100 text-red-800"
       )}
     >
       {notification.type === 'success' ? (
         <CheckCircle2 className="w-5 h-5 text-blue-500" />
+      ) : notification.type === 'info' ? (
+        <AlertCircle className="w-5 h-5 text-slate-400" />
       ) : (
         <AlertCircle className="w-5 h-5 text-red-500" />
       )}
@@ -619,6 +768,7 @@ const ChangePasswordModal: React.FC<{
   );
 };
 
+
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
   const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption'>('dashboard');
   const [certs, setCerts] = useState<Certificate[]>([]);
@@ -665,6 +815,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
   const [routingForm, setRoutingForm] = useState<Record<number, Partial<Vessel>>>({});
   const [isSavingAll, setIsSavingAll] = useState(false);
+  const [isRecognizing, setIsRecognizing] = useState(false);
+  const [ocrHighlights, setOcrHighlights] = useState<any[]>([]);
+  const [tempPreviewUrl, setTempPreviewUrl] = useState<string | null>(null);
+  const sidePanelContentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Correctly initialize routing form when vessels change
@@ -892,7 +1046,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     }
   }, [notes, selectedCert]);
 
-  const notify = (type: 'success' | 'error', message: string) => {
+  const notify = (type: 'success' | 'error' | 'info', message: string) => {
     const id = Date.now();
     setNotifications(prev => [...prev, { id, type, message }]);
   };
@@ -972,7 +1126,14 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     fetchData();
   }, [fetchData]);
 
-  const fetchCertDetails = async (cert: Certificate) => {
+  const fetchCertDetails = async (cert: Certificate, isRefresh = false) => {
+    setSelectedVessel(null);
+    if (!isRefresh) {
+      setOcrHighlights([]);
+      setTempPreviewUrl(null);
+      setPreviewFile(null);
+    }
+    setSelectedCert(cert);
     const headers = { Authorization: `Bearer ${token}` };
     try {
       const [notesRes, filesRes] = await Promise.all([
@@ -986,10 +1147,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       if (filesRes.ok && filesRes.headers.get('content-type')?.includes('application/json')) {
         const filesData = await filesRes.json();
         setFiles(filesData);
-        // Set the latest file as the initial preview
-        if (filesData.length > 0) {
+        // Set the latest file as the initial preview only if not refreshing or if none selected
+        if (filesData.length > 0 && (!isRefresh || !previewFile)) {
           setPreviewFile([...filesData].sort((a: any, b: any) => b.id - a.id)[0]);
-        } else {
+        } else if (filesData.length === 0) {
           setPreviewFile(null);
         }
       }
@@ -1010,13 +1171,27 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}` 
         },
-        body: JSON.stringify({ expiration_date: newExpDate }),
+        body: JSON.stringify({ 
+          expiration_date: newExpDate,
+          date_issued: selectedCert.date_issued,
+          certificate_number: selectedCert.certificate_number
+        }),
       });
       if (res.ok) {
-        notify('success', 'Certificate expiration updated successfully');
-        setCerts(prev => prev.map(c => c.id === selectedCert.id ? { ...c, expiration_date: newExpDate } : c));
+        notify('success', 'Certificate fields updated successfully');
+        setCerts(prev => prev.map(c => c.id === selectedCert.id ? { 
+          ...c, 
+          expiration_date: newExpDate,
+          date_issued: selectedCert.date_issued,
+          certificate_number: selectedCert.certificate_number
+        } : c));
         fetchData();
-        setSelectedCert({ ...selectedCert, expiration_date: newExpDate });
+        setSelectedCert({ 
+          ...selectedCert, 
+          expiration_date: newExpDate,
+          date_issued: selectedCert.date_issued,
+          certificate_number: selectedCert.certificate_number
+        });
       } else {
         notify('error', 'Failed to update certificate');
       }
@@ -1049,22 +1224,104 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0] || !selectedCert) return;
+    const file = e.target.files[0];
     const formData = new FormData();
-    formData.append('file', e.target.files[0]);
+    formData.append('file', file);
+    
+    const isSupported = isGeminiSupportedMimeType(file.type);
+    if (isSupported) {
+      setIsRecognizing(true);
+    }
+    setOcrHighlights([]);
+    setTempPreviewUrl(null);
     try {
+      // 1. Upload the file
       const res = await fetch(`/api/certificates/${selectedCert.id}/files`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
       });
+      
       if (res.ok) {
+        const result = await res.json();
         notify('success', 'File uploaded successfully');
-        fetchCertDetails(selectedCert);
+        
+        // Show local preview immediately
+        setPreviewFile(result); // Set the preview to the newly uploaded file details
+        if (sidePanelContentRef.current) {
+          sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        
+        const reader = new FileReader();
+        reader.onload = (re) => {
+          setTempPreviewUrl(re.target?.result as string);
+        };
+        reader.readAsDataURL(file);
+
+        // Fetch refreshed details
+        fetchCertDetails(selectedCert, true);
+        
+        // 2. Perform OCR recognition
+        if (isSupported) {
+          try {
+            const ocrData = await recognizeCertText(file);
+            
+            // Prepare highlights from the rects
+            const highlights = [];
+            const toArr = (r: any) => r ? [r.ymin, r.xmin, r.ymax, r.xmax] : null;
+
+            if (ocrData.vessel_rect) highlights.push({ label: 'Vessel', rect: toArr(ocrData.vessel_rect), value: ocrData.vessel_name });
+            if (ocrData.cert_type_rect) highlights.push({ label: 'Cert Name', rect: toArr(ocrData.cert_type_rect), value: ocrData.cert_type });
+            if (ocrData.number_rect) highlights.push({ label: 'Cert No', rect: toArr(ocrData.number_rect), value: ocrData.certificate_number });
+            if (ocrData.issued_rect) highlights.push({ label: 'Issued', rect: toArr(ocrData.issued_rect), value: ocrData.date_issued });
+            if (ocrData.expiration_rect) highlights.push({ label: 'Expiry', rect: toArr(ocrData.expiration_rect), value: ocrData.expiration_date });
+            
+            setOcrHighlights(highlights);
+
+            if (ocrData.date_issued || ocrData.certificate_number || ocrData.expiration_date || ocrData.vessel_name || ocrData.cert_type) {
+              const updatedCert = {
+                ...selectedCert,
+                certificate_number: ocrData.certificate_number || selectedCert.certificate_number,
+                date_issued: ocrData.date_issued || selectedCert.date_issued,
+                expiration_date: ocrData.expiration_date || selectedCert.expiration_date,
+                name: ocrData.cert_type || selectedCert.name,
+              };
+              
+              // If we recognized a vessel name, try to find matching vessel if not already matched
+              if (ocrData.vessel_name && !selectedCert.vessel_id) {
+                const normalizedVesselName = ocrData.vessel_name.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const matchedVessel = vessels.find(v => v.name.toLowerCase().replace(/[^a-z0-9]/g, '') === normalizedVesselName);
+                if (matchedVessel) {
+                  updatedCert.vessel_id = matchedVessel.id;
+                  updatedCert.vessel_name = matchedVessel.name;
+                }
+              }
+
+              setSelectedCert(updatedCert);
+              setNewExpDate(updatedCert.expiration_date);
+              notify('success', 'Information recognized and autofilled. Bounding boxes are highlighted in the preview.');
+            } else {
+              notify('info', 'Document uploaded, but no relevant certificate fields were recognized for autofill.');
+            }
+          } catch (ocrErr: any) {
+            console.error("OCR Auto-fill failed:", ocrErr);
+            const errMsg = ocrErr?.message || "";
+            if (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED')) {
+              notify('error', 'AI Quota Exceeded: The system hit its free-tier limit. Please wait a moment or fill manually.');
+            } else {
+              notify('info', 'Automated recognition failed. You can still enter details manually.');
+            }
+          }
+        } else {
+          notify('info', 'OCR text recognition is not supported for this file type.');
+        }
       } else {
         notify('error', 'Failed to upload file');
       }
     } catch (err) {
       notify('error', 'Connection error occurred');
+    } finally {
+      setIsRecognizing(false);
     }
   };
 
@@ -1547,7 +1804,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               certs={certs} 
               setCerts={setCerts}
               onRefresh={fetchData} 
-              notify={notify} 
+              notify={notify}
+              previewFile={previewFile}
+              setPreviewFile={setPreviewFile}
+              setTempPreviewUrl={setTempPreviewUrl}
+              setOcrHighlights={setOcrHighlights}
+              isRecognizing={isRecognizing}
+              setIsRecognizing={setIsRecognizing}
             />
           )}
 
@@ -2016,101 +2279,107 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           </>
         )}
 
-        {selectedCert && (
+        {(selectedCert || previewFile) && (
           <>
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setSelectedCert(null)}
-              className="fixed inset-0 bg-blue-900/20 backdrop-blur-sm z-[150]"
+              onClick={() => {
+                setSelectedCert(null);
+                setPreviewFile(null);
+              }}
+              className="fixed inset-0 bg-blue-900/30 z-[150]"
             />
             <motion.div 
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
-              className="fixed right-0 top-0 bottom-0 w-[500px] bg-white z-[160] shadow-2xl flex flex-col"
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed right-0 top-0 bottom-0 w-full md:w-[700px] bg-white z-[170] shadow-2xl flex flex-col"
             >
               <div className="p-6 border-b border-blue-50 flex items-center justify-between">
                 <div>
-                  <h2 className="text-xl font-bold text-slate-900">{selectedCert.name}</h2>
-                  <p className="text-sm text-slate-500">{selectedCert.vessel_name}</p>
+                  <h2 className="text-xl font-bold text-slate-900">{selectedCert ? selectedCert.name : "Document Preview"}</h2>
+                  <p className="text-sm text-slate-500">{selectedCert ? selectedCert.vessel_name : "Autofill Preview"}</p>
                 </div>
-                <button onClick={() => setSelectedCert(null)} className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors">
+                <button 
+                  onClick={() => {
+                    setSelectedCert(null);
+                    setPreviewFile(null);
+                  }} 
+                  className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="flex-1 overflow-auto p-6 space-y-8 custom-scrollbar">
-                {/* Expiration Section */}
-                <section>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Expiration Date</label>
-                  <div className="flex items-center gap-4">
-                    <input 
-                      type="date"
-                      value={newExpDate}
-                      onChange={(e) => setNewExpDate(e.target.value)}
-                      className="flex-1 px-4 py-3 bg-blue-50/50 rounded-xl font-mono text-sm border-none focus:ring-2 focus:ring-blue-500/20"
-                    />
-                    <button 
-                      onClick={handleUpdateCert}
-                      className="px-4 py-3 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
-                    >
-                      Update
-                    </button>
-                  </div>
-                </section>
-
-                {/* File Preview Section */}
+              <div 
+                ref={sidePanelContentRef}
+                className="flex-1 overflow-auto p-6 space-y-8 custom-scrollbar"
+              >
+                {/* File Preview Section - Primary Focus */}
                 {previewFile && (
                   <section>
-                    <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center justify-between mb-3 px-1">
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Document Preview</label>
-                      <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full truncate max-w-[200px]">
-                        {previewFile.original_name}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full truncate max-w-[200px]">
+                          {previewFile.original_name}
+                        </span>
+                        <a 
+                          href={tempPreviewUrl || `/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`}
+                          target="_blank" 
+                          rel="noreferrer"
+                          className="p-1 hover:bg-blue-50 rounded text-blue-400 hover:text-blue-600 transition-colors"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
                     </div>
                     {(() => {
                       const ext = previewFile.original_name.split('.').pop()?.toLowerCase();
                       const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
                       const isPdf = ext === 'pdf';
-                      const fileUrl = `/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`;
+                      const fileUrl = tempPreviewUrl || `/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`;
 
                       if (isImage) {
                         return (
-                          <div className="relative group overflow-hidden rounded-2xl border border-blue-100 bg-blue-50/30 aspect-video flex items-center justify-center">
-                            <img 
-                              src={fileUrl} 
-                              alt={previewFile.original_name} 
-                              className="max-w-full max-h-full object-contain"
-                              referrerPolicy="no-referrer"
-                            />
-                            <a 
-                              href={fileUrl} 
-                              target="_blank" 
-                              rel="noreferrer"
-                              className="absolute inset-0 bg-blue-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white font-bold text-sm"
-                            >
-                              Open Full Size
-                            </a>
+                          <div className="relative group overflow-hidden rounded-2xl border border-blue-100 bg-blue-50/30 h-[600px] flex items-center justify-center p-8 bg-grid-slate-100/5 backdrop-blur-sm">
+                            <div className="relative inline-grid place-items-center max-w-full max-h-full shadow-2xl transition-transform duration-500 hover:scale-[1.01]">
+                              <img 
+                                src={fileUrl} 
+                                alt={previewFile.original_name} 
+                                className="max-w-full max-h-full block w-auto h-auto rounded-sm ring-1 ring-black/5"
+                                referrerPolicy="no-referrer"
+                              />
+                              {ocrHighlights.length > 0 && <OCRHighlightOverlay highlights={ocrHighlights} />}
+                            </div>
+                            <div className="absolute inset-0 bg-blue-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                              <span className="text-white font-bold text-xs px-3 py-1.5 bg-blue-600/80 rounded-lg backdrop-blur-sm">Full Size View Available</span>
+                            </div>
                           </div>
                         );
                       } else if (isPdf) {
                         return (
-                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden aspect-[3/4] relative">
-                            <PDFViewer url={fileUrl} title={previewFile.original_name} />
+                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden h-[600px] relative">
+                            <PDFViewer 
+                              url={fileUrl} 
+                              title={previewFile.original_name} 
+                              highlights={ocrHighlights}
+                            />
                           </div>
                         );
                       } else {
                         return (
-                          <div className="p-6 rounded-2xl border border-dashed border-blue-200 bg-blue-50/30 flex flex-col items-center justify-center text-center gap-3">
-                            <File className="w-8 h-8 text-slate-300" />
-                            <p className="text-xs text-slate-500">Preview not available for this file type.<br/><span className="font-mono">{previewFile.original_name}</span></p>
+                          <div className="p-8 rounded-2xl border border-dashed border-blue-200 bg-blue-50/30 flex flex-col items-center justify-center text-center gap-3">
+                            <File className="w-8 h-8 text-blue-300" />
+                            <p className="text-xs text-slate-500">Preview not available for this file type.<br/><span className="font-mono font-bold text-blue-600">{previewFile.original_name}</span></p>
                             <a 
                               href={fileUrl} 
                               target="_blank" 
                               rel="noreferrer"
-                              className="text-xs font-bold text-blue-600 hover:underline"
+                              className="px-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-100"
                             >
                               Download to view
                             </a>
@@ -2121,23 +2390,81 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   </section>
                 )}
 
-                {/* Files Section */}
-                <section>
-                  <div className="flex items-center justify-between mb-4">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Documents</label>
-                    <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-blue-600 hover:underline">
-                      <Upload className="w-3 h-3" /> Upload File
-                      <input type="file" className="hidden" onChange={handleFileUpload} />
-                    </label>
+                {/* Info Section */}
+                {selectedCert && (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between ml-1">
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Details</label>
+                      {isRecognizing && (
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 animate-pulse flex items-center gap-1">
+                          <RefreshCw className="w-2 h-2 animate-spin" /> Analyzing Document...
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Cert Number</label>
+                      <input 
+                        type="text" 
+                        value={selectedCert.certificate_number || ''}
+                        onChange={(e) => setSelectedCert({...selectedCert, certificate_number: e.target.value})}
+                        className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20"
+                        placeholder="N/A"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Date Issued</label>
+                        <input 
+                          type="date" 
+                          value={selectedCert.date_issued || ''}
+                          onChange={(e) => setSelectedCert({...selectedCert, date_issued: e.target.value})}
+                          className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
+                        <input 
+                          type="date" 
+                          value={newExpDate}
+                          onChange={(e) => setNewExpDate(e.target.value)}
+                          className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+                    </div>
+                    <button 
+                      onClick={handleUpdateCert}
+                      className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-800 transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2"
+                    >
+                      <Save className="w-4 h-4" /> Save All Changes
+                    </button>
                   </div>
-                  <div className="space-y-2">
+                )}
+
+                {selectedCert && <div className="h-px bg-blue-50" />}
+
+                {/* Files Section */}
+                {selectedCert && (
+                  <section>
+                    <div className="flex items-center justify-between mb-4">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Documents</label>
+                      <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-blue-600 hover:underline">
+                        <Upload className="w-3 h-3" /> Upload File
+                        <input type="file" className="hidden" onChange={handleFileUpload} />
+                      </label>
+                    </div>
+                    <div className="space-y-2">
                     {files.length === 0 ? (
                       <p className="text-sm text-slate-400 italic">No documents uploaded yet.</p>
                     ) : (
                       files.map(file => (
                         <div 
                           key={file.id} 
-                          onClick={() => setPreviewFile(file)}
+                          onClick={() => {
+                            setPreviewFile(file);
+                            if (sidePanelContentRef.current) {
+                              sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                            }
+                          }}
                           className={cn(
                             "flex items-center justify-between p-3 rounded-xl group cursor-pointer transition-all",
                             previewFile?.id === file.id ? "bg-blue-100 border-blue-200" : "bg-blue-50/50 hover:bg-blue-100/50"
@@ -2175,78 +2502,83 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                     )}
                   </div>
                 </section>
+              )}
 
                 {/* Notes History */}
-                <section>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-4">Notes & Communication</label>
-                  <div className="space-y-4">
-                    {notes.length === 0 ? (
-                      <div className="py-8 flex flex-col items-center justify-center text-slate-400 italic">
-                        <MessageSquare className="w-8 h-8 mb-2 opacity-20" />
-                        <p className="text-sm">No notes yet.</p>
-                      </div>
-                    ) : (
-                      notes.map(note => {
-                        const isOwn = note.user_id === user.id;
-                        return (
-                          <div 
-                            key={note.id} 
-                            className={cn(
-                              "flex flex-col max-w-[90%]",
-                              isOwn ? "ml-auto items-end" : "mr-auto items-start"
-                            )}
-                          >
-                            <div className="flex items-center gap-2 mb-1 px-1">
-                              {!isOwn && <span className="text-[10px] font-bold text-slate-900">{note.username}</span>}
-                              <span className="text-[10px] text-slate-400">{format(parseISO(note.created_at), 'MMM d, HH:mm')}</span>
+                {selectedCert && (
+                  <section>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-4">Notes & Communication</label>
+                    <div className="space-y-4">
+                      {notes.length === 0 ? (
+                        <div className="py-8 flex flex-col items-center justify-center text-slate-400 italic">
+                          <MessageSquare className="w-8 h-8 mb-2 opacity-20" />
+                          <p className="text-sm">No notes yet.</p>
+                        </div>
+                      ) : (
+                        notes.map(note => {
+                          const isOwn = note.user_id === user.id;
+                          return (
+                            <div 
+                              key={note.id} 
+                              className={cn(
+                                "flex flex-col max-w-[90%]",
+                                isOwn ? "ml-auto items-end" : "mr-auto items-start"
+                              )}
+                            >
+                              <div className="flex items-center gap-2 mb-1 px-1">
+                                {!isOwn && <span className="text-[10px] font-bold text-slate-900">{note.username}</span>}
+                                <span className="text-[10px] text-slate-400">{format(parseISO(note.created_at), 'MMM d, HH:mm')}</span>
+                              </div>
+                              <div className={cn(
+                                "p-3 rounded-2xl text-sm shadow-sm",
+                                isOwn 
+                                  ? "bg-blue-600 text-white rounded-tr-none" 
+                                  : "bg-slate-100 text-slate-700 rounded-tl-none border border-slate-200"
+                              )}>
+                                {note.content}
+                              </div>
                             </div>
-                            <div className={cn(
-                              "p-3 rounded-2xl text-sm shadow-sm",
-                              isOwn 
-                                ? "bg-blue-600 text-white rounded-tr-none" 
-                                : "bg-slate-100 text-slate-700 rounded-tl-none border border-slate-200"
-                            )}>
-                              {note.content}
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                    <div ref={notesEndRef} />
-                  </div>
-                </section>
+                          );
+                        })
+                      )}
+                      <div ref={notesEndRef} />
+                    </div>
+                  </section>
+                )}
               </div>
 
               {/* Pinned Input At Bottom */}
-              <div className="p-6 border-t border-blue-50 bg-white">
-                <div className="flex gap-2 p-1">
-                  <input 
-                    type="text" 
-                    placeholder="Add a note..." 
-                    value={newNote}
-                    onChange={(e) => setNewNote(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleAddNote();
-                      }
-                    }}
-                    className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
-                  />
-                  <button 
-                    onClick={handleAddNote}
-                    disabled={!newNote.trim()}
-                    className={cn(
-                      "p-3 rounded-xl transition-all shadow-lg flex items-center justify-center",
-                      newNote.trim() 
-                        ? "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-100" 
-                        : "bg-slate-100 text-slate-300 shadow-none cursor-not-allowed"
-                    )}
-                  >
-                    <MessageSquare className="w-5 h-5 fill-current" />
-                  </button>
+              {selectedCert && (
+                <div className="p-6 border-t border-blue-50 bg-white">
+                  <div className="flex gap-2 p-1">
+                    <input 
+                      type="text" 
+                      placeholder="Add a note..." 
+                      value={newNote}
+                      onChange={(e) => setNewNote(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleAddNote();
+                        }
+                      }}
+                      className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
+                    />
+                    <button 
+                      onClick={handleAddNote}
+                      disabled={!newNote.trim()}
+                      className={cn(
+                        "p-3 rounded-xl transition-all shadow-lg flex items-center justify-center",
+                        newNote.trim() 
+                          ? "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-100" 
+                          : "bg-slate-100 text-slate-300 shadow-none cursor-not-allowed"
+                      )}
+                    >
+                      <MessageSquare className="w-5 h-5 fill-current" />
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </motion.div>
           </>
         )}
@@ -4124,14 +4456,23 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
   );
 };
 
-const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify }: { 
+const AdminPanel = ({ 
+  token, teams, vessels, certs, setCerts, onRefresh, notify,
+  previewFile, setPreviewFile, setTempPreviewUrl, setOcrHighlights, isRecognizing, setIsRecognizing 
+}: { 
   token: string, 
   teams: Team[], 
   vessels: Vessel[], 
   certs: Certificate[],
   setCerts: React.Dispatch<React.SetStateAction<Certificate[]>>,
   onRefresh: () => void,
-  notify: (type: 'success' | 'error', message: string) => void
+  notify: (type: 'success' | 'error' | 'info', message: string) => void,
+  previewFile: FileData | null,
+  setPreviewFile: (file: FileData | null) => void,
+  setTempPreviewUrl: (url: string | null) => void,
+  setOcrHighlights: (highlights: any[]) => void,
+  isRecognizing: boolean,
+  setIsRecognizing: (val: boolean) => void
 }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [newVesselName, setNewVesselName] = useState('');
@@ -4144,6 +4485,9 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
   const [newCertVessel, setNewCertVessel] = useState('');
   const [newCertTeam, setNewCertTeam] = useState('');
   const [newCertExp, setNewCertExp] = useState('');
+  const [newCertIssueDate, setNewCertIssueDate] = useState('');
+  const [newCertNumber, setNewCertNumber] = useState('');
+  // const [isRecognizing, setIsRecognizing] = useState(false); // Remove local state
   const [newCertAccessType, setNewCertAccessType] = useState<'office' | 'vessel' | 'any'>('office');
   const [newCertFile, setNewCertFile] = useState<File | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -4459,6 +4803,8 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
     const vesselId = editingCert ? editingCert.vessel_id : (isVessel ? user.vessel_id : newCertVessel);
     const teamId = editingCert ? editingCert.team_id : newCertTeam;
     const name = editingCert ? editingCert.name : newCertName;
+    const certNumber = editingCert ? editingCert.certificate_number : newCertNumber;
+    const issueDate = editingCert ? editingCert.date_issued : newCertIssueDate;
     const expDate = editingCert ? editingCert.expiration_date : newCertExp;
     const accessType = editingCert ? editingCert.access_type : (isVessel ? 'vessel' : newCertAccessType);
 
@@ -4479,6 +4825,8 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
             vessel_id: vesselId === 'all' ? 'all' : (vesselId ? Number(vesselId) : null), 
             team_id: teamId ? Number(teamId) : null,
             name: name, 
+            certificate_number: certNumber,
+            date_issued: issueDate,
             expiration_date: expDate,
             access_type: accessType
           }),
@@ -4488,6 +4836,8 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
         formData.append('vessel_id', vesselId === 'all' ? 'all' : (vesselId ? String(vesselId) : ''));
         formData.append('team_id', teamId ? String(teamId) : '');
         formData.append('name', name);
+        formData.append('certificate_number', certNumber || '');
+        formData.append('date_issued', issueDate || '');
         formData.append('expiration_date', expDate);
         formData.append('access_type', accessType);
         if (newCertFile) {
@@ -4504,9 +4854,11 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
       if (res.ok) {
         notify('success', editingCert ? 'Certificate updated successfully' : 'Certificate(s) assigned successfully');
         if (editingCert) {
-          setCerts(prev => prev.map(c => c.id === editingCert.id ? { ...c, expiration_date: expDate || c.expiration_date, name: name || c.name } : c));
+          setCerts(prev => prev.map(c => c.id === editingCert.id ? { ...c, expiration_date: expDate || c.expiration_date, date_issued: issueDate, certificate_number: certNumber, name: name || c.name } : c));
         }
         setNewCertName('');
+        setNewCertNumber('');
+        setNewCertIssueDate('');
         setNewCertExp('');
         setNewCertVessel('');
         setNewCertTeam('');
@@ -4803,13 +5155,34 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Number</label>
                   <input 
-                    type="date" 
-                    value={newCertExp}
-                    onChange={(e) => setNewCertExp(e.target.value)}
+                    type="text" 
+                    placeholder="Cert #" 
+                    value={newCertNumber}
+                    onChange={(e) => setNewCertNumber(e.target.value)}
                     className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                   />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Date Issued</label>
+                    <input 
+                      type="date" 
+                      value={newCertIssueDate}
+                      onChange={(e) => setNewCertIssueDate(e.target.value)}
+                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
+                    <input 
+                      type="date" 
+                      value={newCertExp}
+                      onChange={(e) => setNewCertExp(e.target.value)}
+                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Access Type</label>
@@ -4825,12 +5198,96 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
                   </select>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Document (Optional)</label>
+                  <div className="flex items-center justify-between ml-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Document (Optional)</label>
+                    {isRecognizing && (
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 animate-pulse flex items-center gap-1">
+                        <RefreshCw className="w-2 h-2 animate-spin" /> Recognizing...
+                      </span>
+                    )}
+                  </div>
                   <input 
                     type="file" 
-                    onChange={(e) => setNewCertFile(e.target.files?.[0] || null)}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0] || null;
+                      setNewCertFile(file);
+                      if (file) {
+                        setIsRecognizing(true);
+                        setOcrHighlights([]);
+                        
+                        // Set preview file (virtual)
+                        setPreviewFile({
+                          id: -1,
+                          certificate_id: -1,
+                          filename: file.name,
+                          original_name: file.name,
+                          upload_date: new Date().toISOString()
+                        });
+
+                        const reader = new FileReader();
+                        reader.onload = (re) => {
+                          setTempPreviewUrl(re.target?.result as string);
+                        };
+                        reader.readAsDataURL(file);
+
+                        try {
+                          const data = await recognizeCertText(file);
+                          
+                          // Prepare highlights
+                          const highlights = [];
+                          const toArr = (r: any) => r ? [r.ymin, r.xmin, r.ymax, r.xmax] : null;
+
+                          if (data.vessel_rect) highlights.push({ label: 'Vessel', rect: toArr(data.vessel_rect), value: data.vessel_name });
+                          if (data.cert_type_rect) highlights.push({ label: 'Cert Name', rect: toArr(data.cert_type_rect), value: data.cert_type });
+                          if (data.number_rect) highlights.push({ label: 'Cert No', rect: toArr(data.number_rect), value: data.certificate_number });
+                          if (data.issued_rect) highlights.push({ label: 'Issued', rect: toArr(data.issued_rect), value: data.date_issued });
+                          if (data.expiration_rect) highlights.push({ label: 'Expiry', rect: toArr(data.expiration_rect), value: data.expiration_date });
+                          
+                          setOcrHighlights(highlights);
+
+                          if (data.cert_type) setNewCertName(data.cert_type);
+                          if (data.certificate_number) setNewCertNumber(data.certificate_number);
+                          if (data.date_issued) setNewCertIssueDate(data.date_issued);
+                          if (data.expiration_date) setNewCertExp(data.expiration_date);
+                          
+                          // Try to match vessel name to select it in the dropdown
+                          if (data.vessel_name && !newCertVessel) {
+                            const normalizedVesselName = data.vessel_name.toLowerCase().replace(/[^a-z0-9]/g, '');
+                            const matchedVessel = vessels.find(v => v.name.toLowerCase().replace(/[^a-z0-9]/g, '') === normalizedVesselName);
+                            if (matchedVessel) {
+                              setNewCertVessel(String(matchedVessel.id));
+                              setNewCertTeam(String(matchedVessel.team_id));
+                            }
+                          }
+
+                          notify('success', 'Document recognized. Please verify the autofilled fields.');
+                        } catch (err) {
+                          console.error("OCR failed", err);
+                          notify('error', 'Failed to recognize document text');
+                        } finally {
+                          setIsRecognizing(false);
+                        }
+                      }
+                    }}
                     className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                   />
+                  {newCertFile && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPreviewFile({
+                          id: -1,
+                          certificate_id: -1,
+                          filename: newCertFile.name,
+                          original_name: newCertFile.name,
+                          upload_date: new Date().toISOString()
+                        });
+                      }}
+                      className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-blue-600 hover:text-blue-800 transition-colors ml-1 mt-1"
+                    >
+                      <Eye className="w-3 h-3" /> Preview Selected File
+                    </button>
+                  )}
                 </div>
                 <button 
                   onClick={handleAddCert}
@@ -5018,8 +5475,20 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
                         <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
                           {cert.vessel_name || `Team: ${cert.team_name}`}
                         </p>
+                        {cert.certificate_number && (
+                          <>
+                            <span className="text-slate-300">•</span>
+                            <p className="text-[10px] text-blue-600 font-bold">{cert.certificate_number}</p>
+                          </>
+                        )}
+                        {cert.date_issued && (
+                          <>
+                            <span className="text-slate-300">•</span>
+                            <p className="text-[10px] text-slate-400">Issued: {cert.date_issued}</p>
+                          </>
+                        )}
                         <span className="text-slate-300">•</span>
-                        <p className="text-[10px] text-slate-400 font-mono">{cert.expiration_date}</p>
+                        <p className="text-[10px] text-slate-400 font-mono">Expires: {cert.expiration_date}</p>
                         <span className="text-slate-300">•</span>
                         <span className={cn(
                           "text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md",
@@ -5749,13 +6218,34 @@ const AdminPanel = ({ token, teams, vessels, certs, setCerts, onRefresh, notify 
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Number</label>
                     <input 
-                      type="date" 
-                      value={editingCert.expiration_date}
-                      onChange={(e) => setEditingCert({...editingCert, expiration_date: e.target.value})}
+                      type="text" 
+                      placeholder="Cert #" 
+                      value={editingCert.certificate_number || ''}
+                      onChange={(e) => setEditingCert({...editingCert, certificate_number: e.target.value})}
                       className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                     />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Date Issued</label>
+                      <input 
+                        type="date" 
+                        value={editingCert.date_issued || ''}
+                        onChange={(e) => setEditingCert({...editingCert, date_issued: e.target.value})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
+                      <input 
+                        type="date" 
+                        value={editingCert.expiration_date}
+                        onChange={(e) => setEditingCert({...editingCert, expiration_date: e.target.value})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      />
+                    </div>
                   </div>
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Access Type</label>

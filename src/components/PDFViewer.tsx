@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Download } from 'lucide-react';
+import { OCRHighlightOverlay } from './OCRHighlightOverlay';
 
 // Set worker source - use unpkg for better reliability and match the version exactly
 const PDF_JS_VERSION = '5.6.205';
@@ -9,9 +10,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${PDF_JS_
 interface PDFViewerProps {
   url: string;
   title?: string;
+  highlights?: any[];
 }
 
-export const PDFViewer: React.FC<PDFViewerProps> = ({ url, title }) => {
+export const PDFViewer: React.FC<PDFViewerProps> = ({ url, title, highlights = [] }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [pageNumber, setPageNumber] = useState(1);
@@ -175,8 +177,12 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({ url, title }) => {
             </a>
           </div>
         ) : (
-          <div className="shadow-2xl shadow-black/50">
-            <canvas ref={canvasRef} className="max-w-full h-auto rounded-sm" />
+          <div className="relative inline-grid place-items-center shadow-2xl shadow-black/50 mx-auto bg-white rounded-sm overflow-hidden">
+            <canvas 
+              ref={canvasRef} 
+              className="block max-w-full h-auto" 
+            />
+            {highlights.length > 0 && <OCRHighlightOverlay highlights={highlights} />}
           </div>
         )}
       </div>
