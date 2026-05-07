@@ -67,8 +67,8 @@ const getDeviceId = () => {
   return deviceId;
 };
 
-const DeviceRegistration = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [deviceCode, setDeviceCode] = useState('');
+const DeviceRegistration = ({ user, token, onLogout, onVerified }: { user: User, token: string, onLogout: () => void, onVerified: (isVerified: boolean, deviceId: string) => void }) => {
+  const [deviceCode] = useState(() => Math.random().toString(36).substring(2, 8).toUpperCase());
   const [status, setStatus] = useState<'idle' | 'pending' | 'success' | 'checking'>('idle');
   const [error, setError] = useState('');
   const deviceId = getDeviceId();
@@ -80,23 +80,18 @@ const DeviceRegistration = ({ user, token, onLogout }: { user: User, token: stri
       });
       const data = await res.json();
       if (data.is_verified && data.device_id === deviceId) {
-        window.location.reload(); // Reload to refresh user state
+        onVerified(true, deviceId);
       } else if (data.has_pending_request) {
         setStatus('pending');
       }
     } catch (e) {}
-  }, [token, deviceId]);
+  }, [token, deviceId, onVerified]);
 
   useEffect(() => {
-    // Generate a random 6-character code if not set
-    if (!deviceCode) {
-      setDeviceCode(Math.random().toString(36).substring(2, 8).toUpperCase());
-    }
-    
     checkStatus();
-    const interval = setInterval(checkStatus, 30000); // Check every 30s
+    const interval = setInterval(checkStatus, 15000); // Check every 15s instead of 30s for better UX
     return () => clearInterval(interval);
-  }, [deviceCode, checkStatus]);
+  }, [checkStatus]);
 
   const handleRegister = async () => {
     setStatus('checking');
@@ -258,6 +253,14 @@ interface DeviceRegistrationRequest {
   device_code: string;
   status: 'pending' | 'approved' | 'rejected';
   created_at: string;
+}
+
+interface RegisteredDevice {
+  id: number;
+  username: string;
+  device_id: string;
+  is_verified: boolean;
+  vessel_name: string | null;
 }
 
 interface Vessel {
@@ -1044,20 +1047,27 @@ const SidebarContent = ({
           >
             <Clock className="w-4 h-4" /> Noon to Noon
           </button>
-          {user.role !== 'vessel' && (
-            <button 
-              onClick={() => { setView('fuel_consumption'); setIsSidebarOpen(false); }}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                view === 'fuel_consumption' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-              )}
-            >
-              <Activity className="w-4 h-4" /> Fuel Consumption
-            </button>
-          )}
+          <button 
+            onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view === 'admin_add_cert' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <Plus className="w-4 h-4" /> Add Certificate
+          </button>
+          <button 
+            onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view === 'admin_cert_list' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <FileText className="w-4 h-4" /> Certificate List
+          </button>
         </>
       )}
-      {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
+      {user.role === 'admin' || user.role === 'team_pic' ? (
         <div className="space-y-1">
           <button 
             onClick={() => setIsAdminTreeOpen(!isAdminTreeOpen)}
@@ -1081,17 +1091,15 @@ const SidebarContent = ({
                 transition={{ duration: 0.2 }}
                 className="overflow-hidden pl-4 space-y-1"
               >
-                {user.role !== 'vessel' && (
-                  <button 
-                    onClick={() => { setView('admin_new_vessel'); setIsSidebarOpen(false); }}
-                    className={cn(
-                      "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                      view === 'admin_new_vessel' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                    )}
-                  >
-                    <Plus className="w-3 h-3" /> New Vessel
-                  </button>
-                )}
+                <button 
+                  onClick={() => { setView('admin_new_vessel'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                    view === 'admin_new_vessel' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <Plus className="w-3 h-3" /> New Vessel
+                </button>
                 <button 
                   onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
                   className={cn(
@@ -1101,17 +1109,15 @@ const SidebarContent = ({
                 >
                   <Plus className="w-3 h-3" /> Add Certificate
                 </button>
-                {user.role !== 'vessel' && (
-                  <button 
-                    onClick={() => { setView('admin_vessel_list'); setIsSidebarOpen(false); }}
-                    className={cn(
-                      "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                      view === 'admin_vessel_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                    )}
-                  >
-                    <Ship className="w-3 h-3" /> Vessel List
-                  </button>
-                )}
+                <button 
+                  onClick={() => { setView('admin_vessel_list'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                    view === 'admin_vessel_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <Ship className="w-3 h-3" /> Vessel List
+                </button>
                 <button 
                   onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
                   className={cn(
@@ -4812,6 +4818,8 @@ const AdminPanel = ({
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editingCert, setEditingCert] = useState<Certificate | null>(null);
   const [deviceRequests, setDeviceRequests] = useState<DeviceRegistrationRequest[]>([]);
+  const [registeredDevices, setRegisteredDevices] = useState<RegisteredDevice[]>([]);
+  const [deviceToRemove, setDeviceToRemove] = useState<number | null>(null);
   const [adminTab, setAdminTab] = useState<'fleet' | 'users' | 'settings' | 'audit' | 'devices'>('fleet');
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
@@ -4878,12 +4886,15 @@ const AdminPanel = ({
 
   const fetchDeviceRequests = useCallback(async () => {
     try {
-      const res = await fetch('/api/admin/device-requests', { headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) {
-        setDeviceRequests(await res.json());
-      }
+      const [reqRes, regRes] = await Promise.all([
+        fetch('/api/admin/device-requests', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/admin/registered-devices', { headers: { Authorization: `Bearer ${token}` } })
+      ]);
+      
+      if (reqRes.ok) setDeviceRequests(await reqRes.json());
+      if (regRes.ok) setRegisteredDevices(await regRes.json());
     } catch (err) {
-      console.error('Failed to fetch device requests:', err);
+      console.error('Failed to fetch device data:', err);
     }
   }, [token]);
 
@@ -5030,6 +5041,30 @@ const AdminPanel = ({
         fetchUsers(); // Refresh users list too
       } else {
         notify('error', `Failed to ${status} request`);
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
+    }
+  };
+
+  const handleRemoveDevice = async (userId: number) => {
+    try {
+      const res = await fetch('/api/admin/remove-device', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ user_id: userId })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        notify('success', 'Device registration removed');
+        setDeviceToRemove(null);
+        fetchDeviceRequests();
+        fetchUsers();
+      } else {
+        notify('error', data.error || 'Failed to remove device');
       }
     } catch (err) {
       notify('error', 'Connection error');
@@ -6488,77 +6523,152 @@ const AdminPanel = ({
       )}
 
       {adminTab === 'devices' && (!subView || subView === 'admin') && (
-        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
-          <div className="p-6 border-b border-blue-50 flex items-center justify-between bg-white sticky top-0 z-10">
-            <h2 className="text-xl font-bold flex items-center gap-3 text-blue-900">
-              <Shield className="w-6 h-6" /> Device Registration Requests
-            </h2>
-            <button 
-              onClick={fetchDeviceRequests}
-              className="p-2 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors"
-              title="Refresh Requests"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          </div>
-          
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                  <th className="px-6 py-4">Vessel / User</th>
-                  <th className="px-6 py-4">Device Code</th>
-                  <th className="px-6 py-4">Device ID</th>
-                  <th className="px-6 py-4">Requested At</th>
-                  <th className="px-6 py-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-blue-50">
-                {deviceRequests.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center text-slate-400 font-medium">
-                      No pending device registration requests found.
-                    </td>
+        <div className="space-y-6">
+          <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+            <div className="p-6 border-b border-blue-50 flex items-center justify-between bg-white sticky top-0 z-10">
+              <h2 className="text-xl font-bold flex items-center gap-3 text-blue-900">
+                <Shield className="w-6 h-6" /> Device Registration Requests
+              </h2>
+              <button 
+                onClick={fetchDeviceRequests}
+                className="p-2 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors"
+                title="Refresh Requests"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                    <th className="px-6 py-4">Vessel / User</th>
+                    <th className="px-6 py-4">Device Code</th>
+                    <th className="px-6 py-4">Device ID</th>
+                    <th className="px-6 py-4">Requested At</th>
+                    <th className="px-6 py-4 text-right">Actions</th>
                   </tr>
-                ) : (
-                  deviceRequests.map(req => (
-                    <tr key={req.id} className="hover:bg-blue-50/30 transition-colors">
-                      <td className="px-6 py-4">
-                        <p className="font-bold text-slate-900">{req.vessel_name || 'No Vessel Assigned'}</p>
-                        <p className="text-xs text-slate-500">User: {req.username}</p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className="px-3 py-1.5 bg-blue-100 text-blue-700 text-sm font-black rounded-lg font-mono tracking-widest">
-                          {req.device_code}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-[10px] text-slate-400 max-w-[150px] truncate">
-                        {req.device_id}
-                      </td>
-                      <td className="px-6 py-4 text-xs text-slate-500">
-                        {format(parseISO(req.created_at), 'MMM dd, yyyy HH:mm')}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => handleVerifyDevice(req.id, 'approved')}
-                            className="px-4 py-2 bg-green-500 text-white text-xs font-bold rounded-xl hover:bg-green-600 transition-colors shadow-md shadow-green-100"
-                          >
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => handleVerifyDevice(req.id, 'rejected')}
-                            className="px-4 py-2 bg-white text-red-500 border border-red-100 text-xs font-bold rounded-xl hover:bg-red-50 transition-colors"
-                          >
-                            Reject
-                          </button>
-                        </div>
+                </thead>
+                <tbody className="divide-y divide-blue-50">
+                  {deviceRequests.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-12 text-center text-slate-400 font-medium">
+                        No pending device registration requests found.
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    deviceRequests.map(req => (
+                      <tr key={req.id} className="hover:bg-blue-50/30 transition-colors">
+                        <td className="px-6 py-4">
+                          <p className="font-bold text-slate-900">{req.vessel_name || 'No Vessel Assigned'}</p>
+                          <p className="text-xs text-slate-500">User: {req.username}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="px-3 py-1.5 bg-blue-100 text-blue-700 text-sm font-black rounded-lg font-mono tracking-widest">
+                            {req.device_code}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 font-mono text-[10px] text-slate-400 max-w-[150px] truncate">
+                          {req.device_id}
+                        </td>
+                        <td className="px-6 py-4 text-xs text-slate-500">
+                          {format(parseISO(req.created_at), 'MMM dd, yyyy HH:mm')}
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => handleVerifyDevice(req.id, 'approved')}
+                              className="px-4 py-2 bg-green-500 text-white text-xs font-bold rounded-xl hover:bg-green-600 transition-colors shadow-md shadow-green-100"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => handleVerifyDevice(req.id, 'rejected')}
+                              className="px-4 py-2 bg-white text-red-500 border border-red-100 text-xs font-bold rounded-xl hover:bg-red-50 transition-colors"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+            <div className="p-6 border-b border-blue-50 bg-white">
+              <h2 className="text-xl font-bold flex items-center gap-3 text-blue-900">
+                <CheckCircle2 className="w-6 h-6 text-green-500" /> Registered Devices
+              </h2>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                    <th className="px-6 py-4">Vessel / User</th>
+                    <th className="px-6 py-4">Device ID</th>
+                    <th className="px-6 py-4">Status</th>
+                    <th className="px-6 py-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-blue-50">
+                  {registeredDevices.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-12 text-center text-slate-400 font-medium">
+                        No registered devices found.
+                      </td>
+                    </tr>
+                  ) : (
+                    registeredDevices.map(device => (
+                      <tr key={device.id} className="hover:bg-blue-50/30 transition-colors">
+                        <td className="px-6 py-4">
+                          <p className="font-bold text-slate-900">{device.vessel_name || 'No Vessel Assigned'}</p>
+                          <p className="text-xs text-slate-500">User: {device.username}</p>
+                        </td>
+                        <td className="px-6 py-4 font-mono text-[10px] text-slate-400 max-w-[250px] truncate">
+                          {device.device_id}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="px-2 py-1 bg-green-100 text-green-700 text-[10px] font-bold rounded-full uppercase tracking-wider">
+                            Verified
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          {deviceToRemove === device.id ? (
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                onClick={() => handleRemoveDevice(device.id)}
+                                className="px-3 py-1.5 bg-red-600 text-white text-[10px] font-bold rounded-lg hover:bg-red-700 shadow-sm transition-all"
+                              >
+                                Confirm Delete
+                              </button>
+                              <button
+                                onClick={() => setDeviceToRemove(null)}
+                                className="px-3 py-1.5 bg-slate-100 text-slate-600 text-[10px] font-bold rounded-lg hover:bg-slate-200 transition-all"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => setDeviceToRemove(device.id)}
+                              className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors group"
+                              title="Remove Device Registration"
+                            >
+                              <Trash2 className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -6955,6 +7065,36 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (user?.role === 'vessel' && token) {
+      const verifyDeviceStatus = async () => {
+        try {
+          const res = await fetch('/api/device/status', {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const currentDeviceId = getDeviceId();
+            // If server state is different from local state, update it
+            if (user.is_verified !== data.is_verified || user.device_id !== data.device_id) {
+              setUser(prev => {
+                if (!prev) return null;
+                const updated = { ...prev, is_verified: data.is_verified, device_id: data.device_id };
+                localStorage.setItem('user', JSON.stringify(updated));
+                return updated;
+              });
+            }
+          }
+        } catch (e) {
+          console.error('Device status sync error:', e);
+        }
+      };
+
+      const interval = setInterval(verifyDeviceStatus, 20000); // Sync every 20s
+      return () => clearInterval(interval);
+    }
+  }, [user?.role, user?.is_verified, user?.device_id, token]);
+
   const handleLogin = (newToken: string, newUser: User) => {
     setToken(newToken);
     setUser(newUser);
@@ -6976,9 +7116,19 @@ export default function App() {
   // Vessel Device Verification Check
   if (user.role === 'vessel') {
     const currentDeviceId = getDeviceId();
-    // Use user.device_id and user.is_verified from the user object set during handleLogin or loaded from localStorage
     if (!user.is_verified || user.device_id !== currentDeviceId) {
-       return <DeviceRegistration user={user} token={token} onLogout={handleLogout} />;
+       return (
+         <DeviceRegistration 
+           user={user} 
+           token={token} 
+           onLogout={handleLogout} 
+           onVerified={(verified, devId) => {
+             const updated = { ...user, is_verified: verified, device_id: devId };
+             localStorage.setItem('user', JSON.stringify(updated));
+             setUser(updated);
+           }}
+         />
+       );
     }
   }
 

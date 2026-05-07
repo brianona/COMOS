@@ -701,6 +701,32 @@ async function startServer() {
     }
   });
 
+  app.get('/api/admin/registered-devices', authenticate, isTeamPicOrAdmin, async (req, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const [rows]: any = await pool.query(`
+        SELECT u.id, u.username, u.device_id, u.is_verified, v.name as vessel_name 
+        FROM users u
+        LEFT JOIN vessels v ON u.vessel_id = v.id
+        WHERE u.role = 'vessel' AND u.device_id IS NOT NULL AND u.is_verified = TRUE
+      `);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/remove-device', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { user_id } = req.body;
+    try {
+      await pool.execute('UPDATE users SET device_id = NULL, is_verified = FALSE WHERE id = ?', [user_id]);
+      res.json({ message: 'Device registration removed' });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post('/api/admin/verify-device', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
     const { request_id, status } = req.body; // status: 'approved' | 'rejected'
