@@ -23,6 +23,7 @@ import {
   Menu,
   Edit2,
   Settings,
+  ChevronDown,
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
@@ -57,6 +58,181 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const getDeviceId = () => {
+  let deviceId = localStorage.getItem('comos_device_id');
+  if (!deviceId) {
+    deviceId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    localStorage.setItem('comos_device_id', deviceId);
+  }
+  return deviceId;
+};
+
+const DeviceRegistration = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
+  const [deviceCode, setDeviceCode] = useState('');
+  const [status, setStatus] = useState<'idle' | 'pending' | 'success' | 'checking'>('idle');
+  const [error, setError] = useState('');
+  const deviceId = getDeviceId();
+
+  const checkStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/device/status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (data.is_verified && data.device_id === deviceId) {
+        window.location.reload(); // Reload to refresh user state
+      } else if (data.has_pending_request) {
+        setStatus('pending');
+      }
+    } catch (e) {}
+  }, [token, deviceId]);
+
+  useEffect(() => {
+    // Generate a random 6-character code if not set
+    if (!deviceCode) {
+      setDeviceCode(Math.random().toString(36).substring(2, 8).toUpperCase());
+    }
+    
+    checkStatus();
+    const interval = setInterval(checkStatus, 30000); // Check every 30s
+    return () => clearInterval(interval);
+  }, [deviceCode, checkStatus]);
+
+  const handleRegister = async () => {
+    setStatus('checking');
+    setError('');
+    try {
+      const res = await fetch('/api/device/register', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          device_id: deviceId,
+          device_code: deviceCode
+        })
+      });
+      if (res.ok) {
+        setStatus('pending');
+      } else {
+        const data = await res.json();
+        setError(data.error || 'Failed to register device');
+        setStatus('idle');
+      }
+    } catch (e: any) {
+      setError(e.message);
+      setStatus('idle');
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6 text-white overflow-hidden relative">
+      <div className="absolute inset-0 opacity-20 pointer-events-none">
+        <div className="absolute top-0 left-0 w-full h-full bg-[radial-gradient(circle_at_50%_50%,#1e40af,transparent_70%)]" />
+      </div>
+      
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-md bg-slate-800/50 backdrop-blur-xl border border-slate-700 p-8 rounded-3xl shadow-2xl relative z-10"
+      >
+        <div className="flex flex-col items-center text-center mb-8">
+          <div className="w-20 h-20 rounded-2xl bg-blue-600/20 flex items-center justify-center mb-6 ring-1 ring-blue-500/30">
+            <ShieldAlert className="w-10 h-10 text-blue-400" />
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight mb-3">Device Not Verified</h1>
+          <p className="text-slate-400 text-sm leading-relaxed">
+            This account is restricted to registered vessel devices. Please complete the registration process.
+          </p>
+        </div>
+
+        {status === 'idle' && (
+          <div className="space-y-6">
+            <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-700/50 text-center">
+              <span className="text-xs font-bold text-blue-400 uppercase tracking-widest block mb-4">Registration Code</span>
+              <div className="flex items-center justify-center gap-3">
+                {deviceCode.split('').map((char, i) => (
+                  <div key={i} className="w-10 h-12 bg-slate-800 border border-slate-700 rounded-lg flex items-center justify-center text-xl font-bold text-white shadow-sm">
+                    {char}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <p className="text-xs text-slate-500 text-center italic">
+                Provide this code to your TEAM PIC or Admin to verify your device.
+              </p>
+              
+              {error && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-xs text-center">
+                  {error}
+                </div>
+              )}
+
+              <button
+                onClick={handleRegister}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                Request Registration
+              </button>
+            </div>
+          </div>
+        )}
+
+        {status === 'pending' && (
+          <div className="space-y-8 py-4">
+            <div className="flex justify-center">
+              <div className="relative">
+                <div className="w-16 h-16 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+                <Clock className="w-6 h-6 text-blue-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+              </div>
+            </div>
+            
+            <div className="text-center space-y-3">
+              <h3 className="text-xl font-bold text-blue-400">Verification Pending</h3>
+              <p className="text-sm text-slate-400 leading-relaxed px-4">
+                Your request has been sent to Admin. You will be redirected automatically once approved.
+              </p>
+              <div className="inline-block px-4 py-2 bg-blue-500/10 rounded-full text-[10px] font-bold text-blue-400 uppercase tracking-widest border border-blue-500/20">
+                Code: {deviceCode}
+              </div>
+            </div>
+
+            <button
+              onClick={() => setStatus('idle')}
+              className="w-full text-slate-500 hover:text-slate-300 text-xs font-bold transition-colors"
+            >
+              Cancel Request
+            </button>
+          </div>
+        )}
+
+        <div className="mt-10 pt-8 border-t border-slate-700/50 flex flex-col gap-4">
+          <div className="flex items-center justify-between px-2">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-xs font-bold text-slate-300">
+                {user.username[0].toUpperCase()}
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-bold text-white">{user.username}</p>
+                <p className="text-[10px] text-slate-500 uppercase font-bold tracking-tighter">Vessel Account</p>
+              </div>
+            </div>
+            <button
+              onClick={onLogout}
+              className="text-red-400 hover:text-red-300 text-xs font-bold flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-red-400/5 transition-all"
+            >
+              <LogOut className="w-3.5 h-3.5" /> Logout
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
 // --- Types ---
 interface Team {
   id: number;
@@ -70,6 +246,18 @@ interface User {
   team_ids: number[];
   vessel_id?: number | null;
   email?: string;
+  device_id?: string | null;
+  is_verified?: boolean;
+}
+
+interface DeviceRegistrationRequest {
+  id: number;
+  user_id: number;
+  username: string;
+  vessel_name: string;
+  device_code: string;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
 }
 
 interface Vessel {
@@ -189,10 +377,13 @@ const getStatus = (date: string) => {
   const exp = parseISO(date);
   const today = new Date();
   today.setHours(0, 0, 0, 0); // Start of today
+  
+  const sixtyDays = addDays(today, 60);
   const thirtyDays = addDays(today, 30);
   
   if (isBefore(exp, today)) return 'expired';
-  if (isBefore(exp, thirtyDays)) return 'expiring';
+  if (isBefore(exp, thirtyDays)) return 'expiring soon';
+  if (isBefore(exp, sixtyDays)) return 'expiring';
   return 'active';
 };
 
@@ -304,7 +495,7 @@ const recognizeCertText = async (file: File) => {
   const dataPart = await fileToDataPart(file);
   
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-3-flash-preview",
     contents: {
       parts: [
         dataPart,
@@ -769,8 +960,215 @@ const ChangePasswordModal: React.FC<{
 };
 
 
+const SidebarContent = ({ 
+  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, onLogout, setIsChangePasswordOpen 
+}: { 
+  view: string, 
+  setView: (v: any) => void, 
+  setIsSidebarOpen: (v: boolean) => void, 
+  user: User, 
+  isAdminTreeOpen: boolean, 
+  setIsAdminTreeOpen: (v: boolean) => void,
+  onLogout: () => void,
+  setIsChangePasswordOpen: (v: boolean) => void
+}) => (
+  <>
+    <button 
+      onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
+      className="p-6 flex items-center gap-3 hover:opacity-80 transition-opacity text-left w-full"
+    >
+      <LogoContainer size="sm" className="border-none shadow-none" />
+      <span className="font-bold text-lg tracking-tight text-blue-900">COMOS</span>
+    </button>
+    
+    <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
+      <button 
+        onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
+        className={cn(
+          "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+          view === 'dashboard' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+        )}
+      >
+        <Clock className="w-4 h-4" /> Dashboard
+      </button>
+      {user.role !== 'vessel' && (
+        <button 
+          onClick={() => { setView('vessels'); setIsSidebarOpen(false); }}
+          className={cn(
+            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+            view === 'vessels' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+          )}
+        >
+          <Ship className="w-4 h-4" /> Vessels
+        </button>
+      )}
+      <button 
+        onClick={() => { setView('routing'); setIsSidebarOpen(false); }}
+        className={cn(
+          "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+          view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+        )}
+      >
+        <Compass className="w-4 h-4" /> Vessel Routing
+      </button>
+      {user.role === 'vessel' && (
+        <>
+          <button 
+            onClick={() => { setView('departure'); setIsSidebarOpen(false); }}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view === 'departure' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <Navigation className="w-4 h-4" /> Departure
+          </button>
+          <button 
+            onClick={() => { setView('arrival'); setIsSidebarOpen(false); }}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view === 'arrival' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <MapIcon className="w-4 h-4" /> Arrival
+          </button>
+          <button 
+            onClick={() => { setView('noon_to_noon'); setIsSidebarOpen(false); }}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view === 'noon_to_noon' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <Clock className="w-4 h-4" /> Noon to Noon
+          </button>
+          {user.role !== 'vessel' && (
+            <button 
+              onClick={() => { setView('fuel_consumption'); setIsSidebarOpen(false); }}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                view === 'fuel_consumption' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+              )}
+            >
+              <Activity className="w-4 h-4" /> Fuel Consumption
+            </button>
+          )}
+        </>
+      )}
+      {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
+        <div className="space-y-1">
+          <button 
+            onClick={() => setIsAdminTreeOpen(!isAdminTreeOpen)}
+            className={cn(
+              "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+              view.startsWith('admin') ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <Users className="w-4 h-4" /> Admin Panel
+            </div>
+            <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isAdminTreeOpen ? "rotate-180" : "")} />
+          </button>
+          
+          <AnimatePresence>
+            {isAdminTreeOpen && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden pl-4 space-y-1"
+              >
+                {user.role !== 'vessel' && (
+                  <button 
+                    onClick={() => { setView('admin_new_vessel'); setIsSidebarOpen(false); }}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                      view === 'admin_new_vessel' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                    )}
+                  >
+                    <Plus className="w-3 h-3" /> New Vessel
+                  </button>
+                )}
+                <button 
+                  onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                    view === 'admin_add_cert' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <Plus className="w-3 h-3" /> Add Certificate
+                </button>
+                {user.role !== 'vessel' && (
+                  <button 
+                    onClick={() => { setView('admin_vessel_list'); setIsSidebarOpen(false); }}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                      view === 'admin_vessel_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                    )}
+                  >
+                    <Ship className="w-3 h-3" /> Vessel List
+                  </button>
+                )}
+                <button 
+                  onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                    view === 'admin_cert_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <FileText className="w-3 h-3" /> Certificate List
+                </button>
+                <button 
+                  onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                    view === 'admin' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <Settings className="w-3 h-3" /> All Admin Settings
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      ) : null}
+      <button 
+        onClick={() => { setView('slideshow'); setIsSidebarOpen(false); }}
+        className={cn(
+          "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+          view === 'slideshow' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+        )}
+      >
+        <Monitor className="w-4 h-4" /> Slideshow
+      </button>
+    </nav>
+
+    <div className="p-4 border-t border-blue-50">
+      <button 
+        onClick={() => { setIsChangePasswordOpen(true); setIsSidebarOpen(false); }}
+        className="w-full flex items-center gap-3 px-4 py-3 mb-2 rounded-xl hover:bg-blue-50 transition-colors text-left group"
+      >
+        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 group-hover:bg-blue-200 transition-colors">
+          {user.username[0].toUpperCase()}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold truncate">{user.username}</p>
+          <p className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">{user.role}</p>
+        </div>
+        <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
+      </button>
+      <button 
+        onClick={onLogout}
+        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-500 hover:bg-red-50 transition-colors"
+      >
+        <LogOut className="w-4 h-4" /> Logout
+      </button>
+    </div>
+  </>
+);
+
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert'>('dashboard');
+  const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [certs, setCerts] = useState<Certificate[]>([]);
   const [vessels, setVessels] = useState<Vessel[]>([]);
   const [departureReports, setDepartureReports] = useState<DepartureReport[]>([]);
@@ -824,8 +1222,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     // Correctly initialize routing form when vessels change
     const initialForm: Record<number, Partial<Vessel>> = {};
     vessels.forEach(v => {
+      // Find latest arrival port for this vessel to use as autofill for next_port if empty
+      const latestArrival = [...arrivalReports]
+        .filter(r => r.vessel_id === v.id)
+        .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
+      
       initialForm[v.id] = {
-        next_port: v.next_port || '',
+        next_port: v.next_port || latestArrival?.arrival_port || '',
         route_status: v.route_status || '',
         eta_atb: v.eta_atb || '',
         etd_atd: v.etd_atd || '',
@@ -833,7 +1236,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       };
     });
     setRoutingForm(initialForm);
-  }, [vessels]);
+  }, [vessels, arrivalReports]);
 
   const handleUpdateRoutingRow = (vesselId: number, field: string, value: string) => {
     setRoutingForm(prev => ({
@@ -907,135 +1310,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   }, [vessels]);
 
   const notesEndRef = useRef<HTMLDivElement>(null);
-
-  const SidebarContent = () => (
-    <>
-      <button 
-        onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
-        className="p-6 flex items-center gap-3 hover:opacity-80 transition-opacity text-left w-full"
-      >
-        <LogoContainer size="sm" className="border-none shadow-none" />
-        <span className="font-bold text-lg tracking-tight text-blue-900">COMOS</span>
-      </button>
-      
-      <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
-        <button 
-          onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
-          className={cn(
-            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            view === 'dashboard' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-          )}
-        >
-          <Clock className="w-4 h-4" /> Dashboard
-        </button>
-        {user.role !== 'vessel' && (
-          <button 
-            onClick={() => { setView('vessels'); setIsSidebarOpen(false); }}
-            className={cn(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-              view === 'vessels' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-            )}
-          >
-            <Ship className="w-4 h-4" /> Vessels
-          </button>
-        )}
-        <button 
-          onClick={() => { setView('routing'); setIsSidebarOpen(false); }}
-          className={cn(
-            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-          )}
-        >
-          <Compass className="w-4 h-4" /> Vessel Routing
-        </button>
-        {user.role === 'vessel' && (
-          <>
-            <button 
-              onClick={() => { setView('departure'); setIsSidebarOpen(false); }}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                view === 'departure' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-              )}
-            >
-              <Navigation className="w-4 h-4" /> Departure
-            </button>
-            <button 
-              onClick={() => { setView('arrival'); setIsSidebarOpen(false); }}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                view === 'arrival' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-              )}
-            >
-              <MapIcon className="w-4 h-4" /> Arrival
-            </button>
-            <button 
-              onClick={() => { setView('noon_to_noon'); setIsSidebarOpen(false); }}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                view === 'noon_to_noon' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-              )}
-            >
-              <Clock className="w-4 h-4" /> Noon to Noon
-            </button>
-            {user.role !== 'vessel' && (
-              <button 
-                onClick={() => { setView('fuel_consumption'); setIsSidebarOpen(false); }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                  view === 'fuel_consumption' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                )}
-              >
-                <Activity className="w-4 h-4" /> Fuel Consumption
-              </button>
-            )}
-          </>
-        )}
-        {user.role === 'admin' || user.role === 'team_pic' || user.role === 'vessel' ? (
-          <button 
-            onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
-            className={cn(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-              view === 'admin' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-            )}
-          >
-            <Users className="w-4 h-4" /> Admin Panel
-          </button>
-        ) : null}
-        <button 
-          onClick={() => { setView('slideshow'); setIsSidebarOpen(false); }}
-          className={cn(
-            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            view === 'slideshow' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-          )}
-        >
-          <Monitor className="w-4 h-4" /> Slideshow
-        </button>
-      </nav>
-
-      <div className="p-4 border-t border-blue-50">
-        <button 
-          onClick={() => { setIsChangePasswordOpen(true); setIsSidebarOpen(false); }}
-          className="w-full flex items-center gap-3 px-4 py-3 mb-2 rounded-xl hover:bg-blue-50 transition-colors text-left group"
-        >
-          <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 group-hover:bg-blue-200 transition-colors">
-            {user.username[0].toUpperCase()}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold truncate">{user.username}</p>
-            <p className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">{user.role}</p>
-          </div>
-          <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
-        </button>
-        <button 
-          onClick={onLogout}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-500 hover:bg-red-50 transition-colors"
-        >
-          <LogOut className="w-4 h-4" /> Logout
-        </button>
-      </div>
-    </>
-  );
-
+  
   const scrollToBottom = () => {
     notesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -1369,8 +1644,11 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         let bValue: any;
 
         if (sortConfig.key === 'status') {
-          aValue = getStatus(a.expiration_date);
-          bValue = getStatus(b.expiration_date);
+          const sA = getStatus(a.expiration_date);
+          const sB = getStatus(b.expiration_date);
+          const statusOrder = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3 };
+          const cmp = statusOrder[sA as keyof typeof statusOrder] - statusOrder[sB as keyof typeof statusOrder];
+          return sortConfig.direction === 'asc' ? cmp : -cmp;
         } else if (sortConfig.key === 'vessel_name') {
           aValue = a.vessel_name || a.team_name || '';
           bValue = b.vessel_name || b.team_name || '';
@@ -1476,8 +1754,18 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
       {/* Desktop Sidebar */}
       <aside className="hidden lg:flex w-64 bg-white border-r border-blue-100 flex-col h-screen sticky top-0">
-        <SidebarContent />
+        <SidebarContent 
+          view={view} 
+          setView={setView} 
+          setIsSidebarOpen={setIsSidebarOpen} 
+          user={user} 
+          isAdminTreeOpen={isAdminTreeOpen} 
+          setIsAdminTreeOpen={setIsAdminTreeOpen}
+          onLogout={onLogout}
+          setIsChangePasswordOpen={setIsChangePasswordOpen}
+        />
       </aside>
+
 
       {/* Mobile Sidebar Overlay */}
       <AnimatePresence>
@@ -1510,7 +1798,16 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 </button>
               </div>
               <div className="flex-1 flex flex-col min-h-0 bg-white">
-                <SidebarContent />
+                <SidebarContent 
+                  view={view} 
+                  setView={setView} 
+                  setIsSidebarOpen={setIsSidebarOpen} 
+                  user={user} 
+                  isAdminTreeOpen={isAdminTreeOpen} 
+                  setIsAdminTreeOpen={setIsAdminTreeOpen}
+                  onLogout={onLogout}
+                  setIsChangePasswordOpen={setIsChangePasswordOpen}
+                />
               </div>
             </motion.aside>
           </>
@@ -1527,27 +1824,34 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 <p className="text-slate-500">Monitor certificate statuses and upcoming expirations.</p>
               </header>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="p-2 bg-red-50 rounded-lg"><AlertTriangle className="text-red-600 w-5 h-5" /></div>
-                    <span className="text-2xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'expired').length}</span>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm transition-all hover:shadow-md hover:border-blue-200 group">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-2 bg-red-50 rounded-lg group-hover:scale-110 transition-transform"><AlertTriangle className="text-red-500 w-4 h-4" /></div>
+                    <span className="text-xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'expired').length}</span>
                   </div>
-                  <p className="text-sm font-medium text-slate-500">Expired Certificates</p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Expired</p>
                 </div>
-                <div className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="p-2 bg-amber-50 rounded-lg"><Clock className="text-amber-600 w-5 h-5" /></div>
-                    <span className="text-2xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'expiring').length}</span>
+                <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm transition-all hover:shadow-md hover:border-blue-200 group">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-2 bg-orange-50 rounded-lg group-hover:scale-110 transition-transform"><Clock className="text-orange-500 w-4 h-4" /></div>
+                    <span className="text-xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'expiring soon').length}</span>
                   </div>
-                  <p className="text-sm font-medium text-slate-500">Expiring Soon</p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Expiring soon</p>
                 </div>
-                <div className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="p-2 bg-blue-50 rounded-lg"><CheckCircle2 className="text-blue-600 w-5 h-5" /></div>
-                    <span className="text-2xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'active').length}</span>
+                <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm transition-all hover:shadow-md hover:border-blue-200 group">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-2 bg-amber-50 rounded-lg group-hover:scale-110 transition-transform"><Clock className="text-amber-500 w-4 h-4" /></div>
+                    <span className="text-xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'expiring').length}</span>
                   </div>
-                  <p className="text-sm font-medium text-slate-500">Valid Certificates</p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Expiring</p>
+                </div>
+                <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm transition-all hover:shadow-md hover:border-blue-200 group">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-2 bg-blue-50 rounded-lg group-hover:scale-110 transition-transform"><CheckCircle2 className="text-blue-500 w-4 h-4" /></div>
+                    <span className="text-xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'active').length}</span>
+                  </div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Valid</p>
                 </div>
               </div>
 
@@ -1646,8 +1950,9 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               <span className={cn(
                                 "px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
                                 getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
+                                getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
                                 getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
-                                "bg-green-100 text-green-700"
+                                "bg-blue-100 text-blue-700"
                               )}>
                                 {getStatus(cert.expiration_date)}
                               </span>
@@ -1796,7 +2101,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             </div>
           )}
 
-          {view === 'admin' && (
+          {view.startsWith('admin') && (
             <AdminPanel 
               token={token} 
               teams={teams} 
@@ -1811,6 +2116,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               setOcrHighlights={setOcrHighlights}
               isRecognizing={isRecognizing}
               setIsRecognizing={setIsRecognizing}
+              subView={view}
             />
           )}
 
@@ -2063,8 +2369,12 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         if (isEditingRoute) {
                           handleUpdateRoute();
                         } else {
+                          const latestArrival = [...arrivalReports]
+                            .filter(r => r.vessel_id === selectedVessel.id)
+                            .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
+                            
                           setRouteForm({
-                            next_port: selectedVessel.next_port || '',
+                            next_port: selectedVessel.next_port || latestArrival?.arrival_port || '',
                             route_status: selectedVessel.route_status || '',
                             eta_atb: selectedVessel.eta_atb || '',
                             etd_atd: selectedVessel.etd_atd || '',
@@ -2226,7 +2536,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       .filter(c => c.vessel_id === selectedVessel.id)
                       .filter(c => c.name.toLowerCase().includes(vesselCertSearch.toLowerCase()))
                       .sort((a, b) => {
-                        const statusOrder = { 'expired': 0, 'expiring': 1, 'active': 2 };
+                        const statusOrder = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3 };
                         const statusA = getStatus(a.expiration_date);
                         const statusB = getStatus(b.expiration_date);
                         return statusOrder[statusA] - statusOrder[statusB];
@@ -2256,6 +2566,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           <span className={cn(
                             "px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider",
                             getStatus(cert.expiration_date) === 'expired' ? "bg-red-50 text-red-700" :
+                            getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-50 text-orange-700" :
                             getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-50 text-amber-700" :
                             "bg-blue-50 text-blue-700"
                           )}>
@@ -2907,7 +3218,9 @@ const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Ce
                       </div>
                       <span className={cn(
                         "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest shrink-0 shadow-lg",
-                        getStatus(cert.expiration_date) === 'expired' ? "bg-red-600/60 text-white border border-red-500/50" : "bg-amber-600/60 text-white border border-amber-500/50"
+                        getStatus(cert.expiration_date) === 'expired' ? "bg-red-600/60 text-white border border-red-500/50" : 
+                        getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-600/60 text-white border border-orange-500/50" :
+                        "bg-amber-600/60 text-white border border-amber-500/50"
                       )}>
                         {getStatus(cert.expiration_date)}
                       </span>
@@ -4458,7 +4771,8 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
 
 const AdminPanel = ({ 
   token, teams, vessels, certs, setCerts, onRefresh, notify,
-  previewFile, setPreviewFile, setTempPreviewUrl, setOcrHighlights, isRecognizing, setIsRecognizing 
+  previewFile, setPreviewFile, setTempPreviewUrl, setOcrHighlights, isRecognizing, setIsRecognizing,
+  subView
 }: { 
   token: string, 
   teams: Team[], 
@@ -4472,7 +4786,8 @@ const AdminPanel = ({
   setTempPreviewUrl: (url: string | null) => void,
   setOcrHighlights: (highlights: any[]) => void,
   isRecognizing: boolean,
-  setIsRecognizing: (val: boolean) => void
+  setIsRecognizing: (val: boolean) => void,
+  subView?: string
 }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [newVesselName, setNewVesselName] = useState('');
@@ -4492,7 +4807,8 @@ const AdminPanel = ({
   const [newCertFile, setNewCertFile] = useState<File | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editingCert, setEditingCert] = useState<Certificate | null>(null);
-  const [adminTab, setAdminTab] = useState<'fleet' | 'users' | 'settings' | 'audit'>('fleet');
+  const [deviceRequests, setDeviceRequests] = useState<DeviceRegistrationRequest[]>([]);
+  const [adminTab, setAdminTab] = useState<'fleet' | 'users' | 'settings' | 'audit' | 'devices'>('fleet');
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
   const [auditPage, setAuditPage] = useState(1);
@@ -4555,6 +4871,23 @@ const AdminPanel = ({
       console.error('Failed to fetch audit logs:', err);
     }
   }, [token]);
+
+  const fetchDeviceRequests = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/device-requests', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        setDeviceRequests(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch device requests:', err);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (adminTab === 'devices') {
+      fetchDeviceRequests();
+    }
+  }, [adminTab, fetchDeviceRequests]);
 
   useEffect(() => {
     if (adminTab === 'audit') {
@@ -4677,6 +5010,25 @@ const AdminPanel = ({
       }
     } catch (err) {
       notify('error', 'Connection error occurred');
+    }
+  };
+
+  const handleVerifyDevice = async (requestId: number, status: 'approved' | 'rejected') => {
+    try {
+      const res = await fetch('/api/admin/verify-device', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ request_id: requestId, status }),
+      });
+      if (res.ok) {
+        notify('success', `Request ${status} successfully`);
+        fetchDeviceRequests();
+        fetchUsers(); // Refresh users list too
+      } else {
+        notify('error', `Failed to ${status} request`);
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
     }
   };
 
@@ -4991,75 +5343,116 @@ const AdminPanel = ({
 
   return (
     <div className="space-y-12">
-      <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">
-            {isVessel ? 'Vessel Management' : 'Admin Control Panel'}
+      {(!subView || subView === 'admin') && (
+        <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">
+              {isVessel ? 'Vessel Management' : 'Admin Control Panel'}
+            </h1>
+            <p className="text-slate-500">
+              {isVessel ? 'Manage your vessel certificates.' : 'Manage fleet, users, and system configuration.'}
+            </p>
+          </div>
+          <div className="flex bg-slate-100 p-1.5 rounded-xl border border-slate-200">
+            <button 
+              onClick={() => setAdminTab('fleet')}
+              className={cn(
+                "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+                adminTab === 'fleet' 
+                  ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                  : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+              )}
+            >
+              {isVessel ? 'My Vessel' : 'Fleet & Certs'}
+            </button>
+            {isAdmin && (
+              <button 
+                onClick={() => setAdminTab('users')}
+                className={cn(
+                  "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+                  adminTab === 'users' 
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                    : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+                )}
+              >
+                User Management
+              </button>
+            )}
+            {isAdmin && (
+              <button 
+                onClick={() => setAdminTab('settings')}
+                className={cn(
+                  "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+                  adminTab === 'settings' 
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                    : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+                )}
+              >
+                System Settings
+              </button>
+            )}
+            {(isAdmin || isTeamPic) && (
+              <button 
+                onClick={() => setAdminTab('devices')}
+                className={cn(
+                  "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200 flex items-center gap-2",
+                  adminTab === 'devices' 
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                    : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+                )}
+              >
+                Device Registration
+                {deviceRequests.length > 0 && (
+                  <span className="bg-red-500 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full leading-none">
+                    {deviceRequests.length}
+                  </span>
+                )}
+              </button>
+            )}
+            {isAdmin && (
+              <button 
+                onClick={() => setAdminTab('audit')}
+                className={cn(
+                  "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
+                  adminTab === 'audit' 
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
+                    : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
+                )}
+              >
+                Audit Logs
+              </button>
+            )}
+          </div>
+        </header>
+      )}
+
+      {subView && subView !== 'admin' && (
+        <header className="mb-8">
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">
+            {subView === 'admin_new_vessel' && 'Add New Vessel'}
+            {subView === 'admin_add_cert' && 'Add Certificate'}
+            {subView === 'admin_vessel_list' && 'Vessel List'}
+            {subView === 'admin_cert_list' && 'Certificate List'}
           </h1>
           <p className="text-slate-500">
-            {isVessel ? 'Manage your vessel certificates.' : 'Manage fleet, users, and system configuration.'}
+            {subView === 'admin_new_vessel' && 'Register a new vessel to the fleet.'}
+            {subView === 'admin_add_cert' && 'Assign a new certificate to a vessel or team.'}
+            {subView === 'admin_vessel_list' && 'Manage all vessels in your fleet.'}
+            {subView === 'admin_cert_list' && 'View and manage all vessel certificates.'}
           </p>
-        </div>
-        <div className="flex bg-slate-100 p-1.5 rounded-xl border border-slate-200">
-          <button 
-            onClick={() => setAdminTab('fleet')}
-            className={cn(
-              "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
-              adminTab === 'fleet' 
-                ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
-                : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
-            )}
-          >
-            {isVessel ? 'My Vessel' : 'Fleet & Certs'}
-          </button>
-          {isAdmin && (
-            <button 
-              onClick={() => setAdminTab('users')}
-              className={cn(
-                "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
-                adminTab === 'users' 
-                  ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
-                  : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
-              )}
-            >
-              User Management
-            </button>
-          )}
-          {isAdmin && (
-            <button 
-              onClick={() => setAdminTab('settings')}
-              className={cn(
-                "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
-                adminTab === 'settings' 
-                  ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
-                  : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
-              )}
-            >
-              System Settings
-            </button>
-          )}
-          {isAdmin && (
-            <button 
-              onClick={() => setAdminTab('audit')}
-              className={cn(
-                "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
-                adminTab === 'audit' 
-                  ? "bg-blue-600 text-white shadow-md shadow-blue-200 ring-1 ring-blue-700" 
-                  : "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
-              )}
-            >
-              Audit Logs
-            </button>
-          )}
-        </div>
-      </header>
+        </header>
+      )}
 
-      {adminTab === 'fleet' && (
+      {(adminTab === 'fleet' || (subView && subView.startsWith('admin_'))) && (
         <div className="space-y-8">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Add Vessel */}
-            {!isVessel && (
-              <section className="order-1 lg:order-1 bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
+          {(!subView || subView === 'admin' || subView === 'admin_new_vessel' || subView === 'admin_add_cert') && (
+            <div className={cn(
+              "grid grid-cols-1 lg:grid-cols-2 gap-8",
+              (subView === 'admin_new_vessel' || subView === 'admin_add_cert') && "lg:grid-cols-1 max-w-2xl"
+            )}>
+              {/* Add Vessel */}
+              {((!subView || subView === 'admin') || subView === 'admin_new_vessel') && !isVessel && (
+                <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
                 <h2 className="font-bold mb-6 flex items-center gap-2 text-blue-900">
                   <Ship className="w-5 h-5" /> Add New Vessel
                 </h2>
@@ -5107,7 +5500,8 @@ const AdminPanel = ({
             )}
 
             {/* Add Cert */}
-            <section className="order-3 lg:order-2 bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
+            {((!subView || subView === 'admin') || subView === 'admin_add_cert') && (
+              <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
               <h2 className="font-bold mb-6 flex items-center gap-2 text-blue-900">
                 <FileText className="w-5 h-5" /> Add Certificate to Vessel/Team
               </h2>
@@ -5297,10 +5691,13 @@ const AdminPanel = ({
                 </button>
               </div>
             </section>
+          )}
+        </div>
+      )}
 
-            {/* Vessel List */}
-            {!isVessel && (
-              <section className="order-2 lg:order-3 bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
+      {/* Vessel List */}
+      {((!subView || subView === 'admin') || subView === 'admin_vessel_list') && !isVessel && (
+        <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="font-bold flex items-center gap-2 text-blue-900"><Ship className="w-5 h-5" /> Vessel List</h2>
                   <div className="flex items-center gap-2">
@@ -5406,7 +5803,8 @@ const AdminPanel = ({
             )}
 
             {/* Cert List */}
-            <section className="order-4 lg:order-4 bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
+            {((!subView || subView === 'admin') || subView === 'admin_cert_list') && (
+              <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="font-bold flex items-center gap-2 text-blue-900"><FileText className="w-5 h-5" /> Certificate List</h2>
                 <div className="flex items-center gap-2">
@@ -5493,8 +5891,9 @@ const AdminPanel = ({
                         <span className={cn(
                           "text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md",
                           getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
+                          getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
                           getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
-                          "bg-green-100 text-green-700"
+                          "bg-blue-100 text-blue-700"
                         )}>
                           {getStatus(cert.expiration_date)}
                         </span>
@@ -5520,11 +5919,11 @@ const AdminPanel = ({
                 ))}
               </div>
             </section>
-          </div>
+          )}
         </div>
       )}
 
-      {adminTab === 'users' && (
+      {adminTab === 'users' && (!subView || subView === 'admin') && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* User Management */}
           <div className="space-y-8">
@@ -5616,6 +6015,19 @@ const AdminPanel = ({
                       <p className="text-sm font-bold text-slate-900">{u.username}</p>
                       <div className="flex items-center gap-2">
                         <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{u.role}</p>
+                        {u.role === 'vessel' && (
+                          <>
+                            <span className="text-slate-300">•</span>
+                            <span className={cn(
+                              "text-[9px] font-black uppercase tracking-tighter px-1.5 py-0.5 rounded border",
+                              u.is_verified 
+                                ? "bg-green-100 text-green-700 border-green-200" 
+                                : "bg-orange-100 text-orange-700 border-orange-200"
+                            )}>
+                              {u.is_verified ? 'Verified' : 'Unverified'}
+                            </span>
+                          </>
+                        )}
                         <span className="text-slate-300">•</span>
                         <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
                           {u.team_ids.length > 0 
@@ -5650,7 +6062,7 @@ const AdminPanel = ({
         </div>
       )}
 
-      {adminTab === 'settings' && (
+      {adminTab === 'settings' && (!subView || subView === 'admin') && (
         <div className="max-w-2xl mx-auto">
           <section className="bg-white p-8 rounded-3xl border border-blue-100 shadow-sm">
             <div className="flex items-center justify-between mb-6">
@@ -5982,7 +6394,7 @@ const AdminPanel = ({
         </div>
       )}
 
-      {adminTab === 'audit' && (
+      {adminTab === 'audit' && (!subView || subView === 'admin') && (
         <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
           <div className="p-6 border-b border-blue-50 flex items-center justify-between">
             <h2 className="text-xl font-bold flex items-center gap-3 text-blue-900">
@@ -6066,6 +6478,82 @@ const AdminPanel = ({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {adminTab === 'devices' && (!subView || subView === 'admin') && (
+        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+          <div className="p-6 border-b border-blue-50 flex items-center justify-between bg-white sticky top-0 z-10">
+            <h2 className="text-xl font-bold flex items-center gap-3 text-blue-900">
+              <Shield className="w-6 h-6" /> Device Registration Requests
+            </h2>
+            <button 
+              onClick={fetchDeviceRequests}
+              className="p-2 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors"
+              title="Refresh Requests"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
+          
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                  <th className="px-6 py-4">Vessel / User</th>
+                  <th className="px-6 py-4">Device Code</th>
+                  <th className="px-6 py-4">Device ID</th>
+                  <th className="px-6 py-4">Requested At</th>
+                  <th className="px-6 py-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-blue-50">
+                {deviceRequests.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-12 text-center text-slate-400 font-medium">
+                      No pending device registration requests found.
+                    </td>
+                  </tr>
+                ) : (
+                  deviceRequests.map(req => (
+                    <tr key={req.id} className="hover:bg-blue-50/30 transition-colors">
+                      <td className="px-6 py-4">
+                        <p className="font-bold text-slate-900">{req.vessel_name || 'No Vessel Assigned'}</p>
+                        <p className="text-xs text-slate-500">User: {req.username}</p>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="px-3 py-1.5 bg-blue-100 text-blue-700 text-sm font-black rounded-lg font-mono tracking-widest">
+                          {req.device_code}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 font-mono text-[10px] text-slate-400 max-w-[150px] truncate">
+                        {req.device_id}
+                      </td>
+                      <td className="px-6 py-4 text-xs text-slate-500">
+                        {format(parseISO(req.created_at), 'MMM dd, yyyy HH:mm')}
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => handleVerifyDevice(req.id, 'approved')}
+                            className="px-4 py-2 bg-green-500 text-white text-xs font-bold rounded-xl hover:bg-green-600 transition-colors shadow-md shadow-green-100"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => handleVerifyDevice(req.id, 'rejected')}
+                            className="px-4 py-2 bg-white text-red-500 border border-red-100 text-xs font-bold rounded-xl hover:bg-red-50 transition-colors"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -6359,6 +6847,20 @@ const AdminPanel = ({
                       </div>
                     )}
                   </div>
+                  {editingUser.role === 'vessel' && editingUser.is_verified && (
+                    <div className="p-3 bg-blue-50 rounded-xl flex items-center justify-between">
+                      <div>
+                        <p className="text-xs font-bold text-blue-900">Device Verified</p>
+                        <p className="text-[10px] text-blue-600 font-mono truncate max-w-[200px]">ID: {editingUser.device_id}</p>
+                      </div>
+                      <button
+                        onClick={() => setEditingUser({ ...editingUser, is_verified: false, device_id: null })}
+                        className="text-[10px] font-bold text-red-600 hover:underline"
+                      >
+                        Reset Device
+                      </button>
+                    </div>
+                  )}
                   <div className="space-y-2">
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Team Affiliations</label>
                     <div className="grid grid-cols-2 gap-2">
@@ -6419,11 +6921,18 @@ export default function App() {
         const contentType = res.headers.get('content-type');
         if (res.ok && contentType && contentType.includes('application/json')) {
           const data = await res.json();
-          setDbStatus(data);
+          setDbStatus(prev => {
+            if (prev && prev.connected === data.connected && prev.error === data.error) return prev;
+            return data;
+          });
         } else {
+          // If it's a 200 with HTML, it's likely the "Starting Server" warmup page
+          if (res.ok && contentType && contentType.includes('text/html')) {
+             setDbStatus({ connected: false, error: 'Server is starting up...' } as any);
+             return;
+          }
           const text = await res.text();
-          console.error(`Failed to check DB status: ${res.status} ${res.statusText}`, text);
-          // If it's a 404, maybe the server is still starting or route is wrong
+          console.error(`Failed to check DB status: ${res.status} ${res.statusText}`, text.slice(0, 500));
           if (res.status === 404) {
              setDbStatus({ connected: false, error: 'API route /api/db-status not found. Server might be starting...' } as any);
           } else {
@@ -6456,6 +6965,15 @@ export default function App() {
 
   if (!token || !user) {
     return <Login onLogin={handleLogin} dbStatus={dbStatus} />;
+  }
+
+  // Vessel Device Verification Check
+  if (user.role === 'vessel') {
+    const currentDeviceId = getDeviceId();
+    // Use user.device_id and user.is_verified from the user object set during handleLogin or loaded from localStorage
+    if (!user.is_verified || user.device_id !== currentDeviceId) {
+       return <DeviceRegistration user={user} token={token} onLogout={handleLogout} />;
+    }
   }
 
   return (

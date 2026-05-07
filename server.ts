@@ -77,9 +77,31 @@ async function startServer() {
         console.log('Migrating users table: Adding email...');
         await pool.query('ALTER TABLE users ADD COLUMN email VARCHAR(255)');
       }
+      
+      if (!columnNames.includes('device_id')) {
+        console.log('Migrating users table: Adding device_id...');
+        await pool.query('ALTER TABLE users ADD COLUMN device_id VARCHAR(255)');
+      }
+
+      if (!columnNames.includes('is_verified')) {
+        console.log('Migrating users table: Adding is_verified...');
+        await pool.query('ALTER TABLE users ADD COLUMN is_verified BOOLEAN NOT NULL DEFAULT FALSE');
+      }
     } catch (e: any) {
       console.error('Error during users table migration:', e.message);
     }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS device_registration_requests (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        device_code VARCHAR(255) NOT NULL,
+        device_id VARCHAR(255) NOT NULL,
+        status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_teams (
@@ -596,8 +618,114 @@ async function startServer() {
     const [userTeams]: any = await pool.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [user.id]);
     const teamIds = userTeams.map((ut: any) => ut.team_id);
     
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role, team_ids: teamIds, vessel_id: user.vessel_id }, JWT_SECRET);
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role, team_ids: teamIds, vessel_id: user.vessel_id } });
+    const token = jwt.sign({ 
+      id: user.id, 
+      username: user.username, 
+      role: user.role, 
+      team_ids: teamIds, 
+      vessel_id: user.vessel_id,
+      device_id: user.device_id,
+      is_verified: !!user.is_verified
+    }, JWT_SECRET);
+    res.json({ 
+      token, 
+      user: { 
+        id: user.id, 
+        username: user.username, 
+        role: user.role, 
+        team_ids: teamIds, 
+        vessel_id: user.vessel_id,
+        device_id: user.device_id,
+        is_verified: !!user.is_verified
+      } 
+    });
+  });
+
+  // Device Registration Routes
+  app.post('/api/device/register', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { device_id, device_code } = req.body;
+    const user_id = req.user.id;
+    try {
+      // Clear any pending requests for this user first
+      await pool.execute('DELETE FROM device_registration_requests WHERE user_id = ? AND status = "pending"', [user_id]);
+      
+      await pool.execute(
+        'INSERT INTO device_registration_requests (user_id, device_id, device_code) VALUES (?, ?, ?)',
+        [user_id, device_id, device_code]
+      );
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/device/status', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const user_id = req.user.id;
+    try {
+      const [rows]: any = await pool.execute(
+        'SELECT is_verified, device_id FROM users WHERE id = ?',
+        [user_id]
+      );
+      if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
+      
+      const [pending]: any = await pool.execute(
+        'SELECT * FROM device_registration_requests WHERE user_id = ? AND status = "pending"',
+        [user_id]
+      );
+
+      res.json({ 
+        is_verified: !!rows[0].is_verified, 
+        device_id: rows[0].device_id,
+        has_pending_request: pending.length > 0
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/admin/device-requests', authenticate, isTeamPicOrAdmin, async (req, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const [rows]: any = await pool.query(`
+        SELECT dr.*, u.username, v.name as vessel_name 
+        FROM device_registration_requests dr
+        JOIN users u ON dr.user_id = u.id
+        LEFT JOIN vessels v ON u.vessel_id = v.id
+        WHERE dr.status = 'pending'
+      `);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/verify-device', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { request_id, status } = req.body; // status: 'approved' | 'rejected'
+    try {
+      if (status === 'approved') {
+        const [requests]: any = await pool.execute(
+          'SELECT * FROM device_registration_requests WHERE id = ?',
+          [request_id]
+        );
+        const request = requests[0];
+        if (request) {
+          await pool.execute(
+            'UPDATE users SET device_id = ?, is_verified = TRUE WHERE id = ?',
+            [request.device_id, request.user_id]
+          );
+        }
+      }
+      await pool.execute(
+        'UPDATE device_registration_requests SET status = ? WHERE id = ?',
+        [status, request_id]
+      );
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // Settings Routes (Admin)
@@ -2043,6 +2171,7 @@ Generated by COMOS System
       const [certs]: any = await pool.query(query, params);
 
       const today = new Date();
+      const sixtyDaysFromNow = addDays(today, 60);
       const thirtyDaysFromNow = addDays(today, 30);
 
       // Group alerts by team and by vessel (for Ship certificates)
@@ -2051,8 +2180,11 @@ Generated by COMOS System
 
       for (const cert of certs) {
         const expDate = new Date(cert.expiration_date);
-        if (isBefore(expDate, thirtyDaysFromNow)) {
-          const status = isBefore(expDate, today) ? 'EXPIRED' : 'EXPIRING SOON';
+        if (isBefore(expDate, sixtyDaysFromNow)) {
+          let status = 'EXPIRING';
+          if (isBefore(expDate, today)) status = 'EXPIRED';
+          else if (isBefore(expDate, thirtyDaysFromNow)) status = 'EXPIRING SOON';
+          
           const alertData = { ...cert, status };
           
           // Office/Any/Vessel certs go to team alerts for office check
