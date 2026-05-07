@@ -182,7 +182,7 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({ url, title, highlights = [
               ref={canvasRef} 
               className="block max-w-full h-auto" 
             />
-            {highlights.length > 0 && <OCRHighlightOverlay highlights={highlights} />}
+            {pageNumber === 1 && highlights.length > 0 && <OCRHighlightOverlay highlights={highlights} />}
           </div>
         )}
       </div>

@@ -15,21 +15,25 @@ export const OCRHighlightOverlay = ({ highlights }: { highlights: Highlight[] })
         if (!h.rect || !Array.isArray(h.rect) || h.rect.length !== 4) return null;
         
         // Gemini coordinates are [ymin, xmin, ymax, xmax] in 0-1000 scale
-        const [ymin, xmin, ymax, xmax] = h.rect;
+        // Normalize to ensure we always have positive dimensions and correct positioning
+        const y_min = Math.min(h.rect[0], h.rect[2]);
+        const y_max = Math.max(h.rect[0], h.rect[2]);
+        const x_min = Math.min(h.rect[1], h.rect[3]);
+        const x_max = Math.max(h.rect[1], h.rect[3]);
         
         // Use percentages for exact mapping to container (using 0.1% increments)
-        const top = ymin / 10;
-        const left = xmin / 10;
-        const height = (ymax - ymin) / 10;
-        const width = (xmax - xmin) / 10;
+        const top = y_min / 10;
+        const left = x_min / 10;
+        const height = (y_max - y_min) / 10;
+        const width = (x_max - x_min) / 10;
 
-        // Skip invalid or zero-size rects
-        if (width <= 0 || height <= 0) return null;
+        // Skip invalid or clearly incorrect rects
+        if (width < 0.1 || height < 0.1) return null;
 
         return (
           <div 
             key={i}
-            className="absolute border-2 border-amber-500 bg-amber-500/10 rounded shadow-[0_0_10px_rgba(245,158,11,0.4)] group/highlight pointer-events-auto cursor-help transition-all duration-300 hover:bg-amber-500/30 hover:border-amber-400"
+            className="absolute border-2 border-amber-500 bg-amber-500/20 rounded shadow-[0_0_15px_rgba(245,158,11,0.5)] group/highlight pointer-events-auto cursor-help transition-all duration-300 hover:bg-amber-500/40 hover:border-amber-300 hover:ring-2 hover:ring-white/30"
             style={{
               top: `${top}%`,
               left: `${left}%`,

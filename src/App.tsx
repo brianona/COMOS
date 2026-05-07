@@ -499,24 +499,28 @@ const recognizeCertText = async (file: File) => {
     contents: {
       parts: [
         dataPart,
-        { text: `Extract certificate information with high precision for spatial alignment.
-          For each field, return the extracted "value" and a "rect" object.
+        { text: `You are a high-precision OCR engine. Your task is to extract core certificate metadata and their exact spatial locations.
           
-          SPATIAL COORDINATE RULES (0-1000 scale):
-          - "rect": {"ymin": int, "xmin": int, "ymax": int, "xmax": int}
-          - 0 is TOP, 1000 is BOTTOM. 0 is LEFT, 1000 is RIGHT.
-          - CRITICAL: The rect MUST be a tight bounding box that matches the exact visual position of the text segments extracted as the "value".
-          - Do NOT include labels (e.g., skip the "Name:" label and only rect the actual name content).
-          - Vertical alignment: Ensure ymin and ymax tightly hug the text characters.
+          COORDINATE SYSTEM:
+          - Use a 0-1000 normalized coordinate system for "rect".
+          - Format: {"ymin": int, "xmin": int, "ymax": int, "xmax": int}
+          - 0,0 is TOP-LEFT. 1000,1000 is BOTTOM-RIGHT.
           
-          FIELDS:
-          - vessel_name: The official Vessel Name found on the document (e.g. "LIGNUM NETWORK").
-          - cert_type: The title or type of the certificate (e.g. "Safety Management Certificate", "Class Certificate").
-          - certificate_number: The unique certificate number.
-          - date_issued: Issue date (YYYY-MM-DD).
-          - expiration_date: Expiration date (YYYY-MM-DD).
+          RULES:
+          1. The "rect" MUST be a TIGHT bounding box around the SPECIFIC text value extracted.
+          2. EXCLUDE labels from the rect (e.g., if the document says "Vessel: MARITIME GOVERNOR", your vessel_name is "MARITIME GOVERNOR" and the rect should ONLY cover "MARITIME GOVERNOR").
+          3. For dates, if they are spread across the page, provide the rect that covers the full date string.
+          4. If the certificate title (cert_type) is multi-line, the rect should encompass all lines of the title.
+          5. Accuracy is paramount. If you are unsure of the exact location, provide your best estimate based on the visual flow.
 
-          If a field is missing, return null for both value and rect.` }
+          FIELDS TO EXTRACT:
+          - vessel_name: Name of the ship/vessel.
+          - cert_type: Full title of the certificate.
+          - certificate_number: The unique ID/No of the document.
+          - date_issued: When it was issued (YYYY-MM-DD).
+          - expiration_date: When it expires (YYYY-MM-DD).
+
+          Return JSON only.` }
       ]
     },
     config: {
@@ -5273,7 +5277,9 @@ const AdminPanel = ({
           role: role, 
           team_ids: teamIds,
           vessel_id: role === 'vessel' ? (vesselId ? Number(vesselId) : null) : null,
-          email: email
+          email: email,
+          device_id: editingUser ? editingUser.device_id : null,
+          is_verified: editingUser ? !!editingUser.is_verified : false
         }),
       });
       if (res.ok) {
