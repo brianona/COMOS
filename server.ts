@@ -9,7 +9,7 @@ import mysql from 'mysql2/promise';
 import multer from 'multer';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 import { addDays, isBefore, format } from 'date-fns';
 import net from 'net';
 import { google } from 'googleapis';
@@ -271,10 +271,7 @@ async function startServer() {
     const [settingRows]: any = await pool.query('SELECT COUNT(*) as count FROM settings');
     if (settingRows[0].count === 0) {
       const defaultSettings = [
-        ['SMTP_HOST', process.env.SMTP_HOST || ''],
-        ['SMTP_PORT', process.env.SMTP_PORT || '587'],
-        ['SMTP_USER', process.env.SMTP_USER || ''],
-        ['SMTP_PASS', process.env.SMTP_PASS || ''],
+        ['RESEND_API_KEY', process.env.RESEND_API_KEY || ''],
         ['SMTP_FROM', process.env.SMTP_FROM || ''],
         ['DESTINATION_EMAIL', process.env.DESTINATION_EMAIL || 'IT@cleanocean.com.ph'],
         ['ENABLE_EMAIL_ALERTS', process.env.ENABLE_EMAIL_ALERTS || 'true'],
@@ -445,6 +442,7 @@ async function startServer() {
 
     // Migration for existing databases: ensure new keys exist
       const newKeys = [
+        ['RESEND_API_KEY', process.env.RESEND_API_KEY || ''],
         ['ALERT_SCHEDULE_TYPE', 'interval'],
         ['ALERT_INTERVAL_HOURS', '24'],
         ['ALERT_TIME', '08:00'],
@@ -787,64 +785,45 @@ async function startServer() {
   });
 
   app.post('/api/admin/test-smtp', authenticate, isAdmin, async (req, res) => {
-    const { host, port, user, pass, from } = req.body;
-    console.log(`Testing SMTP: ${host}:${port} as ${user}`);
+    let { resend_api_key, from } = req.body;
+    console.log(`Testing Resend API Key...`);
     
-    // Quick TCP check to see if the port is even reachable
-    try {
-      await new Promise((resolve, reject) => {
-        const socket = new net.Socket();
-        socket.setTimeout(5000);
-        socket.on('connect', () => { socket.destroy(); resolve(true); });
-        socket.on('timeout', () => { socket.destroy(); reject(new Error('Connection timed out while checking SMTP port availability (5000ms). This often happens if the hosting provider (like Render) blocks outbound ports like 25, 465, or 587.')); });
-        socket.on('error', (err) => { socket.destroy(); reject(new Error(`Failed to reach SMTP host: ${err.message}`)); });
-        socket.connect(Number(port), host);
-      });
-    } catch (tcpErr: any) {
-      console.error('SMTP Port Check Failed:', tcpErr.message);
-      return res.status(500).json({ error: tcpErr.message });
+    // Fallback to process.env if not provided in request body
+    if (!resend_api_key) {
+      resend_api_key = process.env.RESEND_API_KEY;
     }
 
-    const testTransporter = nodemailer.createTransport({
-      host,
-      port: Number(port),
-      secure: Number(port) === 465,
-      auth: { user, pass },
-      tls: { rejectUnauthorized: false },
-      connectionTimeout: 10000, // 10 seconds
-      greetingTimeout: 10000,
-      socketTimeout: 10000
-    });
+    if (!resend_api_key || resend_api_key.trim() === '') {
+      return res.status(400).json({ error: 'Resend API Key is required. Please enter it in Settings or set RESEND_API_KEY in the Secrets menu.' });
+    }
 
     try {
-      console.log('Verifying SMTP transporter...');
-      await testTransporter.verify();
-      console.log('SMTP verification succeeded. Attempting to send test mail...');
-      
+      const resend = new Resend(resend_api_key);
       const currentUser = (req as any).user;
-      // Use setting from as fallback, then user, then destination email
-      const fromEmail = from || user;
-      const toEmail = currentUser.email || (currentUser.username.includes('@') ? currentUser.username : user);
+      const fromEmail = from || 'onboarding@resend.dev';
+      const toEmail = currentUser.email || (currentUser.username.includes('@') ? currentUser.username : 'IT@cleanocean.com.ph');
       
       if (!toEmail || !toEmail.includes('@')) {
         throw new Error(`Invalid recipient email address: "${toEmail}". Please ensure your user profile has a valid email address.`);
       }
 
-      await testTransporter.sendMail({
-        from: `"COMOS Test" <${fromEmail}>`,
+      const { data, error } = await resend.emails.send({
+        from: fromEmail,
         to: toEmail,
-        subject: 'SMTP Connection Test',
-        text: 'If you are reading this, your SMTP settings are working correctly!'
+        subject: 'Resend API Connection Test',
+        html: '<strong>If you are reading this, your Resend API settings are working correctly!</strong>'
       });
+
+      if (error) {
+        throw error;
+      }
       
-      console.log('Test email sent successfully to:', toEmail);
+      console.log('Test email sent successfully via Resend to:', toEmail);
       res.json({ success: true });
     } catch (e: any) {
-      console.error('SMTP Test Failed Detailed Error:', e);
+      console.error('Resend Test Failed Detailed Error:', e);
       res.status(500).json({ 
-        error: e.message || 'Unknown SMTP error',
-        code: e.code,
-        command: e.command
+        error: e.message || 'Unknown Resend error'
       });
     }
   });
@@ -2016,68 +1995,35 @@ Generated by COMOS System
     }
   }
 
-  async function getTransporter() {
+  async function sendEmail({ to, subject, html, from }: { to: string | string[], subject: string, html: string, from?: string }) {
     const settings = await getSmtpSettings();
-    if (!settings || !settings.SMTP_HOST) {
-      console.warn('SMTP_HOST is missing in settings. Email alerts will not be sent.');
+    const apiKey = settings?.RESEND_API_KEY || process.env.RESEND_API_KEY;
+    
+    if (!apiKey) {
+      console.warn('RESEND_API_KEY is missing in both settings and environment. Email will not be sent.');
       return null;
     }
-
-    return nodemailer.createTransport({
-      host: settings.SMTP_HOST,
-      port: Number(settings.SMTP_PORT) || 587,
-      secure: Number(settings.SMTP_PORT) === 465,
-      auth: {
-        user: settings.SMTP_USER,
-        pass: settings.SMTP_PASS,
-      },
-      tls: {
-        rejectUnauthorized: false,
-        minVersion: 'TLSv1.2'
-      },
-      connectionTimeout: 30000,
-      greetingTimeout: 30000,
-      socketTimeout: 30000
-    });
-  }
-
-  // Verify SMTP connection on startup with enhanced diagnostics
-  async function verifySmtpOnStartup() {
-    const settings = await getSmtpSettings();
-    if (settings && settings.SMTP_HOST) {
-      const host = settings.SMTP_HOST;
-      const port = Number(settings.SMTP_PORT) || 587;
+    
+    const resend = new Resend(apiKey);
+    const fromEmail = from || settings?.SMTP_FROM || process.env.SMTP_FROM || 'onboarding@resend.dev';
+    
+    try {
+      const { data, error } = await resend.emails.send({
+        from: fromEmail,
+        to,
+        subject,
+        html,
+      });
       
-      console.log(`[SMTP Diagnostic] Testing connectivity to ${host}:${port}...`);
-      
-      const socket = net.connect(port, host, () => {
-        console.log(`[SMTP Diagnostic] TCP Connection to ${host}:${port} successful!`);
-        socket.destroy();
-        
-        console.log(`[SMTP Diagnostic] Now verifying SMTP protocol...`);
-        getTransporter().then(transporter => {
-          if (!transporter) return;
-          transporter.verify((error) => {
-            if (error) {
-              console.error('SMTP Protocol Error:', error);
-            } else {
-              console.log('SMTP Server is ready to take our messages');
-            }
-          });
-        });
-      });
-
-      socket.on('error', (err) => {
-        console.error(`[SMTP Diagnostic] TCP Connection to ${host}:${port} FAILED:`, err.message);
-      });
-
-      socket.setTimeout(10000, () => {
-        socket.destroy();
-        console.error(`[SMTP Diagnostic] TCP Connection to ${host}:${port} TIMED OUT after 10s.`);
-      });
+      if (error) {
+        throw error;
+      }
+      return data;
+    } catch (error) {
+      console.error('Resend email error:', error);
+      throw error;
     }
   }
-  verifySmtpOnStartup();
 
   // Certificate Expiration Check Logic
   let officeAlertTimeout: NodeJS.Timeout | null = null;
@@ -2267,31 +2213,25 @@ Generated by COMOS System
         return;
       }
       const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
-      const senderEmail = settings?.SMTP_FROM || settings?.SMTP_USER || 'alerts@vesselcert.com';
+      const senderEmail = settings?.SMTP_FROM || process.env.SMTP_FROM || 'onboarding@resend.dev';
 
-      if (settings && settings.SMTP_HOST && settings.SMTP_USER) {
-        const transporter = await getTransporter();
-        if (!transporter) {
-          console.error('Could not initialize transporter for expiration alerts.');
-          return;
-        }
-
+      if (settings?.RESEND_API_KEY || process.env.RESEND_API_KEY) {
         // Send Team Alerts
         for (const teamId in teamAlerts) {
           const { teamName, alerts } = teamAlerts[teamId];
           if (alerts.length === 0) continue;
-          await sendConsolidatedEmail(transporter, teamName, alerts, alertRecipient, senderEmail);
+          await sendConsolidatedEmail(teamName, alerts, alertRecipient, senderEmail);
         }
 
         // Send Vessel Alerts
         for (const vesselId in vesselAlerts) {
           const { vesselName, alerts, email } = vesselAlerts[vesselId];
           if (alerts.length === 0 || !email) continue;
-          await sendConsolidatedEmail(transporter, `Vessel: ${vesselName}`, alerts, email, senderEmail);
+          await sendConsolidatedEmail(`Vessel: ${vesselName}`, alerts, email, senderEmail);
         }
       } else {
-        console.warn('SMTP settings incomplete. Skipping email alerts.');
-        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. SMTP settings incomplete.`, 'LAST_ALERT_LOG']);
+        console.warn('RESEND_API_KEY incomplete in both settings and environment. Skipping email alerts.');
+        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Resend API settings incomplete (Missing API Key).`, 'LAST_ALERT_LOG']);
       }
       console.log('Certificate expiration check completed.');
     } catch (err) {
@@ -2299,7 +2239,7 @@ Generated by COMOS System
     }
   }
 
-  async function sendConsolidatedEmail(transporter: any, name: string, alerts: any[], recipient: string, senderEmail: string) {
+  async function sendConsolidatedEmail(name: string, alerts: any[], recipient: string, senderEmail: string) {
     console.log(`Sending consolidated alert for ${name} (${alerts.length} certificates) to ${recipient}`);
 
     try {
@@ -2338,7 +2278,7 @@ Generated by COMOS System
         </div>
       `;
 
-      await transporter.sendMail({
+      await sendEmail({
         from: `"COMOS" <${senderEmail}>`,
         to: recipient,
         subject: `[COMOS] Certificate Alerts: ${name}`,
@@ -2359,35 +2299,30 @@ Generated by COMOS System
     try {
       console.log('[Manual Trigger] Testing email alerts...');
       const settings = await getSmtpSettings();
+      const apiKey = settings?.RESEND_API_KEY || process.env.RESEND_API_KEY;
       
-      if (!settings || !settings.SMTP_HOST || !settings.SMTP_USER) {
+      if (!apiKey) {
         return res.status(400).json({ 
-          error: 'SMTP settings are incomplete. Please configure SMTP Host, User, and Password.' 
+          error: 'Resend API Key is missing. Please configure it in settings or the Secrets menu.' 
         });
       }
 
-      const transporter = await getTransporter();
-      if (!transporter) {
-        return res.status(500).json({ error: 'Failed to initialize email transporter.' });
-      }
-
-      const alertRecipient = settings.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
-      const senderEmail = settings.SMTP_FROM || settings.SMTP_USER || 'alerts@vesselcert.com';
+      const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
+      const senderEmail = settings?.SMTP_FROM || 'onboarding@resend.dev';
 
       // Send a simple test email first to verify connectivity
-      await transporter.sendMail({
+      await sendEmail({
         from: `"COMOS System Test" <${senderEmail}>`,
         to: alertRecipient,
-        subject: '[COMOS] SMTP Configuration Test',
-        text: `This is a test email from the COMOS Vessel Certificate System. If you are reading this, your SMTP settings for ${alertRecipient} are working correctly.`,
+        subject: '[COMOS] Resend Configuration Test',
         html: `
           <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
             <div style="background-color: #fff3cd; color: #856404; padding: 10px; border: 1px solid #ffeeba; border-radius: 5px; margin-bottom: 20px; text-align: center; font-weight: bold;">
               NOTICE: This system is currently in its TESTING PERIOD.
             </div>
-            <h2 style="color: #2c3e50;">SMTP Configuration Test</h2>
-            <p>This is a test email from the <b>COMOS Vessel Certificate System</b>.</p>
-            <p>If you are reading this, your SMTP settings for <b>${alertRecipient}</b> are working correctly.</p>
+            <h2 style="color: #2c3e50;">Resend Configuration Test</h2>
+            <p>This is a test email from the <b>COMOS Vessel Certificate System</b> using Resend.</p>
+            <p>If you are reading this, your Resend API settings for <b>${alertRecipient}</b> are working correctly.</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
             <p style="font-size: 0.8em; color: #7f8c8d;">Timestamp: ${new Date().toLocaleString()}</p>
           </div>

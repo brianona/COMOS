@@ -5078,18 +5078,15 @@ const AdminPanel = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          host: settings.SMTP_HOST,
-          port: settings.SMTP_PORT,
-          user: settings.SMTP_USER,
-          pass: settings.SMTP_PASS,
+          resend_api_key: settings.RESEND_API_KEY,
           from: settings.SMTP_FROM
         }),
       });
       if (res.ok) {
-        notify('success', 'SMTP test email sent successfully! Check your inbox.');
+        notify('success', 'Resend test email sent successfully! Check your inbox.');
       } else {
         const data = await res.json();
-        notify('error', `SMTP Test Failed: ${data.error}`);
+        notify('error', `Resend Test Failed: ${data.error}`);
       }
     } catch (err) {
       notify('error', 'Connection error during SMTP test');
@@ -6154,27 +6151,18 @@ const AdminPanel = ({
               </div>
 
               <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4">SMTP Email Settings</h3>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4">Email Alerts Settings (Resend API)</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">SMTP Host</label>
+                  <div className="space-y-1 md:col-span-2">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Resend API Key</label>
                     <input 
-                      type="text" 
-                      placeholder="e.g. smtp.gmail.com" 
-                      value={settings.SMTP_HOST || ''}
-                      onChange={(e) => setSettings({...settings, SMTP_HOST: e.target.value})}
+                      type="password" 
+                      placeholder="re_..." 
+                      value={settings.RESEND_API_KEY || ''}
+                      onChange={(e) => setSettings({...settings, RESEND_API_KEY: e.target.value})}
                       className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                     />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">SMTP Port</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. 587" 
-                      value={settings.SMTP_PORT || ''}
-                      onChange={(e) => setSettings({...settings, SMTP_PORT: e.target.value})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                    />
+                    <p className="px-1 text-[10px] text-slate-400">Get your API key from <a href="https://resend.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">resend.com</a></p>
                   </div>
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Destination Email (Alerts)</label>
@@ -6187,26 +6175,17 @@ const AdminPanel = ({
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">SMTP User</label>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Sender Email (From)</label>
                     <input 
                       type="text" 
-                      placeholder="e.g. user@example.com" 
-                      value={settings.SMTP_USER || ''}
-                      onChange={(e) => setSettings({...settings, SMTP_USER: e.target.value})}
+                      placeholder="e.g. alerts@vesselcert.com" 
+                      value={settings.SMTP_FROM || ''}
+                      onChange={(e) => setSettings({...settings, SMTP_FROM: e.target.value})}
                       className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                     />
+                    <p className="px-1 text-[10px] text-slate-400">Must be a verified domain in Resend</p>
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">SMTP Password</label>
-                    <input 
-                      type="password" 
-                      placeholder="Enter password" 
-                      value={settings.SMTP_PASS || ''}
-                      onChange={(e) => setSettings({...settings, SMTP_PASS: e.target.value})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                    />
-                  </div>
-                  <div className="flex items-center gap-3 pt-4">
+                  <div className="flex items-center gap-3 pt-4 md:col-span-2">
                     <input 
                       type="checkbox" 
                       id="enable_alerts"
@@ -6389,7 +6368,7 @@ const AdminPanel = ({
                       }}
                       className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-all shadow-lg shadow-blue-200 active:scale-95"
                     >
-                      <Mail className="w-5 h-5" /> Test SMTP & Send Alerts
+                      <Mail className="w-5 h-5" /> Test Resend & Send Alerts
                     </button>
                     <p className="mt-2 text-xs text-slate-400">
                       This will send a test email to <b>{settings.DESTINATION_EMAIL || 'IT@cleanocean.com.ph'}</b> and trigger an immediate expiration check.
@@ -6401,16 +6380,6 @@ const AdminPanel = ({
                     <p className="text-sm text-slate-600 font-mono break-words">
                       {settings.LAST_ALERT_LOG || 'No log available.'}
                     </p>
-                  </div>
-                  <div className="space-y-1 md:col-span-2">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Sender Email (From)</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. alerts@vesselcert.com" 
-                      value={settings.SMTP_FROM || ''}
-                      onChange={(e) => setSettings({...settings, SMTP_FROM: e.target.value})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                    />
                   </div>
                 </div>
               </div>
