@@ -269,6 +269,26 @@ async function startServer() {
       )
     `);
 
+    // Migration for Soft Delete: Add deleted_at column to all relevant tables
+    try {
+      const tables = [
+        'teams', 'users', 'vessels', 'certificates', 'notes', 'files',
+        'departure_attachments', 'departure_reports', 'arrival_attachments',
+        'noon_attachments', 'arrival_reports', 'noon_reports', 'other_reports'
+      ];
+      
+      for (const table of tables) {
+        const [columns]: any = await pool.query(`SHOW COLUMNS FROM ${table}`);
+        const columnNames = columns.map((c: any) => c.Field);
+        if (!columnNames.includes('deleted_at')) {
+          console.log(`Migrating ${table} table: Adding deleted_at...`);
+          await pool.query(`ALTER TABLE ${table} ADD COLUMN deleted_at DATETIME NULL`);
+        }
+      }
+    } catch (e: any) {
+      console.error('Error during soft delete migration:', e.message);
+    }
+
     // Seed default settings if missing
     const [settingRows]: any = await pool.query('SELECT COUNT(*) as count FROM settings');
     if (settingRows[0].count === 0) {
@@ -483,6 +503,29 @@ async function startServer() {
       ];
       for (const [key, val] of newKeys) {
         await pool.execute('INSERT IGNORE INTO settings (setting_key, setting_value) VALUES (?, ?)', [key, val]);
+      }
+
+      // Sync vessel's next_port with latest arrival report
+      try {
+        console.log('Syncing vessels next_port with latest arrival reports...');
+        await pool.query(`
+          UPDATE vessels v
+          JOIN (
+              SELECT ar1.vessel_id, ar1.arrival_port
+              FROM arrival_reports ar1
+              JOIN (
+                  SELECT vessel_id, MAX(utc_date_time) as max_utc
+                  FROM arrival_reports
+                  WHERE deleted_at IS NULL
+                  GROUP BY vessel_id
+              ) ar2 ON ar1.vessel_id = ar2.vessel_id AND ar1.utc_date_time = ar2.max_utc
+              WHERE ar1.deleted_at IS NULL
+          ) latest_arrival ON v.id = latest_arrival.vessel_id
+          SET v.next_port = latest_arrival.arrival_port
+        `);
+        console.log('Sync completed.');
+      } catch (e: any) {
+        console.error('Error syncing next_port:', e.message);
       }
     }
 
@@ -861,7 +904,7 @@ async function startServer() {
 
   // Team Routes
   app.get('/api/teams', authenticate, async (req, res) => {
-    const [teams] = await pool.query('SELECT * FROM teams');
+    const [teams] = await pool.query('SELECT * FROM teams WHERE deleted_at IS NULL');
     res.json(teams);
   });
 
@@ -869,7 +912,7 @@ async function startServer() {
   app.get('/api/users', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
     try {
-      const [users]: any = await pool.query('SELECT id, username, role, vessel_id, email, device_id, is_verified FROM users');
+      const [users]: any = await pool.query('SELECT id, username, role, vessel_id, email, device_id, is_verified FROM users WHERE deleted_at IS NULL');
       const usersWithTeams = await Promise.all(users.map(async (u: any) => {
         const [teams]: any = await pool.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [u.id]);
         return { ...u, team_ids: teams.map((t: any) => t.team_id) };
@@ -969,20 +1012,21 @@ async function startServer() {
   app.get('/api/vessels', authenticate, async (req: any, res) => {
     let vessels;
     if (req.user.role === 'admin') {
-      [vessels] = await pool.query('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id');
+      [vessels] = await pool.query('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL');
     } else if (req.user.role === 'vessel') {
       const vesselId = req.user.vessel_id;
       if (!vesselId) {
         return res.json([]);
       }
-      [vessels] = await pool.execute('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ?', [vesselId]);
+      [vessels] = await pool.execute('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL', [vesselId]);
     } else {
       const teamIds = req.user.team_ids || [];
       if (teamIds.length === 0) {
         return res.json([]);
       }
       const placeholders = teamIds.map(() => '?').join(',');
-      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders})`, teamIds);
+      const params = [...teamIds];
+      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
     }
     res.json(vessels);
   });
@@ -1101,18 +1145,18 @@ async function startServer() {
       const [vesselRows]: any = await pool.execute('SELECT name FROM vessels WHERE id = ?', [req.params.id]);
       const vesselName = vesselRows.length > 0 ? vesselRows[0].name : 'Unknown';
 
-      // Manual cascade for certificates, notes, and files
-      const [certs]: any = await pool.execute('SELECT id FROM certificates WHERE vessel_id = ?', [req.params.id]);
+      // Soft delete cascade for certificates, notes, and files
+      const [certs]: any = await pool.execute('SELECT id FROM certificates WHERE vessel_id = ? AND deleted_at IS NULL', [req.params.id]);
       for (const cert of certs) {
-        await pool.execute('DELETE FROM notes WHERE certificate_id = ?', [cert.id]);
-        await pool.execute('DELETE FROM files WHERE certificate_id = ?', [cert.id]);
+        await pool.execute('UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [cert.id]);
+        await pool.execute('UPDATE files SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [cert.id]);
       }
-      await pool.execute('DELETE FROM certificates WHERE vessel_id = ?', [req.params.id]);
-      await pool.execute('DELETE FROM vessels WHERE id = ?', [req.params.id]);
-      await logAudit(req.user.id, req.user.username, 'DELETE_VESSEL', `Deleted vessel: ${vesselName} (ID: ${req.params.id})`);
+      await pool.execute('UPDATE certificates SET deleted_at = CURRENT_TIMESTAMP WHERE vessel_id = ? AND deleted_at IS NULL', [req.params.id]);
+      await pool.execute('UPDATE vessels SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_VESSEL', `Soft deleted vessel: ${vesselName} (ID: ${req.params.id})`);
       res.json({ success: true });
     } catch (e: any) {
-      console.error('Delete vessel error:', e);
+      console.error('Soft delete vessel error:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -1124,22 +1168,23 @@ async function startServer() {
       DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as expiration_date, 
       DATE_FORMAT(c.date_issued, '%Y-%m-%d') as date_issued,
       v.name as vessel_name, v.owner, t.name as team_name,
-      (SELECT COUNT(*) FROM files f WHERE f.certificate_id = c.id) > 0 as has_file
+      (SELECT COUNT(*) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) > 0 as has_file
       FROM certificates c 
       LEFT JOIN vessels v ON c.vessel_id = v.id
       JOIN teams t ON c.team_id = t.id
+      WHERE c.deleted_at IS NULL
     `;
     let params: any[] = [];
     if (req.user.role === 'vessel') {
-      query += ` WHERE c.vessel_id = ? AND c.access_type IN ('vessel', 'any')`;
+      query += ` AND c.vessel_id = ? AND c.access_type IN ('vessel', 'any')`;
       params = [req.user.vessel_id];
-    } else if (req.user.role === 'user') {
+    } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
       const teamIds = req.user.team_ids || [];
       if (teamIds.length === 0) {
         return res.json([]);
       }
       const placeholders = teamIds.map(() => '?').join(',');
-      query += ` WHERE c.team_id IN (${placeholders}) AND c.access_type IN ('office', 'vessel', 'any')`;
+      query += ` AND c.team_id IN (${placeholders}) AND c.access_type IN ('office', 'vessel', 'any')`;
       params = teamIds;
     }
     const [certs] = await pool.execute(query, params);
@@ -1259,13 +1304,13 @@ async function startServer() {
 
   app.delete('/api/users/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
     try {
-      // Manual cascade for notes
-      await pool.execute('DELETE FROM notes WHERE user_id = ?', [req.params.id]);
-      await pool.execute('DELETE FROM users WHERE id = ?', [req.params.id]);
-      await logAudit((req as any).user.id, (req as any).user.username, 'DELETE_USER', `Deleted user ID ${req.params.id}`);
+      // Soft delete notes
+      await pool.execute('UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE user_id = ? AND deleted_at IS NULL', [req.params.id]);
+      await pool.execute('UPDATE users SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit((req as any).user.id, (req as any).user.username, 'SOFT_DELETE_USER', `Soft deleted user ID ${req.params.id}`);
       res.json({ success: true });
     } catch (e: any) {
-      console.error('Delete user error:', e);
+      console.error('Soft delete user error:', e);
       res.status(400).json({ error: e.message });
     }
   });
@@ -1279,14 +1324,14 @@ async function startServer() {
       if (req.user.role === 'team_pic') {
         if (!req.user.team_ids.includes(cert.team_id)) return res.status(403).json({ error: 'Forbidden' });
       }
-      // Manual cascade for notes and files
-      await pool.execute('DELETE FROM notes WHERE certificate_id = ?', [req.params.id]);
-      await pool.execute('DELETE FROM files WHERE certificate_id = ?', [req.params.id]);
-      await pool.execute('DELETE FROM certificates WHERE id = ?', [req.params.id]);
-      await logAudit(req.user.id, req.user.username, 'DELETE_CERTIFICATE', `Deleted certificate: ${cert.name} (ID: ${req.params.id})`);
+      // Soft delete notes and files
+      await pool.execute('UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
+      await pool.execute('UPDATE files SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
+      await pool.execute('UPDATE certificates SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_CERTIFICATE', `Soft deleted certificate: ${cert.name} (ID: ${req.params.id})`);
       res.json({ success: true });
     } catch (e: any) {
-      console.error('Delete certificate error:', e);
+      console.error('Soft delete certificate error:', e);
       res.status(400).json({ error: e.message });
     }
   });
@@ -1454,7 +1499,7 @@ Generated by COMOS System
       SELECT n.*, u.username 
       FROM notes n 
       JOIN users u ON n.user_id = u.id 
-      WHERE n.certificate_id = ? 
+      WHERE n.certificate_id = ? AND n.deleted_at IS NULL
       ORDER BY n.created_at DESC
     `, [req.params.id]);
     res.json(notes);
@@ -1468,7 +1513,7 @@ Generated by COMOS System
 
   // File Routes
   app.get('/api/certificates/:id/files', authenticate, async (req, res) => {
-    const [files] = await pool.execute('SELECT id, certificate_id, filename, original_name, mimetype, upload_date FROM files WHERE certificate_id = ?', [req.params.id]);
+    const [files] = await pool.execute('SELECT id, certificate_id, filename, original_name, mimetype, upload_date FROM files WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
     res.json(files);
   });
 
@@ -1498,7 +1543,7 @@ Generated by COMOS System
     try {
       // Note: In this new version, we might want to fetch by ID or filename. 
       // Since the old code used filename, we'll try to find by filename first.
-      const [files]: any = await pool.execute('SELECT * FROM files WHERE filename = ? ORDER BY id DESC LIMIT 1', [req.params.filename]);
+      const [files]: any = await pool.execute('SELECT * FROM files WHERE filename = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1', [req.params.filename]);
       
       if (files.length > 0 && files[0].data) {
         const file = files[0];
@@ -1522,9 +1567,9 @@ Generated by COMOS System
         const [files]: any = await pool.execute('SELECT c.team_id FROM files f JOIN certificates c ON f.certificate_id = c.id WHERE f.id = ?', [req.params.id]);
         if (files.length > 0 && !req.user.team_ids.includes(files[0].team_id)) return res.status(403).json({ error: 'Forbidden' });
       }
-      // Delete from database
-      await pool.execute('DELETE FROM files WHERE id = ?', [req.params.id]);
-      await logAudit(req.user.id, req.user.username, 'DELETE_FILE', `Deleted file ID ${req.params.id}`);
+      // Soft delete from database
+      await pool.execute('UPDATE files SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_FILE', `Soft deleted file ID ${req.params.id}`);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -1539,14 +1584,15 @@ Generated by COMOS System
         FROM departure_reports dr
         JOIN vessels v ON dr.vessel_id = v.id
         LEFT JOIN departure_attachments da ON dr.attachment_id = da.id
+        WHERE dr.deleted_at IS NULL
       `;
       let params: any[] = [];
 
       if (req.user.role === 'vessel' && req.user.vessel_id) {
-        query += ' WHERE dr.vessel_id = ?';
+        query += ' AND dr.vessel_id = ?';
         params.push(req.user.vessel_id);
       } else if (req.user.role === 'team_pic') {
-        query += ' WHERE v.team_id IN (?)';
+        query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
 
@@ -1675,7 +1721,7 @@ Generated by COMOS System
 
   app.get('/api/departure-attachments/:id', authenticate, async (req, res) => {
     try {
-      const [attachments]: any = await pool.execute('SELECT * FROM departure_attachments WHERE id = ?', [req.params.id]);
+      const [attachments]: any = await pool.execute('SELECT * FROM departure_attachments WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
       if (attachments.length > 0 && attachments[0].data) {
         const file = attachments[0];
         res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
@@ -1691,7 +1737,7 @@ Generated by COMOS System
 
   app.get('/api/arrival-attachments/:id', authenticate, async (req, res) => {
     try {
-      const [attachments]: any = await pool.execute('SELECT * FROM arrival_attachments WHERE id = ?', [req.params.id]);
+      const [attachments]: any = await pool.execute('SELECT * FROM arrival_attachments WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
       if (attachments.length > 0 && attachments[0].data) {
         const file = attachments[0];
         res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
@@ -1707,7 +1753,7 @@ Generated by COMOS System
 
   app.get('/api/noon-attachments/:id', authenticate, async (req, res) => {
     try {
-      const [attachments]: any = await pool.execute('SELECT * FROM noon_attachments WHERE id = ?', [req.params.id]);
+      const [attachments]: any = await pool.execute('SELECT * FROM noon_attachments WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
       if (attachments.length > 0 && attachments[0].data) {
         const file = attachments[0];
         res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
@@ -1729,14 +1775,15 @@ Generated by COMOS System
         FROM arrival_reports ar
         JOIN vessels v ON ar.vessel_id = v.id
         LEFT JOIN arrival_attachments aa ON ar.attachment_id = aa.id
+        WHERE ar.deleted_at IS NULL
       `;
       let params: any[] = [];
 
       if (req.user.role === 'vessel' && req.user.vessel_id) {
-        query += ' WHERE ar.vessel_id = ?';
+        query += ' AND ar.vessel_id = ?';
         params.push(req.user.vessel_id);
       } else if (req.user.role === 'team_pic') {
-        query += ' WHERE v.team_id IN (?)';
+        query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
 
@@ -1803,6 +1850,14 @@ Generated by COMOS System
       ]);
 
       await logAudit(req.user.id, req.user.username, 'CREATE_ARRIVAL_REPORT', `Created arrival report for vessel ID ${vessel_id}`);
+      
+      // Update vessel's next_port to the arrival_port of the latest report
+      try {
+        await pool.execute('UPDATE vessels SET next_port = ? WHERE id = ?', [arrival_port, vessel_id]);
+      } catch (vErr) {
+        console.error('Failed to update vessel next_port during arrival report creation:', vErr);
+      }
+
       res.json({ success: true });
     } catch (e: any) {
       console.error('Failed to create arrival report:', e);
@@ -1866,6 +1921,24 @@ Generated by COMOS System
       ]);
 
       await logAudit(req.user.id, req.user.username, 'UPDATE_ARRIVAL_REPORT', `Updated arrival report ID ${id}`);
+      
+      // Update vessel's next_port if this is the latest report
+      try {
+        const [reportRows]: any = await pool.execute('SELECT vessel_id, utc_date_time FROM arrival_reports WHERE id = ?', [id]);
+        if (reportRows.length > 0) {
+          const vId = reportRows[0].vessel_id;
+          const [latest]: any = await pool.execute(
+            'SELECT id FROM arrival_reports WHERE vessel_id = ? AND deleted_at IS NULL ORDER BY utc_date_time DESC LIMIT 1',
+            [vId]
+          );
+          if (latest.length > 0 && latest[0].id === Number(id)) {
+            await pool.execute('UPDATE vessels SET next_port = ? WHERE id = ?', [arrival_port, vId]);
+          }
+        }
+      } catch (vErr) {
+        console.error('Failed to update vessel next_port during arrival report update:', vErr);
+      }
+
       res.json({ success: true });
     } catch (e: any) {
       console.error('Failed to update arrival report:', e);
@@ -1881,14 +1954,15 @@ Generated by COMOS System
         FROM noon_reports nr
         JOIN vessels v ON nr.vessel_id = v.id
         LEFT JOIN noon_attachments na ON nr.attachment_id = na.id
+        WHERE nr.deleted_at IS NULL
       `;
       let params: any[] = [];
 
       if (req.user.role === 'vessel' && req.user.vessel_id) {
-        query += ' WHERE nr.vessel_id = ?';
+        query += ' AND nr.vessel_id = ?';
         params.push(req.user.vessel_id);
       } else if (req.user.role === 'team_pic') {
-        query += ' WHERE v.team_id IN (?)';
+        query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
 
@@ -2019,14 +2093,15 @@ Generated by COMOS System
         SELECT orr.*, v.name as vessel_name
         FROM other_reports orr
         JOIN vessels v ON orr.vessel_id = v.id
+        WHERE orr.deleted_at IS NULL
       `;
       let params: any[] = [];
 
       if (req.user.role === 'vessel' && req.user.vessel_id) {
-        query += ' WHERE orr.vessel_id = ?';
+        query += ' AND orr.vessel_id = ?';
         params.push(req.user.vessel_id);
       } else if (req.user.role === 'team_pic') {
-        query += ' WHERE v.team_id IN (?)';
+        query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
 
@@ -2306,14 +2381,15 @@ Generated by COMOS System
         FROM certificates c
         LEFT JOIN vessels v ON c.vessel_id = v.id
         JOIN teams t ON c.team_id = t.id
+        WHERE c.deleted_at IS NULL
       `;
       
       let params: any[] = [];
       if (targetType === 'office') {
-        query += " WHERE c.access_type IN (?, ?, ?)";
+        query += " AND c.access_type IN (?, ?, ?)";
         params = ['office', 'any', 'vessel'];
       } else if (targetType === 'vessel') {
-        query += " WHERE c.access_type IN (?, ?)";
+        query += " AND c.access_type IN (?, ?)";
         params = ['vessel', 'any'];
       }
 
@@ -2506,6 +2582,116 @@ Generated by COMOS System
         error: 'Failed to send test email.', 
         details: error.message 
       });
+    }
+  });
+
+  // Report Delete Routes (Soft Delete)
+  app.delete('/api/departure-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE departure_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_DEPARTURE_REPORT', `Soft deleted departure report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/arrival-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE arrival_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_ARRIVAL_REPORT', `Soft deleted arrival report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/noon-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE noon_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_NOON_REPORT', `Soft deleted noon report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/other-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE other_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_OTHER_REPORT', `Soft deleted other report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Recycle Bin Routes (Admin only)
+  app.get('/api/admin/recycle-bin', authenticate, isAdmin, async (req, res) => {
+    try {
+      const types = ['vessels', 'users', 'certificates', 'files', 'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports'];
+      const results: any = {};
+      
+      for (const type of types) {
+        let query = `SELECT * FROM ${type} WHERE deleted_at IS NOT NULL`;
+        if (type === 'certificates') {
+          query = `SELECT c.*, v.name as vessel_name FROM certificates c LEFT JOIN vessels v ON c.vessel_id = v.id WHERE c.deleted_at IS NOT NULL`;
+        } else if (type === 'files') {
+          query = `SELECT f.*, c.name as certificate_name FROM files f JOIN certificates c ON f.certificate_id = c.id WHERE f.deleted_at IS NOT NULL`;
+        } else if (type.includes('report')) {
+          query = `SELECT r.*, v.name as vessel_name FROM ${type} r JOIN vessels v ON r.vessel_id = v.id WHERE r.deleted_at IS NOT NULL`;
+        }
+        const [rows] = await pool.query(query);
+        results[type] = rows;
+      }
+      
+      res.json(results);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/recycle-bin/restore', authenticate, isAdmin, async (req: any, res) => {
+    const { type, id } = req.body;
+    try {
+      const validTypes = ['vessels', 'users', 'certificates', 'files', 'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports'];
+      if (!validTypes.includes(type)) return res.status(400).json({ error: 'Invalid type' });
+      
+      await pool.execute(`UPDATE ${type} SET deleted_at = NULL WHERE id = ?`, [id]);
+      await logAudit(req.user.id, req.user.username, 'RESTORE_ITEM', `Restored ${type} ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/recycle-bin/permanent-delete', authenticate, isAdmin, async (req: any, res) => {
+    const { type, id } = req.body;
+    try {
+      const validTypes = ['vessels', 'users', 'certificates', 'files', 'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports'];
+      if (!validTypes.includes(type)) return res.status(400).json({ error: 'Invalid type' });
+      
+      // Special handling for attachments
+      if (type === 'departure_reports') {
+        const [rows]: any = await pool.execute('SELECT attachment_id FROM departure_reports WHERE id = ?', [id]);
+        if (rows[0]?.attachment_id) await pool.execute('DELETE FROM departure_attachments WHERE id = ?', [rows[0].attachment_id]);
+      } else if (type === 'arrival_reports') {
+        const [rows]: any = await pool.execute('SELECT attachment_id FROM arrival_reports WHERE id = ?', [id]);
+        if (rows[0]?.attachment_id) await pool.execute('DELETE FROM arrival_attachments WHERE id = ?', [rows[0].attachment_id]);
+      } else if (type === 'noon_reports') {
+        const [rows]: any = await pool.execute('SELECT attachment_id FROM noon_reports WHERE id = ?', [id]);
+        if (rows[0]?.attachment_id) await pool.execute('DELETE FROM noon_attachments WHERE id = ?', [rows[0].attachment_id]);
+      } else if (type === 'certificates') {
+        // When permanently deleting a certificate, we must also clean up its notes and files even if they were already soft-deleted
+        await pool.execute('DELETE FROM notes WHERE certificate_id = ?', [id]);
+        await pool.execute('DELETE FROM files WHERE certificate_id = ?', [id]);
+      }
+
+      await pool.execute(`DELETE FROM ${type} WHERE id = ?`, [id]);
+      await logAudit(req.user.id, req.user.username, 'PERMANENT_DELETE', `Permanently deleted ${type} ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 

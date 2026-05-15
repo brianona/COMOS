@@ -1202,6 +1202,17 @@ const SidebarContent = ({
                 >
                   <Settings className="w-3 h-3" /> All Admin Settings
                 </button>
+                {user.role === 'admin' && (
+                  <button 
+                    onClick={() => { setView('admin_recycle_bin'); setIsSidebarOpen(false); }}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                      view === 'admin_recycle_bin' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                    )}
+                  >
+                    <Trash2 className="w-3 h-3" /> Recycle Bin
+                  </button>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -1243,7 +1254,7 @@ const SidebarContent = ({
 );
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin'>('dashboard');
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [certs, setCerts] = useState<Certificate[]>([]);
@@ -2198,7 +2209,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             </div>
           )}
 
-          {view.startsWith('admin') && (
+          {view.startsWith('admin') && view !== 'admin_recycle_bin' && (
             <AdminPanel 
               token={token} 
               teams={teams} 
@@ -2214,6 +2225,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               isRecognizing={isRecognizing}
               setIsRecognizing={setIsRecognizing}
               subView={view}
+            />
+          )}
+
+          {view === 'admin_recycle_bin' && (
+            <RecycleBinView
+              token={token}
+              notify={notify}
             />
           )}
 
@@ -3552,6 +3570,25 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
     setActiveTab('form');
   };
 
+  const handleDelete = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this report?')) return;
+    try {
+      const res = await fetch(`/api/noon-reports/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        notify('success', 'Report deleted successfully');
+        onRefresh();
+      } else {
+        const error = await res.json();
+        notify('error', error.error || 'Failed to delete report');
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
+    }
+  };
+
   const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
 
   return (
@@ -3819,13 +3856,22 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <button 
-                        onClick={() => handleEdit(report)}
-                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                        title="Edit Report"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => handleEdit(report)}
+                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          title="Edit Report"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleDelete(report.id)}
+                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Delete Report"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -3931,6 +3977,25 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
       rob_fw: String(report.rob_fw)
     });
     setActiveTab('form');
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this report?')) return;
+    try {
+      const res = await fetch(`/api/other-reports/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        notify('success', 'Report deleted successfully');
+        onRefresh();
+      } else {
+        const error = await res.json();
+        notify('error', error.error || 'Failed to delete report');
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
+    }
   };
 
   const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
@@ -4196,14 +4261,23 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     </td>
                     <td className="px-6 py-4 font-bold text-slate-700">{report.rob_type}</td>
                     <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
-                    <td className="px-6 py-4">
-                      <button 
-                        onClick={() => handleEdit(report)}
-                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                        title="Edit Report"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button 
+                          onClick={() => handleEdit(report)}
+                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          title="Edit Report"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleDelete(report.id)}
+                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Delete Report"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -4402,6 +4476,25 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
       agent_detail: report.agent_detail
     });
     setActiveTab('form');
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this report?')) return;
+    try {
+      const res = await fetch(`/api/arrival-reports/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        notify('success', 'Report deleted successfully');
+        onRefresh();
+      } else {
+        const error = await res.json();
+        notify('error', error.error || 'Failed to delete report');
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
+    }
   };
 
   const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
@@ -4788,6 +4881,203 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
   );
 };
 
+const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'success' | 'error' | 'info', message: string) => void }) => {
+  const [data, setData] = useState<Record<string, any[]>>({});
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<string>('vessels');
+
+  const fetchDeleted = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/admin/recycle-bin', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setData(await res.json());
+      } else {
+        notify('error', 'Failed to fetch recycle bin items');
+      }
+    } catch (e) {
+      notify('error', 'Failed to fetch recycle bin items');
+    } finally {
+      setLoading(false);
+    }
+  }, [token, notify]);
+
+  useEffect(() => {
+    fetchDeleted();
+  }, [fetchDeleted]);
+
+  const handleRestore = async (type: string, id: number) => {
+    try {
+      const res = await fetch('/api/admin/recycle-bin/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type, id })
+      });
+      if (res.ok) {
+        notify('success', `Item restored successfully`);
+        fetchDeleted();
+      } else {
+        const error = await res.json();
+        notify('error', error.error || 'Failed to restore item');
+      }
+    } catch (e) {
+      notify('error', 'Failed to restore item');
+    }
+  };
+
+  const handlePermanentDelete = async (type: string, id: number) => {
+    if (!window.confirm('Are you sure you want to PERMANENTLY delete this item? This cannot be undone.')) return;
+    try {
+      const res = await fetch('/api/admin/recycle-bin/permanent-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type, id })
+      });
+      if (res.ok) {
+        notify('success', `Item permanently deleted`);
+        fetchDeleted();
+      } else {
+        const error = await res.json();
+        notify('error', error.error || 'Failed to delete item permanently');
+      }
+    } catch (e) {
+      notify('error', 'Failed to delete item permanently');
+    }
+  };
+
+  const tabs = [
+    { id: 'vessels', label: 'Vessels', icon: Ship },
+    { id: 'users', label: 'Users', icon: Users },
+    { id: 'certificates', label: 'Certificates', icon: FileText },
+    { id: 'files', label: 'Files', icon: File },
+    { id: 'departure_reports', label: 'Departure', icon: Navigation },
+    { id: 'arrival_reports', label: 'Arrival', icon: MapIcon },
+    { id: 'noon_reports', label: 'Noon', icon: Clock },
+    { id: 'other_reports', label: 'Other', icon: File }
+  ];
+
+  const currentItems = data[activeTab] || [];
+
+  return (
+    <div className="space-y-8 animate-in fade-in duration-500">
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Recycle Bin</h1>
+          <p className="text-slate-500">View and restore soft-deleted items or permanently remove them from the system.</p>
+        </div>
+        <button 
+          onClick={fetchDeleted}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-600 rounded-xl font-bold hover:bg-blue-100 transition-all"
+        >
+          <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} /> Refresh
+        </button>
+      </header>
+
+      <div className="flex border-b border-slate-100 gap-1 overflow-x-auto pb-px">
+        {tabs.map((tab) => {
+          const Icon = tab.icon;
+          const count = data[tab.id]?.length || 0;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                "flex items-center gap-2 px-4 py-3 text-sm font-bold transition-all border-b-2 whitespace-nowrap",
+                activeTab === tab.id 
+                  ? "border-blue-600 text-blue-600 bg-blue-50/50" 
+                  : "border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50"
+              )}
+            >
+              <Icon className="w-4 h-4" />
+              {tab.label}
+              <span className={cn(
+                "ml-1 px-1.5 py-0.5 rounded-full text-[10px]",
+                activeTab === tab.id ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-500"
+              )}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
+        {loading ? (
+          <div className="p-20 flex flex-col items-center justify-center gap-4 text-slate-400">
+            <RefreshCw className="w-8 h-8 animate-spin" />
+            <p className="font-medium">Loading deleted items...</p>
+          </div>
+        ) : currentItems.length === 0 ? (
+          <div className="p-20 flex flex-col items-center justify-center gap-4 text-slate-400">
+            <Trash2 className="w-12 h-12 opacity-20" />
+            <p className="font-medium text-lg">Your recycle bin for {tabs.find(t => t.id === activeTab)?.label} is empty.</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50/50 border-b border-slate-100">
+                  <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-400">Item Details</th>
+                  <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-400">Deleted At</th>
+                  <th className="px-6 py-4 text-right text-[10px] font-bold uppercase tracking-wider text-slate-400">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {currentItems.map((item) => (
+                  <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group">
+                    <td className="px-6 py-4">
+                      <div className="flex flex-col">
+                        <span className="font-bold text-slate-900">
+                          {activeTab === 'vessels' && item.name}
+                          {activeTab === 'users' && item.username}
+                          {activeTab === 'certificates' && item.name}
+                          {activeTab === 'files' && item.original_name}
+                          {activeTab.includes('report') && `${item.vessel_name} - Voyage ${item.voyage_number || 'N/A'}`}
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          {activeTab === 'vessels' && `Owner: ${item.owner}`}
+                          {activeTab === 'users' && `Role: ${item.role}`}
+                          {activeTab === 'certificates' && `Vessel: ${item.vessel_name || 'Generic'}`}
+                          {activeTab === 'files' && `Certificate: ${item.certificate_name}`}
+                          {activeTab.includes('report') && `Date: ${format(new Date(item.utc_date_time), 'MMM dd, yyyy')}`}
+                          ID: {item.id}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className="text-sm text-slate-500 font-medium font-mono">
+                        {item.deleted_at ? format(new Date(item.deleted_at), 'MMM dd, yyyy HH:mm') : 'Unknown'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handleRestore(activeTab, item.id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold hover:bg-blue-100 transition-all"
+                        >
+                          <RefreshCw className="w-3 h-3" /> Restore
+                        </button>
+                        <button
+                          onClick={() => handlePermanentDelete(activeTab, item.id)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100 transition-all"
+                        >
+                          <Trash2 className="w-3 h-3" /> Permanent Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: { 
   user: User, 
   token: string, 
@@ -4924,6 +5214,25 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
       arrival_mdo: String(report.rob_mdo + report.foc_port_mdo)
     });
     setActiveTab('form');
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Are you sure you want to delete this report?')) return;
+    try {
+      const res = await fetch(`/api/departure-reports/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        notify('success', 'Report deleted successfully');
+        onRefresh();
+      } else {
+        const error = await res.json();
+        notify('error', error.error || 'Failed to delete report');
+      }
+    } catch (err) {
+      notify('error', 'Connection error');
+    }
   };
 
   const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
