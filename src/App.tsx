@@ -44,15 +44,17 @@ import {
   ChevronLeft,
   Shield,
   ShieldAlert,
+  ShieldCheck,
   Compass,
-  Navigation
+  Navigation,
+  Paperclip,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isBefore, addDays, parseISO } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
-import { OCRHighlightOverlay } from './components/OCRHighlightOverlay';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -66,6 +68,8 @@ const getDeviceId = () => {
   }
   return deviceId;
 };
+
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 
 const DeviceRegistration = ({ user, token, onLogout, onVerified }: { user: User, token: string, onLogout: () => void, onVerified: (isVerified: boolean, deviceId: string) => void }) => {
   const [deviceCode] = useState(() => Math.random().toString(36).substring(2, 8).toUpperCase());
@@ -430,6 +434,8 @@ interface FileData {
   certificate_id: number;
   filename: string;
   original_name: string;
+  mimetype?: string;
+  file_type: 'certificate' | 'supporting';
   upload_date: string;
 }
 
@@ -1202,7 +1208,7 @@ const SidebarContent = ({
                 >
                   <Settings className="w-3 h-3" /> All Admin Settings
                 </button>
-                {user.role === 'admin' && (
+                {(user.role === 'admin' || user.role === 'team_pic') && (
                   <button 
                     onClick={() => { setView('admin_recycle_bin'); setIsSidebarOpen(false); }}
                     className={cn(
@@ -1218,15 +1224,17 @@ const SidebarContent = ({
           </AnimatePresence>
         </div>
       ) : null}
-      <button 
-        onClick={() => { setView('slideshow'); setIsSidebarOpen(false); }}
-        className={cn(
-          "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-          view === 'slideshow' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-        )}
-      >
-        <Monitor className="w-4 h-4" /> Slideshow
-      </button>
+      {user.role !== 'vessel' && (
+        <button 
+          onClick={() => { setView('slideshow'); setIsSidebarOpen(false); }}
+          className={cn(
+            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+            view === 'slideshow' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+          )}
+        >
+          <Monitor className="w-4 h-4" /> Slideshow
+        </button>
+      )}
     </nav>
 
     <div className="p-4 border-t border-blue-50">
@@ -1279,6 +1287,12 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isEditingRoute, setIsEditingRoute] = useState(false);
+  
+  const [editingVessel, setEditingVessel] = useState<Vessel | null>(null);
+  const [editingVesselPhoto, setEditingVesselPhoto] = useState<File | null>(null);
+  const [editingCert, setEditingCert] = useState<Certificate | null>(null);
+  const [newCertFile, setNewCertFile] = useState<File | null>(null);
+
   const [routeForm, setRouteForm] = useState({
     next_port: '',
     route_status: '',
@@ -1303,7 +1317,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [routingForm, setRoutingForm] = useState<Record<number, Partial<Vessel>>>({});
   const [isSavingAll, setIsSavingAll] = useState(false);
   const [isRecognizing, setIsRecognizing] = useState(false);
-  const [ocrHighlights, setOcrHighlights] = useState<any[]>([]);
+  const [uploadFileType, setUploadFileType] = useState<'certificate' | 'supporting'>('certificate');
   const [tempPreviewUrl, setTempPreviewUrl] = useState<string | null>(null);
   const sidePanelContentRef = useRef<HTMLDivElement>(null);
 
@@ -1366,6 +1380,119 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       notify('error', `Failed to update ${failCount} vessels`);
     }
     setIsSavingAll(false);
+  };
+
+  const handleUpdateVessel = async () => {
+    if (!editingVessel || !editingVessel.name) {
+      notify('error', 'Vessel name is required');
+      return;
+    }
+    try {
+      const formData = new FormData();
+      formData.append('name', editingVessel.name);
+      formData.append('team_id', editingVessel.team_id ? String(editingVessel.team_id) : '');
+      formData.append('owner', editingVessel.owner || 'Nissen');
+      if (editingVesselPhoto) {
+        formData.append('photo', editingVesselPhoto);
+      }
+
+      const res = await fetch(`/api/vessels/${editingVessel.id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (res.ok) {
+        notify('success', 'Vessel updated successfully');
+        setEditingVessel(null);
+        setEditingVesselPhoto(null);
+        fetchData();
+      } else {
+        const data = await res.json();
+        notify('error', data.error || 'Failed to update vessel');
+      }
+    } catch (err) {
+      notify('error', 'Connection error occurred');
+    }
+  };
+
+  const handleDeleteVessel = async (id: number) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Vessel',
+      message: 'Are you sure you want to delete this vessel? This will also delete all associated certificates.',
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/vessels/${id}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            notify('success', 'Vessel deleted successfully');
+            fetchData();
+          } else {
+            notify('error', 'Failed to delete vessel');
+          }
+        } catch (err) {
+          notify('error', 'Connection error occurred');
+        }
+      }
+    });
+  };
+
+  const handleUpdateCert = async () => {
+    if (!editingCert || !editingCert.name || !editingCert.expiration_date) {
+      notify('error', 'Certificate name and expiration date are required');
+      return;
+    }
+    try {
+      const res = await fetch(`/api/certificates/${editingCert.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ 
+          vessel_id: editingCert.vessel_id, 
+          team_id: editingCert.team_id,
+          name: editingCert.name, 
+          certificate_number: editingCert.certificate_number,
+          date_issued: editingCert.date_issued,
+          expiration_date: editingCert.expiration_date,
+          access_type: editingCert.access_type
+        }),
+      });
+
+      if (res.ok) {
+        notify('success', 'Certificate updated successfully');
+        setEditingCert(null);
+        fetchData();
+      } else {
+        notify('error', 'Failed to update certificate');
+      }
+    } catch (err) {
+      notify('error', 'Connection error occurred');
+    }
+  };
+
+  const handleDeleteCert = async (id: number) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Delete Certificate',
+      message: 'Are you sure you want to delete this certificate?',
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/certificates/${id}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (res.ok) {
+            notify('success', 'Certificate deleted successfully');
+            fetchData();
+          } else {
+            notify('error', 'Failed to delete certificate');
+          }
+        } catch (err) {
+          notify('error', 'Connection error occurred');
+        }
+      }
+    });
   };
 
   const groupedVessels = React.useMemo(() => {
@@ -1493,7 +1620,6 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const fetchCertDetails = async (cert: Certificate, isRefresh = false) => {
     setSelectedVessel(null);
     if (!isRefresh) {
-      setOcrHighlights([]);
       setTempPreviewUrl(null);
       setPreviewFile(null);
     }
@@ -1509,11 +1635,16 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         setNotes(await notesRes.json());
       }
       if (filesRes.ok && filesRes.headers.get('content-type')?.includes('application/json')) {
-        const filesData = await filesRes.json();
+        const filesData: FileData[] = await filesRes.json();
         setFiles(filesData);
-        // Set the latest file as the initial preview only if not refreshing or if none selected
+        // Latest Certificate files should always be pinned as the default display.
         if (filesData.length > 0 && (!isRefresh || !previewFile)) {
-          setPreviewFile([...filesData].sort((a: any, b: any) => b.id - a.id)[0]);
+          const certFiles = filesData.filter(f => f.file_type === 'certificate');
+          if (certFiles.length > 0) {
+            setPreviewFile([...certFiles].sort((a, b) => b.id - a.id)[0]);
+          } else {
+            setPreviewFile([...filesData].sort((a, b) => b.id - a.id)[0]);
+          }
         } else if (filesData.length === 0) {
           setPreviewFile(null);
         }
@@ -1526,7 +1657,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     }
   };
 
-  const handleUpdateCert = async () => {
+  const handleSidePanelUpdateCert = async () => {
     if (!selectedCert || !newExpDate) return;
     try {
       const res = await fetch(`/api/certificates/${selectedCert.id}`, {
@@ -1589,14 +1720,21 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.[0] || !selectedCert) return;
     const file = e.target.files[0];
+
+    if (file.size > MAX_FILE_SIZE) {
+      notify('error', 'File is too large (max 20MB)');
+      e.target.value = '';
+      return;
+    }
+
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('file_type', uploadFileType);
     
     const isSupported = isGeminiSupportedMimeType(file.type);
     if (isSupported) {
       setIsRecognizing(true);
     }
-    setOcrHighlights([]);
     setTempPreviewUrl(null);
     try {
       // 1. Upload the file
@@ -1630,18 +1768,6 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           try {
             const ocrData = await recognizeCertText(file);
             
-            // Prepare highlights from the rects
-            const highlights = [];
-            const toArr = (r: any) => r ? [r.ymin, r.xmin, r.ymax, r.xmax] : null;
-
-            if (ocrData.vessel_rect) highlights.push({ label: 'Vessel', rect: toArr(ocrData.vessel_rect), value: ocrData.vessel_name });
-            if (ocrData.cert_type_rect) highlights.push({ label: 'Cert Name', rect: toArr(ocrData.cert_type_rect), value: ocrData.cert_type });
-            if (ocrData.number_rect) highlights.push({ label: 'Cert No', rect: toArr(ocrData.number_rect), value: ocrData.certificate_number });
-            if (ocrData.issued_rect) highlights.push({ label: 'Issued', rect: toArr(ocrData.issued_rect), value: ocrData.date_issued });
-            if (ocrData.expiration_rect) highlights.push({ label: 'Expiry', rect: toArr(ocrData.expiration_rect), value: ocrData.expiration_date });
-            
-            setOcrHighlights(highlights);
-
             if (ocrData.date_issued || ocrData.certificate_number || ocrData.expiration_date || ocrData.vessel_name || ocrData.cert_type) {
               const updatedCert = {
                 ...selectedCert,
@@ -2067,12 +2193,32 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                             </button>
                           </td>
                           <td className="px-6 py-4 text-right">
-                            <button 
-                              onClick={() => fetchCertDetails(cert)}
-                              className="p-2 hover:bg-blue-50 rounded-lg transition-colors opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-600"
-                            >
-                              <ChevronRight className="w-4 h-4" />
-                            </button>
+                            <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              {(user.role === 'admin' || user.role === 'team_pic') && (
+                                <>
+                                  <button 
+                                    onClick={() => setEditingCert(cert)}
+                                    className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                                    title="Edit"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button 
+                                    onClick={() => handleDeleteCert(cert.id)}
+                                    className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
+                                    title="Delete"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+                              <button 
+                                onClick={() => fetchCertDetails(cert)}
+                                className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                              >
+                                <ChevronRight className="w-4 h-4" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -2197,12 +2343,32 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         </span>
                       </div>
                     </div>
-                    <button 
-                      onClick={() => setSelectedVessel(vessel)}
-                      className="w-full mt-6 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-bold hover:bg-blue-100 transition-colors"
-                    >
-                      View Details
-                    </button>
+                    <div className="mt-6 flex items-center gap-2">
+                      <button 
+                        onClick={() => setSelectedVessel(vessel)}
+                        className="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-bold hover:bg-blue-100 transition-colors"
+                      >
+                        Details
+                      </button>
+                      {(user.role === 'admin' || user.role === 'team_pic') && (
+                        <>
+                          <button 
+                            onClick={() => setEditingVessel(vessel)}
+                            className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button 
+                            onClick={() => handleDeleteVessel(vessel.id)}
+                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2221,10 +2387,25 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               previewFile={previewFile}
               setPreviewFile={setPreviewFile}
               setTempPreviewUrl={setTempPreviewUrl}
-              setOcrHighlights={setOcrHighlights}
               isRecognizing={isRecognizing}
               setIsRecognizing={setIsRecognizing}
               subView={view}
+              editingVessel={editingVessel}
+              setEditingVessel={setEditingVessel}
+              editingVesselPhoto={editingVesselPhoto}
+              setEditingVesselPhoto={setEditingVesselPhoto}
+              handleUpdateVessel={handleUpdateVessel}
+              handleDeleteVessel={handleDeleteVessel}
+              editingCert={editingCert}
+              setEditingCert={setEditingCert}
+              newCertFile={newCertFile}
+              setNewCertFile={setNewCertFile}
+              handleUpdateCert={handleUpdateCert}
+              handleDeleteCert={handleDeleteCert}
+              confirmDialog={confirmDialog}
+              setConfirmDialog={setConfirmDialog}
+              uploadFileType={uploadFileType}
+              setUploadFileType={setUploadFileType}
             />
           )}
 
@@ -2289,135 +2470,149 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           )}
 
           {view === 'routing' && (
-            <div className="space-y-8">
-              <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Vessel Routing</h1>
-                  <p className="text-slate-500">Update destination, status, and ETA for all assigned vessels in one place.</p>
-                </div>
-                <button 
-                  onClick={handleSaveAllRouting}
-                  disabled={isSavingAll}
-                  className="flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 disabled:opacity-50"
-                >
-                  {isSavingAll ? (
-                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                  ) : (
-                    <Save className="w-4 h-4" />
-                  )}
-                  Save All Changes
-                </button>
-              </header>
-
-              <div className="space-y-6">
-                {groupedVessels.sortedOwners.map(owner => (
-                  <div key={owner} className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
-                    <div className="px-6 py-4 bg-slate-50 border-b border-blue-100 flex items-center justify-between">
-                      <h2 className={cn(
-                        "text-sm font-black uppercase tracking-widest",
-                        owner === 'Nissen' ? "text-purple-600" : "text-orange-600"
-                      )}>
-                        {owner}
-                      </h2>
-                      <span className="text-[10px] font-bold text-slate-400 bg-white px-3 py-1 rounded-full shadow-sm border border-blue-50">
-                        {groupedVessels.groups[owner].length} Vessels
-                      </span>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left">
-                        <thead>
-                          <tr className="bg-blue-50/10 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                            <th className="px-6 py-3 min-w-[200px]">Vessel</th>
-                            <th className="px-6 py-3 min-w-[200px]">Destination / Next Port</th>
-                            <th className="px-6 py-3 w-36">Status</th>
-                            <th className="px-6 py-3 w-44">ETA / ATB (UTC)</th>
-                            <th className="px-6 py-3 w-44">ETD / ATD (UTC)</th>
-                            <th className="px-6 py-3 min-w-[350px]">Cargo</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-blue-50">
-                          {groupedVessels.groups[owner].map(v => {
-                            const form = routingForm[v.id] || {};
-                            return (
-                              <tr key={v.id} className="hover:bg-blue-50/20 transition-colors">
-                                <td className="px-6 py-4">
-                                  <div className="flex items-center gap-3">
-                                    {v.has_photo ? (
-                                      <div className="w-8 h-8 rounded-lg overflow-hidden border border-blue-100 shrink-0">
-                                        <img 
-                                          src={`/api/vessels/${v.id}/photo?token=${token}&t=${Date.now()}`} 
-                                          alt={v.name}
-                                          className="w-full h-full object-cover"
-                                          referrerPolicy="no-referrer"
-                                        />
-                                      </div>
-                                    ) : (
-                                      <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
-                                        <Ship className="w-4 h-4 text-blue-600" />
-                                      </div>
-                                    )}
-                                    <div>
-                                      <p className="text-sm font-bold text-slate-900 leading-tight">{v.name}</p>
-                                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{v.team_name}</p>
-                                    </div>
-                                  </div>
-                                </td>
-                                <td className="px-6 py-4">
-                                  <input 
-                                    type="text"
-                                    value={form.next_port || ''}
-                                    onChange={e => handleUpdateRoutingRow(v.id, 'next_port', e.target.value)}
-                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                    placeholder="Next Port"
-                                  />
-                                </td>
-                                <td className="px-6 py-4">
-                                  <input 
-                                    type="text"
-                                    value={form.route_status || ''}
-                                    onChange={e => handleUpdateRoutingRow(v.id, 'route_status', e.target.value)}
-                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                    placeholder="Status"
-                                  />
-                                </td>
-                                <td className="px-6 py-4">
-                                  <input 
-                                    type="datetime-local"
-                                    value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
-                                    onChange={e => handleUpdateRoutingRow(v.id, 'eta_atb', e.target.value.replace('T', ' '))}
-                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                  />
-                                </td>
-                                <td className="px-6 py-4">
-                                  <input 
-                                    type="datetime-local"
-                                    value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
-                                    onChange={e => handleUpdateRoutingRow(v.id, 'etd_atd', e.target.value.replace('T', ' '))}
-                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                  />
-                                </td>
-                                <td className="px-6 py-4">
-                                  <input 
-                                    type="text"
-                                    value={form.cargo || ''}
-                                    onChange={e => handleUpdateRoutingRow(v.id, 'cargo', e.target.value)}
-                                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                    placeholder="Cargo"
-                                  />
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+            user.role === 'vessel' && vessels.length > 0 ? (
+              <VesselRoutingUserView 
+                vessel={vessels[0]}
+                form={routingForm[vessels[0].id] || {}}
+                updating={isSavingAll}
+                onUpdateRow={handleUpdateRoutingRow}
+                onSave={handleSaveAllRouting}
+              />
+            ) : (
+              <div className="space-y-8">
+                <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div>
+                    <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Vessel Routing</h1>
+                    <p className="text-slate-500">Update destination, status, and ETA for all assigned vessels in one place.</p>
                   </div>
-                ))}
+                  <button 
+                    onClick={handleSaveAllRouting}
+                    disabled={isSavingAll}
+                    className="flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 disabled:opacity-50"
+                  >
+                    {isSavingAll ? (
+                      <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <Save className="w-4 h-4" />
+                    )}
+                    Save All Changes
+                  </button>
+                </header>
+
+                <div className="space-y-6">
+                  {groupedVessels.sortedOwners.map(owner => (
+                    <div key={owner} className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
+                      <div className="px-6 py-4 bg-slate-50 border-b border-blue-100 flex items-center justify-between">
+                        <h2 className={cn(
+                          "text-sm font-black uppercase tracking-widest",
+                          owner === 'Nissen' ? "text-purple-600" : "text-orange-600"
+                        )}>
+                          {owner}
+                        </h2>
+                        <span className="text-[10px] font-bold text-slate-400 bg-white px-3 py-1 rounded-full shadow-sm border border-blue-50">
+                          {groupedVessels.groups[owner].length} Vessels
+                        </span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="bg-blue-50/10 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                              <th className="px-6 py-3 min-w-[200px]">Vessel</th>
+                              <th className="px-6 py-3 min-w-[200px]">Destination / Next Port</th>
+                              <th className="px-6 py-3 w-36">Status</th>
+                              <th className="px-6 py-3 w-44">ETA / ATB (UTC)</th>
+                              <th className="px-6 py-3 w-44">ETD / ATD (UTC)</th>
+                              <th className="px-6 py-3 min-w-[350px]">Cargo</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-blue-50">
+                            {groupedVessels.groups[owner].map(v => {
+                              const form = routingForm[v.id] || {};
+                              return (
+                                <tr key={v.id} className="hover:bg-blue-50/20 transition-colors">
+                                  <td className="px-6 py-4">
+                                    <div className="flex items-center gap-3">
+                                      {v.has_photo ? (
+                                        <div className="w-8 h-8 rounded-lg overflow-hidden border border-blue-100 shrink-0">
+                                          <img 
+                                            src={`/api/vessels/${v.id}/photo?token=${token}&t=${Date.now()}`} 
+                                            alt={v.name}
+                                            className="w-full h-full object-cover"
+                                            referrerPolicy="no-referrer"
+                                          />
+                                        </div>
+                                      ) : (
+                                        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+                                          <Ship className="w-4 h-4 text-blue-600" />
+                                        </div>
+                                      )}
+                                      <div>
+                                        <p className="text-sm font-bold text-slate-900 leading-tight">{v.name}</p>
+                                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{v.team_name}</p>
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <input 
+                                      type="text"
+                                      value={form.next_port || ''}
+                                      onChange={e => handleUpdateRoutingRow(v.id, 'next_port', e.target.value)}
+                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                      placeholder="Next Port"
+                                    />
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <select 
+                                      value={form.route_status || ''}
+                                      onChange={e => handleUpdateRoutingRow(v.id, 'route_status', e.target.value)}
+                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
+                                    >
+                                      <option value="">Select Status</option>
+                                      <option value="At sea">At sea</option>
+                                      <option value="In port">In port</option>
+                                      <option value="Anchor">Anchor</option>
+                                      <option value="Drifting">Drifting</option>
+                                    </select>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <input 
+                                      type="datetime-local"
+                                      value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
+                                      onChange={e => handleUpdateRoutingRow(v.id, 'eta_atb', e.target.value.replace('T', ' '))}
+                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                    />
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <input 
+                                      type="datetime-local"
+                                      value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
+                                      onChange={e => handleUpdateRoutingRow(v.id, 'etd_atd', e.target.value.replace('T', ' '))}
+                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                    />
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <input 
+                                      type="text"
+                                      value={form.cargo || ''}
+                                      onChange={e => handleUpdateRoutingRow(v.id, 'cargo', e.target.value)}
+                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                      placeholder="Cargo"
+                                    />
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+            )
           )}
 
-          {view === 'slideshow' && (
+          {view === 'slideshow' && user.role !== 'vessel' && (
             <div className="h-[calc(100vh-64px)]">
               <SlideshowView vessels={vessels} certs={certs} token={token} />
             </div>
@@ -2530,13 +2725,17 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
                           <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Status</label>
-                          <input 
-                            type="text"
+                          <select 
                             value={routeForm.route_status}
                             onChange={e => setRouteForm({...routeForm, route_status: e.target.value})}
-                            placeholder="e.g. In Transit"
-                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
-                          />
+                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                          >
+                            <option value="">Select Status</option>
+                            <option value="At sea">At sea</option>
+                            <option value="In port">In port</option>
+                            <option value="Anchor">Anchor</option>
+                            <option value="Drifting">Drifting</option>
+                          </select>
                         </div>
                         <div className="space-y-1">
                           <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Cargo</label>
@@ -2688,7 +2887,33 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         className="p-4 bg-blue-50/30 rounded-2xl border border-transparent hover:border-blue-100 hover:bg-white hover:shadow-sm transition-all cursor-pointer group"
                       >
                         <div className="flex items-center justify-between mb-2">
-                          <span className="font-bold text-sm text-slate-900">{cert.name}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-sm text-slate-900">{cert.name}</span>
+                            {(user.role === 'admin' || user.role === 'team_pic') && (
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingCert(cert);
+                                  }}
+                                  className="p-1 hover:bg-blue-100 rounded text-blue-600"
+                                  title="Edit Certificate"
+                                >
+                                  <Edit2 className="w-3 h-3" />
+                                </button>
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteCert(cert.id);
+                                  }}
+                                  className="p-1 hover:bg-red-100 rounded text-red-600"
+                                  title="Delete Certificate"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
                           <span className={cn(
                             "px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider",
                             getStatus(cert.expiration_date) === 'expired' ? "bg-red-50 text-red-700" :
@@ -2790,7 +3015,6 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                 className="max-w-full max-h-full block w-auto h-auto rounded-sm ring-1 ring-black/5"
                                 referrerPolicy="no-referrer"
                               />
-                              {ocrHighlights.length > 0 && <OCRHighlightOverlay highlights={ocrHighlights} />}
                             </div>
                             <div className="absolute inset-0 bg-blue-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
                               <span className="text-white font-bold text-xs px-3 py-1.5 bg-blue-600/80 rounded-lg backdrop-blur-sm">Full Size View Available</span>
@@ -2803,7 +3027,6 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                             <PDFViewer 
                               url={fileUrl} 
                               title={previewFile.original_name} 
-                              highlights={ocrHighlights}
                             />
                           </div>
                         );
@@ -2843,8 +3066,9 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       <input 
                         type="text" 
                         value={selectedCert.certificate_number || ''}
+                        readOnly={!(user.role === 'admin' || user.role === 'team_pic')}
                         onChange={(e) => setSelectedCert({...selectedCert, certificate_number: e.target.value})}
-                        className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20"
+                        className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
                         placeholder="N/A"
                       />
                     </div>
@@ -2854,8 +3078,9 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <input 
                           type="date" 
                           value={selectedCert.date_issued || ''}
+                          readOnly={!(user.role === 'admin' || user.role === 'team_pic')}
                           onChange={(e) => setSelectedCert({...selectedCert, date_issued: e.target.value})}
-                          className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20"
+                          className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
                         />
                       </div>
                       <div className="space-y-1">
@@ -2863,17 +3088,20 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <input 
                           type="date" 
                           value={newExpDate}
+                          readOnly={!(user.role === 'admin' || user.role === 'team_pic')}
                           onChange={(e) => setNewExpDate(e.target.value)}
-                          className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20"
+                          className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
                         />
                       </div>
                     </div>
-                    <button 
-                      onClick={handleUpdateCert}
-                      className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-800 transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2"
-                    >
-                      <Save className="w-4 h-4" /> Save All Changes
-                    </button>
+                    {(user.role === 'admin' || user.role === 'team_pic') && (
+                      <button 
+                        onClick={handleSidePanelUpdateCert}
+                        className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-800 transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2"
+                      >
+                        <Save className="w-4 h-4" /> Save All Changes
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -2883,59 +3111,178 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 {selectedCert && (
                   <section>
                     <div className="flex items-center justify-between mb-4">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Documents</label>
-                      <label className="cursor-pointer flex items-center gap-2 text-xs font-bold text-blue-600 hover:underline">
-                        <Upload className="w-3 h-3" /> Upload File
+                      <div className="flex flex-col gap-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Documents</label>
+                        <div className="flex items-center gap-2 mt-1">
+                          <button 
+                            onClick={() => setUploadFileType('certificate')}
+                            className={cn(
+                              "px-2 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all shadow-sm",
+                              uploadFileType === 'certificate' ? "bg-blue-600 text-white shadow-blue-100" : "bg-slate-50 text-slate-400 hover:bg-white hover:text-slate-600 border border-slate-100"
+                            )}
+                          >
+                            Certificate
+                          </button>
+                          <button 
+                            onClick={() => setUploadFileType('supporting')}
+                            className={cn(
+                              "px-2 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all shadow-sm",
+                              uploadFileType === 'supporting' ? "bg-blue-600 text-white shadow-blue-100" : "bg-slate-50 text-slate-400 hover:bg-white hover:text-slate-600 border border-slate-100"
+                            )}
+                          >
+                            Supporting
+                          </button>
+                        </div>
+                      </div>
+                      <label className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-xl text-[10px] font-bold hover:bg-blue-100 transition-colors shadow-sm self-end">
+                        <Upload className="w-3 h-3" /> Upload {uploadFileType === 'certificate' ? 'Cert' : 'File'}
                         <input type="file" className="hidden" onChange={handleFileUpload} />
                       </label>
                     </div>
-                    <div className="space-y-2">
+                    
+                    <div className="space-y-6">
                     {files.length === 0 ? (
-                      <p className="text-sm text-slate-400 italic">No documents uploaded yet.</p>
+                      <p className="text-sm text-slate-400 italic px-1">No documents uploaded yet.</p>
                     ) : (
-                      files.map(file => (
-                        <div 
-                          key={file.id} 
-                          onClick={() => {
-                            setPreviewFile(file);
-                            if (sidePanelContentRef.current) {
-                              sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
-                            }
-                          }}
-                          className={cn(
-                            "flex items-center justify-between p-3 rounded-xl group cursor-pointer transition-all",
-                            previewFile?.id === file.id ? "bg-blue-100 border-blue-200" : "bg-blue-50/50 hover:bg-blue-100/50"
-                          )}
-                        >
-                          <div className="flex items-center gap-3">
-                            <File className={cn("w-4 h-4", previewFile?.id === file.id ? "text-blue-600" : "text-slate-400")} />
-                            <span className={cn("text-sm font-medium", previewFile?.id === file.id ? "text-blue-900" : "text-slate-900")}>{file.original_name}</span>
-                          </div>
-                          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <a 
-                              href={`/api/files/${file.filename}?token=${token}`} 
-                              target="_blank" 
-                              rel="noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              className="text-[10px] font-bold text-blue-600 hover:underline px-2 py-1 bg-white rounded-lg shadow-sm"
-                            >
-                              Download
-                            </a>
-                            {(user?.role === 'admin' || user?.role === 'team_pic') && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteFile(file.id);
+                      <>
+                        {/* Certificate Files (Latest Pinned) */}
+                        {files.some(f => f.file_type === 'certificate') && (
+                          <div className="space-y-2">
+                            <h4 className="text-[9px] font-black uppercase tracking-widest text-blue-400 flex items-center gap-2 ml-1">
+                              Certificate History
+                              <div className="flex-1 h-px bg-blue-50" />
+                            </h4>
+                            {files.filter(f => f.file_type === 'certificate').sort((a,b) => b.id - a.id).map((file, idx) => (
+                              <div 
+                                key={file.id} 
+                                onClick={() => {
+                                  setPreviewFile(file);
+                                  if (sidePanelContentRef.current) {
+                                    sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                                  }
                                 }}
-                                className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                                title="Delete File"
+                                className={cn(
+                                  "flex items-center justify-between p-3 rounded-xl group cursor-pointer transition-all border",
+                                  previewFile?.id === file.id 
+                                    ? "bg-blue-50/50 border-blue-200 shadow-sm" 
+                                    : "bg-white border-slate-100 hover:border-blue-100 hover:bg-blue-50/20"
+                                )}
                               >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            )}
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <div className={cn(
+                                    "p-1.5 rounded-lg shrink-0",
+                                    idx === 0 ? "bg-blue-600 text-white shadow-sm" : "bg-blue-50 text-blue-400"
+                                  )}>
+                                    <File className="w-3.5 h-3.5" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className={cn("text-xs font-bold truncate", previewFile?.id === file.id ? "text-blue-900" : "text-slate-900")}>
+                                        {file.original_name}
+                                      </span>
+                                      {idx === 0 && (
+                                        <span className="shrink-0 px-1.5 py-0.5 bg-blue-600 text-white text-[7px] font-black uppercase tracking-tighter rounded-full">LATEST</span>
+                                      )}
+                                    </div>
+                                    <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest leading-none mt-0.5">
+                                      {new Date(file.upload_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <a 
+                                    href={`/api/files/${file.filename}?token=${token}`} 
+                                    target="_blank" 
+                                    rel="noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="p-1.5 hover:bg-blue-100 rounded-lg text-blue-600 transition-colors"
+                                    title="Download"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </a>
+                                  {(user?.role === 'admin' || user?.role === 'team_pic') && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteFile(file.id);
+                                      }}
+                                      className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                      title="Delete"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        </div>
-                      ))
+                        )}
+
+                        {/* Supporting Files */}
+                        {files.some(f => f.file_type === 'supporting') && (
+                          <div className="space-y-2">
+                            <h4 className="text-[9px] font-black uppercase tracking-widest text-purple-400 flex items-center gap-2 ml-1">
+                              Supporting Documents
+                              <div className="flex-1 h-px bg-purple-50" />
+                            </h4>
+                            {files.filter(f => f.file_type === 'supporting').sort((a,b) => b.id - a.id).map(file => (
+                              <div 
+                                key={file.id} 
+                                onClick={() => {
+                                  setPreviewFile(file);
+                                  if (sidePanelContentRef.current) {
+                                    sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                                  }
+                                }}
+                                className={cn(
+                                  "flex items-center justify-between p-3 rounded-xl group cursor-pointer transition-all border",
+                                  previewFile?.id === file.id 
+                                    ? "bg-purple-50/50 border-purple-200 shadow-sm" 
+                                    : "bg-white border-slate-100 hover:border-purple-100 hover:bg-purple-50/20"
+                                )}
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <div className="p-1.5 bg-purple-50 text-purple-400 rounded-lg shrink-0">
+                                    <Paperclip className="w-3.5 h-3.5" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className={cn("text-xs font-bold truncate block", previewFile?.id === file.id ? "text-purple-900" : "text-slate-900")}>
+                                      {file.original_name}
+                                    </span>
+                                    <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest leading-none mt-0.5">
+                                      {new Date(file.upload_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <a 
+                                    href={`/api/files/${file.filename}?token=${token}`} 
+                                    target="_blank" 
+                                    rel="noreferrer"
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="p-1.5 hover:bg-purple-100 rounded-lg text-purple-600 transition-colors"
+                                    title="Download"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </a>
+                                  {(user?.role === 'admin' || user?.role === 'team_pic') && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteFile(file.id);
+                                      }}
+                                      className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                      title="Delete"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </section>
@@ -3037,6 +3384,220 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         onConfirm={confirmDialog.onConfirm}
         onCancel={() => setConfirmDialog(prev => ({ ...prev, isOpen: false }))}
       />
+
+      {/* Lifted Modals for Vessel and Certificate Editing */}
+      {createPortal(
+        <AnimatePresence>
+          {editingVessel && (
+            <>
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setEditingVessel(null)}
+                className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[150]"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-md:max-w-[95%] max-w-md bg-white rounded-3xl shadow-2xl z-[160] overflow-hidden"
+              >
+                <div className="p-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-xl font-bold text-slate-900">Edit Vessel</h3>
+                    <button onClick={() => setEditingVessel(null)} className="p-2 hover:bg-slate-100 rounded-lg text-slate-400">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel Name</label>
+                      <input 
+                        type="text" 
+                        placeholder="Vessel Name" 
+                        value={editingVessel.name}
+                        onChange={(e) => setEditingVessel({...editingVessel, name: e.target.value})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Team Assignment</label>
+                      <select 
+                        value={editingVessel.team_id || ''}
+                        onChange={(e) => setEditingVessel({...editingVessel, team_id: Number(e.target.value)})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      >
+                        <option value="">Select Team</option>
+                        {[...teams].sort((a, b) => a.name.localeCompare(b.name)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Owner</label>
+                      <select 
+                        value={editingVessel.owner || 'Nissen'}
+                        onChange={(e) => setEditingVessel({...editingVessel, owner: e.target.value as any})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      >
+                        <option value="Nissen">Nissen</option>
+                        <option value="Goodwill">Goodwill</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel Photo (Optional)</label>
+                      <input 
+                        type="file" 
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          if (file && file.size > MAX_FILE_SIZE) {
+                            notify('error', 'File is too large (max 20MB)');
+                            e.target.value = '';
+                            return;
+                          }
+                          setEditingVesselPhoto(file);
+                        }}
+                        className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                      />
+                    </div>
+                    <button 
+                      onClick={handleUpdateVessel}
+                      className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
+                    >
+                      Update Vessel
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </>
+          )}
+
+          {editingCert && (
+            <>
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setEditingCert(null)}
+                className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[150]"
+              />
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-md:max-w-[95%] max-w-md bg-white rounded-3xl shadow-2xl z-[160] overflow-hidden"
+              >
+                <div className="p-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-xl font-bold text-slate-900">Edit Certificate</h3>
+                    <button onClick={() => setEditingCert(null)} className="p-2 hover:bg-slate-100 rounded-lg text-slate-400">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel</label>
+                        <select 
+                          value={editingCert.vessel_id || ''}
+                          disabled={user.role === 'vessel'}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            const vessel = vessels.find(v => v.id === Number(val));
+                            setEditingCert({
+                              ...editingCert, 
+                              vessel_id: val ? Number(val) : null,
+                              team_id: vessel ? vessel.team_id : (val === '' ? '' : editingCert.team_id) as any
+                            });
+                          }}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50"
+                        >
+                          {user.role !== 'vessel' && <option value="">None</option>}
+                          {vessels.filter(v => user.role !== 'vessel' || v.id === user.vessel_id).map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Team</label>
+                        <select 
+                          value={editingCert.team_id || ''}
+                          onChange={(e) => setEditingCert({...editingCert, team_id: Number(e.target.value)})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={!!editingCert.vessel_id}
+                        >
+                          <option value="">Select Team</option>
+                          {[...teams].sort((a, b) => a.name.localeCompare(b.name)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Name</label>
+                      <input 
+                        type="text" 
+                        placeholder="Certificate Name" 
+                        value={editingCert.name}
+                        onChange={(e) => setEditingCert({...editingCert, name: e.target.value})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Number</label>
+                      <input 
+                        type="text" 
+                        placeholder="Cert #" 
+                        value={editingCert.certificate_number || ''}
+                        onChange={(e) => setEditingCert({...editingCert, certificate_number: e.target.value})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Date Issued</label>
+                        <input 
+                          type="date" 
+                          value={editingCert.date_issued || ''}
+                          onChange={(e) => setEditingCert({...editingCert, date_issued: e.target.value})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
+                        <input 
+                          type="date" 
+                          value={editingCert.expiration_date}
+                          onChange={(e) => setEditingCert({...editingCert, expiration_date: e.target.value})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Access Type</label>
+                      <select 
+                        value={editingCert.access_type}
+                        disabled={user.role === 'vessel'}
+                        onChange={(e) => setEditingCert({...editingCert, access_type: e.target.value as any})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50"
+                      >
+                        {user.role !== 'vessel' && <option value="office">Office Only</option>}
+                        <option value="vessel">Ship certificate</option>
+                        {user.role !== 'vessel' && <option value="any">Any</option>}
+                      </select>
+                    </div>
+                    <button 
+                      onClick={handleUpdateCert}
+                      className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
+                    >
+                      Update Certificate
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   );
 };
@@ -3469,6 +4030,11 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
   const [form, setForm] = useState(defaultForm);
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+  const [vesselFilter, setVesselFilter] = useState<string>('');
+
+  const filteredReports = React.useMemo(() => {
+    return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
+  }, [reports, vesselFilter]);
 
   const foc_computation = React.useMemo(() => {
     // If no reports yet, we can't auto compute FOC relative to previous ROB
@@ -3745,7 +4311,15 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
                       <Upload className="w-4 h-4 text-blue-600" />
                       <span className="text-sm font-bold text-blue-700">{file ? file.name : 'Upload Report'}</span>
-                      <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                      <input type="file" className="hidden" onChange={(e) => {
+                        const f = e.target.files?.[0] || null;
+                        if (f && f.size > MAX_FILE_SIZE) {
+                          notify('error', 'File is too large (max 20MB)');
+                          e.target.value = '';
+                          return;
+                        }
+                        setFile(f);
+                      }} />
                     </label>
                     {file && (
                       <button onClick={() => setFile(null)} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors">
@@ -3814,25 +4388,41 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
           </div>
         </form>
       ) : (
-        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                  <th className="px-6 py-4">Date & Time (UTC)</th>
-                  <th className="px-6 py-4">Vessel</th>
-                  <th className="px-6 py-4">Voyage</th>
-                  <th className="px-6 py-4">Position</th>
-                  <th className="px-6 py-4">DTG</th>
-                  <th className="px-6 py-4">Cargo</th>
-                  <th className="px-6 py-4">HSFO ROB</th>
-                  <th className="px-6 py-4">Daily FOC (HSFO)</th>
-                  <th className="px-6 py-4">Attachment</th>
-                  <th className="px-6 py-4">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-blue-50 text-sm">
-                {reports.map(report => (
+        <div className="space-y-4">
+          <div className="flex justify-end px-6">
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Filter Vessel:</label>
+              <select 
+                value={vesselFilter}
+                onChange={(e) => setVesselFilter(e.target.value)}
+                className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+              >
+                <option value="">All Vessels</option>
+                {vessels.map(v => (
+                  <option key={v.id} value={String(v.id)}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                    <th className="px-6 py-4">Date & Time (UTC)</th>
+                    <th className="px-6 py-4">Vessel</th>
+                    <th className="px-6 py-4">Voyage</th>
+                    <th className="px-6 py-4">Position</th>
+                    <th className="px-6 py-4">DTG</th>
+                    <th className="px-6 py-4">Cargo</th>
+                    <th className="px-6 py-4">HSFO ROB</th>
+                    <th className="px-6 py-4">Daily FOC (HSFO)</th>
+                    <th className="px-6 py-4">Attachment</th>
+                    <th className="px-6 py-4">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-blue-50 text-sm">
+                  {filteredReports.map(report => (
                   <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
                     <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
                     <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
@@ -3886,7 +4476,8 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
             </table>
           </div>
         </div>
-      )}
+      </div>
+    )}
     </div>
   );
 };
@@ -3920,6 +4511,11 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
   };
   const [form, setForm] = useState(defaultForm);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+  const [vesselFilter, setVesselFilter] = useState<string>('');
+
+  const filteredReports = React.useMemo(() => {
+    return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
+  }, [reports, vesselFilter]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4232,28 +4828,46 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
           </div>
         </form>
       ) : (
-        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                  <th className="px-6 py-4">Date & Time (UTC)</th>
-                  <th className="px-6 py-4">Vessel</th>
-                  <th className="px-6 py-4">Voyage</th>
-                  <th className="px-6 py-4">Port</th>
-                  <th className="px-6 py-4">Operation</th>
-                  <th className="px-6 py-4">Event Type</th>
-                  <th className="px-6 py-4">HSFO ROB</th>
-                  <th className="px-6 py-4">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-blue-50 text-sm">
-                {reports.map(report => (
+        <div className="space-y-4">
+          <div className="flex justify-end px-6">
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Filter Vessel:</label>
+              <select 
+                value={vesselFilter}
+                onChange={(e) => setVesselFilter(e.target.value)}
+                className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+              >
+                <option value="">All Vessels</option>
+                {vessels.map(v => (
+                  <option key={v.id} value={String(v.id)}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                    <th className="px-6 py-4">Date & Time (UTC)</th>
+                    <th className="px-6 py-4">Vessel</th>
+                    <th className="px-6 py-4">Voyage</th>
+                    <th className="px-6 py-4">Port</th>
+                    <th className="px-6 py-4">EU/UK Status</th>
+                    <th className="px-6 py-4">Operation</th>
+                    <th className="px-6 py-4">Event Type</th>
+                    <th className="px-6 py-4">HSFO ROB</th>
+                    <th className="px-6 py-4">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-blue-50 text-sm">
+                  {filteredReports.map(report => (
                   <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
                     <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
                     <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
                     <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
                     <td className="px-6 py-4">{report.port}</td>
+                    <td className="px-6 py-4 uppercase text-[10px] font-bold text-slate-500">{report.eu_uk_status}</td>
                     <td className="px-6 py-4">
                       <span className="px-2 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-full uppercase">
                         {report.operation_type}
@@ -4283,7 +4897,7 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
                 ))}
                 {reports.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-6 py-12 text-center text-slate-400 font-medium">
+                    <td colSpan={9} className="px-6 py-12 text-center text-slate-400 font-medium">
                       No reports found.
                     </td>
                   </tr>
@@ -4292,7 +4906,8 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
             </table>
           </div>
         </div>
-      )}
+      </div>
+    )}
     </div>
   );
 };
@@ -4335,6 +4950,11 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
   const [form, setForm] = useState(defaultForm);
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+  const [vesselFilter, setVesselFilter] = useState<string>('');
+
+  const filteredReports = React.useMemo(() => {
+    return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
+  }, [reports, vesselFilter]);
 
   useEffect(() => {
     if (departureReports && form.vessel_id && !editingId) {
@@ -4724,7 +5344,15 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                     <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
                       <Upload className="w-4 h-4 text-blue-600" />
                       <span className="text-sm font-bold text-blue-700">{file ? file.name : 'Upload Report'}</span>
-                      <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                      <input type="file" className="hidden" onChange={(e) => {
+                        const f = e.target.files?.[0] || null;
+                        if (f && f.size > MAX_FILE_SIZE) {
+                          notify('error', 'File is too large (max 20MB)');
+                          e.target.value = '';
+                          return;
+                        }
+                        setFile(f);
+                      }} />
                     </label>
                     {file && (
                       <button onClick={() => setFile(null)} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors">
@@ -4807,31 +5435,49 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
           </div>
         </form>
       ) : (
-        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                  <th className="px-6 py-4">Date & Time (UTC)</th>
-                  <th className="px-6 py-4">Vessel</th>
-                  <th className="px-6 py-4">Voyage</th>
-                  <th className="px-6 py-4">Port</th>
-                  <th className="px-6 py-4">Sea Time</th>
-                  <th className="px-6 py-4">Distance</th>
-                  <th className="px-6 py-4">HSFO Arrival</th>
-                  <th className="px-6 py-4">FOC Sea</th>
-                  <th className="px-6 py-4">Agent Detail</th>
-                  <th className="px-6 py-4">Attachment</th>
-                  <th className="px-6 py-4">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-blue-50 text-sm">
-                {reports.map(report => (
+        <div className="space-y-4">
+          <div className="flex justify-end px-6">
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Filter Vessel:</label>
+              <select 
+                value={vesselFilter}
+                onChange={(e) => setVesselFilter(e.target.value)}
+                className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+              >
+                <option value="">All Vessels</option>
+                {vessels.map(v => (
+                  <option key={v.id} value={String(v.id)}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                    <th className="px-6 py-4">Date & Time (UTC)</th>
+                    <th className="px-6 py-4">Vessel</th>
+                    <th className="px-6 py-4">Voyage</th>
+                    <th className="px-6 py-4">Port</th>
+                    <th className="px-6 py-4">EU/UK Status</th>
+                    <th className="px-6 py-4">Sea Time</th>
+                    <th className="px-6 py-4">Distance</th>
+                    <th className="px-6 py-4">HSFO Arrival</th>
+                    <th className="px-6 py-4">FOC Sea</th>
+                    <th className="px-6 py-4">Agent Detail</th>
+                    <th className="px-6 py-4">Attachment</th>
+                    <th className="px-6 py-4">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-blue-50 text-sm">
+                  {filteredReports.map(report => (
                   <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
                     <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
                     <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
                     <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
                     <td className="px-6 py-4">{report.arrival_port}</td>
+                    <td className="px-6 py-4 uppercase text-[10px] font-bold text-slate-500">{report.eu_uk_status}</td>
                     <td className="px-6 py-4">{report.total_time_at_sea}</td>
                     <td className="px-6 py-4">{report.total_distance} nm</td>
                     <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
@@ -4854,20 +5500,31 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                         </a>
                       )}
                     </td>
-                    <td className="px-6 py-4">
-                      <button 
-                        onClick={() => handleEdit(report)}
-                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                        title="Edit Report"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button 
+                          onClick={() => handleEdit(report)}
+                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          title="Edit Report"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        {(user.role === 'admin' || user.role === 'team_pic') && (
+                          <button 
+                            onClick={() => handleDelete(report.id)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete Report"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
                 {reports.length === 0 && (
                   <tr>
-                    <td colSpan={10} className="px-6 py-12 text-center text-slate-400 font-medium">
+                    <td colSpan={12} className="px-6 py-12 text-center text-slate-400 font-medium">
                       No arrival reports found.
                     </td>
                   </tr>
@@ -4876,7 +5533,8 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
             </table>
           </div>
         </div>
-      )}
+      </div>
+    )}
     </div>
   );
 };
@@ -5078,6 +5736,186 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
   );
 };
 
+
+const VesselRoutingUserView = ({ 
+  vessel, 
+  form, 
+  updating, 
+  onUpdateRow, 
+  onSave 
+}: { 
+  vessel: Vessel, 
+  form: any, 
+  updating: boolean, 
+  onUpdateRow: (id: number, field: string, value: any) => void,
+  onSave: () => void
+}) => {
+  return (
+    <div className="max-w-5xl mx-auto pb-12">
+      <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl shadow-blue-900/5 overflow-hidden">
+        {/* Card Header / Vessel Info Banner */}
+        <div className="bg-slate-900 p-8 md:p-12 text-white relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-r from-blue-600/20 to-transparent pointer-events-none" />
+          <div className="absolute -right-20 -top-20 opacity-10 pointer-events-none">
+            <Ship className="w-96 h-96 -rotate-12" />
+          </div>
+          
+          <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-8">
+            <div className="flex items-center gap-6">
+              <div className="w-20 h-20 bg-blue-600 rounded-3xl flex items-center justify-center shadow-2xl shadow-blue-600/20 border border-white/10 shrink-0">
+                <Navigation className="w-10 h-10 text-white" />
+              </div>
+              <div>
+                <h1 className="text-4xl font-black tracking-tighter mb-1">{vessel.name}</h1>
+                <div className="flex items-center gap-3">
+                  <span className="text-blue-400 font-black uppercase tracking-[0.2em] text-[10px]">Voyage Routing Hub</span>
+                  <div className="w-1.5 h-1.5 rounded-full bg-slate-700" />
+                  <span className="text-slate-400 font-bold uppercase tracking-widest text-[9px]">{vessel.team_name}</span>
+                </div>
+              </div>
+            </div>
+            
+            <button 
+              onClick={onSave}
+              disabled={updating}
+              className="group relative flex items-center gap-4 bg-white text-slate-900 px-10 py-5 rounded-[2rem] text-sm font-black hover:bg-blue-50 transition-all shadow-xl disabled:opacity-50 active:scale-95 shrink-0"
+            >
+              {updating ? (
+                <div className="w-5 h-5 border-3 border-slate-200 border-t-blue-600 rounded-full animate-spin" />
+              ) : (
+                <Save className="w-5 h-5 group-hover:scale-110 transition-transform" />
+              )}
+              UPDATE VOYAGE DATA
+            </button>
+          </div>
+        </div>
+
+        {/* Card Body / Form Inputs */}
+        <div className="p-8 md:p-14 space-y-12">
+          {/* Section: Core Navigation */}
+          <div className="space-y-10">
+            <div className="flex items-center gap-4">
+              <div className="w-1.5 h-6 bg-blue-600 rounded-full" />
+              <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Positioning & Destination</h2>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+              <div className="group space-y-4">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">Next Destination / Port Calls</label>
+                <div className="relative">
+                  <Anchor className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <input 
+                    type="text"
+                    value={form.next_port || ''}
+                    onChange={e => onUpdateRow(vessel.id, 'next_port', e.target.value)}
+                    className="w-full pl-16 pr-8 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all placeholder:text-slate-200"
+                    placeholder="ENTER NEXT PORT..."
+                  />
+                </div>
+              </div>
+
+              <div className="group space-y-4">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">Current Navigational Status</label>
+                <div className="relative">
+                  <Activity className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <select 
+                    value={form.route_status || ''}
+                    onChange={e => onUpdateRow(vessel.id, 'route_status', e.target.value)}
+                    className="w-full pl-16 pr-12 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all cursor-pointer appearance-none"
+                  >
+                    <option value="">SELECT STATUS...</option>
+                    <option value="At sea">At sea</option>
+                    <option value="In port">In port</option>
+                    <option value="Anchor">Anchor</option>
+                    <option value="Drifting">Drifting</option>
+                  </select>
+                  <ChevronDown className="w-6 h-6 text-slate-300 absolute right-8 top-1/2 -translate-y-1/2 pointer-events-none group-focus-within:text-blue-500 group-focus-within:rotate-180 transition-all" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <hr className="border-slate-50" />
+
+          {/* Section: Operational Timeline */}
+          <div className="space-y-10">
+            <div className="flex items-center gap-4">
+              <div className="w-1.5 h-6 bg-slate-900 rounded-full" />
+              <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Voyage Temporal Schedule (UTC)</h2>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+              <div className="group space-y-4">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">ETA / ATB (Arrival Schedule)</label>
+                <div className="relative">
+                  <Clock className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <input 
+                    type="datetime-local"
+                    value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
+                    onChange={e => onUpdateRow(vessel.id, 'eta_atb', e.target.value.replace('T', ' '))}
+                    className="w-full pl-16 pr-8 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="group space-y-4">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">ETD / ATD (Departure Schedule)</label>
+                <div className="relative">
+                  <Clock className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <input 
+                    type="datetime-local"
+                    value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
+                    onChange={e => onUpdateRow(vessel.id, 'etd_atd', e.target.value.replace('T', ' '))}
+                    className="w-full pl-16 pr-8 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <hr className="border-slate-50" />
+
+          {/* Section: Cargo Logistics */}
+          <div className="space-y-10 focus-within:translate-y-[-4px] transition-transform duration-500">
+            <div className="flex items-center gap-4">
+              <div className="w-1.5 h-6 bg-slate-200 rounded-full" />
+              <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Cargo Logistics & Operational Remarks</h2>
+            </div>
+            
+            <div className="relative group">
+              <Package className="w-7 h-7 text-slate-200 absolute left-6 top-9 -translate-y-1/2 group-focus-within:text-blue-500 transition-colors" />
+              <textarea 
+                value={form.cargo || ''}
+                onChange={e => onUpdateRow(vessel.id, 'cargo', e.target.value)}
+                rows={5}
+                className="w-full pl-16 pr-8 py-8 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all resize-none placeholder:text-slate-200 leading-relaxed"
+                placeholder="DESCRIBE CARGO STATUS AND ADDITIONAL REMARKS..."
+              />
+            </div>
+          </div>
+
+          {/* Footer Notice */}
+          <div className="bg-blue-50/50 p-8 rounded-[2rem] border border-blue-50 flex flex-col md:flex-row items-center justify-between gap-6">
+            <div className="flex items-center gap-5">
+              <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-blue-100">
+                <ShieldCheck className="w-6 h-6 text-blue-600" />
+              </div>
+              <p className="text-[11px] font-black uppercase tracking-widest text-blue-600/70 max-w-sm leading-relaxed">
+                Verification Protocol: Please double-check all destination codes and cargo quantities before submission.
+              </p>
+            </div>
+            <div className="flex -space-x-4 opacity-30 hover:opacity-100 transition-opacity">
+              <div className="w-10 h-10 rounded-full border-2 border-white bg-slate-100" />
+              <div className="w-10 h-10 rounded-full border-2 border-white bg-slate-200" />
+              <div className="w-10 h-10 rounded-full border-2 border-white bg-blue-100" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: { 
   user: User, 
   token: string, 
@@ -5112,6 +5950,11 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
   const [form, setForm] = useState(defaultForm);
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+  const [vesselFilter, setVesselFilter] = useState<string>('');
+
+  const filteredReports = React.useMemo(() => {
+    return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
+  }, [reports, vesselFilter]);
 
   const foc_computation = React.useMemo(() => {
     const arrival = {
@@ -5411,7 +6254,15 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
                       <Upload className="w-4 h-4 text-blue-600" />
                       <span className="text-sm font-bold text-blue-700">{file ? file.name : 'Upload Report'}</span>
-                      <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+                      <input type="file" className="hidden" onChange={(e) => {
+                        const f = e.target.files?.[0] || null;
+                        if (f && f.size > MAX_FILE_SIZE) {
+                          notify('error', 'File is too large (max 20MB)');
+                          e.target.value = '';
+                          return;
+                        }
+                        setFile(f);
+                      }} />
                     </label>
                     {file && (
                       <button onClick={() => setFile(null)} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors">
@@ -5494,29 +6345,47 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
           </div>
         </form>
       ) : (
-        <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                  <th className="px-6 py-4">Date & Time (UTC)</th>
-                  <th className="px-6 py-4">Vessel</th>
-                  <th className="px-6 py-4">Voyage</th>
-                  <th className="px-6 py-4">Port</th>
-                  <th className="px-6 py-4">Operation</th>
-                  <th className="px-6 py-4">HSFO Departure</th>
-                  <th className="px-6 py-4">FOC Port</th>
-                  <th className="px-6 py-4">Attachment</th>
-                  <th className="px-6 py-4">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-blue-50 text-sm">
-                {reports.map(report => (
+        <div className="space-y-4">
+          <div className="flex justify-end px-6">
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Filter Vessel:</label>
+              <select 
+                value={vesselFilter}
+                onChange={(e) => setVesselFilter(e.target.value)}
+                className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+              >
+                <option value="">All Vessels</option>
+                {vessels.map(v => (
+                  <option key={v.id} value={String(v.id)}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                    <th className="px-6 py-4">Date & Time (UTC)</th>
+                    <th className="px-6 py-4">Vessel</th>
+                    <th className="px-6 py-4">Voyage</th>
+                    <th className="px-6 py-4">Port</th>
+                    <th className="px-6 py-4">EU/UK Status</th>
+                    <th className="px-6 py-4">Operation</th>
+                    <th className="px-6 py-4">HSFO Departure</th>
+                    <th className="px-6 py-4">FOC Port</th>
+                    <th className="px-6 py-4">Attachment</th>
+                    <th className="px-6 py-4">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-blue-50 text-sm">
+                  {filteredReports.map(report => (
                   <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
                     <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
                     <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
                     <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
                     <td className="px-6 py-4">{report.departure_port}</td>
+                    <td className="px-6 py-4 uppercase text-[10px] font-bold text-slate-500">{report.eu_uk_status}</td>
                     <td className="px-6 py-4">
                       <span className="px-2 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-full uppercase">
                         {report.operation_type}
@@ -5550,7 +6419,7 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
                 ))}
                 {reports.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-6 py-12 text-center text-slate-400 font-medium">
+                    <td colSpan={10} className="px-6 py-12 text-center text-slate-400 font-medium">
                       No departure reports found.
                     </td>
                   </tr>
@@ -5559,15 +6428,20 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
             </table>
           </div>
         </div>
-      )}
+      </div>
+    )}
     </div>
   );
 };
 
 const AdminPanel = ({ 
   token, teams, vessels, certs, setCerts, onRefresh, notify,
-  previewFile, setPreviewFile, setTempPreviewUrl, setOcrHighlights, isRecognizing, setIsRecognizing,
-  subView
+  previewFile, setPreviewFile, setTempPreviewUrl, isRecognizing, setIsRecognizing,
+  subView,
+  editingVessel, setEditingVessel, editingVesselPhoto, setEditingVesselPhoto, handleUpdateVessel, handleDeleteVessel,
+  editingCert, setEditingCert, newCertFile, setNewCertFile, handleUpdateCert, handleDeleteCert,
+  confirmDialog, setConfirmDialog,
+  uploadFileType, setUploadFileType
 }: { 
   token: string, 
   teams: Team[], 
@@ -5579,29 +6453,39 @@ const AdminPanel = ({
   previewFile: FileData | null,
   setPreviewFile: (file: FileData | null) => void,
   setTempPreviewUrl: (url: string | null) => void,
-  setOcrHighlights: (highlights: any[]) => void,
   isRecognizing: boolean,
   setIsRecognizing: (val: boolean) => void,
-  subView?: string
+  subView?: string,
+  editingVessel: Vessel | null,
+  setEditingVessel: (v: Vessel | null) => void,
+  editingVesselPhoto: File | null,
+  setEditingVesselPhoto: (f: File | null) => void,
+  handleUpdateVessel: () => Promise<void>,
+  handleDeleteVessel: (id: number) => Promise<void>,
+  editingCert: Certificate | null,
+  setEditingCert: (c: Certificate | null) => void,
+  newCertFile: File | null,
+  setNewCertFile: (f: File | null) => void,
+  handleUpdateCert: () => Promise<void>,
+  handleDeleteCert: (id: number) => Promise<void>,
+  confirmDialog: any,
+  setConfirmDialog: any,
+  uploadFileType: 'certificate' | 'supporting',
+  setUploadFileType: (type: 'certificate' | 'supporting') => void
 }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [newVesselName, setNewVesselName] = useState('');
   const [newVesselTeam, setNewVesselTeam] = useState('');
   const [newVesselOwner, setNewVesselOwner] = useState('Nissen');
   const [newVesselPhoto, setNewVesselPhoto] = useState<File | null>(null);
-  const [editingVessel, setEditingVessel] = useState<Vessel | null>(null);
-  const [editingVesselPhoto, setEditingVesselPhoto] = useState<File | null>(null);
   const [newCertName, setNewCertName] = useState('');
   const [newCertVessel, setNewCertVessel] = useState('');
   const [newCertTeam, setNewCertTeam] = useState('');
   const [newCertExp, setNewCertExp] = useState('');
   const [newCertIssueDate, setNewCertIssueDate] = useState('');
   const [newCertNumber, setNewCertNumber] = useState('');
-  // const [isRecognizing, setIsRecognizing] = useState(false); // Remove local state
   const [newCertAccessType, setNewCertAccessType] = useState<'office' | 'vessel' | 'any'>('office');
-  const [newCertFile, setNewCertFile] = useState<File | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [editingCert, setEditingCert] = useState<Certificate | null>(null);
   const [deviceRequests, setDeviceRequests] = useState<DeviceRegistrationRequest[]>([]);
   const [registeredDevices, setRegisteredDevices] = useState<RegisteredDevice[]>([]);
   const [deviceToRemove, setDeviceToRemove] = useState<number | null>(null);
@@ -5706,19 +6590,6 @@ const AdminPanel = ({
     }
   }, [isVessel, user.vessel_id, vessels]);
 
-  const [confirmDialog, setConfirmDialog] = useState<{
-    isOpen: boolean;
-    title: string;
-    message: string;
-    onConfirm: () => void;
-  }>({
-    isOpen: false,
-    title: '',
-    message: '',
-    onConfirm: () => {},
-  });
-
-  // Add User State
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState<'admin' | 'user' | 'vessel' | 'team_pic'>('user');
@@ -5915,120 +6786,45 @@ const AdminPanel = ({
     }
   };
 
-  const handleUpdateVessel = async () => {
-    if (!editingVessel || !editingVessel.name) {
-      notify('error', 'Vessel name is required');
-      return;
-    }
-    try {
-      const formData = new FormData();
-      formData.append('name', editingVessel.name);
-      formData.append('team_id', editingVessel.team_id ? String(editingVessel.team_id) : '');
-      formData.append('owner', editingVessel.owner || 'Nissen');
-      if (editingVesselPhoto) {
-        formData.append('photo', editingVesselPhoto);
-      }
-
-      const res = await fetch(`/api/vessels/${editingVessel.id}`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      });
-      if (res.ok) {
-        notify('success', 'Vessel updated successfully');
-        setEditingVessel(null);
-        setEditingVesselPhoto(null);
-        onRefresh();
-      } else {
-        const data = await res.json();
-        notify('error', data.error || 'Failed to update vessel');
-      }
-    } catch (err) {
-      notify('error', 'Connection error occurred');
-    }
-  };
-
-  const handleDeleteVessel = async (id: number) => {
-    setConfirmDialog({
-      isOpen: true,
-      title: 'Delete Vessel',
-      message: 'Are you sure you want to delete this vessel? This will also delete all associated certificates.',
-      onConfirm: async () => {
-        try {
-          const res = await fetch(`/api/vessels/${id}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (res.ok) {
-            notify('success', 'Vessel deleted successfully');
-            onRefresh();
-          } else {
-            notify('error', 'Failed to delete vessel');
-          }
-        } catch (err) {
-          notify('error', 'Connection error occurred');
-        }
-      }
-    });
-  };
-
   const handleAddCert = async () => {
-    const vesselId = editingCert ? editingCert.vessel_id : (isVessel ? user.vessel_id : newCertVessel);
-    const teamId = editingCert ? editingCert.team_id : newCertTeam;
-    const name = editingCert ? editingCert.name : newCertName;
-    const certNumber = editingCert ? editingCert.certificate_number : newCertNumber;
-    const issueDate = editingCert ? editingCert.date_issued : newCertIssueDate;
-    const expDate = editingCert ? editingCert.expiration_date : newCertExp;
-    const accessType = editingCert ? editingCert.access_type : (isVessel ? 'vessel' : newCertAccessType);
+    const vesselId = isVessel ? user.vessel_id : newCertVessel;
+    const teamId = newCertTeam;
+    const name = newCertName;
+    const certNumber = newCertNumber;
+    const issueDate = newCertIssueDate;
+    const expDate = newCertExp;
+    const accessType = isVessel ? 'vessel' : newCertAccessType;
 
     if (!name || (!vesselId && !teamId) || !expDate) {
       notify('error', 'Certificate name, expiration date, and either a vessel or team are required');
       return;
     }
     try {
-      const url = editingCert ? `/api/certificates/${editingCert.id}` : '/api/certificates';
-      const method = editingCert ? 'PUT' : 'POST';
+      const url = '/api/certificates';
+      const method = 'POST';
       
       let res;
-      if (editingCert) {
-        res = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ 
-            vessel_id: vesselId === 'all' ? 'all' : (vesselId ? Number(vesselId) : null), 
-            team_id: teamId ? Number(teamId) : null,
-            name: name, 
-            certificate_number: certNumber,
-            date_issued: issueDate,
-            expiration_date: expDate,
-            access_type: accessType
-          }),
-        });
-      } else {
-        const formData = new FormData();
-        formData.append('vessel_id', vesselId === 'all' ? 'all' : (vesselId ? String(vesselId) : ''));
-        formData.append('team_id', teamId ? String(teamId) : '');
-        formData.append('name', name);
-        formData.append('certificate_number', certNumber || '');
-        formData.append('date_issued', issueDate || '');
-        formData.append('expiration_date', expDate);
-        formData.append('access_type', accessType);
-        if (newCertFile) {
-          formData.append('file', newCertFile);
-        }
-
-        res = await fetch(url, {
-          method,
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData,
-        });
+      const formData = new FormData();
+      formData.append('vessel_id', vesselId === 'all' ? 'all' : (vesselId ? String(vesselId) : ''));
+      formData.append('team_id', teamId ? String(teamId) : '');
+      formData.append('name', name);
+      formData.append('certificate_number', certNumber || '');
+      formData.append('date_issued', issueDate || '');
+      formData.append('expiration_date', expDate);
+      formData.append('access_type', accessType);
+      if (newCertFile) {
+        formData.append('file', newCertFile);
+        formData.append('file_type', uploadFileType);
       }
 
+      res = await fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+
       if (res.ok) {
-        notify('success', editingCert ? 'Certificate updated successfully' : 'Certificate(s) assigned successfully');
-        if (editingCert) {
-          setCerts(prev => prev.map(c => c.id === editingCert.id ? { ...c, expiration_date: expDate || c.expiration_date, date_issued: issueDate, certificate_number: certNumber, name: name || c.name } : c));
-        }
+        notify('success', 'Certificate(s) assigned successfully');
         setNewCertName('');
         setNewCertNumber('');
         setNewCertIssueDate('');
@@ -6037,38 +6833,13 @@ const AdminPanel = ({
         setNewCertTeam('');
         setNewCertAccessType('office');
         setNewCertFile(null);
-        setEditingCert(null);
         onRefresh();
       } else {
-        notify('error', editingCert ? 'Failed to update certificate' : 'Failed to assign certificate');
+        notify('error', 'Failed to assign certificate');
       }
     } catch (err) {
       notify('error', 'Connection error occurred');
     }
-  };
-
-  const handleDeleteCert = async (id: number) => {
-    setConfirmDialog({
-      isOpen: true,
-      title: 'Delete Certificate',
-      message: 'Are you sure you want to delete this certificate?',
-      onConfirm: async () => {
-        try {
-          const res = await fetch(`/api/certificates/${id}`, {
-            method: 'DELETE',
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          if (res.ok) {
-            notify('success', 'Certificate deleted successfully');
-            onRefresh();
-          } else {
-            notify('error', 'Failed to delete certificate');
-          }
-        } catch (err) {
-          notify('error', 'Connection error occurred');
-        }
-      }
-    });
   };
 
   const handleAddUser = async () => {
@@ -6308,17 +7079,25 @@ const AdminPanel = ({
                     <input 
                       type="file" 
                       accept="image/*"
-                      onChange={(e) => setNewVesselPhoto(e.target.files?.[0] || null)}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        if (file && file.size > MAX_FILE_SIZE) {
+                          notify('error', 'File is too large (max 20MB)');
+                          e.target.value = '';
+                          return;
+                        }
+                        setNewVesselPhoto(file);
+                      }}
                       className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                     />
                   </div>
-                  <button 
-                    onClick={handleAddVessel}
-                    className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
-                  >
-                    Add Vessel
-                  </button>
                 </div>
+                <button 
+                  onClick={handleAddVessel}
+                  className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
+                >
+                  Add Vessel
+                </button>
               </section>
             )}
 
@@ -6417,20 +7196,42 @@ const AdminPanel = ({
                 <div className="space-y-1">
                   <div className="flex items-center justify-between ml-1">
                     <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Document (Optional)</label>
-                    {isRecognizing && (
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 animate-pulse flex items-center gap-1">
-                        <RefreshCw className="w-2 h-2 animate-spin" /> Recognizing...
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <button 
+                        type="button"
+                        onClick={() => setUploadFileType('certificate')}
+                        className={cn(
+                          "px-2 py-0.5 rounded text-[8px] font-bold uppercase transition-colors",
+                          uploadFileType === 'certificate' ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400"
+                        )}
+                      >
+                        Cert
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => setUploadFileType('supporting')}
+                        className={cn(
+                          "px-2 py-0.5 rounded text-[8px] font-bold uppercase transition-colors",
+                          uploadFileType === 'supporting' ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400"
+                        )}
+                      >
+                        Support
+                      </button>
+                    </div>
                   </div>
-                  <input 
-                    type="file" 
-                    onChange={async (e) => {
+                  <div className="relative">
+                    <input 
+                      type="file" 
+                      onChange={async (e) => {
                       const file = e.target.files?.[0] || null;
+                      if (file && file.size > MAX_FILE_SIZE) {
+                        notify('error', 'File is too large (max 20MB)');
+                        e.target.value = '';
+                        return;
+                      }
                       setNewCertFile(file);
                       if (file) {
                         setIsRecognizing(true);
-                        setOcrHighlights([]);
                         
                         // Set preview file (virtual)
                         setPreviewFile({
@@ -6438,6 +7239,7 @@ const AdminPanel = ({
                           certificate_id: -1,
                           filename: file.name,
                           original_name: file.name,
+                          file_type: uploadFileType,
                           upload_date: new Date().toISOString()
                         });
 
@@ -6450,18 +7252,6 @@ const AdminPanel = ({
                         try {
                           const data = await recognizeCertText(file);
                           
-                          // Prepare highlights
-                          const highlights = [];
-                          const toArr = (r: any) => r ? [r.ymin, r.xmin, r.ymax, r.xmax] : null;
-
-                          if (data.vessel_rect) highlights.push({ label: 'Vessel', rect: toArr(data.vessel_rect), value: data.vessel_name });
-                          if (data.cert_type_rect) highlights.push({ label: 'Cert Name', rect: toArr(data.cert_type_rect), value: data.cert_type });
-                          if (data.number_rect) highlights.push({ label: 'Cert No', rect: toArr(data.number_rect), value: data.certificate_number });
-                          if (data.issued_rect) highlights.push({ label: 'Issued', rect: toArr(data.issued_rect), value: data.date_issued });
-                          if (data.expiration_rect) highlights.push({ label: 'Expiry', rect: toArr(data.expiration_rect), value: data.expiration_date });
-                          
-                          setOcrHighlights(highlights);
-
                           if (data.cert_type) setNewCertName(data.cert_type);
                           if (data.certificate_number) setNewCertNumber(data.certificate_number);
                           if (data.date_issued) setNewCertIssueDate(data.date_issued);
@@ -6488,6 +7278,12 @@ const AdminPanel = ({
                     }}
                     className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                   />
+                  {isRecognizing && (
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                      <RefreshCw className="w-3 h-3 text-blue-600 animate-spin" />
+                    </div>
+                  )}
+                </div>
                   {newCertFile && (
                     <button
                       type="button"
@@ -6497,6 +7293,7 @@ const AdminPanel = ({
                           certificate_id: -1,
                           filename: newCertFile.name,
                           original_name: newCertFile.name,
+                          file_type: uploadFileType,
                           upload_date: new Date().toISOString()
                         });
                       }}
@@ -6610,7 +7407,7 @@ const AdminPanel = ({
                         >
                           <Edit2 className="w-4 h-4" />
                         </button>
-                        {isAdmin && (
+                        {(isAdmin || isTeamPic) && (
                           <button 
                             onClick={() => handleDeleteVessel(v.id)}
                             className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
@@ -7427,209 +8224,8 @@ const AdminPanel = ({
         </div>
       )}
 
-      {/* Modals */}
       {createPortal(
         <AnimatePresence>
-        {editingVessel && (
-          <>
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setEditingVessel(null)}
-                className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[150]"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md bg-white rounded-3xl shadow-2xl z-[160] overflow-hidden"
-              >
-              <div className="p-8">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xl font-bold text-slate-900">Edit Vessel</h3>
-                  <button onClick={() => setEditingVessel(null)} className="p-2 hover:bg-slate-100 rounded-lg text-slate-400">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-                <div className="space-y-4">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel Name</label>
-                    <input 
-                      type="text" 
-                      placeholder="Vessel Name" 
-                      value={editingVessel.name}
-                      onChange={(e) => setEditingVessel({...editingVessel, name: e.target.value})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Team Assignment</label>
-                    <select 
-                      value={editingVessel.team_id || ''}
-                      onChange={(e) => setEditingVessel({...editingVessel, team_id: Number(e.target.value)})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                    >
-                      <option value="">Select Team</option>
-                      {[...teams].sort((a, b) => a.name.localeCompare(b.name)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Owner</label>
-                    <select 
-                      value={editingVessel.owner || 'Nissen'}
-                      onChange={(e) => setEditingVessel({...editingVessel, owner: e.target.value as any})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                    >
-                      <option value="Nissen">Nissen</option>
-                      <option value="Goodwill">Goodwill</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel Photo (Optional)</label>
-                    <input 
-                      type="file" 
-                      accept="image/*"
-                      onChange={(e) => setEditingVesselPhoto(e.target.files?.[0] || null)}
-                      className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                    />
-                  </div>
-                  <button 
-                    onClick={handleUpdateVessel}
-                    className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
-                  >
-                    Update Vessel
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-
-          {editingCert && (
-            <>
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setEditingCert(null)}
-                className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[150]"
-              />
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md bg-white rounded-3xl shadow-2xl z-[160] overflow-hidden"
-              >
-              <div className="p-8">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xl font-bold text-slate-900">Edit Certificate</h3>
-                  <button onClick={() => setEditingCert(null)} className="p-2 hover:bg-slate-100 rounded-lg text-slate-400">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel</label>
-                      <select 
-                        value={editingCert.vessel_id || ''}
-                        disabled={isVessel}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          const vessel = vessels.find(v => v.id === Number(val));
-                          setEditingCert({
-                            ...editingCert, 
-                            vessel_id: val ? Number(val) : null,
-                            team_id: vessel ? vessel.team_id : (val === '' ? '' : editingCert.team_id) as any
-                          });
-                        }}
-                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50"
-                      >
-                        {!isVessel && <option value="">None</option>}
-                        {vessels.filter(v => !isVessel || v.id === user.vessel_id).map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                      </select>
-                    </div>
-
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Team</label>
-                      <select 
-                        value={editingCert.team_id || ''}
-                        onChange={(e) => setEditingCert({...editingCert, team_id: Number(e.target.value)})}
-                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                        disabled={!!editingCert.vessel_id}
-                      >
-                        <option value="">Select Team</option>
-                        {[...teams].sort((a, b) => a.name.localeCompare(b.name)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Name</label>
-                    <input 
-                      type="text" 
-                      placeholder="Certificate Name" 
-                      value={editingCert.name}
-                      onChange={(e) => setEditingCert({...editingCert, name: e.target.value})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Number</label>
-                    <input 
-                      type="text" 
-                      placeholder="Cert #" 
-                      value={editingCert.certificate_number || ''}
-                      onChange={(e) => setEditingCert({...editingCert, certificate_number: e.target.value})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Date Issued</label>
-                      <input 
-                        type="date" 
-                        value={editingCert.date_issued || ''}
-                        onChange={(e) => setEditingCert({...editingCert, date_issued: e.target.value})}
-                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
-                      <input 
-                        type="date" 
-                        value={editingCert.expiration_date}
-                        onChange={(e) => setEditingCert({...editingCert, expiration_date: e.target.value})}
-                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Access Type</label>
-                    <select 
-                      value={editingCert.access_type}
-                      disabled={isVessel}
-                      onChange={(e) => setEditingCert({...editingCert, access_type: e.target.value as any})}
-                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50"
-                    >
-                      {!isVessel && <option value="office">Office Only</option>}
-                      <option value="vessel">Ship certificate</option>
-                      {!isVessel && <option value="any">Any</option>}
-                    </select>
-                  </div>
-                  <button 
-                    onClick={handleAddCert}
-                    className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
-                  >
-                    Update Certificate
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-
           {editingUser && (
             <>
               <motion.div 
