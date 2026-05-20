@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { GoogleGenAI, Type } from "@google/genai";
 import { 
   Ship, 
   FileText, 
@@ -48,7 +47,11 @@ import {
   Compass,
   Navigation,
   Paperclip,
-  Download
+  Download,
+  Droplets,
+  Wrench,
+  FlaskConical,
+  Waves
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isBefore, addDays, parseISO } from 'date-fns';
@@ -504,140 +507,82 @@ const isGeminiSupportedMimeType = (mimeType: string) => {
   return supported.includes(mimeType);
 };
 
-const fileToDataPart = async (file: File) => {
-  return new Promise<{ inlineData: { data: string, mimeType: string } }>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = (reader.result as string).split(',')[1];
-      resolve({
-        inlineData: {
-          data: base64,
-          mimeType: file.type,
-        },
-      });
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-};
-
 const recognizeCertText = async (file: File) => {
   if (!isGeminiSupportedMimeType(file.type)) {
     console.warn(`OCR skipped: MIME type ${file.type} is not supported by Gemini multimodal input.`);
     return {};
   }
-  const ai = new GoogleGenAI({ apiKey: (process.env as any).GEMINI_API_KEY });
-  const dataPart = await fileToDataPart(file);
+
+  // Generate a robust unique cache key for this file
+  const cacheKey = `comos_ocr_v2_${file.name.replace(/[^a-zA-Z0-9]/g, '_')}_${file.size}_${file.lastModified}`;
   
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: {
-      parts: [
-        dataPart,
-        { text: `You are a high-precision OCR engine. Your task is to extract core certificate metadata and their exact spatial locations.
-          
-          COORDINATE SYSTEM:
-          - Use a 0-1000 normalized coordinate system for "rect".
-          - Format: {"ymin": int, "xmin": int, "ymax": int, "xmax": int}
-          - 0,0 is TOP-LEFT. 1000,1000 is BOTTOM-RIGHT.
-          
-          RULES:
-          1. The "rect" MUST be a TIGHT bounding box around the SPECIFIC text value extracted.
-          2. EXCLUDE labels from the rect (e.g., if the document says "Vessel: MARITIME GOVERNOR", your vessel_name is "MARITIME GOVERNOR" and the rect should ONLY cover "MARITIME GOVERNOR").
-          3. For dates, if they are spread across the page, provide the rect that covers the full date string.
-          4. If the certificate title (cert_type) is multi-line, the rect should encompass all lines of the title.
-          5. Accuracy is paramount. If you are unsure of the exact location, provide your best estimate based on the visual flow.
+  // 1. Check local cache
+  try {
+    const cachedData = localStorage.getItem(cacheKey);
+    if (cachedData) {
+      const parsed = JSON.parse(cachedData);
+      console.log("OCR Result retrieved instantly from client-side cache:", parsed);
+      return parsed;
+    }
+  } catch (err) {
+    console.warn("Error reading from OCR cache:", err);
+  }
 
-          FIELDS TO EXTRACT:
-          - vessel_name: Name of the ship/vessel.
-          - cert_type: Full title of the certificate.
-          - certificate_number: The unique ID/No of the document.
-          - date_issued: When it was issued (YYYY-MM-DD).
-          - expiration_date: When it expires (YYYY-MM-DD).
+  const token = localStorage.getItem('token');
+  const formData = new FormData();
+  formData.append('file', file);
 
-          Return JSON only.` }
-      ]
-    },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          vessel_name: { type: Type.STRING, nullable: true },
-          vessel_rect: { 
-            type: Type.OBJECT, 
-            properties: {
-              ymin: { type: Type.NUMBER },
-              xmin: { type: Type.NUMBER },
-              ymax: { type: Type.NUMBER },
-              xmax: { type: Type.NUMBER }
-            },
-            description: "Bounding box of the vessel name value", 
-            nullable: true 
-          },
-          cert_type: { type: Type.STRING, nullable: true },
-          cert_type_rect: { 
-            type: Type.OBJECT, 
-            properties: {
-              ymin: { type: Type.NUMBER },
-              xmin: { type: Type.NUMBER },
-              ymax: { type: Type.NUMBER },
-              xmax: { type: Type.NUMBER }
-            },
-            description: "Bounding box of the certificate title", 
-            nullable: true 
-          },
-          certificate_number: { type: Type.STRING, nullable: true },
-          number_rect: { 
-            type: Type.OBJECT, 
-            properties: {
-              ymin: { type: Type.NUMBER },
-              xmin: { type: Type.NUMBER },
-              ymax: { type: Type.NUMBER },
-              xmax: { type: Type.NUMBER }
-            },
-            description: "Bounding box of the certificate number value", 
-            nullable: true 
-          },
-          date_issued: { type: Type.STRING, description: "YYYY-MM-DD", nullable: true },
-          issued_rect: { 
-            type: Type.OBJECT, 
-            properties: {
-              ymin: { type: Type.NUMBER },
-              xmin: { type: Type.NUMBER },
-              ymax: { type: Type.NUMBER },
-              xmax: { type: Type.NUMBER }
-            },
-            description: "Bounding box of the issue date value", 
-            nullable: true 
-          },
-          expiration_date: { type: Type.STRING, description: "YYYY-MM-DD", nullable: true },
-          expiration_rect: { 
-            type: Type.OBJECT, 
-            properties: {
-              ymin: { type: Type.NUMBER },
-              xmin: { type: Type.NUMBER },
-              ymax: { type: Type.NUMBER },
-              xmax: { type: Type.NUMBER }
-            },
-            description: "Bounding box of the expiration date value", 
-            nullable: true 
-          }
-        }
+  let response: Response | null = null;
+  let retries = 2; // Retry twice on transient API failures
+  let delayMs = 1500;
+
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      response = await fetch('/api/ocr', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+
+      if (response.ok) {
+        break; // Success!
+      }
+
+      // If unauthorized or bad request, don't retry
+      if (response.status === 401 || response.status === 400 || response.status === 403) {
+        break;
+      }
+    } catch (fetchErr) {
+      if (attempt === retries + 1) {
+        throw fetchErr;
       }
     }
-  });
-  
-  try {
-    const text = response.text || '';
-    const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    const data = JSON.parse(jsonStr);
-    console.log("Gemini OCR Result:", data);
-    return data;
-  } catch (e) {
-    console.error("Failed to parse Gemini response:", e, response.text);
-    return {};
+
+    if (attempt <= retries) {
+      console.warn(`OCR client-side request attempt ${attempt} failed or timed out. Retrying in ${delayMs}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      delayMs *= 2;
+    }
   }
+
+  if (!response || !response.ok) {
+    const errData = await response?.json().catch(() => ({})).then(data => data || {});
+    throw new Error(errData.error || 'Failed to analyze document.');
+  }
+
+  const data = await response.json();
+  console.log("OCR Result from server:", data);
+
+  // 2. Store in local cache for instant future retrieval
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+  } catch (cacheStoreErr) {
+    console.warn("Failed to save OCR result to cache:", cacheStoreErr);
+  }
+
+  return data;
 };
 
 // --- Components ---
@@ -1000,7 +945,7 @@ const ChangePasswordModal: React.FC<{
 
 
 const SidebarContent = ({ 
-  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, onLogout, setIsChangePasswordOpen 
+  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, onLogout, setIsChangePasswordOpen 
 }: { 
   view: string, 
   setView: (v: any) => void, 
@@ -1010,6 +955,18 @@ const SidebarContent = ({
   setIsAdminTreeOpen: (v: boolean) => void,
   isVoyageReportOpen: boolean,
   setIsVoyageReportOpen: (v: boolean) => void,
+  isMonitoringOpen: boolean,
+  setIsMonitoringOpen: (v: boolean) => void,
+  isDefectsOpen: boolean,
+  setIsDefectsOpen: (v: boolean) => void,
+  isSparePartsOpen: boolean,
+  setIsSparePartsOpen: (v: boolean) => void,
+  isBunkerOpen: boolean,
+  setIsBunkerOpen: (v: boolean) => void,
+  isLubeOilOpen: boolean,
+  setIsLubeOilOpen: (v: boolean) => void,
+  isStoreChemicalsOpen: boolean,
+  setIsStoreChemicalsOpen: (v: boolean) => void,
   onLogout: () => void,
   setIsChangePasswordOpen: (v: boolean) => void
 }) => (
@@ -1117,6 +1074,281 @@ const SidebarContent = ({
         </AnimatePresence>
       </div>
 
+      {/* Monitoring Group */}
+      <div className="space-y-1">
+        <button 
+          onClick={() => setIsMonitoringOpen(!isMonitoringOpen)}
+          className={cn(
+            "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <Activity className="w-4 h-4" /> Monitoring
+          </div>
+          <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isMonitoringOpen ? "rotate-180" : "")} />
+        </button>
+        <AnimatePresence>
+          {isMonitoringOpen && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
+            >
+              {/* Defects */}
+              <div className="space-y-1">
+                <button 
+                  onClick={() => setIsDefectsOpen(!isDefectsOpen)}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    ['defects_5_2', 'defects_1_6'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="w-4 h-4" /> Defects
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isDefectsOpen ? "rotate-180" : "")} />
+                </button>
+                <AnimatePresence>
+                  {isDefectsOpen && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden pl-4 space-y-1"
+                    >
+                      <button 
+                        onClick={() => { setView('defects_5_2'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'defects_5_2' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> COMI-SMS-5-2
+                      </button>
+                      <button 
+                        onClick={() => { setView('defects_1_6'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'defects_1_6' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> COMI-SMS-1-6
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Spare Parts Requisition */}
+              <div className="space-y-1">
+                <button 
+                  onClick={() => setIsSparePartsOpen(!isSparePartsOpen)}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    ['spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <Package className="w-4 h-4" /> Spare Parts Requisition
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isSparePartsOpen ? "rotate-180" : "")} />
+                </button>
+                <AnimatePresence>
+                  {isSparePartsOpen && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden pl-4 space-y-1"
+                    >
+                      <button 
+                        onClick={() => { setView('spare_requisition_ship'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'spare_requisition_ship' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Requisition(Ship)
+                      </button>
+                      <button 
+                        onClick={() => { setView('spare_quotation_pic'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'spare_quotation_pic' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Quotation(PIC)
+                      </button>
+                      <button 
+                        onClick={() => { setView('spare_logistic_pic'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'spare_logistic_pic' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Logistic(PIC)
+                      </button>
+                      <button 
+                        onClick={() => { setView('spare_delivery_note_ship'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'spare_delivery_note_ship' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Delivery Note(Ship)
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Bunker */}
+              <div className="space-y-1">
+                <button 
+                  onClick={() => setIsBunkerOpen(!isBunkerOpen)}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    ['bunker_bdn', 'bunker_fuel_analysis'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <Droplets className="w-4 h-4" /> Bunker
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isBunkerOpen ? "rotate-180" : "")} />
+                </button>
+                <AnimatePresence>
+                  {isBunkerOpen && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden pl-4 space-y-1"
+                    >
+                      <button 
+                        onClick={() => { setView('bunker_bdn'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'bunker_bdn' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> BDN
+                      </button>
+                      <button 
+                        onClick={() => { setView('bunker_fuel_analysis'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'bunker_fuel_analysis' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Fuel Analysis
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Lube Oil */}
+              <div className="space-y-1">
+                <button 
+                  onClick={() => setIsLubeOilOpen(!isLubeOilOpen)}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    ['lube_oil_analysis', 'lube_oil_requisition'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <Waves className="w-4 h-4" /> Lube Oil
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isLubeOilOpen ? "rotate-180" : "")} />
+                </button>
+                <AnimatePresence>
+                  {isLubeOilOpen && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden pl-4 space-y-1"
+                    >
+                      <button 
+                        onClick={() => { setView('lube_oil_analysis'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'lube_oil_analysis' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Lube Oil Analysis
+                      </button>
+                      <button 
+                        onClick={() => { setView('lube_oil_requisition'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'lube_oil_requisition' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Lube Oil Requisition
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Store and Chemicals */}
+              <div className="space-y-1">
+                <button 
+                  onClick={() => setIsStoreChemicalsOpen(!isStoreChemicalsOpen)}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    ['store_requisition', 'chemical_requisition'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <FlaskConical className="w-4 h-4" /> Store and Chemicals
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isStoreChemicalsOpen ? "rotate-180" : "")} />
+                </button>
+                <AnimatePresence>
+                  {isStoreChemicalsOpen && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden pl-4 space-y-1"
+                    >
+                      <button 
+                        onClick={() => { setView('store_requisition'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'store_requisition' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Store Requisition
+                      </button>
+                      <button 
+                        onClick={() => { setView('chemical_requisition'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'chemical_requisition' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Chemical Requisition
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
       {user.role === 'vessel' && (
         <>
           <button 
@@ -1126,7 +1358,7 @@ const SidebarContent = ({
               view === 'admin_add_cert' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
             )}
           >
-            <Plus className="w-4 h-4" /> Add Certificate
+            <Plus className="w-4 h-4" /> Add Certificate/Service Report
           </button>
           <button 
             onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
@@ -1135,7 +1367,7 @@ const SidebarContent = ({
               view === 'admin_cert_list' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
             )}
           >
-            <FileText className="w-4 h-4" /> Certificate List
+            <FileText className="w-4 h-4" /> Certificate/Service Report List
           </button>
         </>
       )}
@@ -1179,7 +1411,7 @@ const SidebarContent = ({
                     view === 'admin_add_cert' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                   )}
                 >
-                  <Plus className="w-3 h-3" /> Add Certificate
+                  <Plus className="w-3 h-3" /> Add Certificate/Service Report
                 </button>
                 <button 
                   onClick={() => { setView('admin_vessel_list'); setIsSidebarOpen(false); }}
@@ -1197,7 +1429,7 @@ const SidebarContent = ({
                     view === 'admin_cert_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                   )}
                 >
-                  <FileText className="w-3 h-3" /> Certificate List
+                  <FileText className="w-3 h-3" /> Certificate/Service Report List
                 </button>
                 <button 
                   onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
@@ -1262,9 +1494,23 @@ const SidebarContent = ({
 );
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'store_requisition' | 'chemical_requisition'>('dashboard');
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
+  const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
+  const [isDefectsOpen, setIsDefectsOpen] = useState(false);
+  const [isSparePartsOpen, setIsSparePartsOpen] = useState(false);
+  const [isBunkerOpen, setIsBunkerOpen] = useState(false);
+  const [isLubeOilOpen, setIsLubeOilOpen] = useState(false);
+  const [isStoreChemicalsOpen, setIsStoreChemicalsOpen] = useState(false);
+  
+  const getLatestArrivalOperationType = (vesselId: number) => {
+    const reports = arrivalReports
+      .filter(r => r.vessel_id === vesselId)
+      .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
+    return reports.length > 0 ? reports[0].operation_type : 'N/A';
+  };
+
   const [certs, setCerts] = useState<Certificate[]>([]);
   const [vessels, setVessels] = useState<Vessel[]>([]);
   const [departureReports, setDepartureReports] = useState<DepartureReport[]>([]);
@@ -1441,7 +1687,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
   const handleUpdateCert = async () => {
     if (!editingCert || !editingCert.name || !editingCert.expiration_date) {
-      notify('error', 'Certificate name and expiration date are required');
+      notify('error', 'Certificate/Service Report name and expiration date are required');
       return;
     }
     try {
@@ -1460,7 +1706,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       });
 
       if (res.ok) {
-        notify('success', 'Certificate updated successfully');
+        notify('success', 'Certificate/Service Report updated successfully');
         setEditingCert(null);
         fetchData();
       } else {
@@ -1474,8 +1720,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const handleDeleteCert = async (id: number) => {
     setConfirmDialog({
       isOpen: true,
-      title: 'Delete Certificate',
-      message: 'Are you sure you want to delete this certificate?',
+      title: 'Delete Certificate/Service Report',
+      message: 'Are you sure you want to delete this certificate/service report?',
       onConfirm: async () => {
         try {
           const res = await fetch(`/api/certificates/${id}`, {
@@ -1483,10 +1729,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             headers: { Authorization: `Bearer ${token}` },
           });
           if (res.ok) {
-            notify('success', 'Certificate deleted successfully');
+            notify('success', 'Certificate/Service Report deleted successfully');
             fetchData();
           } else {
-            notify('error', 'Failed to delete certificate');
+            notify('error', 'Failed to delete certificate/service report');
           }
         } catch (err) {
           notify('error', 'Connection error occurred');
@@ -1673,7 +1919,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         }),
       });
       if (res.ok) {
-        notify('success', 'Certificate fields updated successfully');
+        notify('success', 'Certificate/Service Report fields updated successfully');
         setCerts(prev => prev.map(c => c.id === selectedCert.id ? { 
           ...c, 
           expiration_date: newExpDate,
@@ -1764,7 +2010,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         fetchCertDetails(selectedCert, true);
         
         // 2. Perform OCR recognition
-        if (isSupported) {
+        if (isSupported && uploadFileType === 'certificate') {
           try {
             const ocrData = await recognizeCertText(file);
             
@@ -1789,7 +2035,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
               setSelectedCert(updatedCert);
               setNewExpDate(updatedCert.expiration_date);
-              notify('success', 'Information recognized and autofilled. Bounding boxes are highlighted in the preview.');
+              notify('success', 'Information recognized and autofilled. Please verify the fields.');
             } else {
               notify('info', 'Document uploaded, but no relevant certificate fields were recognized for autofill.');
             }
@@ -1993,6 +2239,18 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           setIsAdminTreeOpen={setIsAdminTreeOpen}
           isVoyageReportOpen={isVoyageReportOpen}
           setIsVoyageReportOpen={setIsVoyageReportOpen}
+          isMonitoringOpen={isMonitoringOpen}
+          setIsMonitoringOpen={setIsMonitoringOpen}
+          isDefectsOpen={isDefectsOpen}
+          setIsDefectsOpen={setIsDefectsOpen}
+          isSparePartsOpen={isSparePartsOpen}
+          setIsSparePartsOpen={setIsSparePartsOpen}
+          isBunkerOpen={isBunkerOpen}
+          setIsBunkerOpen={setIsBunkerOpen}
+          isLubeOilOpen={isLubeOilOpen}
+          setIsLubeOilOpen={setIsLubeOilOpen}
+          isStoreChemicalsOpen={isStoreChemicalsOpen}
+          setIsStoreChemicalsOpen={setIsStoreChemicalsOpen}
           onLogout={onLogout}
           setIsChangePasswordOpen={setIsChangePasswordOpen}
         />
@@ -2039,6 +2297,18 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   setIsAdminTreeOpen={setIsAdminTreeOpen}
                   isVoyageReportOpen={isVoyageReportOpen}
                   setIsVoyageReportOpen={setIsVoyageReportOpen}
+                  isMonitoringOpen={isMonitoringOpen}
+                  setIsMonitoringOpen={setIsMonitoringOpen}
+                  isDefectsOpen={isDefectsOpen}
+                  setIsDefectsOpen={setIsDefectsOpen}
+                  isSparePartsOpen={isSparePartsOpen}
+                  setIsSparePartsOpen={setIsSparePartsOpen}
+                  isBunkerOpen={isBunkerOpen}
+                  setIsBunkerOpen={setIsBunkerOpen}
+                  isLubeOilOpen={isLubeOilOpen}
+                  setIsLubeOilOpen={setIsLubeOilOpen}
+                  isStoreChemicalsOpen={isStoreChemicalsOpen}
+                  setIsStoreChemicalsOpen={setIsStoreChemicalsOpen}
                   onLogout={onLogout}
                   setIsChangePasswordOpen={setIsChangePasswordOpen}
                 />
@@ -2091,7 +2361,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
               <div className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-blue-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <h2 className="font-bold text-slate-900">All Certificates</h2>
+                  <h2 className="font-bold text-slate-900">All Certificates/Service Reports</h2>
                   <div className="flex items-center gap-2">
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
@@ -2131,7 +2401,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           <div className="flex items-center">Vessel / Team {getSortIcon('vessel_name')}</div>
                         </th>
                         <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('name')}>
-                          <div className="flex items-center">Certificate Name {getSortIcon('name')}</div>
+                          <div className="flex items-center">Certificate/Service Report Name {getSortIcon('name')}</div>
                         </th>
                         <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('expiration_date')}>
                           <div className="flex items-center">Expiration Date {getSortIcon('expiration_date')}</div>
@@ -2333,7 +2603,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <span className="font-bold text-slate-900 truncate max-w-[120px]">{vessel.next_port || 'N/A'}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-500">Total Certificates</span>
+                        <span className="text-slate-500">Total Certificates/Service Reports</span>
                         <span className="font-bold text-slate-900">{certs.filter(c => c.vessel_id === vessel.id).length}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
@@ -2477,6 +2747,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 updating={isSavingAll}
                 onUpdateRow={handleUpdateRoutingRow}
                 onSave={handleSaveAllRouting}
+                latestOperationType={getLatestArrivalOperationType(vessels[0].id)}
               />
             ) : (
               <div className="space-y-8">
@@ -2520,8 +2791,9 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               <th className="px-6 py-3 min-w-[200px]">Vessel</th>
                               <th className="px-6 py-3 min-w-[200px]">Destination / Next Port</th>
                               <th className="px-6 py-3 w-36">Status</th>
+                              <th className="px-6 py-3 w-40">Operation Type</th>
                               <th className="px-6 py-3 w-44">ETA / ATB (UTC)</th>
-                              <th className="px-6 py-3 w-44">ETD / ATD (UTC)</th>
+                              <th className="px-6 py-3 w-44">ETD/ATD at Arrival (UTC)</th>
                               <th className="px-6 py-3 min-w-[350px]">Cargo</th>
                             </tr>
                           </thead>
@@ -2568,11 +2840,14 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                       className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
                                     >
                                       <option value="">Select Status</option>
-                                      <option value="At sea">At sea</option>
-                                      <option value="In port">In port</option>
-                                      <option value="Anchor">Anchor</option>
-                                      <option value="Drifting">Drifting</option>
+                                      <option value="Laden">Laden</option>
+                                      <option value="Ballast">Ballast</option>
                                     </select>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <div className="px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs text-slate-500 italic">
+                                      {getLatestArrivalOperationType(v.id)}
+                                    </div>
                                   </td>
                                   <td className="px-6 py-4">
                                     <input 
@@ -2615,6 +2890,31 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           {view === 'slideshow' && user.role !== 'vessel' && (
             <div className="h-[calc(100vh-64px)]">
               <SlideshowView vessels={vessels} certs={certs} token={token} />
+            </div>
+          )}
+
+          {['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) && (
+            <div className="bg-white p-12 rounded-3xl border border-blue-100 shadow-sm flex flex-col items-center justify-center text-center animate-in fade-in zoom-in duration-500">
+               <div className="w-20 h-20 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
+                 {view.startsWith('defects') ? <AlertTriangle className="w-10 h-10 text-blue-600" /> : 
+                  view.startsWith('spare') ? <Package className="w-10 h-10 text-blue-600" /> : 
+                  view.startsWith('lube_oil') ? <Waves className="w-10 h-10 text-blue-600" /> :
+                  view.includes('requisition') && view.includes('store') ? <Package className="w-10 h-10 text-blue-600" /> :
+                  view.includes('chemical') ? <FlaskConical className="w-10 h-10 text-blue-600" /> :
+                  <Droplets className="w-10 h-10 text-blue-600" />}
+               </div>
+               <h2 className="text-2xl font-bold text-slate-900 mb-2">
+                 {view.toUpperCase().replace(/_/g, ' ')}
+               </h2>
+               <p className="text-slate-500 max-w-md">
+                 This module is currently under development. The detailed features and report forms for <b>{view.replace(/_/g, ' ')}</b> will be implemented soon.
+               </p>
+               <button 
+                 onClick={() => setView('dashboard')}
+                 className="mt-8 px-6 py-2 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-100"
+               >
+                 Back to Dashboard
+               </button>
             </div>
           )}
         </div>
@@ -2759,7 +3059,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           />
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">ETD / ATD (UTC)</label>
+                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">ETD/ATD at Arrival (UTC)</label>
                           <input 
                             type="datetime-local"
                             value={routeForm.etd_atd ? routeForm.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
@@ -2801,7 +3101,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       <div className="flex items-start gap-3">
                         <div className="p-2 bg-purple-100 rounded-lg shrink-0"><Anchor className="w-3.5 h-3.5 text-purple-600" /></div>
                         <div>
-                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">ETD / ATD (UTC)</p>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">ETD/ATD at Arrival (UTC)</p>
                           <p className="text-xs font-bold text-slate-900">{selectedVessel.etd_atd ? selectedVessel.etd_atd.replace('T', ' ') : 'Not Set'}</p>
                         </div>
                       </div>
@@ -2818,7 +3118,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
                 {/* Certificate Summary */}
                 <section>
-                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-4">Certificate Summary</h3>
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-4">Certificate/Service Report Summary</h3>
                   <div className="grid grid-cols-3 gap-4">
                     <div className="p-4 bg-blue-50/50 rounded-2xl border border-blue-100/50 text-center">
                       <span className="block text-lg font-bold text-slate-900">
@@ -2843,7 +3143,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
                 <section>
                   <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Vessel Certificates</h3>
+                    <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Vessel Certificates/Service Reports</h3>
                     <div className="relative">
                       <Search className="w-3 h-3 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
                       <input
@@ -2897,7 +3197,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                     setEditingCert(cert);
                                   }}
                                   className="p-1 hover:bg-blue-100 rounded text-blue-600"
-                                  title="Edit Certificate"
+                                  title="Edit Certificate/Service Report"
                                 >
                                   <Edit2 className="w-3 h-3" />
                                 </button>
@@ -2907,7 +3207,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                     handleDeleteCert(cert.id);
                                   }}
                                   className="p-1 hover:bg-red-100 rounded text-red-600"
-                                  title="Delete Certificate"
+                                  title="Delete Certificate/Service Report"
                                 >
                                   <Trash2 className="w-3 h-3" />
                                 </button>
@@ -3121,7 +3421,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               uploadFileType === 'certificate' ? "bg-blue-600 text-white shadow-blue-100" : "bg-slate-50 text-slate-400 hover:bg-white hover:text-slate-600 border border-slate-100"
                             )}
                           >
-                            Certificate
+                            Certificate/Service Report
                           </button>
                           <button 
                             onClick={() => setUploadFileType('supporting')}
@@ -3135,7 +3435,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         </div>
                       </div>
                       <label className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-xl text-[10px] font-bold hover:bg-blue-100 transition-colors shadow-sm self-end">
-                        <Upload className="w-3 h-3" /> Upload {uploadFileType === 'certificate' ? 'Cert' : 'File'}
+                        <Upload className="w-3 h-3" /> Upload {uploadFileType === 'certificate' ? 'Cert/Repo' : 'File'}
                         <input type="file" className="hidden" onChange={handleFileUpload} />
                       </label>
                     </div>
@@ -3149,7 +3449,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         {files.some(f => f.file_type === 'certificate') && (
                           <div className="space-y-2">
                             <h4 className="text-[9px] font-black uppercase tracking-widest text-blue-400 flex items-center gap-2 ml-1">
-                              Certificate History
+                              Certificate/Service Report History
                               <div className="flex-1 h-px bg-blue-50" />
                             </h4>
                             {files.filter(f => f.file_type === 'certificate').sort((a,b) => b.id - a.id).map((file, idx) => (
@@ -3489,7 +3789,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               >
                 <div className="p-8">
                   <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-bold text-slate-900">Edit Certificate</h3>
+                    <h3 className="text-xl font-bold text-slate-900">Edit Certificate/Service Report</h3>
                     <button onClick={() => setEditingCert(null)} className="p-2 hover:bg-slate-100 rounded-lg text-slate-400">
                       <X className="w-5 h-5" />
                     </button>
@@ -3532,17 +3832,17 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                     </div>
 
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Name</label>
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate/Service Report Name</label>
                       <input 
                         type="text" 
-                        placeholder="Certificate Name" 
+                        placeholder="Certificate/Service Report Name" 
                         value={editingCert.name}
                         onChange={(e) => setEditingCert({...editingCert, name: e.target.value})}
                         className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Number</label>
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate/Service Report Number</label>
                       <input 
                         type="text" 
                         placeholder="Cert #" 
@@ -3580,7 +3880,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50"
                       >
                         {user.role !== 'vessel' && <option value="office">Office Only</option>}
-                        <option value="vessel">Ship certificate</option>
+                        <option value="vessel">Ship Certificate/Service Report</option>
                         {user.role !== 'vessel' && <option value="any">Any</option>}
                       </select>
                     </div>
@@ -3588,7 +3888,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       onClick={handleUpdateCert}
                       className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
                     >
-                      Update Certificate
+                      Update Certificate/Service Report
                     </button>
                   </div>
                 </div>
@@ -3846,7 +4146,7 @@ const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Ce
                   { icon: MapPin, label: 'Next Port', value: vessel.next_port || 'NOT SET', color: 'blue' },
                   { icon: Activity, label: 'Status', value: vessel.route_status || 'NOT SET', color: 'green' },
                   { icon: Clock, label: 'ETA / ATB (UTC)', value: vessel.eta_atb || 'NOT SET', color: 'amber' },
-                  { icon: Anchor, label: 'ETD / ATD (UTC)', value: vessel.etd_atd || 'NOT SET', color: 'purple' },
+                  { icon: Anchor, label: 'ETD/ATD at Arrival (UTC)', value: vessel.etd_atd || 'NOT SET', color: 'purple' },
                   { icon: Package, label: 'Cargo', value: vessel.cargo || 'NO CARGO INFORMATION', color: 'orange', full: true }
                 ].map((item, idx) => (
                   <motion.div 
@@ -3875,7 +4175,7 @@ const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Ce
             <div className="space-y-6 max-w-sm w-full">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2 drop-shadow-md">
-                  <AlertTriangle className="w-4 h-4 text-amber-400" /> Urgent Certificates
+                  <AlertTriangle className="w-4 h-4 text-amber-400" /> Urgent Certificates/Service Reports
                 </h3>
               </div>
 
@@ -5608,7 +5908,7 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
   const tabs = [
     { id: 'vessels', label: 'Vessels', icon: Ship },
     { id: 'users', label: 'Users', icon: Users },
-    { id: 'certificates', label: 'Certificates', icon: FileText },
+    { id: 'certificates', label: 'Certificates/Service Reports', icon: FileText },
     { id: 'files', label: 'Files', icon: File },
     { id: 'departure_reports', label: 'Departure', icon: Navigation },
     { id: 'arrival_reports', label: 'Arrival', icon: MapIcon },
@@ -5742,13 +6042,15 @@ const VesselRoutingUserView = ({
   form, 
   updating, 
   onUpdateRow, 
-  onSave 
+  onSave,
+  latestOperationType
 }: { 
   vessel: Vessel, 
   form: any, 
   updating: boolean, 
   onUpdateRow: (id: number, field: string, value: any) => void,
-  onSave: () => void
+  onSave: () => void,
+  latestOperationType: string
 }) => {
   return (
     <div className="max-w-5xl mx-auto pb-12">
@@ -5824,12 +6126,20 @@ const VesselRoutingUserView = ({
                     className="w-full pl-16 pr-12 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all cursor-pointer appearance-none"
                   >
                     <option value="">SELECT STATUS...</option>
-                    <option value="At sea">At sea</option>
-                    <option value="In port">In port</option>
-                    <option value="Anchor">Anchor</option>
-                    <option value="Drifting">Drifting</option>
+                    <option value="Laden">Laden</option>
+                    <option value="Ballast">Ballast</option>
                   </select>
                   <ChevronDown className="w-6 h-6 text-slate-300 absolute right-8 top-1/2 -translate-y-1/2 pointer-events-none group-focus-within:text-blue-500 group-focus-within:rotate-180 transition-all" />
+                </div>
+              </div>
+
+              <div className="group space-y-4">
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">Operation Type (Latest Arrival)</label>
+                <div className="relative">
+                  <Activity className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2" />
+                  <div className="w-full pl-16 pr-8 py-7 bg-slate-50/30 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-400 italic">
+                    {latestOperationType}
+                  </div>
                 </div>
               </div>
             </div>
@@ -5859,7 +6169,7 @@ const VesselRoutingUserView = ({
               </div>
 
               <div className="group space-y-4">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">ETD / ATD (Departure Schedule)</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">ETD/ATD at Arrival (UTC)</label>
                 <div className="relative">
                   <Clock className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
                   <input 
@@ -6824,7 +7134,7 @@ const AdminPanel = ({
       });
 
       if (res.ok) {
-        notify('success', 'Certificate(s) assigned successfully');
+        notify('success', 'Certificate/Service Report(s) assigned successfully');
         setNewCertName('');
         setNewCertNumber('');
         setNewCertIssueDate('');
@@ -6835,7 +7145,7 @@ const AdminPanel = ({
         setNewCertFile(null);
         onRefresh();
       } else {
-        notify('error', 'Failed to assign certificate');
+        notify('error', 'Failed to assign certificate/service report');
       }
     } catch (err) {
       notify('error', 'Connection error occurred');
@@ -7024,9 +7334,9 @@ const AdminPanel = ({
         <header className="mb-8">
           <h1 className="text-3xl font-bold tracking-tight text-slate-900 mb-2">
             {subView === 'admin_new_vessel' && 'Add New Vessel'}
-            {subView === 'admin_add_cert' && 'Add Certificate'}
+            {subView === 'admin_add_cert' && 'Add Certificate/Service Report'}
             {subView === 'admin_vessel_list' && 'Vessel List'}
-            {subView === 'admin_cert_list' && 'Certificate List'}
+            {subView === 'admin_cert_list' && 'Certificate/Service Report List'}
           </h1>
           <p className="text-slate-500">
             {subView === 'admin_new_vessel' && 'Register a new vessel to the fleet.'}
@@ -7105,7 +7415,7 @@ const AdminPanel = ({
             {((!subView || subView === 'admin') || subView === 'admin_add_cert') && (
               <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
               <h2 className="font-bold mb-6 flex items-center gap-2 text-blue-900">
-                <FileText className="w-5 h-5" /> Add Certificate to Vessel/Team
+                <FileText className="w-5 h-5" /> Add Certificate/Service Report to Vessel/Team
               </h2>
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
@@ -7141,17 +7451,17 @@ const AdminPanel = ({
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Name</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate/Service Report Name</label>
                   <input 
                     type="text" 
-                    placeholder="Certificate Name" 
+                    placeholder="Certificate/Service Report Name" 
                     value={newCertName}
                     onChange={(e) => setNewCertName(e.target.value)}
                     className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate Number</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Certificate/Service Report Number</label>
                   <input 
                     type="text" 
                     placeholder="Cert #" 
@@ -7189,7 +7499,7 @@ const AdminPanel = ({
                     className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 disabled:opacity-50"
                   >
                     {!isVessel && <option value="office">Office Only</option>}
-                    <option value="vessel">Ship certificate</option>
+                    <option value="vessel">Ship Certificate/Service Report</option>
                     {!isVessel && <option value="any">Any</option>}
                   </select>
                 </div>
@@ -7231,7 +7541,10 @@ const AdminPanel = ({
                       }
                       setNewCertFile(file);
                       if (file) {
-                        setIsRecognizing(true);
+                        const isSupported = isGeminiSupportedMimeType(file.type);
+                        if (isSupported && uploadFileType === 'certificate') {
+                          setIsRecognizing(true);
+                        }
                         
                         // Set preview file (virtual)
                         setPreviewFile({
@@ -7249,30 +7562,32 @@ const AdminPanel = ({
                         };
                         reader.readAsDataURL(file);
 
-                        try {
-                          const data = await recognizeCertText(file);
-                          
-                          if (data.cert_type) setNewCertName(data.cert_type);
-                          if (data.certificate_number) setNewCertNumber(data.certificate_number);
-                          if (data.date_issued) setNewCertIssueDate(data.date_issued);
-                          if (data.expiration_date) setNewCertExp(data.expiration_date);
-                          
-                          // Try to match vessel name to select it in the dropdown
-                          if (data.vessel_name && !newCertVessel) {
-                            const normalizedVesselName = data.vessel_name.toLowerCase().replace(/[^a-z0-9]/g, '');
-                            const matchedVessel = vessels.find(v => v.name.toLowerCase().replace(/[^a-z0-9]/g, '') === normalizedVesselName);
-                            if (matchedVessel) {
-                              setNewCertVessel(String(matchedVessel.id));
-                              setNewCertTeam(String(matchedVessel.team_id));
+                        if (isSupported && uploadFileType === 'certificate') {
+                          try {
+                            const data = await recognizeCertText(file);
+                            
+                            if (data.cert_type) setNewCertName(data.cert_type);
+                            if (data.certificate_number) setNewCertNumber(data.certificate_number);
+                            if (data.date_issued) setNewCertIssueDate(data.date_issued);
+                            if (data.expiration_date) setNewCertExp(data.expiration_date);
+                            
+                            // Try to match vessel name to select it in the dropdown
+                            if (data.vessel_name && !newCertVessel) {
+                              const normalizedVesselName = data.vessel_name.toLowerCase().replace(/[^a-z0-9]/g, '');
+                              const matchedVessel = vessels.find(v => v.name.toLowerCase().replace(/[^a-z0-9]/g, '') === normalizedVesselName);
+                              if (matchedVessel) {
+                                setNewCertVessel(String(matchedVessel.id));
+                                setNewCertTeam(String(matchedVessel.team_id));
+                              }
                             }
-                          }
 
-                          notify('success', 'Document recognized. Please verify the autofilled fields.');
-                        } catch (err) {
-                          console.error("OCR failed", err);
-                          notify('error', 'Failed to recognize document text');
-                        } finally {
-                          setIsRecognizing(false);
+                            notify('success', 'Document recognized. Please verify the autofilled fields.');
+                          } catch (err) {
+                            console.error("OCR failed", err);
+                            notify('error', 'Failed to recognize document text');
+                          } finally {
+                            setIsRecognizing(false);
+                          }
                         }
                       }
                     }}
@@ -7307,7 +7622,7 @@ const AdminPanel = ({
                   onClick={handleAddCert}
                   className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
                 >
-                  Add Certificate
+                  Add Certificate/Service Report
                 </button>
               </div>
             </section>
@@ -7426,7 +7741,7 @@ const AdminPanel = ({
             {((!subView || subView === 'admin') || subView === 'admin_cert_list') && (
               <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
               <div className="flex items-center justify-between mb-6">
-                <h2 className="font-bold flex items-center gap-2 text-blue-900"><FileText className="w-5 h-5" /> Certificate List</h2>
+                <h2 className="font-bold flex items-center gap-2 text-blue-900"><FileText className="w-5 h-5" /> Certificate/Service Report List</h2>
                 <div className="flex items-center gap-2">
                   <div className="relative w-32">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-3 h-3" />
@@ -7781,7 +8096,7 @@ const AdminPanel = ({
                   </div>
 
                   <div className="pt-6 border-t border-blue-50 space-y-6">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Office Certificate Alert Schedule</h3>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Office Certificate/Service Report Alert Schedule</h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Schedule Type</label>
@@ -7856,7 +8171,7 @@ const AdminPanel = ({
                   </div>
 
                   <div className="pt-6 border-t border-blue-50 space-y-6">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Ship Certificate Alert Schedule</h3>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Ship Certificate/Service Report Alert Schedule</h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Schedule Type</label>

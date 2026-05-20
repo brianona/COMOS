@@ -13,6 +13,7 @@ import { Resend } from 'resend';
 import { addDays, isBefore, format } from 'date-fns';
 import net from 'net';
 import { google } from 'googleapis';
+import { GoogleGenAI, Type } from "@google/genai";
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -1210,6 +1211,165 @@ async function startServer() {
     }
     const [certs] = await pool.execute(query, params);
     res.json(certs);
+  });
+
+  app.post('/api/ocr', authenticate, upload.single('file'), async (req: any, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        console.error('OCR error: GEMINI_API_KEY environment variable is not set');
+        return res.status(500).json({ error: 'GEMINI_API_KEY secret is not configured. Please add it via Settings > Secrets.' });
+      }
+
+      const ai = new GoogleGenAI({ 
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
+      const base64Data = req.file.buffer.toString('base64');
+      const dataPart = {
+        inlineData: {
+          data: base64Data,
+          mimeType: req.file.mimetype,
+        }
+      };
+
+      let response = null;
+      let retries = 3;
+      let delayMs = 1500;
+      let lastError: any = null;
+
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          response = await ai.models.generateContent({
+            model: "gemini-3.5-flash",
+            contents: {
+              parts: [
+                dataPart,
+                { text: `You are a high-precision OCR engine. Your task is to extract core certificate metadata and their exact spatial locations.
+              
+              COORDINATE SYSTEM:
+              - Use a 0-1000 normalized coordinate system for "rect".
+              - Format: {"ymin": int, "xmin": int, "ymax": int, "xmax": int}
+              - 0,0 is TOP-LEFT. 1000,1000 is BOTTOM-RIGHT.
+              
+              RULES:
+              1. The "rect" MUST be a TIGHT bounding box around the SPECIFIC text value extracted.
+              2. EXCLUDE labels from the rect (e.g., if the document says "Vessel: MARITIME GOVERNOR", your vessel_name is "MARITIME GOVERNOR" and the rect should ONLY cover "MARITIME GOVERNOR").
+              3. For dates, if they are spread across the page, provide the rect that covers the full date string.
+              4. If the certificate title (cert_type) is multi-line, the rect should encompass all lines of the title.
+              5. Accuracy is paramount. If you are unsure of the exact location, provide your best estimate based on the visual flow.
+
+              FIELDS TO EXTRACT:
+              - vessel_name: Name of the ship/vessel.
+              - cert_type: Full title of the certificate.
+              - certificate_number: The unique ID/No of the document.
+              - date_issued: When it was issued (YYYY-MM-DD).
+              - expiration_date: When it expires (YYYY-MM-DD).
+
+              Return JSON only.` }
+              ]
+            },
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  vessel_name: { type: Type.STRING, nullable: true },
+                  vessel_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the vessel name value", 
+                    nullable: true 
+                  },
+                  cert_type: { type: Type.STRING, nullable: true },
+                  cert_type_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the certificate title", 
+                    nullable: true 
+                  },
+                  certificate_number: { type: Type.STRING, nullable: true },
+                  number_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the certificate number value", 
+                    nullable: true 
+                  },
+                  date_issued: { type: Type.STRING, description: "YYYY-MM-DD", nullable: true },
+                  issued_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the issue date value", 
+                    nullable: true 
+                  },
+                  expiration_date: { type: Type.STRING, description: "YYYY-MM-DD", nullable: true },
+                  expiration_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the expiration date value", 
+                    nullable: true 
+                  }
+                }
+              }
+            }
+          });
+          break; // Suceeded!
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`Server-side OCR attempt ${attempt} of ${retries} failed:`, err.message || err);
+          if (attempt < retries) {
+            await sleep(delayMs);
+            delayMs *= 1.5; // Exponential scale
+          }
+        }
+      }
+
+      if (!response) {
+        throw lastError || new Error("Failed to contact generative AI model after retries.");
+      }
+
+      const text = response.text || '';
+      const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const data = JSON.parse(jsonStr);
+      res.json(data);
+    } catch (e: any) {
+      console.error("Server-side OCR processing failed:", e);
+      res.status(500).json({ error: e.message || "Failed to process OCR" });
+    }
   });
 
   app.post('/api/certificates', authenticate, canAddCertificate, upload.single('file'), async (req: any, res) => {
@@ -2502,13 +2662,13 @@ Generated by COMOS System
           <div style="background-color: #fff3cd; color: #856404; padding: 10px; border: 1px solid #ffeeba; border-radius: 5px; margin-bottom: 20px; text-align: center; font-weight: bold;">
             NOTICE: This system is currently in its TESTING PERIOD. Table data in this email are dummy data and doesn't reflect the actual data from our operations.
           </div>
-          <h2 style="color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;">Certificate Expiration Alerts: ${name}</h2>
-          <p>The following certificates for <b>${name}</b> require attention:</p>
+          <h2 style="color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;">Certificate/Service Report Expiration Alerts: ${name}</h2>
+          <p>The following certificates/service reports for <b>${name}</b> require attention:</p>
           <table style="border-collapse: collapse; width: 100%; margin-top: 20px;">
             <thead>
               <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
                 <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Vessel</th>
-                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Certificate Name</th>
+                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Certificate/Service Report Name</th>
                 <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Expiration Date</th>
                 <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Status</th>
               </tr>
@@ -2518,7 +2678,7 @@ Generated by COMOS System
             </tbody>
           </table>
           <p style="margin-top: 30px; font-size: 0.85em; color: #7f8c8d; border-top: 1px solid #eee; padding-top: 15px;">
-            This is an automated notification from the <b>COMOS Vessel Certificate System</b>.
+            This is an automated notification from the <b>COMOS Vessel Certificate/Service Report System</b>.
           </p>
         </div>
       `;
@@ -2526,7 +2686,7 @@ Generated by COMOS System
       await sendEmail({
         from: `"COMOS" <${senderEmail}>`,
         to: recipient,
-        subject: `[COMOS] Certificate Alerts: ${name}`,
+        subject: `[COMOS] Certificate/Service Report Alerts: ${name}`,
         html: htmlContent
       });
       console.log(`Consolidated email alert sent to ${recipient} for ${name}`);
@@ -2566,7 +2726,7 @@ Generated by COMOS System
               NOTICE: This system is currently in its TESTING PERIOD.
             </div>
             <h2 style="color: #2c3e50;">Resend Configuration Test</h2>
-            <p>This is a test email from the <b>COMOS Vessel Certificate System</b> using Resend.</p>
+            <p>This is a test email from the <b>COMOS Vessel Certificate/Service Report System</b> using Resend.</p>
             <p>If you are reading this, your Resend API settings for <b>${alertRecipient}</b> are working correctly.</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
             <p style="font-size: 0.8em; color: #7f8c8d;">Timestamp: ${new Date().toLocaleString()}</p>
