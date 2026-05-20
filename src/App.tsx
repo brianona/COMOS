@@ -282,6 +282,7 @@ interface Vessel {
   eta_atb?: string | null;
   etd_atd?: string | null;
   cargo?: string | null;
+  operation_type?: string | null;
 }
 
 interface Certificate {
@@ -1581,7 +1582,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         route_status: v.route_status || '',
         eta_atb: v.eta_atb || '',
         etd_atd: v.etd_atd || '',
-        cargo: v.cargo || ''
+        cargo: v.cargo || '',
+        operation_type: v.operation_type || latestArrival?.operation_type || ''
       };
     });
     setRoutingForm(initialForm);
@@ -2414,15 +2416,20 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                     </thead>
                     <tbody className="divide-y divide-blue-50">
                       {sortedCerts.map(cert => (
-                        <tr key={cert.id} className="hover:bg-blue-50/30 transition-colors group">
+                        <tr 
+                          key={cert.id} 
+                          className="hover:bg-blue-50/30 transition-colors group cursor-pointer"
+                          onClick={() => fetchCertDetails(cert)}
+                        >
                           <td className="px-6 py-4 font-medium text-sm">
                             {cert.vessel_id ? (
                               <button 
-                                onClick={() => {
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   const vessel = vessels.find(v => v.id === cert.vessel_id);
                                   if (vessel) setSelectedVessel(vessel);
                                 }}
-                                className="text-left hover:text-blue-600 hover:underline transition-colors"
+                                className="text-left hover:text-blue-600 hover:underline transition-colors animate-none"
                               >
                                 {cert.vessel_name}
                               </button>
@@ -2430,52 +2437,43 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               <span className="text-blue-600 italic">Other ({cert.team_name})</span>
                             )}
                           </td>
-                          <td className="px-6 py-4 text-sm">
-                            <button 
-                              onClick={() => fetchCertDetails(cert)}
-                              className="text-left hover:text-blue-600 hover:underline transition-colors"
-                            >
-                              {cert.name}
-                            </button>
+                          <td className="px-6 py-4 text-sm font-medium text-slate-900">
+                            {cert.name}
                           </td>
-                          <td className="px-6 py-4 text-sm font-mono">
-                            <button 
-                              onClick={() => fetchCertDetails(cert)}
-                              className="hover:text-blue-600 hover:underline transition-colors"
-                            >
-                              {cert.expiration_date}
-                            </button>
+                          <td className="px-6 py-4 text-sm font-mono text-slate-600">
+                            {cert.expiration_date}
                           </td>
                           <td className="px-6 py-4">
-                            <button 
-                              onClick={() => fetchCertDetails(cert)}
-                              className="hover:opacity-80 transition-opacity"
-                            >
-                              <span className={cn(
-                                "px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
-                                getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
-                                getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
-                                getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
-                                "bg-blue-100 text-blue-700"
-                              )}>
-                                {getStatus(cert.expiration_date)}
-                              </span>
-                            </button>
+                            <span className={cn(
+                              "inline-block px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
+                              getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
+                              getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
+                              getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
+                              "bg-blue-100 text-blue-700"
+                            )}>
+                              {getStatus(cert.expiration_date)}
+                            </span>
                           </td>
                           <td className="px-6 py-4 text-right">
                             <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                               {(user.role === 'admin' || user.role === 'team_pic') && (
                                 <>
                                   <button 
-                                    onClick={() => setEditingCert(cert)}
-                                    className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingCert(cert);
+                                    }}
+                                    className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors animate-none"
                                     title="Edit"
                                   >
                                     <Edit2 className="w-3.5 h-3.5" />
                                   </button>
                                   <button 
-                                    onClick={() => handleDeleteCert(cert.id)}
-                                    className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteCert(cert.id);
+                                    }}
+                                    className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors animate-none"
                                     title="Delete"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
@@ -2483,8 +2481,11 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                 </>
                               )}
                               <button 
-                                onClick={() => fetchCertDetails(cert)}
-                                className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  fetchCertDetails(cert);
+                                }}
+                                className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors animate-none"
                               >
                                 <ChevronRight className="w-4 h-4" />
                               </button>
@@ -2566,7 +2567,11 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                     return vesselSortOrder === 'asc' ? cmp : -cmp;
                   })
                   .map(vessel => (
-                  <div key={vessel.id} className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm hover:shadow-md transition-shadow">
+                  <div 
+                    key={vessel.id} 
+                    className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm hover:shadow-md cursor-pointer hover:border-blue-200 transition-all"
+                    onClick={() => setSelectedVessel(vessel)}
+                  >
                     <div className="flex items-center justify-between mb-6">
                         <div className="flex items-center gap-3 min-w-0">
                           {vessel.has_photo ? (
@@ -2615,7 +2620,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                     </div>
                     <div className="mt-6 flex items-center gap-2">
                       <button 
-                        onClick={() => setSelectedVessel(vessel)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedVessel(vessel);
+                        }}
                         className="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-bold hover:bg-blue-100 transition-colors"
                       >
                         Details
@@ -2623,14 +2631,20 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       {(user.role === 'admin' || user.role === 'team_pic') && (
                         <>
                           <button 
-                            onClick={() => setEditingVessel(vessel)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingVessel(vessel);
+                            }}
                             className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                             title="Edit"
                           >
                             <Edit2 className="w-4 h-4" />
                           </button>
                           <button 
-                            onClick={() => handleDeleteVessel(vessel.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteVessel(vessel.id);
+                            }}
                             className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             title="Delete"
                           >
@@ -2676,6 +2690,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               setConfirmDialog={setConfirmDialog}
               uploadFileType={uploadFileType}
               setUploadFileType={setUploadFileType}
+              fetchCertDetails={fetchCertDetails}
+              setSelectedVessel={setSelectedVessel}
             />
           )}
 
@@ -2845,9 +2861,18 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                     </select>
                                   </td>
                                   <td className="px-6 py-4">
-                                    <div className="px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs text-slate-500 italic">
-                                      {getLatestArrivalOperationType(v.id)}
-                                    </div>
+                                    <select 
+                                      value={form.operation_type || ''}
+                                      onChange={e => handleUpdateRoutingRow(v.id, 'operation_type', e.target.value)}
+                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
+                                    >
+                                      <option value="">Select Operation</option>
+                                      <option value="LOADING">LOADING</option>
+                                      <option value="DISCHARGING">DISCHARGING</option>
+                                      <option value="BUNKERING">BUNKERING</option>
+                                      <option value="ship-to-ship cargo operation">SHIP-TO-SHIP CARGO OPERATION</option>
+                                      <option value="Others">Others</option>
+                                    </select>
                                   </td>
                                   <td className="px-6 py-4">
                                     <input 
@@ -2889,7 +2914,15 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'slideshow' && user.role !== 'vessel' && (
             <div className="h-[calc(100vh-64px)]">
-              <SlideshowView vessels={vessels} certs={certs} token={token} />
+              <SlideshowView 
+                vessels={vessels} 
+                certs={certs} 
+                token={token} 
+                arrivalReports={arrivalReports}
+                departureReports={departureReports}
+                noonReports={noonReports}
+                otherReports={otherReports}
+              />
             </div>
           )}
 
@@ -3902,7 +3935,249 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   );
 };
 
-const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Certificate[], token: string }) => {
+const parseCoordinate = (coordStr: string, isLat: boolean): number | null => {
+  if (!coordStr) return null;
+  let clean = coordStr.toUpperCase().trim();
+  
+  // Determine sign based on cardinal directions
+  let isNegative = false;
+  if (clean.includes('S') || clean.includes('W')) {
+    isNegative = true;
+  }
+  
+  if (clean.startsWith('-')) {
+    isNegative = true;
+    clean = clean.substring(1);
+  } else if (clean.startsWith('+')) {
+    clean = clean.substring(1);
+  }
+  
+  // Strip cardinal direction letters from start/end
+  clean = clean.replace(/^[NSWE]/g, '').replace(/[NSWE]$/g, '').trim();
+
+  // 1. Check if the remaining string is a direct decimal degree (a clean float)
+  const floatRegex = /^[0-9]+(?:\.[0-9]+)?$/;
+  if (floatRegex.test(clean)) {
+    const parsedVal = parseFloat(clean);
+    if (!isNaN(parsedVal)) {
+      const dotIdx = clean.indexOf('.');
+      const integerPart = dotIdx !== -1 ? clean.substring(0, dotIdx) : clean;
+      
+      const threshold = isLat ? 2 : 3;
+      // If integer part length is greater than threshold OR value is out of decimal degree bounds,
+      // it looks like unseparated degrees-minutes (e.g. 1234.56 or 10324.56)
+      const looksLikeDM = integerPart.length > threshold || (isLat && parsedVal > 90) || (!isLat && parsedVal > 180);
+
+      if (!looksLikeDM) {
+        let val = parsedVal;
+        if (isNegative) val = -val;
+        if (isLat && val >= -90 && val <= 90) return val;
+        if (!isLat && val >= -180 && val <= 180) return val;
+      }
+    }
+  }
+
+  // 2. Fallback parsing for other styles (e.g. separated DM/DMS, or unseparated padded DM)
+  const spaced = clean.replace(/[^0-9.]/g, ' ').trim();
+  const parts = spaced.split(/\s+/).map(p => parseFloat(p)).filter(p => !isNaN(p));
+  
+  if (parts.length === 0) return null;
+  
+  let decimal = 0;
+  
+  if (parts.length === 1) {
+    // Single number with separators? Or unseparated DM like "1234.56" or "10324.56"
+    const originalDigits = clean.replace(/[^0-9.]/g, '').trim();
+    const dotIdx = originalDigits.indexOf('.');
+    const integerPart = dotIdx !== -1 ? originalDigits.substring(0, dotIdx) : originalDigits;
+    const decimalPart = dotIdx !== -1 ? originalDigits.substring(dotIdx) : '';
+    
+    let degLen = isLat ? 2 : 3;
+    if (!isLat && integerPart.length <= 4) {
+      degLen = 2;
+    }
+    
+    if (integerPart.length > degLen) {
+      const degStr = integerPart.substring(0, degLen);
+      const minStr = integerPart.substring(degLen) + decimalPart;
+      const deg = parseFloat(degStr);
+      const min = parseFloat(minStr);
+      if (!isNaN(deg) && !isNaN(min)) {
+        decimal = deg + (min / 60);
+      } else {
+        decimal = parts[0];
+      }
+    } else {
+      decimal = parts[0];
+    }
+  } else if (parts.length === 2) {
+    decimal = parts[0] + (parts[1] / 60);
+  } else if (parts.length >= 3) {
+    decimal = parts[0] + (parts[1] / 60) + (parts[2] / 3600);
+  }
+  
+  if (isNegative) {
+    decimal = -decimal;
+  }
+  
+  // Validation bounds check
+  if (isLat) {
+    if (decimal < -90 || decimal > 90) return null;
+  } else {
+    if (decimal < -180 || decimal > 180) return null;
+  }
+  
+  return decimal;
+};
+
+const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: string, vesselName: string }) => {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const leafletInstance = useRef<any>(null);
+  const [leafletReady, setLeafletReady] = useState(!!(window as any).L);
+
+  const parsedLat = parseCoordinate(latStr, true);
+  const parsedLon = parseCoordinate(lonStr, false);
+
+  // Poll or verify that globally injected Leaflet is fully parsed by the browser
+  useEffect(() => {
+    if ((window as any).L) {
+      setLeafletReady(true);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      if ((window as any).L) {
+        setLeafletReady(true);
+        clearInterval(interval);
+      }
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (!leafletReady || parsedLat === null || parsedLon === null || !mapRef.current) return;
+
+    const L = (window as any).L;
+    if (!L) return;
+
+    let map: any = null;
+
+    try {
+      if (leafletInstance.current) {
+        leafletInstance.current.remove();
+        leafletInstance.current = null;
+      }
+
+      map = L.map(mapRef.current, {
+        zoomControl: false,
+        attributionControl: false,
+        preferCanvas: true
+      }).setView([parsedLat, parsedLon], 1);
+      
+      leafletInstance.current = map;
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        updateWhenIdle: true,
+        updateWhenZooming: false,
+        keepBuffer: 3,
+        className: 'map-tiles-load'
+      }).addTo(map);
+
+      const customIcon = L.divIcon({
+        className: 'custom-marine-marker',
+        html: `
+          <div class="relative flex items-center justify-center">
+            <div class="absolute w-8 h-8 bg-blue-500/40 rounded-full animate-ping"></div>
+            <div class="w-4 h-4 bg-blue-600 rounded-full border-2 border-white shadow-xl relative z-10"></div>
+          </div>
+        `,
+        iconSize: [32, 32]
+      });
+
+      L.marker([parsedLat, parsedLon], { icon: customIcon }).addTo(map);
+
+      // Force instant sizing recalculation and another one shortly after layouts finalize
+      map.invalidateSize();
+      const delayInval = setTimeout(() => {
+        if (map) {
+          map.invalidateSize();
+        }
+      }, 50);
+
+      return () => {
+        clearTimeout(delayInval);
+      };
+    } catch (e) {
+      console.warn("Leaflet instantiation issue:", e);
+    }
+
+    return () => {
+      if (leafletInstance.current) {
+        leafletInstance.current.remove();
+        leafletInstance.current = null;
+      }
+    };
+  }, [leafletReady, parsedLat, parsedLon, vesselName, latStr, lonStr]);
+
+  if (parsedLat === null || parsedLon === null) {
+    return (
+      <div className="w-full h-full min-h-[200px] flex flex-col items-center justify-center bg-black/40 border border-white/10 rounded-2xl p-6 text-center backdrop-blur-md">
+        <MapIcon className="w-10 h-10 text-slate-500 mb-2 animate-bounce" />
+        <p className="text-slate-400 font-bold text-sm">NO VALID LOCATION COORDINATES FOUND</p>
+        <p className="text-slate-500 text-xs mt-1">Check recent voyage reports for lat/long</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-full h-full min-h-[200px] rounded-2xl overflow-hidden border border-white/15 shadow-2xl">
+      <style>{`
+        .leaflet-container {
+          background: #0b1329 !important;
+          color: #f8fafc !important;
+          font-family: inherit;
+        }
+        .leaflet-tile-container {
+          filter: invert(100%) hue-rotate(180deg) brightness(85%) contrast(95%);
+        }
+        .leaflet-pane {
+          z-index: 1 !important;
+        }
+        .leaflet-top, .leaflet-bottom {
+          z-index: 2 !important;
+        }
+      `}</style>
+      <div ref={mapRef} className="w-full h-full z-10" />
+      <div className="absolute top-4 left-4 z-[400] bg-slate-950/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 flex items-center gap-2 pointer-events-none">
+        <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+        <span className="text-[10px] font-black uppercase tracking-widest text-white">Live Tracking</span>
+      </div>
+      <div className="absolute bottom-4 right-4 z-[400] bg-slate-950/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 flex flex-col pointer-events-none text-right font-mono text-[9px] text-slate-300">
+        <span>Lat: {latStr}</span>
+        <span>Long: {lonStr}</span>
+      </div>
+    </div>
+  );
+};
+
+const SlideshowView = ({ 
+  vessels, 
+  certs, 
+  token, 
+  arrivalReports,
+  departureReports,
+  noonReports,
+  otherReports
+}: { 
+  vessels: Vessel[], 
+  certs: Certificate[], 
+  token: string, 
+  arrivalReports: ArrivalReport[],
+  departureReports: DepartureReport[],
+  noonReports: NoonReport[],
+  otherReports: OtherReport[]
+}) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -3910,6 +4185,46 @@ const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Ce
   const [cachedImages, setCachedImages] = useState<Record<number, string>>({});
   const containerRef = React.useRef<HTMLDivElement>(null);
   const slideDuration = 10000; // 10 seconds per slide
+
+  const getLatestArrivalOperationType = (vesselId: number) => {
+    const reports = (arrivalReports || [])
+      .filter(r => r.vessel_id === vesselId)
+      .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
+    return reports.length > 0 ? reports[0].operation_type : 'N/A';
+  };
+
+  const getLatestVesselPosition = (vesselId: number) => {
+    const allReports: { utc_date_time: string, position_lat: string, position_long: string, type: string }[] = [];
+    
+    (arrivalReports || []).filter(r => r.vessel_id === vesselId).forEach(r => {
+      if (r.position_lat && r.position_long) {
+        allReports.push({ utc_date_time: r.utc_date_time, position_lat: r.position_lat, position_long: r.position_long, type: 'Arrival' });
+      }
+    });
+    (departureReports || []).filter(r => r.vessel_id === vesselId).forEach(r => {
+      if (r.position_lat && r.position_long) {
+        allReports.push({ utc_date_time: r.utc_date_time, position_lat: r.position_lat, position_long: r.position_long, type: 'Departure' });
+      }
+    });
+    (noonReports || []).filter(r => r.vessel_id === vesselId).forEach(r => {
+      if (r.position_lat && r.position_long) {
+        allReports.push({ utc_date_time: r.utc_date_time, position_lat: r.position_lat, position_long: r.position_long, type: 'Noon' });
+      }
+    });
+    (otherReports || []).filter(r => r.vessel_id === vesselId).forEach(r => {
+      if (r.position_lat && r.position_long) {
+        allReports.push({ utc_date_time: r.utc_date_time, position_lat: r.position_lat, position_long: r.position_long, type: 'Other' });
+      }
+    });
+
+    allReports.sort((a, b) => {
+      const timeA = new Date(a.utc_date_time).getTime();
+      const timeB = new Date(b.utc_date_time).getTime();
+      return timeB - timeA;
+    });
+
+    return allReports[0] || null;
+  };
 
   // Preload all vessel images into local cache (Blob URLs)
   useEffect(() => {
@@ -4002,6 +4317,9 @@ const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Ce
   );
 
   const vessel = vessels[currentIndex];
+  const lastPos = getLatestVesselPosition(vessel.id);
+  const latStr = lastPos ? lastPos.position_lat : '';
+  const lonStr = lastPos ? lastPos.position_long : '';
   const vesselCerts = certs.filter(c => c.vessel_id === vessel.id && getStatus(c.expiration_date) !== 'active')
     .sort((a, b) => new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime())
     .slice(0, 10);
@@ -4145,6 +4463,7 @@ const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Ce
                 {[
                   { icon: MapPin, label: 'Next Port', value: vessel.next_port || 'NOT SET', color: 'blue' },
                   { icon: Activity, label: 'Status', value: vessel.route_status || 'NOT SET', color: 'green' },
+                  { icon: Compass, label: 'Operation Type', value: vessel.operation_type || getLatestArrivalOperationType(vessel.id), color: 'indigo' },
                   { icon: Clock, label: 'ETA / ATB (UTC)', value: vessel.eta_atb || 'NOT SET', color: 'amber' },
                   { icon: Anchor, label: 'ETD/ATD at Arrival (UTC)', value: vessel.etd_atd || 'NOT SET', color: 'purple' },
                   { icon: Package, label: 'Cargo', value: vessel.cargo || 'NO CARGO INFORMATION', color: 'orange', full: true }
@@ -4171,49 +4490,61 @@ const SlideshowView = ({ vessels, certs, token }: { vessels: Vessel[], certs: Ce
               </div>
             </div>
 
-            {/* Right Column: Urgent Certificates */}
-            <div className="space-y-6 max-w-sm w-full">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2 drop-shadow-md">
-                  <AlertTriangle className="w-4 h-4 text-amber-400" /> Urgent Certificates/Service Reports
-                </h3>
+            {/* Right Column: Urgent Certificates & Vessel Map */}
+            <div className="space-y-6 max-w-sm w-full flex flex-col justify-between">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2 drop-shadow-md">
+                    <AlertTriangle className="w-4 h-4 text-amber-400" /> Urgent Certificates/Service Reports
+                  </h3>
+                </div>
+
+                <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                  {vesselCerts.length === 0 ? (
+                    <motion.div 
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ delay: 0.8 }}
+                      className="p-8 text-center bg-black/40 rounded-3xl border border-white/10 border-dashed backdrop-blur-md"
+                    >
+                      <CheckCircle2 className="w-10 h-10 text-green-500/20 mx-auto mb-2" />
+                      <p className="text-slate-300 italic text-xs">No expiring or expired certificates.</p>
+                    </motion.div>
+                  ) : (
+                    vesselCerts.map((cert, idx) => (
+                      <motion.div 
+                        key={cert.id} 
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: 0.6 + (idx * 0.05) }}
+                        className="flex items-center justify-between p-3 bg-black/40 rounded-xl border border-white/10 hover:bg-black/60 transition-all backdrop-blur-md group/item font-sans"
+                      >
+                        <div className="min-w-0 flex-1 pr-4">
+                          <p className="text-sm font-bold text-white truncate group-hover/item:text-blue-400 transition-colors">{cert.name}</p>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5 font-mono">Expires: {cert.expiration_date}</p>
+                        </div>
+                        <span className={cn(
+                          "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest shrink-0 shadow-lg",
+                          getStatus(cert.expiration_date) === 'expired' ? "bg-red-600/60 text-white border border-red-500/50" : 
+                          getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-600/60 text-white border border-orange-500/50" :
+                          "bg-amber-600/60 text-white border border-amber-500/50"
+                        )}>
+                          {getStatus(cert.expiration_date)}
+                        </span>
+                      </motion.div>
+                    ))
+                  )}
+                </div>
               </div>
 
-              <div className="space-y-2">
-                {vesselCerts.length === 0 ? (
-                  <motion.div 
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: 0.8 }}
-                    className="p-12 text-center bg-black/40 rounded-3xl border border-white/10 border-dashed backdrop-blur-md"
-                  >
-                    <CheckCircle2 className="w-12 h-12 text-green-500/20 mx-auto mb-4" />
-                    <p className="text-slate-300 italic">No expiring or expired certificates.</p>
-                  </motion.div>
-                ) : (
-                  vesselCerts.map((cert, idx) => (
-                    <motion.div 
-                      key={cert.id} 
-                      initial={{ opacity: 0, x: 20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.6 + (idx * 0.05) }}
-                      className="flex items-center justify-between p-3 bg-black/40 rounded-xl border border-white/10 hover:bg-black/60 transition-all backdrop-blur-md group/item"
-                    >
-                      <div className="min-w-0 flex-1 pr-4">
-                        <p className="text-sm font-bold text-white truncate group-hover/item:text-blue-400 transition-colors">{cert.name}</p>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5">Expires: {cert.expiration_date}</p>
-                      </div>
-                      <span className={cn(
-                        "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest shrink-0 shadow-lg",
-                        getStatus(cert.expiration_date) === 'expired' ? "bg-red-600/60 text-white border border-red-500/50" : 
-                        getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-600/60 text-white border border-orange-500/50" :
-                        "bg-amber-600/60 text-white border border-amber-500/50"
-                      )}>
-                        {getStatus(cert.expiration_date)}
-                      </span>
-                    </motion.div>
-                  ))
-                )}
+              {/* Location Map Section */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2 drop-shadow-md">
+                  <Compass className="w-4 h-4 text-blue-400" /> Interactive Location Map
+                </h3>
+                <div className="h-[220px]">
+                  <SlideshowMap latStr={latStr} lonStr={lonStr} vesselName={vessel.name} />
+                </div>
               </div>
             </div>
           </motion.div>
@@ -4416,6 +4747,23 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
     } finally {
       setLoading(false);
     }
+  };
+
+  const isLatestReport = (report: NoonReport) => {
+    const vesselReports = (reports || []).filter(r => r.vessel_id === report.vessel_id);
+    if (vesselReports.length === 0) return false;
+    const sorted = [...vesselReports].sort((a, b) => {
+      const timeB = new Date(b.utc_date_time).getTime();
+      const timeA = new Date(a.utc_date_time).getTime();
+      if (timeB !== timeA) return timeB - timeA;
+      return b.id - a.id;
+    });
+    return sorted[0]?.id === report.id;
+  };
+
+  const canEditReport = (report: NoonReport) => {
+    if (user.role !== 'vessel') return true;
+    return isLatestReport(report);
   };
 
   const handleEdit = (report: NoonReport) => {
@@ -4747,20 +5095,24 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-1">
-                        <button 
-                          onClick={() => handleEdit(report)}
-                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="Edit Report"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button 
-                          onClick={() => handleDelete(report.id)}
-                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                          title="Delete Report"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {canEditReport(report) && (
+                          <button 
+                            onClick={() => handleEdit(report)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit Report"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {(user.role === 'admin' || user.role === 'team_pic') && (
+                          <button 
+                            onClick={() => handleDelete(report.id)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete Report"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -4851,6 +5203,23 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
     } finally {
       setLoading(false);
     }
+  };
+
+  const isLatestReport = (report: OtherReport) => {
+    const vesselReports = (reports || []).filter(r => r.vessel_id === report.vessel_id);
+    if (vesselReports.length === 0) return false;
+    const sorted = [...vesselReports].sort((a, b) => {
+      const timeB = new Date(b.utc_date_time).getTime();
+      const timeA = new Date(a.utc_date_time).getTime();
+      if (timeB !== timeA) return timeB - timeA;
+      return b.id - a.id;
+    });
+    return sorted[0]?.id === report.id;
+  };
+
+  const canEditReport = (report: OtherReport) => {
+    if (user.role !== 'vessel') return true;
+    return isLatestReport(report);
   };
 
   const handleEdit = (report: OtherReport) => {
@@ -5177,20 +5546,24 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button 
-                          onClick={() => handleEdit(report)}
-                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="Edit Report"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                        <button 
-                          onClick={() => handleDelete(report.id)}
-                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                          title="Delete Report"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {canEditReport(report) && (
+                          <button 
+                            onClick={() => handleEdit(report)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit Report"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {(user.role === 'admin' || user.role === 'team_pic') && (
+                          <button 
+                            onClick={() => handleDelete(report.id)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete Report"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -5367,6 +5740,23 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
     } finally {
       setLoading(false);
     }
+  };
+
+  const isLatestReport = (report: ArrivalReport) => {
+    const vesselReports = (reports || []).filter(r => r.vessel_id === report.vessel_id);
+    if (vesselReports.length === 0) return false;
+    const sorted = [...vesselReports].sort((a, b) => {
+      const timeB = new Date(b.utc_date_time).getTime();
+      const timeA = new Date(a.utc_date_time).getTime();
+      if (timeB !== timeA) return timeB - timeA;
+      return b.id - a.id;
+    });
+    return sorted[0]?.id === report.id;
+  };
+
+  const canEditReport = (report: ArrivalReport) => {
+    if (user.role !== 'vessel') return true;
+    return isLatestReport(report);
   };
 
   const handleEdit = (report: ArrivalReport) => {
@@ -5554,6 +5944,7 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                       <option value="DISCHARGING">DISCHARGING</option>
                       <option value="BUNKERING">BUNKERING</option>
                       <option value="ship-to-ship cargo operation">SHIP-TO-SHIP CARGO OPERATION</option>
+                      <option value="Others">Others</option>
                     </select>
                   </div>
                 </div>
@@ -5802,13 +6193,15 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button 
-                          onClick={() => handleEdit(report)}
-                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="Edit Report"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
+                        {canEditReport(report) && (
+                          <button 
+                            onClick={() => handleEdit(report)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit Report"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        )}
                         {(user.role === 'admin' || user.role === 'team_pic') && (
                           <button 
                             onClick={() => handleDelete(report.id)}
@@ -6134,12 +6527,22 @@ const VesselRoutingUserView = ({
               </div>
 
               <div className="group space-y-4">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">Operation Type (Latest Arrival)</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">Operation Type</label>
                 <div className="relative">
-                  <Activity className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2" />
-                  <div className="w-full pl-16 pr-8 py-7 bg-slate-50/30 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-400 italic">
-                    {latestOperationType}
-                  </div>
+                  <Activity className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <select 
+                    value={form.operation_type || ''}
+                    onChange={e => onUpdateRow(vessel.id, 'operation_type', e.target.value)}
+                    className="w-full pl-16 pr-12 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all cursor-pointer appearance-none"
+                  >
+                    <option value="">SELECT OPERATION TYPE...</option>
+                    <option value="LOADING">LOADING</option>
+                    <option value="DISCHARGING">DISCHARGING</option>
+                    <option value="BUNKERING">BUNKERING</option>
+                    <option value="ship-to-ship cargo operation">SHIP-TO-SHIP CARGO OPERATION</option>
+                    <option value="Others">Others</option>
+                  </select>
+                  <ChevronDown className="w-6 h-6 text-slate-300 absolute right-8 top-1/2 -translate-y-1/2 pointer-events-none group-focus-within:text-blue-500 group-focus-within:rotate-180 transition-all" />
                 </div>
               </div>
             </div>
@@ -6341,6 +6744,23 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
     } finally {
       setLoading(false);
     }
+  };
+
+  const isLatestReport = (report: DepartureReport) => {
+    const vesselReports = (reports || []).filter(r => r.vessel_id === report.vessel_id);
+    if (vesselReports.length === 0) return false;
+    const sorted = [...vesselReports].sort((a, b) => {
+      const timeB = new Date(b.utc_date_time).getTime();
+      const timeA = new Date(a.utc_date_time).getTime();
+      if (timeB !== timeA) return timeB - timeA;
+      return b.id - a.id;
+    });
+    return sorted[0]?.id === report.id;
+  };
+
+  const canEditReport = (report: DepartureReport) => {
+    if (user.role !== 'vessel') return true;
+    return isLatestReport(report);
   };
 
   const handleEdit = (report: DepartureReport) => {
@@ -6717,13 +7137,15 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <button 
-                        onClick={() => handleEdit(report)}
-                        className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                        title="Edit Report"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
+                      {canEditReport(report) && (
+                        <button 
+                          onClick={() => handleEdit(report)}
+                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                          title="Edit Report"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -6751,7 +7173,9 @@ const AdminPanel = ({
   editingVessel, setEditingVessel, editingVesselPhoto, setEditingVesselPhoto, handleUpdateVessel, handleDeleteVessel,
   editingCert, setEditingCert, newCertFile, setNewCertFile, handleUpdateCert, handleDeleteCert,
   confirmDialog, setConfirmDialog,
-  uploadFileType, setUploadFileType
+  uploadFileType, setUploadFileType,
+  fetchCertDetails,
+  setSelectedVessel
 }: { 
   token: string, 
   teams: Team[], 
@@ -6781,7 +7205,9 @@ const AdminPanel = ({
   confirmDialog: any,
   setConfirmDialog: any,
   uploadFileType: 'certificate' | 'supporting',
-  setUploadFileType: (type: 'certificate' | 'supporting') => void
+  setUploadFileType: (type: 'certificate' | 'supporting') => void,
+  fetchCertDetails: (cert: Certificate, isRefresh?: boolean) => Promise<void>,
+  setSelectedVessel: (v: Vessel | null) => void
 }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [newVesselName, setNewVesselName] = useState('');
@@ -7687,7 +8113,11 @@ const AdminPanel = ({
                       return vesselSortOrder === 'asc' ? cmp : -cmp;
                     })
                     .map(v => (
-                    <div key={v.id} className="flex items-center justify-between p-3 bg-blue-50/50 rounded-xl group">
+                    <div 
+                      key={v.id} 
+                      className="flex items-center justify-between p-3 bg-blue-50/50 hover:bg-white hover:shadow-sm border border-transparent hover:border-blue-100 rounded-xl group cursor-pointer transition-all"
+                      onClick={() => setSelectedVessel(v)}
+                    >
                       <div className="flex items-center gap-3 min-w-0 flex-1">
                         {v.has_photo ? (
                           <div className="w-8 h-8 rounded-lg overflow-hidden border border-blue-100 shrink-0">
@@ -7717,14 +8147,20 @@ const AdminPanel = ({
                       </div>
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button 
-                          onClick={() => setEditingVessel(v)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingVessel(v);
+                          }}
                           className="p-2 hover:bg-blue-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
                         >
                           <Edit2 className="w-4 h-4" />
                         </button>
                         {(isAdmin || isTeamPic) && (
                           <button 
-                            onClick={() => handleDeleteVessel(v.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteVessel(v.id);
+                            }}
                             className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -7801,7 +8237,11 @@ const AdminPanel = ({
                     return certSortOrder === 'asc' ? cmp : -cmp;
                   })
                   .map(cert => (
-                  <div key={cert.id} className="flex items-center justify-between p-3 bg-blue-50/50 rounded-xl group">
+                  <div 
+                    key={cert.id} 
+                    className="flex items-center justify-between p-3 bg-blue-50/50 hover:bg-white hover:shadow-sm border border-transparent hover:border-blue-100 rounded-xl group cursor-pointer transition-all"
+                    onClick={() => fetchCertDetails(cert)}
+                  >
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-bold text-slate-900 truncate">{cert.name}</p>
                       <div className="flex items-center gap-2">
@@ -7836,15 +8276,21 @@ const AdminPanel = ({
                     </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button 
-                      onClick={() => setEditingCert(cert)}
-                      className="p-2 hover:bg-blue-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingCert(cert);
+                      }}
+                      className="p-2 hover:bg-blue-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors animate-none"
                     >
                       <Edit2 className="w-4 h-4" />
                     </button>
                     {(isAdmin || isTeamPic) && (
                       <button 
-                        onClick={() => handleDeleteCert(cert.id)}
-                        className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteCert(cert.id);
+                        }}
+                        className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors animate-none"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
