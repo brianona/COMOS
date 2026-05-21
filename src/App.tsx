@@ -58,6 +58,7 @@ import { format, isBefore, addDays, parseISO } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
+import { CrewListView, CrewComplianceView, AuditRegistryView, NonConformityTrackerView } from './components/CrewAndAudits';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -946,7 +947,7 @@ const ChangePasswordModal: React.FC<{
 
 
 const SidebarContent = ({ 
-  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, onLogout, setIsChangePasswordOpen 
+  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, onLogout, setIsChangePasswordOpen 
 }: { 
   view: string, 
   setView: (v: any) => void, 
@@ -968,6 +969,10 @@ const SidebarContent = ({
   setIsLubeOilOpen: (v: boolean) => void,
   isStoreChemicalsOpen: boolean,
   setIsStoreChemicalsOpen: (v: boolean) => void,
+  isCrewOpen: boolean,
+  setIsCrewOpen: (v: boolean) => void,
+  isAuditsOpen: boolean,
+  setIsAuditsOpen: (v: boolean) => void,
   onLogout: () => void,
   setIsChangePasswordOpen: (v: boolean) => void
 }) => (
@@ -1081,7 +1086,7 @@ const SidebarContent = ({
           onClick={() => setIsMonitoringOpen(!isMonitoringOpen)}
           className={cn(
             "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_findings'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
           )}
         >
           <div className="flex items-center gap-3">
@@ -1128,7 +1133,7 @@ const SidebarContent = ({
                           view === 'defects_5_2' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                         )}
                       >
-                        <div className="w-1 h-1 bg-current rounded-full" /> COMI-SMS-5-2
+                        <div className="w-1 h-1 bg-current rounded-full" /> COMI-SM-5-2
                       </button>
                       <button 
                         onClick={() => { setView('defects_1_6'); setIsSidebarOpen(false); }}
@@ -1137,7 +1142,7 @@ const SidebarContent = ({
                           view === 'defects_1_6' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                         )}
                       >
-                        <div className="w-1 h-1 bg-current rounded-full" /> COMI-SMS-1-6
+                        <div className="w-1 h-1 bg-current rounded-full" /> COMI-SM-1-6
                       </button>
                     </motion.div>
                   )}
@@ -1345,6 +1350,98 @@ const SidebarContent = ({
                   )}
                 </AnimatePresence>
               </div>
+
+              {/* Crew */}
+              <div className="space-y-1">
+                <button 
+                  onClick={() => setIsCrewOpen(!isCrewOpen)}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    ['crew_list', 'crew_compliance'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <Users className="w-4 h-4" /> Crew
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isCrewOpen ? "rotate-180" : "")} />
+                </button>
+                <AnimatePresence>
+                  {isCrewOpen && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden pl-4 space-y-1"
+                    >
+                      <button 
+                        onClick={() => { setView('crew_list'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'crew_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Crew List
+                      </button>
+                      <button 
+                        onClick={() => { setView('crew_compliance'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'crew_compliance' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Compliance & Status
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Audits */}
+              <div className="space-y-1">
+                <button 
+                  onClick={() => setIsAuditsOpen(!isAuditsOpen)}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    ['audit_list', 'audit_findings'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <ShieldCheck className="w-4 h-4" /> Audits
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isAuditsOpen ? "rotate-180" : "")} />
+                </button>
+                <AnimatePresence>
+                  {isAuditsOpen && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden pl-4 space-y-1"
+                    >
+                      <button 
+                        onClick={() => { setView('audit_list'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'audit_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Audit Registry
+                      </button>
+                      <button 
+                        onClick={() => { setView('audit_findings'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'audit_findings' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Non-Conformity Tracker
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -1495,7 +1592,7 @@ const SidebarContent = ({
 );
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'store_requisition' | 'chemical_requisition'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'store_requisition' | 'chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_findings'>('dashboard');
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -1504,6 +1601,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [isBunkerOpen, setIsBunkerOpen] = useState(false);
   const [isLubeOilOpen, setIsLubeOilOpen] = useState(false);
   const [isStoreChemicalsOpen, setIsStoreChemicalsOpen] = useState(false);
+  const [isCrewOpen, setIsCrewOpen] = useState(false);
+  const [isAuditsOpen, setIsAuditsOpen] = useState(false);
   
   const getLatestArrivalOperationType = (vesselId: number) => {
     const reports = arrivalReports
@@ -2002,11 +2101,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
         }
         
-        const reader = new FileReader();
-        reader.onload = (re) => {
-          setTempPreviewUrl(re.target?.result as string);
-        };
-        reader.readAsDataURL(file);
+        const blobUrl = URL.createObjectURL(file);
+        setTempPreviewUrl(blobUrl);
 
         // Fetch refreshed details
         fetchCertDetails(selectedCert, true);
@@ -2262,6 +2358,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           setIsLubeOilOpen={setIsLubeOilOpen}
           isStoreChemicalsOpen={isStoreChemicalsOpen}
           setIsStoreChemicalsOpen={setIsStoreChemicalsOpen}
+          isCrewOpen={isCrewOpen}
+          setIsCrewOpen={setIsCrewOpen}
+          isAuditsOpen={isAuditsOpen}
+          setIsAuditsOpen={setIsAuditsOpen}
           onLogout={onLogout}
           setIsChangePasswordOpen={setIsChangePasswordOpen}
         />
@@ -2320,6 +2420,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   setIsLubeOilOpen={setIsLubeOilOpen}
                   isStoreChemicalsOpen={isStoreChemicalsOpen}
                   setIsStoreChemicalsOpen={setIsStoreChemicalsOpen}
+                  isCrewOpen={isCrewOpen}
+                  setIsCrewOpen={setIsCrewOpen}
+                  isAuditsOpen={isAuditsOpen}
+                  setIsAuditsOpen={setIsAuditsOpen}
                   onLogout={onLogout}
                   setIsChangePasswordOpen={setIsChangePasswordOpen}
                 />
@@ -2935,6 +3039,30 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             </div>
           )}
 
+          {view === 'crew_list' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <CrewListView vessels={vessels} />
+            </div>
+          )}
+
+          {view === 'crew_compliance' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <CrewComplianceView vessels={vessels} />
+            </div>
+          )}
+
+          {view === 'audit_list' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <AuditRegistryView vessels={vessels} />
+            </div>
+          )}
+
+          {view === 'audit_findings' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <NonConformityTrackerView vessels={vessels} />
+            </div>
+          )}
+
           {['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) && (
             <div className="bg-white p-12 rounded-3xl border border-blue-100 shadow-sm flex flex-col items-center justify-center text-center animate-in fade-in zoom-in duration-500">
                <div className="w-20 h-20 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
@@ -3332,7 +3460,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           {previewFile.original_name}
                         </span>
                         <a 
-                          href={tempPreviewUrl || `/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`}
+                          href={tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href}
                           target="_blank" 
                           rel="noreferrer"
                           className="p-1 hover:bg-blue-50 rounded text-blue-400 hover:text-blue-600 transition-colors"
@@ -3345,7 +3473,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       const ext = previewFile.original_name.split('.').pop()?.toLowerCase();
                       const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
                       const isPdf = ext === 'pdf';
-                      const fileUrl = tempPreviewUrl || `/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`;
+                      const fileUrl = tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href;
 
                       if (isImage) {
                         return (
@@ -3498,6 +3626,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               <div 
                                 key={file.id} 
                                 onClick={() => {
+                                  setTempPreviewUrl(null);
                                   setPreviewFile(file);
                                   if (sidePanelContentRef.current) {
                                     sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
@@ -3533,7 +3662,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <a 
-                                    href={`/api/files/${file.filename}?token=${token}`} 
+                                    href={new URL(`/api/files/${file.filename}?token=${token}`, window.location.href).href} 
                                     target="_blank" 
                                     rel="noreferrer"
                                     onClick={(e) => e.stopPropagation()}
@@ -3571,6 +3700,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               <div 
                                 key={file.id} 
                                 onClick={() => {
+                                  setTempPreviewUrl(null);
                                   setPreviewFile(file);
                                   if (sidePanelContentRef.current) {
                                     sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
@@ -3598,7 +3728,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <a 
-                                    href={`/api/files/${file.filename}?token=${token}`} 
+                                    href={new URL(`/api/files/${file.filename}?token=${token}`, window.location.href).href} 
                                     target="_blank" 
                                     rel="noreferrer"
                                     onClick={(e) => e.stopPropagation()}
@@ -4193,7 +4323,7 @@ const SlideshowView = ({
   const [isKioskMode, setIsKioskMode] = useState(false);
   const [cachedImages, setCachedImages] = useState<Record<number, string>>({});
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const slideDuration = 10000; // 10 seconds per slide
+  const slideDuration = 20000; // 20 seconds per slide
 
   const getLatestArrivalOperationType = (vesselId: number) => {
     const reports = (arrivalReports || [])
@@ -4294,13 +4424,35 @@ const SlideshowView = ({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        target && 
+        (target.tagName === 'INPUT' || 
+         target.tagName === 'TEXTAREA' || 
+         target.isContentEditable)
+      ) {
+        return;
+      }
+
       if (isKioskMode && e.key === 'Escape') {
         exitKioskMode();
+        return;
+      }
+
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        setIsPaused(prev => !prev);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setCurrentIndex(prev => (prev + 1) % vessels.length);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setCurrentIndex(prev => (prev - 1 + vessels.length) % vessels.length);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isKioskMode]);
+  }, [isKioskMode, vessels.length]);
 
   const enterKioskMode = () => {
     setIsKioskMode(true);
@@ -5092,7 +5244,7 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <td className="px-6 py-4">
                       {report.attachment_id && (
                         <a 
-                          href={`/api/noon-attachments/${report.attachment_id}?token=${token}`}
+                          href={new URL(`/api/noon-attachments/${report.attachment_id}?token=${token}`, window.location.href).href}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex items-center gap-1.5 text-blue-600 hover:underline font-bold"
@@ -6190,7 +6342,7 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                     <td className="px-6 py-4">
                       {report.attachment_id && (
                         <a 
-                          href={`/api/arrival-attachments/${report.attachment_id}?token=${token}`}
+                          href={new URL(`/api/arrival-attachments/${report.attachment_id}?token=${token}`, window.location.href).href}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex items-center gap-1.5 text-blue-600 hover:underline font-bold"
@@ -7113,7 +7265,7 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <td className="px-6 py-4">
                       {report.attachment_id && (
                         <a 
-                          href={`/api/departure-attachments/${report.attachment_id}?token=${token}`}
+                          href={new URL(`/api/departure-attachments/${report.attachment_id}?token=${token}`, window.location.href).href}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex items-center gap-1.5 text-blue-600 hover:underline font-bold"
@@ -7969,11 +8121,8 @@ const AdminPanel = ({
                           upload_date: new Date().toISOString()
                         });
 
-                        const reader = new FileReader();
-                        reader.onload = (re) => {
-                          setTempPreviewUrl(re.target?.result as string);
-                        };
-                        reader.readAsDataURL(file);
+                        const blobUrl = URL.createObjectURL(file);
+                        setTempPreviewUrl(blobUrl);
 
                         if (isSupported && uploadFileType === 'certificate') {
                           try {
