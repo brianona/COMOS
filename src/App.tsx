@@ -6455,94 +6455,86 @@ const VesselRoutingUserView = ({
   latestOperationType: string
 }) => {
   return (
-    <div className="max-w-5xl mx-auto pb-12">
-      <div className="bg-white rounded-[40px] border border-slate-100 shadow-2xl shadow-blue-900/5 overflow-hidden">
-        {/* Card Header / Vessel Info Banner */}
-        <div className="bg-slate-900 p-8 md:p-12 text-white relative overflow-hidden">
-          <div className="absolute inset-0 bg-gradient-to-r from-blue-600/20 to-transparent pointer-events-none" />
-          <div className="absolute -right-20 -top-20 opacity-10 pointer-events-none">
-            <Ship className="w-96 h-96 -rotate-12" />
-          </div>
-          
-          <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-8">
-            <div className="flex items-center gap-6">
-              <div className="w-20 h-20 bg-blue-600 rounded-3xl flex items-center justify-center shadow-2xl shadow-blue-600/20 border border-white/10 shrink-0">
-                <Navigation className="w-10 h-10 text-white" />
-              </div>
-              <div>
-                <h1 className="text-4xl font-black tracking-tighter mb-1">{vessel.name}</h1>
-                <div className="flex items-center gap-3">
-                  <span className="text-blue-400 font-black uppercase tracking-[0.2em] text-[10px]">Voyage Routing Hub</span>
-                  <div className="w-1.5 h-1.5 rounded-full bg-slate-700" />
-                  <span className="text-slate-400 font-bold uppercase tracking-widest text-[9px]">{vessel.team_name}</span>
-                </div>
-              </div>
+    <div className="space-y-8">
+      <header className="flex flex-col md:flex-row md:items-end justify-between gap-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Vessel Routing</h1>
+          <p className="text-slate-500">Update destination, navigational status, scheduling, and cargo details for your vessel.</p>
+        </div>
+        <button 
+          onClick={onSave}
+          disabled={updating}
+          className="flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 disabled:opacity-50"
+        >
+          {updating ? (
+            <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+          ) : (
+            <Save className="w-4 h-4" />
+          )}
+          Save Current Changes
+        </button>
+      </header>
+
+      <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
+        {/* Vessel Quick Info Banner */}
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50/50 p-6 border-b border-blue-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-200 shrink-0">
+              <Ship className="w-6 h-6 text-white" />
             </div>
-            
-            <button 
-              onClick={onSave}
-              disabled={updating}
-              className="group relative flex items-center gap-4 bg-white text-slate-900 px-10 py-5 rounded-[2rem] text-sm font-black hover:bg-blue-50 transition-all shadow-xl disabled:opacity-50 active:scale-95 shrink-0"
-            >
-              {updating ? (
-                <div className="w-5 h-5 border-3 border-slate-200 border-t-blue-600 rounded-full animate-spin" />
-              ) : (
-                <Save className="w-5 h-5 group-hover:scale-110 transition-transform" />
-              )}
-              UPDATE VOYAGE DATA
-            </button>
+            <div>
+              <h2 className="text-lg font-bold text-slate-900 leading-tight">{vessel.name}</h2>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest leading-none mt-1">{vessel.team_name || 'Vessel Fleet'}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-xl shadow-sm border border-blue-50/80">
+            <div className="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse" />
+            <span className="text-xs font-bold text-slate-600 uppercase tracking-wider">Live Route Syncing</span>
           </div>
         </div>
 
-        {/* Card Body / Form Inputs */}
-        <div className="p-8 md:p-14 space-y-12">
-          {/* Section: Core Navigation */}
-          <div className="space-y-10">
-            <div className="flex items-center gap-4">
-              <div className="w-1.5 h-6 bg-blue-600 rounded-full" />
-              <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Positioning & Destination</h2>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-              <div className="group space-y-4">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">Next Destination / Port Calls</label>
+        <div className="p-8 space-y-8">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <div className="space-y-6">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Next Destination / Port Calls</label>
                 <div className="relative">
-                  <Anchor className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <Anchor className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input 
                     type="text"
                     value={form.next_port || ''}
                     onChange={e => onUpdateRow(vessel.id, 'next_port', e.target.value)}
-                    className="w-full pl-16 pr-8 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all placeholder:text-slate-200"
-                    placeholder="ENTER NEXT PORT..."
+                    className="w-full pl-11 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    placeholder="Enter next port..."
                   />
                 </div>
               </div>
 
-              <div className="group space-y-4">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">Current Navigational Status</label>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Current Navigational Status</label>
                 <div className="relative">
-                  <Activity className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <Activity className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <select 
                     value={form.route_status || ''}
                     onChange={e => onUpdateRow(vessel.id, 'route_status', e.target.value)}
-                    className="w-full pl-16 pr-12 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all cursor-pointer appearance-none"
+                    className="w-full pl-11 pr-10 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none appearance-none cursor-pointer"
                   >
                     <option value="">SELECT STATUS...</option>
                     <option value="Laden">Laden</option>
                     <option value="Ballast">Ballast</option>
                   </select>
-                  <ChevronDown className="w-6 h-6 text-slate-300 absolute right-8 top-1/2 -translate-y-1/2 pointer-events-none group-focus-within:text-blue-500 group-focus-within:rotate-180 transition-all" />
+                  <ChevronDown className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
               </div>
 
-              <div className="group space-y-4">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">Operation Type</label>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Operation Type</label>
                 <div className="relative">
-                  <Activity className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <Activity className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <select 
                     value={form.operation_type || ''}
                     onChange={e => onUpdateRow(vessel.id, 'operation_type', e.target.value)}
-                    className="w-full pl-16 pr-12 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all cursor-pointer appearance-none"
+                    className="w-full pl-11 pr-10 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none appearance-none cursor-pointer"
                   >
                     <option value="">SELECT OPERATION TYPE...</option>
                     <option value="LOADING">LOADING</option>
@@ -6551,86 +6543,72 @@ const VesselRoutingUserView = ({
                     <option value="ship-to-ship cargo operation">SHIP-TO-SHIP CARGO OPERATION</option>
                     <option value="Others">Others</option>
                   </select>
-                  <ChevronDown className="w-6 h-6 text-slate-300 absolute right-8 top-1/2 -translate-y-1/2 pointer-events-none group-focus-within:text-blue-500 group-focus-within:rotate-180 transition-all" />
+                  <ChevronDown className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
               </div>
             </div>
-          </div>
 
-          <hr className="border-slate-50" />
-
-          {/* Section: Operational Timeline */}
-          <div className="space-y-10">
-            <div className="flex items-center gap-4">
-              <div className="w-1.5 h-6 bg-slate-900 rounded-full" />
-              <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Voyage Temporal Schedule (UTC)</h2>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-              <div className="group space-y-4">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">ETA / ATB (Arrival Schedule)</label>
+            <div className="space-y-6">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">ETA / ATB (Arrival Schedule UTC)</label>
                 <div className="relative">
-                  <Clock className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <Clock className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input 
                     type="datetime-local"
                     value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
                     onChange={e => onUpdateRow(vessel.id, 'eta_atb', e.target.value.replace('T', ' '))}
-                    className="w-full pl-16 pr-8 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all"
+                    className="w-full pl-11 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
                   />
                 </div>
               </div>
 
-              <div className="group space-y-4">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 ml-2">ETD/ATD at Arrival (UTC)</label>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">ETD / ATD at Arrival (UTC)</label>
                 <div className="relative">
-                  <Clock className="w-7 h-7 text-slate-200 absolute left-6 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 group-focus-within:scale-110 transition-all duration-300" />
+                  <Clock className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input 
                     type="datetime-local"
                     value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
                     onChange={e => onUpdateRow(vessel.id, 'etd_atd', e.target.value.replace('T', ' '))}
-                    className="w-full pl-16 pr-8 py-7 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all"
+                    className="w-full pl-11 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Cargo Logistics & Operational Remarks</label>
+                <div className="relative">
+                  <Package className="w-4 h-4 text-slate-400 absolute left-4 top-3 pointer-events-none" />
+                  <textarea 
+                    value={form.cargo || ''}
+                    onChange={e => onUpdateRow(vessel.id, 'cargo', e.target.value)}
+                    rows={3}
+                    className="w-full pl-11 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none leading-relaxed"
+                    placeholder="Describe cargo status and other remarks..."
                   />
                 </div>
               </div>
             </div>
           </div>
 
-          <hr className="border-slate-50" />
-
-          {/* Section: Cargo Logistics */}
-          <div className="space-y-10 focus-within:translate-y-[-4px] transition-transform duration-500">
-            <div className="flex items-center gap-4">
-              <div className="w-1.5 h-6 bg-slate-200 rounded-full" />
-              <h2 className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-400">Cargo Logistics & Operational Remarks</h2>
-            </div>
-            
-            <div className="relative group">
-              <Package className="w-7 h-7 text-slate-200 absolute left-6 top-9 -translate-y-1/2 group-focus-within:text-blue-500 transition-colors" />
-              <textarea 
-                value={form.cargo || ''}
-                onChange={e => onUpdateRow(vessel.id, 'cargo', e.target.value)}
-                rows={5}
-                className="w-full pl-16 pr-8 py-8 bg-slate-50/50 border-2 border-slate-50 rounded-[2.5rem] text-xl font-bold text-slate-900 focus:ring-[12px] focus:ring-blue-500/5 focus:bg-white focus:border-blue-200 outline-none transition-all resize-none placeholder:text-slate-200 leading-relaxed"
-                placeholder="DESCRIBE CARGO STATUS AND ADDITIONAL REMARKS..."
-              />
-            </div>
-          </div>
-
-          {/* Footer Notice */}
-          <div className="bg-blue-50/50 p-8 rounded-[2rem] border border-blue-50 flex flex-col md:flex-row items-center justify-between gap-6">
-            <div className="flex items-center gap-5">
-              <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-blue-100">
-                <ShieldCheck className="w-6 h-6 text-blue-600" />
+          {/* Verification Alert Banner */}
+          <div className="bg-blue-50/50 p-6 rounded-2xl border border-blue-100 flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-white rounded-xl flex items-center justify-center border border-blue-100 shadow-sm shrink-0">
+                <ShieldCheck className="w-5 h-5 text-blue-600" />
               </div>
-              <p className="text-[11px] font-black uppercase tracking-widest text-blue-600/70 max-w-sm leading-relaxed">
-                Verification Protocol: Please double-check all destination codes and cargo quantities before submission.
+              <p className="text-xs font-bold text-blue-800/80 leading-relaxed max-w-xl">
+                Verification Protocol: Please double-check all destination codes and operational statuses before saving.
               </p>
             </div>
-            <div className="flex -space-x-4 opacity-30 hover:opacity-100 transition-opacity">
-              <div className="w-10 h-10 rounded-full border-2 border-white bg-slate-100" />
-              <div className="w-10 h-10 rounded-full border-2 border-white bg-slate-200" />
-              <div className="w-10 h-10 rounded-full border-2 border-white bg-blue-100" />
-            </div>
+            <button 
+              type="button"
+              onClick={onSave}
+              disabled={updating}
+              className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all shrink-0 shadow-sm disabled:opacity-50"
+            >
+              Update Voyage Data
+            </button>
           </div>
         </div>
       </div>
