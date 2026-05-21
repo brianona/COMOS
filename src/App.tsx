@@ -284,6 +284,7 @@ interface Vessel {
   etd_atd?: string | null;
   cargo?: string | null;
   operation_type?: string | null;
+  remark_from_vessel?: string | null;
 }
 
 interface Certificate {
@@ -1682,7 +1683,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         eta_atb: v.eta_atb || '',
         etd_atd: v.etd_atd || '',
         cargo: v.cargo || '',
-        operation_type: v.operation_type || latestArrival?.operation_type || ''
+        operation_type: v.operation_type || latestArrival?.operation_type || '',
+        remark_from_vessel: v.remark_from_vessel || ''
       };
     });
     setRoutingForm(initialForm);
@@ -2924,6 +2926,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               <th className="px-6 py-3 w-44">ETA / ATB (UTC)</th>
                               <th className="px-6 py-3 w-44">ETD/ATD at Arrival (UTC)</th>
                               <th className="px-6 py-3 min-w-[350px]">Cargo</th>
+                              <th className="px-6 py-3 min-w-[300px]">Remark from Vessel</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-blue-50">
@@ -3010,6 +3013,15 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                       onChange={e => handleUpdateRoutingRow(v.id, 'cargo', e.target.value)}
                                       className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
                                       placeholder="Cargo"
+                                    />
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <input 
+                                      type="text"
+                                      value={form.remark_from_vessel || ''}
+                                      onChange={e => handleUpdateRoutingRow(v.id, 'remark_from_vessel', e.target.value)}
+                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                      placeholder="Remark from Vessel"
                                     />
                                   </td>
                                 </tr>
@@ -4288,10 +4300,6 @@ const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: 
         }
       `}</style>
       <div ref={mapRef} className="w-full h-full z-10" />
-      <div className="absolute top-4 left-4 z-[400] bg-slate-950/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 flex items-center gap-2 pointer-events-none">
-        <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-        <span className="text-[10px] font-black uppercase tracking-widest text-white">Live Tracking</span>
-      </div>
       <div className="absolute bottom-4 right-4 z-[400] bg-slate-950/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 flex flex-col pointer-events-none text-right font-mono text-[9px] text-slate-300">
         <span>Lat: {latStr}</span>
         <span>Long: {lonStr}</span>
@@ -4701,7 +4709,7 @@ const SlideshowView = ({
               {/* Location Map Section */}
               <div className="space-y-3">
                 <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2 drop-shadow-md">
-                  <Compass className="w-4 h-4 text-blue-400" /> Interactive Location Map
+                   <Compass className="w-4 h-4 text-blue-400" /> Location Map
                 </h3>
                 <div className="h-[220px]">
                   <SlideshowMap latStr={latStr} lonStr={lonStr} vesselName={vessel.name} />
@@ -4711,6 +4719,31 @@ const SlideshowView = ({
           </motion.div>
         </AnimatePresence>
       </div>
+
+      {/* Ticker Tape */}
+      <style>{`
+        @keyframes marquee {
+          0% { transform: translate3d(100vw, 0, 0); }
+          100% { transform: translate3d(-100%, 0, 0); }
+        }
+        .animate-marquee {
+          display: inline-block;
+          animation: marquee 12s linear infinite;
+        }
+        .animate-marquee:hover {
+          animation-play-state: paused;
+        }
+      `}</style>
+      
+      {vessel.remark_from_vessel && vessel.remark_from_vessel.trim() ? (
+        <div className="relative bg-slate-950/90 border-t border-white/10 backdrop-blur-md px-6 py-2.5 overflow-hidden flex items-center z-20 h-11 select-none">
+          <div className="w-full overflow-hidden whitespace-nowrap">
+            <div className="animate-marquee whitespace-nowrap text-sm font-semibold tracking-wide text-blue-100/90">
+              {vessel.remark_from_vessel}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Progress Bar */}
       <div className="relative h-1.5 bg-white/10 w-full overflow-hidden">
@@ -6737,6 +6770,20 @@ const VesselRoutingUserView = ({
                     rows={3}
                     className="w-full pl-11 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none leading-relaxed"
                     placeholder="Describe cargo status and other remarks..."
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Remark from Vessel</label>
+                <div className="relative">
+                  <MessageSquare className="w-4 h-4 text-slate-400 absolute left-4 top-3 pointer-events-none" />
+                  <textarea 
+                    value={form.remark_from_vessel || ''}
+                    onChange={e => onUpdateRow(vessel.id, 'remark_from_vessel', e.target.value)}
+                    rows={2}
+                    className="w-full pl-11 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none leading-relaxed"
+                    placeholder="Enter custom remarks or announcements which will scroll across the bottom of the slideshow slide..."
                   />
                 </div>
               </div>
