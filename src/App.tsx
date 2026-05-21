@@ -2209,6 +2209,15 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       fetchDepartureReports();
       fetchArrivalReports();
     }
+    if (view === 'slideshow') {
+      fetchDepartureReports();
+      fetchArrivalReports();
+      fetchNoonReports();
+      fetchOtherReports();
+    }
+    if (view === 'routing') {
+      fetchArrivalReports();
+    }
   }, [view, fetchDepartureReports, fetchArrivalReports, fetchNoonReports, fetchOtherReports]);
 
   return (
