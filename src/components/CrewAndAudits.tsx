@@ -39,7 +39,7 @@ export interface CrewMember {
 
 export interface AuditRecord {
   id: string;
-  type: 'Internal Audit' | 'External Audit' | 'PSC Inspection' | 'Vetting Inspection';
+  type: 'Internal Audit' | 'External Audit' | 'PSC Inspection' | 'Vetting Inspection' | 'VIR' | 'Navigational Audit';
   vesselId: string;
   date: string;
   inspectorName: string;
@@ -207,6 +207,28 @@ const INITIAL_AUDITS: AuditRecord[] = [
     status: 'Overdue', // Target was early May, flag survey overdue
     findingsCount: 0,
     scope: 'Annual Classification & Machinery Survey'
+  },
+  {
+    id: 'a6',
+    type: 'VIR',
+    vesselId: 'all',
+    date: '2026-05-18',
+    inspectorName: 'Capt. Hiroshi Tanaka',
+    inspectorOrganization: 'ClassNK Inspector',
+    status: 'Completed',
+    findingsCount: 1,
+    scope: 'Vessel Inspection Report, Cargo Gear, Hatch Cover watertightness'
+  },
+  {
+    id: 'a7',
+    type: 'Navigational Audit',
+    vesselId: 'all',
+    date: '2026-05-20',
+    inspectorName: 'Capt. Robert Vance',
+    inspectorOrganization: 'Marine Safety Advisory',
+    status: 'In Progress',
+    findingsCount: 0,
+    scope: 'Navigational Safety Audit, Bridge Team Management, ECDIS compliance check'
   }
 ];
 
@@ -886,15 +908,24 @@ export const CrewComplianceView = ({ vessels }: { vessels: any[] }) => {
 
 
 // 3. Audit Registry View Component
-export const AuditRegistryView = ({ vessels }: { vessels: any[] }) => {
+export const AuditRegistryView = ({ vessels, prefilteredType }: { vessels: any[], prefilteredType?: string }) => {
   const [audits, setAudits] = useState<AuditRecord[]>(() => {
     const saved = localStorage.getItem('comos_audits_list');
     return saved ? JSON.parse(saved) : INITIAL_AUDITS;
   });
 
-  const [filterType, setFilterType] = useState('All');
+  const [filterType, setFilterType] = useState(prefilteredType || 'All');
   const [filterStatus, setFilterStatus] = useState('All');
   const [showModal, setShowModal] = useState(false);
+
+  // Sync state if prefilteredType changes
+  useEffect(() => {
+    if (prefilteredType) {
+      setFilterType(prefilteredType);
+    } else {
+      setFilterType('All');
+    }
+  }, [prefilteredType]);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -1009,6 +1040,8 @@ export const AuditRegistryView = ({ vessels }: { vessels: any[] }) => {
             <option value="External Audit">External Audit</option>
             <option value="PSC Inspection">PSC Inspection</option>
             <option value="Vetting Inspection">Vetting Inspection</option>
+            <option value="VIR">VIR</option>
+            <option value="Navigational Audit">Navigational Audit</option>
           </select>
 
           <select 
@@ -1108,6 +1141,8 @@ export const AuditRegistryView = ({ vessels }: { vessels: any[] }) => {
                     <option value="External Audit">External Audit</option>
                     <option value="PSC Inspection">PSC Inspection</option>
                     <option value="Vetting Inspection">Vetting Inspection</option>
+                    <option value="VIR">VIR</option>
+                    <option value="Navigational Audit">Navigational Audit</option>
                   </select>
                 </div>
                 <div>

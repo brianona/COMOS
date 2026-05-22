@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { 
   Ship, 
+  Flag,
   FileText, 
   AlertTriangle, 
   Calendar, 
@@ -59,6 +60,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
 import { CrewListView, CrewComplianceView, AuditRegistryView, NonConformityTrackerView } from './components/CrewAndAudits';
+import { TroubleReportView } from './components/TroubleReport';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -285,6 +287,8 @@ interface Vessel {
   cargo?: string | null;
   operation_type?: string | null;
   remark_from_vessel?: string | null;
+  flag?: string | null;
+  date_built?: string | null;
 }
 
 interface Certificate {
@@ -1087,7 +1091,7 @@ const SidebarContent = ({
           onClick={() => setIsMonitoringOpen(!isMonitoringOpen)}
           className={cn(
             "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_findings'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_findings', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
           )}
         >
           <div className="flex items-center gap-3">
@@ -1134,7 +1138,7 @@ const SidebarContent = ({
                           view === 'defects_5_2' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                         )}
                       >
-                        <div className="w-1 h-1 bg-current rounded-full" /> COMI-SM-5-2
+                        <div className="w-1 h-1 bg-current rounded-full" /> Trouble Report
                       </button>
                       <button 
                         onClick={() => { setView('defects_1_6'); setIsSidebarOpen(false); }}
@@ -1404,7 +1408,7 @@ const SidebarContent = ({
                   onClick={() => setIsAuditsOpen(!isAuditsOpen)}
                   className={cn(
                     "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                    ['audit_list', 'audit_findings'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                    ['audit_list', 'audit_findings', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                   )}
                 >
                   <div className="flex items-center gap-3">
@@ -1429,6 +1433,42 @@ const SidebarContent = ({
                         )}
                       >
                         <div className="w-1 h-1 bg-current rounded-full" /> Audit Registry
+                      </button>
+                      <button 
+                        onClick={() => { setView('audit_internal'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'audit_internal' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Internal Audit
+                      </button>
+                      <button 
+                        onClick={() => { setView('audit_external'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'audit_external' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> External Audit
+                      </button>
+                      <button 
+                        onClick={() => { setView('audit_vir'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'audit_vir' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> VIR
+                      </button>
+                      <button 
+                        onClick={() => { setView('audit_navigational'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          view === 'audit_navigational' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Navigational Audit
                       </button>
                       <button 
                         onClick={() => { setView('audit_findings'); setIsSidebarOpen(false); }}
@@ -1593,7 +1633,7 @@ const SidebarContent = ({
 );
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'store_requisition' | 'chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_findings'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'store_requisition' | 'chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_findings' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational'>('dashboard');
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -1741,6 +1781,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       formData.append('name', editingVessel.name);
       formData.append('team_id', editingVessel.team_id ? String(editingVessel.team_id) : '');
       formData.append('owner', editingVessel.owner || 'Nissen');
+      formData.append('flag', editingVessel.flag || '');
+      formData.append('date_built', editingVessel.date_built || '');
       if (editingVesselPhoto) {
         formData.append('photo', editingVesselPhoto);
       }
@@ -2714,13 +2756,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       </div>
                     </div>
                     <div className="space-y-3">
-                      <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-blue-50 pb-2 mb-2">
-                        <span>Route Status</span>
-                        <span className="text-blue-600">{vessel.route_status || 'N/A'}</span>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-500">Flag</span>
+                        <span className="font-bold text-slate-900">{vessel.flag || 'N/A'}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-500">Next Port</span>
-                        <span className="font-bold text-slate-900 truncate max-w-[120px]">{vessel.next_port || 'N/A'}</span>
+                        <span className="text-slate-500">Date Built</span>
+                        <span className="font-bold text-slate-900">{vessel.date_built || 'N/A'}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Total Certificates/Service Reports</span>
@@ -3069,13 +3111,43 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             </div>
           )}
 
+          {view === 'audit_internal' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <AuditRegistryView vessels={vessels} prefilteredType="Internal Audit" />
+            </div>
+          )}
+
+          {view === 'audit_external' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <AuditRegistryView vessels={vessels} prefilteredType="External Audit" />
+            </div>
+          )}
+
+          {view === 'audit_vir' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <AuditRegistryView vessels={vessels} prefilteredType="VIR" />
+            </div>
+          )}
+
+          {view === 'audit_navigational' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <AuditRegistryView vessels={vessels} prefilteredType="Navigational Audit" />
+            </div>
+          )}
+
           {view === 'audit_findings' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
               <NonConformityTrackerView vessels={vessels} />
             </div>
           )}
 
-          {['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) && (
+          {view === 'defects_5_2' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <TroubleReportView vessels={vessels} />
+            </div>
+          )}
+
+          {['defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) && (
             <div className="bg-white p-12 rounded-3xl border border-blue-100 shadow-sm flex flex-col items-center justify-center text-center animate-in fade-in zoom-in duration-500">
                <div className="w-20 h-20 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
                  {view.startsWith('defects') ? <AlertTriangle className="w-10 h-10 text-blue-600" /> : 
@@ -3285,6 +3357,20 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <div>
                           <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">ETD/ATD at Arrival (UTC)</p>
                           <p className="text-xs font-bold text-slate-900">{selectedVessel.etd_atd ? selectedVessel.etd_atd.replace('T', ' ') : 'Not Set'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-pink-100 rounded-lg shrink-0"><Flag className="w-3.5 h-3.5 text-pink-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Flag</p>
+                          <p className="text-xs font-bold text-slate-900">{selectedVessel.flag || 'Not Set'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-teal-100 rounded-lg shrink-0"><Calendar className="w-3.5 h-3.5 text-teal-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Date Built</p>
+                          <p className="text-xs font-bold text-slate-900">{selectedVessel.date_built || 'Not Set'}</p>
                         </div>
                       </div>
                       <div className="flex items-start gap-3 col-span-2">
@@ -3926,6 +4012,28 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <option value="Nissen">Nissen</option>
                         <option value="Goodwill">Goodwill</option>
                       </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Flag</label>
+                        <input 
+                          type="text" 
+                          placeholder="Flag" 
+                          value={editingVessel.flag || ''}
+                          onChange={(e) => setEditingVessel({...editingVessel, flag: e.target.value})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Date Built</label>
+                        <input 
+                          type="text" 
+                          placeholder="e.g. 2024-05-10" 
+                          value={editingVessel.date_built || ''}
+                          onChange={(e) => setEditingVessel({...editingVessel, date_built: e.target.value})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel Photo (Optional)</label>
@@ -7399,6 +7507,8 @@ const AdminPanel = ({
   const [newVesselName, setNewVesselName] = useState('');
   const [newVesselTeam, setNewVesselTeam] = useState('');
   const [newVesselOwner, setNewVesselOwner] = useState('Nissen');
+  const [newVesselFlag, setNewVesselFlag] = useState('');
+  const [newVesselDateBuilt, setNewVesselDateBuilt] = useState('');
   const [newVesselPhoto, setNewVesselPhoto] = useState<File | null>(null);
   const [newCertName, setNewCertName] = useState('');
   const [newCertVessel, setNewCertVessel] = useState('');
@@ -7683,6 +7793,8 @@ const AdminPanel = ({
       formData.append('name', newVesselName);
       formData.append('team_id', newVesselTeam ? String(newVesselTeam) : '');
       formData.append('owner', newVesselOwner);
+      formData.append('flag', newVesselFlag);
+      formData.append('date_built', newVesselDateBuilt);
       if (newVesselPhoto) {
         formData.append('photo', newVesselPhoto);
       }
@@ -7697,6 +7809,8 @@ const AdminPanel = ({
         setNewVesselName('');
         setNewVesselTeam('');
         setNewVesselOwner('Nissen');
+        setNewVesselFlag('');
+        setNewVesselDateBuilt('');
         setNewVesselPhoto(null);
         onRefresh();
       } else {
@@ -7996,6 +8110,22 @@ const AdminPanel = ({
                     <option value="Nissen">Nissen</option>
                     <option value="Goodwill">Goodwill</option>
                   </select>
+                  <div className="grid grid-cols-2 gap-4">
+                    <input 
+                      type="text" 
+                      placeholder="Flag" 
+                      value={newVesselFlag}
+                      onChange={(e) => setNewVesselFlag(e.target.value)}
+                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                    <input 
+                      type="text" 
+                      placeholder="Date Built (e.g. 2024-05-10)" 
+                      value={newVesselDateBuilt}
+                      onChange={(e) => setNewVesselDateBuilt(e.target.value)}
+                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel Photo</label>
                     <input 
