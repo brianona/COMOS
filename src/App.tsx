@@ -61,6 +61,7 @@ import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
 import { CrewListView, CrewComplianceView, AuditRegistryView, NonConformityTrackerView } from './components/CrewAndAudits';
 import { TroubleReportView } from './components/TroubleReport';
+import { SparePartsRequisitionView } from './components/SparePartsRequisition';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -1109,114 +1110,26 @@ const SidebarContent = ({
               className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
             >
               {/* Defects */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setIsDefectsOpen(!isDefectsOpen)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                    ['defects_5_2', 'defects_1_6'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    <AlertTriangle className="w-4 h-4" /> Defects
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isDefectsOpen ? "rotate-180" : "")} />
-                </button>
-                <AnimatePresence>
-                  {isDefectsOpen && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1"
-                    >
-                      <button 
-                        onClick={() => { setView('defects_5_2'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'defects_5_2' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Trouble Report
-                      </button>
-                      <button 
-                        onClick={() => { setView('defects_1_6'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'defects_1_6' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> COMI-SM-1-6
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+              <button 
+                onClick={() => { setView('defects_5_2'); setIsSidebarOpen(false); }}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                  view === 'defects_5_2' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                )}
+              >
+                <AlertTriangle className="w-4 h-4" /> Defects
+              </button>
 
               {/* Spare Parts Requisition */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setIsSparePartsOpen(!isSparePartsOpen)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                    ['spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    <Package className="w-4 h-4" /> Spare Parts Requisition
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isSparePartsOpen ? "rotate-180" : "")} />
-                </button>
-                <AnimatePresence>
-                  {isSparePartsOpen && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1"
-                    >
-                      <button 
-                        onClick={() => { setView('spare_requisition_ship'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'spare_requisition_ship' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Requisition(Ship)
-                      </button>
-                      <button 
-                        onClick={() => { setView('spare_quotation_pic'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'spare_quotation_pic' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Quotation(PIC)
-                      </button>
-                      <button 
-                        onClick={() => { setView('spare_logistic_pic'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'spare_logistic_pic' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Logistic(PIC)
-                      </button>
-                      <button 
-                        onClick={() => { setView('spare_delivery_note_ship'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'spare_delivery_note_ship' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Delivery Note(Ship)
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+              <button 
+                onClick={() => { setView('spare_requisition_ship'); setIsSidebarOpen(false); }}
+                className={cn(
+                  "w-full flex items-center gap-1.5 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                  ['spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship'].includes(view) ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                )}
+              >
+                <Package className="w-4 h-4" /> Spare Parts Requisition
+              </button>
 
               {/* Bunker */}
               <div className="space-y-1">
@@ -3143,11 +3056,17 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'defects_5_2' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <TroubleReportView vessels={vessels} />
+              <TroubleReportView vessels={vessels} currentUser={user} />
             </div>
           )}
 
-          {['defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) && (
+          {view === 'spare_requisition_ship' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <SparePartsRequisitionView vessels={vessels} currentUser={user} />
+            </div>
+          )}
+
+          {['defects_1_6', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) && (
             <div className="bg-white p-12 rounded-3xl border border-blue-100 shadow-sm flex flex-col items-center justify-center text-center animate-in fade-in zoom-in duration-500">
                <div className="w-20 h-20 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
                  {view.startsWith('defects') ? <AlertTriangle className="w-10 h-10 text-blue-600" /> : 

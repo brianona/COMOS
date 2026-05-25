@@ -95,9 +95,23 @@ const INITIAL_REPORTS: TroubleReport[] = [
 
 interface TroubleReportViewProps {
   vessels: any[];
+  currentUser?: {
+    id: number;
+    username: string;
+    role: 'admin' | 'user' | 'vessel' | 'team_pic';
+    team_ids: number[];
+    vessel_id?: number | null;
+    email?: string;
+  } | null;
 }
 
-export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels }) => {
+export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, currentUser }) => {
+  const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
+  const userVesselId = isVesselUser ? String(currentUser.vessel_id) : null;
+  const allowedVessels = isVesselUser 
+    ? vessels.filter(v => String(v.id) === String(currentUser.vessel_id))
+    : vessels;
+
   const [reports, setReports] = useState<TroubleReport[]>(() => {
     const saved = localStorage.getItem('comos_trouble_reports');
     return saved ? JSON.parse(saved) : INITIAL_REPORTS;
@@ -105,7 +119,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
 
   const [activeTab, setActiveTab] = useState<'all' | 'Submitted' | 'In Progress' | 'Resolved'>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterVessel, setFilterVessel] = useState('All');
+  const [filterVessel, setFilterVessel] = useState(() => isVesselUser ? String(currentUser.vessel_id) : 'All');
   const [filterClass, setFilterClass] = useState('All');
   const [selectedReport, setSelectedReport] = useState<TroubleReport | null>(null);
   const [showFormModal, setShowFormModal] = useState(false);
@@ -123,7 +137,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
 
   // Form states
   const [formData, setFormData] = useState({
-    vesselId: vessels[0]?.id?.toString() || '1',
+    vesselId: isVesselUser ? String(currentUser.vessel_id) : (vessels[0]?.id?.toString() || '1'),
     deficiencyNumber: '',
     dateFound: new Date().toISOString().split('T')[0],
     deficiency: '',
@@ -133,6 +147,13 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
     reporterName: '',
     pmsCode: ''
   });
+
+  useEffect(() => {
+    if (userVesselId) {
+      setFilterVessel(userVesselId);
+      setFormData(prev => ({ ...prev, vesselId: userVesselId }));
+    }
+  }, [userVesselId]);
 
   useEffect(() => {
     localStorage.setItem('comos_trouble_reports', JSON.stringify(reports));
@@ -171,7 +192,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
     
     // Reset form
     setFormData({
-      vesselId: vessels[0]?.id?.toString() || '1',
+      vesselId: userVesselId || vessels[0]?.id?.toString() || '1',
       deficiencyNumber: '',
       dateFound: new Date().toISOString().split('T')[0],
       deficiency: '',
@@ -321,8 +342,13 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
     }
   };
 
+  // Base reports accessible by the current user
+  const accessibleReports = isVesselUser
+    ? reports.filter(r => String(r.vesselId) === userVesselId)
+    : reports;
+
   // Filtering
-  const filteredReports = reports.filter(r => {
+  const filteredReports = accessibleReports.filter(r => {
     const matchesTab = activeTab === 'all' || r.status === activeTab;
     const matchesVessel = filterVessel === 'All' || r.vesselId === filterVessel;
     const matchesClass = filterClass === 'All' || r.classification === filterClass;
@@ -341,12 +367,12 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
   });
 
   const stats = {
-    total: (filterVessel === 'All' ? reports : reports.filter(r => r.vesselId === filterVessel)).length,
-    submitted: (filterVessel === 'All' ? reports : reports.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'Submitted').length,
-    inProgress: (filterVessel === 'All' ? reports : reports.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'In Progress').length,
-    resolved: (filterVessel === 'All' ? reports : reports.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'Resolved').length,
-    malfunctions: (filterVessel === 'All' ? reports : reports.filter(r => r.vesselId === filterVessel)).filter(r => r.classification === 'Malfunction (Hull / Machinery / Equipment)').length,
-    nonConformities: (filterVessel === 'All' ? reports : reports.filter(r => r.vesselId === filterVessel)).filter(r => r.classification.startsWith('Non conformity')).length
+    total: (filterVessel === 'All' ? accessibleReports : accessibleReports.filter(r => r.vesselId === filterVessel)).length,
+    submitted: (filterVessel === 'All' ? accessibleReports : accessibleReports.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'Submitted').length,
+    inProgress: (filterVessel === 'All' ? accessibleReports : accessibleReports.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'In Progress').length,
+    resolved: (filterVessel === 'All' ? accessibleReports : accessibleReports.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'Resolved').length,
+    malfunctions: (filterVessel === 'All' ? accessibleReports : accessibleReports.filter(r => r.vesselId === filterVessel)).filter(r => r.classification === 'Malfunction (Hull / Machinery / Equipment)').length,
+    nonConformities: (filterVessel === 'All' ? accessibleReports : accessibleReports.filter(r => r.vesselId === filterVessel)).filter(r => r.classification.startsWith('Non conformity')).length
   };
 
   const classificationOptions = [
@@ -383,7 +409,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
           <div className="bg-blue-500/30 text-blue-100 px-3 py-1 rounded-full text-xs font-semibold w-max uppercase tracking-wider">
             Defects Management
           </div>
-          <h1 className="text-2xl md:text-3xl font-black tracking-tight">Trouble Reports (COMI-SM-5-2)</h1>
+          <h1 className="text-2xl md:text-3xl font-black tracking-tight">Trouble Reports</h1>
           <p className="text-blue-100/90 text-sm max-w-2xl">
             Record, classify and monitor marine deficiencies, incidents, malfunctions or PSC observations across fleet vessels. Ensuring safety code compliance and swift close-out.
           </p>
@@ -404,7 +430,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
           { label: 'In Progress', value: stats.inProgress, color: 'text-amber-600', bg: 'bg-amber-50/30' },
           { label: 'Resolved Only', value: stats.resolved, color: 'text-emerald-600', bg: 'bg-emerald-50/30' },
           { label: 'Malfunctions', value: stats.malfunctions, color: 'text-rose-600', bg: 'bg-rose-50/20' },
-          { label: 'Audits/PSC Logs', value: stats.nonConformities + (filterVessel === 'All' ? reports : reports.filter(r => r.vesselId === filterVessel)).filter(r => r.classification.includes('PSC')).length, color: 'text-indigo-600', bg: 'bg-indigo-50/20' },
+          { label: 'Audits/PSC Logs', value: stats.nonConformities + (filterVessel === 'All' ? accessibleReports : accessibleReports.filter(r => r.vesselId === filterVessel)).filter(r => r.classification.includes('PSC')).length, color: 'text-indigo-600', bg: 'bg-indigo-50/20' },
         ].map((item, idx) => (
           <div key={idx} className={`${item.bg} p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between`}>
             <span className="text-xs font-semibold text-slate-500 tracking-tight uppercase">{item.label}</span>
@@ -441,10 +467,11 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
             <select
               value={filterVessel}
               onChange={(e) => setFilterVessel(e.target.value)}
-              className="px-3 py-2.5 rounded-xl border border-slate-200 text-xs bg-slate-50/50 font-medium focus:ring-2 focus:ring-blue-500/20"
+              disabled={!!isVesselUser}
+              className="px-3 py-2.5 rounded-xl border border-slate-200 text-xs bg-slate-50/50 font-medium focus:ring-2 focus:ring-blue-500/20 disabled:opacity-75 disabled:bg-slate-100"
             >
-              <option value="All">All Vessels</option>
-              {vessels.map(v => (
+              {!isVesselUser && <option value="All">All Vessels</option>}
+              {allowedVessels.map(v => (
                 <option key={v.id} value={v.id}>{v.name}</option>
               ))}
             </select>
@@ -605,7 +632,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
               {/* Modal Banner Header */}
               <div className="bg-blue-600 p-6 text-white flex items-center justify-between">
                 <div className="space-y-1">
-                  <span className="text-[10px] font-black uppercase tracking-wider bg-blue-500 px-2 py-0.5 rounded">COMI-SM-5-2 Form</span>
+                  <span className="text-[10px] font-black uppercase tracking-wider bg-blue-500 px-2 py-0.5 rounded">Trouble Report Form</span>
                   <h2 className="text-xl font-black">Record Marine Trouble Report</h2>
                 </div>
                 <button
@@ -625,9 +652,10 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels })
                     <select
                       value={formData.vesselId}
                       onChange={(e) => setFormData(formData => ({ ...formData, vesselId: e.target.value }))}
-                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500/10 focus:border-blue-600 bg-slate-50"
+                      disabled={!!isVesselUser}
+                      className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500/10 focus:border-blue-600 bg-slate-50 disabled:opacity-75 disabled:bg-slate-100"
                     >
-                      {vessels.map(v => (
+                      {allowedVessels.map(v => (
                         <option key={v.id} value={v.id}>{v.name}</option>
                       ))}
                     </select>
