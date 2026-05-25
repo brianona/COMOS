@@ -52,7 +52,9 @@ import {
   Droplets,
   Wrench,
   FlaskConical,
-  Waves
+  Waves,
+  Camera,
+  Image
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isBefore, addDays, parseISO } from 'date-fns';
@@ -388,6 +390,11 @@ interface NoonReport {
   vessel_name?: string;
   attachment_id?: number;
   attachment_name?: string;
+  weather_notation?: string | null;
+  swell_scale_21?: string | null;
+  wind_scale?: string | null;
+  wave_scale?: string | null;
+  weather_image?: string | null;
 }
 
 interface OtherReport {
@@ -4863,7 +4870,7 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
   reports: NoonReport[],
   onRefresh: () => void,
   notify: (type: 'success' | 'error', message: string) => void
-}) => {
+  }) => {
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const defaultForm = {
@@ -4877,12 +4884,18 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
     rob_lsfo: '0',
     rob_mgo: '0',
     rob_mdo: '0',
-    voyage_number: ''
+    voyage_number: '',
+    weather_notation: '',
+    swell_scale_21: '',
+    wind_scale: '',
+    wave_scale: '',
+    weather_image: ''
   };
   const [form, setForm] = useState(defaultForm);
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
   const [vesselFilter, setVesselFilter] = useState<string>('');
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   const filteredReports = React.useMemo(() => {
     return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
@@ -5000,7 +5013,12 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
       rob_hsfo: String(report.rob_hsfo),
       rob_lsfo: String(report.rob_lsfo),
       rob_mgo: String(report.rob_mgo),
-      rob_mdo: String(report.rob_mdo)
+      rob_mdo: String(report.rob_mdo),
+      weather_notation: report.weather_notation || '',
+      swell_scale_21: report.swell_scale_21 || '',
+      wind_scale: report.wind_scale || '',
+      wave_scale: report.wave_scale || '',
+      weather_image: report.weather_image || ''
     });
     setActiveTab('form');
   };
@@ -5240,6 +5258,171 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
               </div>
             </div>
 
+            {/* Weather Conditions Section */}
+            <div className="border-t border-slate-100 pt-8 mt-6">
+              <h4 className="text-sm font-bold text-blue-900 mb-4 flex items-center gap-2">
+                <Waves className="w-4 h-4 text-blue-600" />
+                Weather Conditions
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                {/* Weather Notation dropdown */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Weather Notation</label>
+                  <select
+                    value={form.weather_notation}
+                    onChange={(e) => setForm({ ...form, weather_notation: e.target.value })}
+                    required
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  >
+                    <option value="">Select Weather Notation</option>
+                    <option value="Blue Sky (Cloud 0~2)">Blue Sky (Cloud 0~2)</option>
+                    <option value="Fine but Cloudy (Cloud 3~7)">Fine but Cloudy (Cloud 3~7)</option>
+                    <option value="Cloudy (8~10)">Cloudy (8~10)</option>
+                    <option value="Drizzling rain">Drizzling rain</option>
+                    <option value="Fog">Fog</option>
+                    <option value="Gloom">Gloom</option>
+                    <option value="Hail">Hail</option>
+                    <option value="Lightning">Lightning</option>
+                    <option value="Mist">Mist</option>
+                    <option value="Overcast (Cloud 10)">Overcast (Cloud 10)</option>
+                    <option value="Passing Showers">Passing Showers</option>
+                    <option value="Squalls">Squalls</option>
+                    <option value="Rain">Rain</option>
+                    <option value="Snow">Snow</option>
+                    <option value="Thunder">Thunder</option>
+                    <option value="Ugly threatening wr.">Ugly threatening wr.</option>
+                    <option value="Visibility">Visibility</option>
+                    <option value="Dew">Dew</option>
+                    <option value="Haze">Haze</option>
+                  </select>
+                </div>
+
+                {/* Swell Scale21 dropdown */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Swell Scale</label>
+                  <select
+                    value={form.swell_scale_21}
+                    onChange={(e) => setForm({ ...form, swell_scale_21: e.target.value })}
+                    required
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  >
+                    <option value="">Select Swell Scale</option>
+                    <option value="No Swell">No Swell</option>
+                    <option value="Low Swell - Short or Average">Low Swell - Short or Average</option>
+                    <option value="Low Swell - Long">Low Swell - Long</option>
+                    <option value="Moderate - Short">Moderate - Short</option>
+                    <option value="Moderate - Average">Moderate - Average</option>
+                    <option value="Moderate - Long">Moderate - Long</option>
+                    <option value="Heavy Swell - Short">Heavy Swell - Short</option>
+                    <option value="Heavy Swell - Average">Heavy Swell - Average</option>
+                    <option value="Heavy Swell - Long">Heavy Swell - Long</option>
+                    <option value="Confused Swell">Confused Swell</option>
+                  </select>
+                </div>
+
+                {/* Wind Scale dropdown */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Wind Scale</label>
+                  <select
+                    value={form.wind_scale}
+                    onChange={(e) => setForm({ ...form, wind_scale: e.target.value })}
+                    required
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  >
+                    <option value="">Select Wind Scale</option>
+                    <option value="Calm 0~0.2m/sec">Calm 0~0.2m/sec</option>
+                    <option value="Light Air 0.3~1.5m/sec">Light Air 0.3~1.5m/sec</option>
+                    <option value="Light Breeze 1.6~3.3m/sec">Light Breeze 1.6~3.3m/sec</option>
+                    <option value="Gentle Breeze 3.4~5.4m/sec">Gentle Breeze 3.4~5.4m/sec</option>
+                    <option value="Moderate Breeze 5.5~7.9m/sec">Moderate Breeze 5.5~7.9m/sec</option>
+                    <option value="Fresh Breeze 8.0~10.7m/sec">Fresh Breeze  8.0~10.7m/sec</option>
+                    <option value="Strong Breeze 10.8~13.8m/sec">Strong Breeze 10.8~13.8m/sec</option>
+                    <option value="Near Gale 13.9~17.1m/sec">Near Gale 13.9~17.1m/sec</option>
+                    <option value="Gale 17.2 ~24.4m/sec">Gale 17.2 ~24.4m/sec</option>
+                    <option value="Strong Gale 20.8~24.4m/sec">Strong Gale 20.8~24.4m/sec</option>
+                    <option value="Storm 24.5 ~ 28.4m/sec">Storm 24.5 ~ 28.4m/sec</option>
+                    <option value="Violent Storm 28.5~32.6m/sec">Violent Storm 28.5~32.6m/sec</option>
+                    <option value="Hurricane 32.7m/sec">Hurricane 32.7m/sec</option>
+                  </select>
+                </div>
+
+                {/* Wave Scale dropdown */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Wave Scale</label>
+                  <select
+                    value={form.wave_scale}
+                    onChange={(e) => setForm({ ...form, wave_scale: e.target.value })}
+                    required
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  >
+                    <option value="">Select Wave Scale</option>
+                    <option value="Calm (Classy)">Calm (Classy)</option>
+                    <option value="Calm (Rippled)">Calm (Rippled)</option>
+                    <option value="Smooth (Wavelets)">Smooth (Wavelets)</option>
+                    <option value="Slight">Slight</option>
+                    <option value="Moderate">Moderate</option>
+                    <option value="Rough">Rough</option>
+                    <option value="Very rough">Very rough</option>
+                    <option value="High">High</option>
+                    <option value="Very High">Very High</option>
+                    <option value="Phenomenal">Phenomenal</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Weather Photo component */}
+              <div className="mt-6 bg-slate-50/20 border border-slate-100 p-5 rounded-2xl">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2.5">Weather Conditions Photo (Optional)</label>
+                {form.weather_image ? (
+                  <div className="relative inline-block rounded-2xl overflow-hidden border border-slate-200 shadow-md bg-white p-1.5 transition-all">
+                    <img 
+                      src={form.weather_image} 
+                      className="max-h-64 rounded-xl object-contain" 
+                      alt="Weather Conditions Photo" 
+                      referrerPolicy="no-referrer" 
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setForm({ ...form, weather_image: '' })}
+                      className="absolute top-4 right-4 p-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1 text-xs font-bold"
+                      title="Remove Photo"
+                    >
+                      <Trash2 className="w-4 h-4" /> Remove Photo
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-start max-w-xl">
+                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-200 border-dashed rounded-2xl cursor-pointer bg-slate-50/50 hover:bg-slate-100/50 hover:border-blue-400/50 transition-all">
+                      <div className="flex flex-col items-center justify-center pt-4 pb-4 px-4 text-center">
+                        <Camera className="w-8 h-8 text-blue-500 mb-2" />
+                        <p className="text-sm font-bold text-slate-700">Click to upload weather snapshot</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">PNG, JPG, JPEG, WEBP up to 5MB</p>
+                      </div>
+                      <input 
+                        type="file" 
+                        accept="image/*" 
+                        className="hidden" 
+                        onChange={(e) => {
+                          const selectedFile = e.target.files?.[0];
+                          if (selectedFile) {
+                            if (selectedFile.size > 5 * 1024 * 1024) {
+                              alert("File is too large! Maximum limit is 5MB.");
+                              return;
+                            }
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              setForm(prev => ({ ...prev, weather_image: reader.result as string }));
+                            };
+                            reader.readAsDataURL(selectedFile);
+                          }
+                        }}
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="flex justify-end pt-8 border-t border-slate-100">
               <button 
                 type="submit"
@@ -5284,6 +5467,7 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <th className="px-6 py-4">Position</th>
                     <th className="px-6 py-4">DTG</th>
                     <th className="px-6 py-4">Cargo</th>
+                    <th className="px-6 py-4">Weather</th>
                     <th className="px-6 py-4">HSFO ROB</th>
                     <th className="px-6 py-4">Daily FOC (HSFO)</th>
                     <th className="px-6 py-4">Attachment</th>
@@ -5299,6 +5483,41 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <td className="px-6 py-4 font-mono text-xs">{report.position_lat} / {report.position_long}</td>
                     <td className="px-6 py-4">{report.distance_to_go} nm</td>
                     <td className="px-6 py-4 uppercase text-[10px] font-bold text-slate-500">{report.cargo_status}</td>
+                    <td className="px-6 py-4">
+                      <div className="flex items-center gap-3">
+                        {report.weather_image && (
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImage(report.weather_image || null)}
+                            className="relative group cursor-pointer flex-shrink-0"
+                            title="Click to view full photo"
+                          >
+                            <img 
+                              src={report.weather_image} 
+                              className="w-10 h-10 object-cover rounded-lg border border-slate-200 group-hover:border-blue-500 transition-all shadow-sm"
+                              alt="Weather thumbnail"
+                              referrerPolicy="no-referrer"
+                            />
+                            <div className="absolute inset-0 bg-black/10 group-hover:bg-black/0 rounded-lg transition-all" />
+                          </button>
+                        )}
+                        {report.weather_notation ? (
+                          <div className="space-y-0.5 max-w-[150px]">
+                            <div className="text-xs font-semibold text-slate-800 truncate" title={`Notation: ${report.weather_notation}`}>
+                              {report.weather_notation}
+                            </div>
+                            {(report.wind_scale || report.swell_scale_21 || report.wave_scale) && (
+                              <div className="text-[10px] text-slate-400 font-medium truncate" title={`Swell: ${report.swell_scale_21 || ''} | Wind: ${report.wind_scale || ''} | Wave: ${report.wave_scale || ''}`}>
+                                {report.wind_scale ? `${report.wind_scale.split(' ')[0]}` : ''}
+                                {report.swell_scale_21 ? ` • ${report.swell_scale_21.split(' ')[0]}` : ''}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          !report.weather_image && <span className="text-xs text-slate-400">-</span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
                     <td className="px-6 py-4 font-mono text-blue-600">-{report.foc_hsfo}</td>
                     <td className="px-6 py-4">
@@ -5347,6 +5566,43 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {previewImage && (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 p-4 animate-fade-in">
+        <div className="relative bg-white max-w-4xl w-full rounded-2xl overflow-hidden shadow-2xl flex flex-col">
+          <div className="bg-slate-900 px-6 py-4 text-white flex justify-between items-center border-b border-slate-800">
+            <h3 className="font-bold text-base flex items-center gap-2">
+              <Waves className="w-5 h-5 text-blue-400" />
+              Weather Conditions Snapshot
+            </h3>
+            <button
+              type="button"
+              onClick={() => setPreviewImage(null)}
+              className="p-1.5 hover:bg-slate-800 rounded-xl transition-all cursor-pointer text-slate-400 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="p-6 bg-slate-100 flex items-center justify-center max-h-[70vh] overflow-y-auto">
+            <img 
+              src={previewImage} 
+              className="max-h-[60vh] max-w-full rounded-xl object-contain shadow-md" 
+              alt="Full Weather Snapshot" 
+              referrerPolicy="no-referrer"
+            />
+          </div>
+          <div className="bg-slate-50 px-6 py-4 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setPreviewImage(null)}
+              className="px-5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-sm font-bold transition-all cursor-pointer"
+            >
+              Close Preview
+            </button>
           </div>
         </div>
       </div>
