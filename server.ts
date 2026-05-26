@@ -137,6 +137,8 @@ async function startServer() {
         photo_mimetype VARCHAR(255),
         flag VARCHAR(255),
         date_built VARCHAR(255),
+        min_fuel_consumption VARCHAR(255),
+        max_fuel_consumption VARCHAR(255),
         FOREIGN KEY (team_id) REFERENCES teams(id)
       )
     `);
@@ -186,6 +188,16 @@ async function startServer() {
       if (!columnNames.includes('date_built')) {
         console.log('Adding date_built column to vessels table...');
         await pool.query("ALTER TABLE vessels ADD COLUMN date_built VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('min_fuel_consumption')) {
+        console.log('Adding min_fuel_consumption column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN min_fuel_consumption VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('max_fuel_consumption')) {
+        console.log('Adding max_fuel_consumption column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN max_fuel_consumption VARCHAR(255)");
       }
     } catch (e: any) {
       console.error('Error during vessels table migration:', e.message);
@@ -472,12 +484,20 @@ async function startServer() {
         wind_scale VARCHAR(255) NULL,
         wave_scale VARCHAR(255) NULL,
         weather_image LONGTEXT NULL,
+        remarks TEXT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (vessel_id) REFERENCES vessels(id),
         FOREIGN KEY (user_id) REFERENCES users(id),
         FOREIGN KEY (attachment_id) REFERENCES noon_attachments(id) ON DELETE SET NULL
       )
     `);
+
+    try {
+      await pool.query(`ALTER TABLE noon_reports ADD COLUMN remarks TEXT NULL`);
+      console.log('Added remarks column to noon_reports table');
+    } catch (e) {
+      // Column might already exist, ignore error
+    }
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS other_reports (
@@ -1081,13 +1101,13 @@ async function startServer() {
   app.get('/api/vessels', authenticate, async (req: any, res) => {
     let vessels;
     if (req.user.role === 'admin') {
-      [vessels] = await pool.query('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL');
+      [vessels] = await pool.query('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL');
     } else if (req.user.role === 'vessel') {
       const vesselId = req.user.vessel_id;
       if (!vesselId) {
         return res.json([]);
       }
-      [vessels] = await pool.execute('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL', [vesselId]);
+      [vessels] = await pool.execute('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL', [vesselId]);
     } else {
       const teamIds = req.user.team_ids || [];
       if (teamIds.length === 0) {
@@ -1095,7 +1115,7 @@ async function startServer() {
       }
       const placeholders = teamIds.map(() => '?').join(',');
       const params = [...teamIds];
-      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
+      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
     }
     res.json(vessels);
   });
@@ -1115,7 +1135,7 @@ async function startServer() {
   });
 
   app.post('/api/vessels', authenticate, isTeamPicOrAdmin, upload.single('photo'), async (req: any, res) => {
-    const { name, team_id, owner, flag, date_built } = req.body;
+    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption } = req.body;
     try {
       // If team_pic, they can only add to their own teams
       if (req.user.role === 'team_pic' && team_id && !req.user.team_ids.includes(Number(team_id))) {
@@ -1126,8 +1146,8 @@ async function startServer() {
       const photoMimetype = req.file ? req.file.mimetype : null;
 
       await pool.execute(
-        'INSERT INTO vessels (name, team_id, owner, flag, date_built, photo_data, photo_mimetype) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-        [name, team_id || null, owner || 'Nissen', flag || null, date_built || null, photoData, photoMimetype]
+        'INSERT INTO vessels (name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, photo_data, photo_mimetype) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 
+        [name, team_id || null, owner || 'Nissen', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, photoData, photoMimetype]
       );
       await logAudit(req.user.id, req.user.username, 'CREATE_VESSEL', `Created vessel: ${name}`);
       res.json({ success: true });
@@ -1141,7 +1161,7 @@ async function startServer() {
   });
 
   app.put('/api/vessels/:id', authenticate, isTeamPicOrAdmin, upload.single('photo'), async (req: any, res) => {
-    const { name, team_id, owner, flag, date_built } = req.body;
+    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption } = req.body;
     try {
       const [vessels]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [req.params.id]);
       if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
@@ -1157,13 +1177,13 @@ async function startServer() {
 
       if (photoData !== undefined) {
         await pool.execute(
-          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, flag = ?, date_built = ?, photo_data = ?, photo_mimetype = ? WHERE id = ?', 
-          [name, team_id || null, owner, flag || null, date_built || null, photoData, photoMimetype, req.params.id]
+          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, photo_data = ?, photo_mimetype = ? WHERE id = ?', 
+          [name, team_id || null, owner, flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, photoData, photoMimetype, req.params.id]
         );
       } else {
         await pool.execute(
-          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, flag = ?, date_built = ? WHERE id = ?', 
-          [name, team_id || null, owner, flag || null, date_built || null, req.params.id]
+          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ? WHERE id = ?', 
+          [name, team_id || null, owner, flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, req.params.id]
         );
       }
       
@@ -1297,7 +1317,7 @@ async function startServer() {
       for (let attempt = 1; attempt <= retries; attempt++) {
         try {
           response = await ai.models.generateContent({
-            model: "gemini-3.5-flash",
+            model: "gemini-3.0-flash",
             contents: {
               parts: [
                 dataPart,
@@ -1905,6 +1925,14 @@ Generated by COMOS System
         if (latest.length > 0 && latest[0].id !== Number(id)) {
           return res.status(403).json({ error: 'Vessel users can only edit the latest departure report' });
         }
+
+        const [expired]: any = await pool.execute(`
+          SELECT id FROM departure_reports 
+          WHERE id = ? AND created_at < NOW() - INTERVAL 24 HOUR
+        `, [id]);
+        if (expired.length > 0) {
+          return res.status(403).json({ error: 'Vessel users can only edit or update voyage reports within 24 hours after posting' });
+        }
       }
 
       let attachmentId = req.body.attachment_id || null;
@@ -2116,6 +2144,14 @@ Generated by COMOS System
         if (latest.length > 0 && latest[0].id !== Number(id)) {
           return res.status(403).json({ error: 'Vessel users can only edit the latest arrival report' });
         }
+
+        const [expired]: any = await pool.execute(`
+          SELECT id FROM arrival_reports 
+          WHERE id = ? AND created_at < NOW() - INTERVAL 24 HOUR
+        `, [id]);
+        if (expired.length > 0) {
+          return res.status(403).json({ error: 'Vessel users can only edit or update voyage reports within 24 hours after posting' });
+        }
       }
 
       let attachmentId = req.body.attachment_id || null;
@@ -2235,7 +2271,8 @@ Generated by COMOS System
         swell_scale_21,
         wind_scale,
         wave_scale,
-        weather_image
+        weather_image,
+        remarks
       } = req.body;
 
       if (!vessel_id) {
@@ -2257,15 +2294,16 @@ Generated by COMOS System
           vessel_id, user_id, voyage_number, utc_date_time, position_long, position_lat,
           distance_to_go, cargo_status, rob_hsfo, rob_lsfo, rob_mgo, rob_mdo,
           foc_hsfo, foc_lsfo, foc_mgo, foc_mdo, attachment_id,
-          weather_notation, swell_scale_21, wind_scale, wave_scale, weather_image
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          weather_notation, swell_scale_21, wind_scale, wave_scale, weather_image, remarks
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         vessel_id, req.user.id, voyage_number, utc_date_time, position_long, position_lat,
         distance_to_go, cargo_status, 
         rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0,
         foc_hsfo || 0, foc_lsfo || 0, foc_mgo || 0, foc_mdo || 0,
         attachmentId,
-        weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null, weather_image || null
+        weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null, weather_image || null,
+        remarks || null
       ]);
 
       await logAudit(req.user.id, req.user.username, 'CREATE_NOON_REPORT', `Created noon report for vessel ID ${vessel_id}`);
@@ -2289,6 +2327,14 @@ Generated by COMOS System
         if (latest.length > 0 && latest[0].id !== Number(id)) {
           return res.status(403).json({ error: 'Vessel users can only edit the latest noon report' });
         }
+
+        const [expired]: any = await pool.execute(`
+          SELECT id FROM noon_reports 
+          WHERE id = ? AND created_at < NOW() - INTERVAL 24 HOUR
+        `, [id]);
+        if (expired.length > 0) {
+          return res.status(403).json({ error: 'Vessel users can only edit or update voyage reports within 24 hours after posting' });
+        }
       }
 
       const {
@@ -2310,7 +2356,8 @@ Generated by COMOS System
         swell_scale_21,
         wind_scale,
         wave_scale,
-        weather_image
+        weather_image,
+        remarks
       } = req.body;
 
       let attachmentId = null;
@@ -2332,7 +2379,7 @@ Generated by COMOS System
           rob_mgo = ?, rob_mdo = ?, foc_hsfo = ?, foc_lsfo = ?,
           foc_mgo = ?, foc_mdo = ?, attachment_id = ?,
           weather_notation = ?, swell_scale_21 = ?, wind_scale = ?, wave_scale = ?,
-          weather_image = ?
+          weather_image = ?, remarks = ?
         WHERE id = ?
       `, [
         voyage_number, utc_date_time, position_long, position_lat,
@@ -2341,7 +2388,7 @@ Generated by COMOS System
         foc_hsfo || 0, foc_lsfo || 0, foc_mgo || 0, foc_mdo || 0,
         attachmentId,
         weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null,
-        weather_image || null,
+        weather_image || null, remarks || null,
         id
       ]);
 
@@ -2438,6 +2485,14 @@ Generated by COMOS System
         `, [req.user.vessel_id]);
         if (latest.length > 0 && latest[0].id !== Number(id)) {
           return res.status(403).json({ error: 'Vessel users can only edit the latest other report' });
+        }
+
+        const [expired]: any = await pool.execute(`
+          SELECT id FROM other_reports 
+          WHERE id = ? AND created_at < NOW() - INTERVAL 24 HOUR
+        `, [id]);
+        if (expired.length > 0) {
+          return res.status(403).json({ error: 'Vessel users can only edit or update voyage reports within 24 hours after posting' });
         }
       }
 

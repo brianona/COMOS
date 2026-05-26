@@ -54,7 +54,8 @@ import {
   FlaskConical,
   Waves,
   Camera,
-  Image
+  Image,
+  Fuel
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isBefore, addDays, parseISO } from 'date-fns';
@@ -292,6 +293,8 @@ interface Vessel {
   remark_from_vessel?: string | null;
   flag?: string | null;
   date_built?: string | null;
+  min_fuel_consumption?: string | null;
+  max_fuel_consumption?: string | null;
 }
 
 interface Certificate {
@@ -395,6 +398,7 @@ interface NoonReport {
   wind_scale?: string | null;
   wave_scale?: string | null;
   weather_image?: string | null;
+  remarks?: string | null;
 }
 
 interface OtherReport {
@@ -436,6 +440,25 @@ const getStatus = (date: string) => {
   if (isBefore(exp, thirtyDays)) return 'expiring soon';
   if (isBefore(exp, sixtyDays)) return 'expiring';
   return 'active';
+};
+
+const isFocOutsideLimits = (focStr: string, minLimitStr?: string | null, maxLimitStr?: string | null) => {
+  const foc = parseFloat(focStr);
+  if (isNaN(foc) || foc <= 0) return false;
+
+  const parseNumericLimit = (val?: string | null) => {
+    if (!val) return null;
+    const match = val.match(/[\d.]+/);
+    return match ? parseFloat(match[0]) : null;
+  };
+
+  const minLimit = parseNumericLimit(minLimitStr);
+  const maxLimit = parseNumericLimit(maxLimitStr);
+
+  if (minLimit !== null && foc < minLimit) return true;
+  if (maxLimit !== null && foc > maxLimit) return true;
+
+  return false;
 };
 
 interface Note {
@@ -521,6 +544,8 @@ const isGeminiSupportedMimeType = (mimeType: string) => {
   ];
   return supported.includes(mimeType);
 };
+
+const AUTO_FILL_ENABLED = false; // Set to false to temporarily disable the Gemini OCR certificate auto-fill feature
 
 const recognizeCertText = async (file: File) => {
   if (!isGeminiSupportedMimeType(file.type)) {
@@ -1703,6 +1728,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       formData.append('owner', editingVessel.owner || 'Nissen');
       formData.append('flag', editingVessel.flag || '');
       formData.append('date_built', editingVessel.date_built || '');
+      formData.append('min_fuel_consumption', editingVessel.min_fuel_consumption || '');
+      formData.append('max_fuel_consumption', editingVessel.max_fuel_consumption || '');
       if (editingVesselPhoto) {
         formData.append('photo', editingVesselPhoto);
       }
@@ -2072,7 +2099,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         fetchCertDetails(selectedCert, true);
         
         // 2. Perform OCR recognition
-        if (isSupported && uploadFileType === 'certificate') {
+        if (AUTO_FILL_ENABLED && isSupported && uploadFileType === 'certificate') {
           try {
             const ocrData = await recognizeCertText(file);
             
@@ -2110,7 +2137,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               notify('info', 'Automated recognition failed. You can still enter details manually.');
             }
           }
-        } else {
+        } else if (AUTO_FILL_ENABLED && uploadFileType === 'certificate') {
           notify('info', 'OCR text recognition is not supported for this file type.');
         }
       } else {
@@ -2683,6 +2710,14 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Date Built</span>
                         <span className="font-bold text-slate-900">{vessel.date_built || 'N/A'}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-500">Min Fuel Consumption</span>
+                        <span className="font-bold text-slate-900">{vessel.min_fuel_consumption || 'N/A'}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-500">Max Fuel Consumption</span>
+                        <span className="font-bold text-slate-900">{vessel.max_fuel_consumption || 'N/A'}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Total Certificates/Service Reports</span>
@@ -3297,6 +3332,20 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <div>
                           <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Date Built</p>
                           <p className="text-xs font-bold text-slate-900">{selectedVessel.date_built || 'Not Set'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-blue-100 rounded-lg shrink-0"><Fuel className="w-3.5 h-3.5 text-blue-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Min Fuel Cons.</p>
+                          <p className="text-xs font-bold text-slate-900">{selectedVessel.min_fuel_consumption || 'Not Set'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-blue-100 rounded-lg shrink-0"><Fuel className="w-3.5 h-3.5 text-blue-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Max Fuel Cons.</p>
+                          <p className="text-xs font-bold text-slate-900">{selectedVessel.max_fuel_consumption || 'Not Set'}</p>
                         </div>
                       </div>
                       <div className="flex items-start gap-3 col-span-2">
@@ -3957,6 +4006,28 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           placeholder="e.g. 2024-05-10" 
                           value={editingVessel.date_built || ''}
                           onChange={(e) => setEditingVessel({...editingVessel, date_built: e.target.value})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Min Fuel Consumption</label>
+                        <input 
+                          type="text" 
+                          placeholder="e.g. 15.5 MT" 
+                          value={editingVessel.min_fuel_consumption || ''}
+                          onChange={(e) => setEditingVessel({...editingVessel, min_fuel_consumption: e.target.value})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Max Fuel Consumption</label>
+                        <input 
+                          type="text" 
+                          placeholder="e.g. 25.0 MT" 
+                          value={editingVessel.max_fuel_consumption || ''}
+                          onChange={(e) => setEditingVessel({...editingVessel, max_fuel_consumption: e.target.value})}
                           className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                         />
                       </div>
@@ -4889,7 +4960,8 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
     swell_scale_21: '',
     wind_scale: '',
     wave_scale: '',
-    weather_image: ''
+    weather_image: '',
+    remarks: ''
   };
   const [form, setForm] = useState(defaultForm);
   const [file, setFile] = useState<File | null>(null);
@@ -4997,7 +5069,10 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
 
   const canEditReport = (report: NoonReport) => {
     if (user.role !== 'vessel') return true;
-    return isLatestReport(report);
+    if (!isLatestReport(report)) return false;
+    const reportTime = new Date(report.created_at).getTime();
+    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return reportTime >= twentyFourHoursAgo;
   };
 
   const handleEdit = (report: NoonReport) => {
@@ -5018,7 +5093,8 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
       swell_scale_21: report.swell_scale_21 || '',
       wind_scale: report.wind_scale || '',
       wave_scale: report.wave_scale || '',
-      weather_image: report.weather_image || ''
+      weather_image: report.weather_image || '',
+      remarks: report.remarks || ''
     });
     setActiveTab('form');
   };
@@ -5042,7 +5118,8 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
     }
   };
 
-  const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
+  const currentVessel = vessels.find(v => String(v.id) === String(form.vessel_id));
+  const selectedVesselName = currentVessel?.name || 'Unknown Vessel';
 
   return (
     <div className="space-y-8">
@@ -5193,6 +5270,16 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                 </div>
 
                 <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Remarks</label>
+                  <textarea 
+                    placeholder="Enter any notes or remarks..."
+                    value={form.remarks || ''}
+                    onChange={(e) => setForm({ ...form, remarks: e.target.value })}
+                    className="w-full px-4 text-slate-900 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none h-20 placeholder-slate-400 font-bold"
+                  />
+                </div>
+
+                <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Scanned ROB Report</label>
                   <div className="flex items-center gap-3">
                     <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
@@ -5226,7 +5313,14 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
                       <span>Fuel Type</span>
-                      <span>Current ROB / FOC (Auto Computed)</span>
+                      <div>
+                        <span>Current ROB / Consumption based on previous report ROB</span>
+                        {currentVessel && (
+                          <span className="block text-blue-600 text-[9px] font-bold mt-0.5 normal-case tracking-normal">
+                            Vessel Limit: {currentVessel.min_fuel_consumption || 'N/A'} - {currentVessel.max_fuel_consumption || 'N/A'}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     {[
                       { key: 'hsfo', label: 'HSFO', rob: 'rob_hsfo' },
@@ -5244,7 +5338,14 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                             onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
                             className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
                           />
-                          <div className="w-24 px-2 py-1.5 bg-blue-100 text-blue-700 text-xs font-bold rounded-lg flex items-center justify-center" title="Consumption based on previous report ROB">
+                          <div 
+                            className={`w-24 px-2 py-1.5 text-xs font-bold rounded-lg flex items-center justify-center whitespace-nowrap ${
+                              isFocOutsideLimits((foc_computation as any)[f.key], currentVessel?.min_fuel_consumption, currentVessel?.max_fuel_consumption)
+                                ? 'bg-red-100 text-red-700 border border-red-200'
+                                : 'bg-blue-100 text-blue-700'
+                            }`} 
+                            title={`Consumption based on previous report ROB (Vessel Limit: ${currentVessel?.min_fuel_consumption || 'N/A'} - ${currentVessel?.max_fuel_consumption || 'N/A'})`}
+                          >
                             {(foc_computation as any)[f.key]}
                           </div>
                         </div>
@@ -5468,6 +5569,7 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <th className="px-6 py-4">DTG</th>
                     <th className="px-6 py-4">Cargo</th>
                     <th className="px-6 py-4">Weather</th>
+                    <th className="px-6 py-4 animate-pulse-subtle">Remarks</th>
                     <th className="px-6 py-4">HSFO ROB</th>
                     <th className="px-6 py-4">Daily FOC (HSFO)</th>
                     <th className="px-6 py-4">Attachment</th>
@@ -5517,6 +5619,9 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                           !report.weather_image && <span className="text-xs text-slate-400">-</span>
                         )}
                       </div>
+                    </td>
+                    <td className="px-6 py-4 text-slate-600 max-w-[150px] truncate" title={report.remarks || ''}>
+                      {report.remarks || <span className="text-slate-400">-</span>}
                     </td>
                     <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
                     <td className="px-6 py-4 font-mono text-blue-600">-{report.foc_hsfo}</td>
@@ -5696,7 +5801,10 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
 
   const canEditReport = (report: OtherReport) => {
     if (user.role !== 'vessel') return true;
-    return isLatestReport(report);
+    if (!isLatestReport(report)) return false;
+    const reportTime = new Date(report.created_at).getTime();
+    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return reportTime >= twentyFourHoursAgo;
   };
 
   const handleEdit = (report: OtherReport) => {
@@ -6233,7 +6341,10 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
 
   const canEditReport = (report: ArrivalReport) => {
     if (user.role !== 'vessel') return true;
-    return isLatestReport(report);
+    if (!isLatestReport(report)) return false;
+    const reportTime = new Date(report.created_at).getTime();
+    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return reportTime >= twentyFourHoursAgo;
   };
 
   const handleEdit = (report: ArrivalReport) => {
@@ -6284,7 +6395,8 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
     }
   };
 
-  const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
+  const currentVessel = vessels.find(v => String(v.id) === String(form.vessel_id));
+  const selectedVesselName = currentVessel?.name || 'Unknown Vessel';
 
   return (
     <div className="space-y-8">
@@ -6539,7 +6651,14 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                     <div className="grid grid-cols-3 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
                       <span>Fuel Type</span>
                       <span>Dep. ROB</span>
-                      <span>Arr. ROB / FOC</span>
+                      <div>
+                        <span>Arr. ROB / Consumption based on previous report ROB</span>
+                        {currentVessel && (
+                          <span className="block text-blue-600 text-[9px] font-bold mt-0.5 normal-case tracking-normal">
+                            Vessel Limit: {currentVessel.min_fuel_consumption || 'N/A'} - {currentVessel.max_fuel_consumption || 'N/A'}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     {[
                       { key: 'hsfo', label: 'HSFO', departure: 'departure_hsfo', rob: 'rob_hsfo' },
@@ -6564,7 +6683,14 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                             onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
                             className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
                           />
-                          <div className="w-20 px-2 py-1.5 bg-blue-100 text-blue-700 text-xs font-bold rounded-lg flex items-center justify-center">
+                          <div 
+                            className={`w-20 px-2 py-1.5 text-xs font-bold rounded-lg flex items-center justify-center whitespace-nowrap ${
+                              isFocOutsideLimits((foc_computation as any)[f.key], currentVessel?.min_fuel_consumption, currentVessel?.max_fuel_consumption)
+                                ? 'bg-red-100 text-red-700 border border-red-200'
+                                : 'bg-blue-100 text-blue-700'
+                            }`}
+                            title={`Consumption based on previous report ROB (Vessel Limit: ${currentVessel?.min_fuel_consumption || 'N/A'} - ${currentVessel?.max_fuel_consumption || 'N/A'})`}
+                          >
                             {(foc_computation as any)[f.key]}
                           </div>
                         </div>
@@ -7229,7 +7355,10 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
 
   const canEditReport = (report: DepartureReport) => {
     if (user.role !== 'vessel') return true;
-    return isLatestReport(report);
+    if (!isLatestReport(report)) return false;
+    const reportTime = new Date(report.created_at).getTime();
+    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+    return reportTime >= twentyFourHoursAgo;
   };
 
   const handleEdit = (report: DepartureReport) => {
@@ -7277,7 +7406,8 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
     }
   };
 
-  const selectedVesselName = vessels.find(v => String(v.id) === String(form.vessel_id))?.name || 'Unknown Vessel';
+  const currentVessel = vessels.find(v => String(v.id) === String(form.vessel_id));
+  const selectedVesselName = currentVessel?.name || 'Unknown Vessel';
 
   return (
     <div className="space-y-8">
@@ -7480,7 +7610,14 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     <div className="grid grid-cols-3 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
                       <span>Fuel Type</span>
                       <span>Arrival ROB</span>
-                      <span>Dep. ROB / FOC</span>
+                      <div>
+                        <span>Dep. ROB / Consumption based on previous report ROB</span>
+                        {currentVessel && (
+                          <span className="block text-blue-600 text-[9px] font-bold mt-0.5 normal-case tracking-normal">
+                            Vessel Limit: {currentVessel.min_fuel_consumption || 'N/A'} - {currentVessel.max_fuel_consumption || 'N/A'}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     {[
                       { key: 'hsfo', label: 'HSFO', arrival: 'arrival_hsfo', rob: 'rob_hsfo' },
@@ -7505,7 +7642,14 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
                             onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
                             className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
                           />
-                          <div className="w-20 px-2 py-1.5 bg-blue-100 text-blue-700 text-xs font-bold rounded-lg flex items-center justify-center">
+                          <div 
+                            className={`w-20 px-2 py-1.5 text-xs font-bold rounded-lg flex items-center justify-center whitespace-nowrap ${
+                              isFocOutsideLimits((foc_computation as any)[f.key], currentVessel?.min_fuel_consumption, currentVessel?.max_fuel_consumption)
+                                ? 'bg-red-100 text-red-700 border border-red-200'
+                                : 'bg-blue-100 text-blue-700'
+                            }`}
+                            title={`Consumption based on previous report ROB (Vessel Limit: ${currentVessel?.min_fuel_consumption || 'N/A'} - ${currentVessel?.max_fuel_consumption || 'N/A'})`}
+                          >
                             {(foc_computation as any)[f.key]}
                           </div>
                         </div>
@@ -7684,6 +7828,8 @@ const AdminPanel = ({
   const [newVesselOwner, setNewVesselOwner] = useState('Nissen');
   const [newVesselFlag, setNewVesselFlag] = useState('');
   const [newVesselDateBuilt, setNewVesselDateBuilt] = useState('');
+  const [newVesselMinFuel, setNewVesselMinFuel] = useState('');
+  const [newVesselMaxFuel, setNewVesselMaxFuel] = useState('');
   const [newVesselPhoto, setNewVesselPhoto] = useState<File | null>(null);
   const [newCertName, setNewCertName] = useState('');
   const [newCertVessel, setNewCertVessel] = useState('');
@@ -7970,6 +8116,8 @@ const AdminPanel = ({
       formData.append('owner', newVesselOwner);
       formData.append('flag', newVesselFlag);
       formData.append('date_built', newVesselDateBuilt);
+      formData.append('min_fuel_consumption', newVesselMinFuel);
+      formData.append('max_fuel_consumption', newVesselMaxFuel);
       if (newVesselPhoto) {
         formData.append('photo', newVesselPhoto);
       }
@@ -7986,6 +8134,8 @@ const AdminPanel = ({
         setNewVesselOwner('Nissen');
         setNewVesselFlag('');
         setNewVesselDateBuilt('');
+        setNewVesselMinFuel('');
+        setNewVesselMaxFuel('');
         setNewVesselPhoto(null);
         onRefresh();
       } else {
@@ -8301,6 +8451,22 @@ const AdminPanel = ({
                       className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                     />
                   </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <input 
+                      type="text" 
+                      placeholder="Min Fuel Consumption" 
+                      value={newVesselMinFuel}
+                      onChange={(e) => setNewVesselMinFuel(e.target.value)}
+                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                    <input 
+                      type="text" 
+                      placeholder="Max Fuel Consumption" 
+                      value={newVesselMaxFuel}
+                      onChange={(e) => setNewVesselMaxFuel(e.target.value)}
+                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Vessel Photo</label>
                     <input 
@@ -8459,7 +8625,7 @@ const AdminPanel = ({
                       setNewCertFile(file);
                       if (file) {
                         const isSupported = isGeminiSupportedMimeType(file.type);
-                        if (isSupported && uploadFileType === 'certificate') {
+                        if (AUTO_FILL_ENABLED && isSupported && uploadFileType === 'certificate') {
                           setIsRecognizing(true);
                         }
                         
@@ -8476,7 +8642,7 @@ const AdminPanel = ({
                         const blobUrl = URL.createObjectURL(file);
                         setTempPreviewUrl(blobUrl);
 
-                        if (isSupported && uploadFileType === 'certificate') {
+                        if (AUTO_FILL_ENABLED && isSupported && uploadFileType === 'certificate') {
                           try {
                             const data = await recognizeCertText(file);
                             
