@@ -46,6 +46,12 @@ export interface TroubleReport {
     type: string;
     dataUrl?: string;
   };
+  comiFile?: {
+    name: string;
+    size: number;
+    type: string;
+    dataUrl?: string;
+  };
 }
 
 const INITIAL_REPORTS: TroubleReport[] = [
@@ -124,6 +130,10 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
   const [selectedReport, setSelectedReport] = useState<TroubleReport | null>(null);
   const [showFormModal, setShowFormModal] = useState(false);
 
+  // Required COMI-SM-5-2 Upload State
+  const [newReportComiFile, setNewReportComiFile] = useState<{ name: string; size: number; type: string; dataUrl?: string } | null>(null);
+  const [newReportComiDragActive, setNewReportComiDragActive] = useState(false);
+
   // Rectification states
   const [rectifyingReportId, setRectifyingReportId] = useState<string | null>(null);
   const [rectificationActions, setRectificationActions] = useState('');
@@ -169,6 +179,10 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
       alert('Please fill out the deficiency description.');
       return;
     }
+    if (!newReportComiFile) {
+      alert('Please upload the required COMI-SM-5-2 document.');
+      return;
+    }
 
     const selectedVessel = vessels.find(v => v.id.toString() === formData.vesselId) || vessels[0];
     
@@ -184,11 +198,13 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
       othersDetail: formData.classification === 'Others: (please specify)' ? formData.othersDetail : undefined,
       status: 'Submitted',
       reporterName: formData.reporterName || 'Officer on Duty',
-      pmsCode: formData.pmsCode || 'GEN-DEF-' + Math.floor(100 + Math.random() * 900)
+      pmsCode: formData.pmsCode || 'GEN-DEF-' + Math.floor(100 + Math.random() * 900),
+      comiFile: newReportComiFile
     };
 
     setReports([newReport, ...reports]);
     setShowFormModal(false);
+    setNewReportComiFile(null);
     
     // Reset form
     setFormData({
@@ -215,6 +231,10 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
   };
 
   const handleResolveReport = (id: string) => {
+    if (currentUser?.role === 'vessel') {
+      alert('Vessel users are not authorized to resolve trouble reports.');
+      return;
+    }
     const reportVal = reports.find(r => r.id === id);
     setRectifyingReportId(id);
     setRectificationActions(reportVal?.actionTaken || '');
@@ -595,7 +615,12 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
                     )}
                     {report.rectificationFile && (
                       <span className="text-slate-500 bg-slate-100 border border-slate-200/50 px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-0.5" title={`${report.rectificationFile.name} attached`}>
-                        <Paperclip className="w-2.5 h-2.5 text-blue-500 shrink-0" /> Doc
+                        <Paperclip className="w-2.5 h-2.5 text-blue-500 shrink-0" /> Close Doc
+                      </span>
+                    )}
+                    {report.comiFile && (
+                      <span className="text-indigo-600 bg-indigo-50/70 border border-indigo-150 px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-0.5" title="Required COMI-SM-5-2 uploaded">
+                        <FileText className="w-2.5 h-2.5 text-indigo-500 shrink-0" /> COMI-SM-5-2
                       </span>
                     )}
                   </div>
@@ -918,18 +943,118 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
                   </div>
                 </div>
 
+                {/* COMI-SM-5-2 Required Upload */}
+                <div className="space-y-2 border-t border-slate-100 pt-4">
+                  <label className="text-[11px] font-black uppercase tracking-wider text-slate-500 block">
+                    COMI-SM-5-2 Form / Document <span className="text-rose-500 font-bold">* Required</span>
+                  </label>
+                  <p className="text-[10px] text-slate-400 font-medium -mt-1 mb-2">
+                    Please upload the mandatory COMI-SM-5-2 form to register this new defect trouble report.
+                  </p>
+                  
+                  <div
+                    onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setNewReportComiDragActive(true); }}
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setNewReportComiDragActive(true); }}
+                    onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setNewReportComiDragActive(false); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setNewReportComiDragActive(false);
+                      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                        const file = e.dataTransfer.files[0];
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          setNewReportComiFile({
+                            name: file.name,
+                            size: file.size,
+                            type: file.type,
+                            dataUrl: reader.result as string
+                          });
+                        };
+                        reader.readAsDataURL(file);
+                      }
+                    }}
+                    className={`relative border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all ${
+                      newReportComiDragActive 
+                        ? 'border-indigo-500 bg-indigo-50/50' 
+                        : newReportComiFile 
+                          ? 'border-emerald-500 bg-emerald-50/15' 
+                          : 'border-slate-200 bg-slate-50 hover:bg-slate-100/70 hover:border-slate-300'
+                    }`}
+                    onClick={() => document.getElementById('new-report-comi-file-input')?.click()}
+                  >
+                    <input
+                      id="new-report-comi-file-input"
+                      type="file"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files[0]) {
+                          const file = e.target.files[0];
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            setNewReportComiFile({
+                              name: file.name,
+                              size: file.size,
+                              type: file.type,
+                              dataUrl: reader.result as string
+                            });
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                      accept="image/*,application/pdf,.xlsx,.csv,.xls,.doc,.docx"
+                    />
+
+                    {newReportComiFile ? (
+                      <div className="space-y-2 flex flex-col items-center">
+                        <div className="w-12 h-12 bg-emerald-100 text-emerald-700 rounded-2xl flex items-center justify-center">
+                          <CheckCircle className="w-6 h-6 text-emerald-600" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-black text-slate-800 line-clamp-1">{newReportComiFile.name}</p>
+                          <p className="text-[10px] font-semibold text-slate-400 mt-0.5">
+                            {Math.round(newReportComiFile.size / 1024)} KB • Click or drag to change file
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2 flex flex-col items-center">
+                        <div className="w-12 h-12 bg-indigo-50 text-indigo-650 rounded-2xl flex items-center justify-center">
+                          <Upload className="w-6 h-6 text-indigo-500" />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-700">
+                            <span className="text-indigo-600 hover:underline">Click to upload COMI-SM-5-2 document</span> or drag & drop here
+                          </p>
+                          <p className="text-[9px] font-semibold text-slate-400 mt-1">
+                            PDF, Word, Excel, or Images are accepted
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* Form Bottom Submission controls */}
                 <div className="flex items-center justify-end gap-3 pt-5 border-t border-slate-100">
                   <button
                     type="button"
-                    onClick={() => setShowFormModal(false)}
+                    onClick={() => {
+                      setShowFormModal(false);
+                      setNewReportComiFile(null);
+                    }}
                     className="px-5 py-2.5 border border-slate-200 text-slate-500 hover:text-slate-700 rounded-xl font-bold text-xs hover:bg-slate-50 transition-colors"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs shadow-md shadow-blue-100 transition-transform active:scale-95"
+                    disabled={!newReportComiFile}
+                    className={`px-5 py-2.5 rounded-xl font-bold text-xs transition-all ${
+                      newReportComiFile
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-100 cursor-pointer transition-transform active:scale-95'
+                        : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                    }`}
                   >
                     Submit Report
                   </button>
@@ -1035,6 +1160,35 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
                     <p className="text-slate-700 text-xs leading-relaxed whitespace-pre-wrap font-medium">{selectedReport.deficiency}</p>
                   </div>
                 </div>
+
+                {/* Required COMI-SM-5-2 Document */}
+                {selectedReport.comiFile && (
+                  <div className="space-y-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400 block">Required COMI-SM-5-2 Document</span>
+                    <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-3 overflow-hidden">
+                        <div className="w-10 h-10 bg-indigo-50 text-indigo-605 rounded-xl flex items-center justify-center shrink-0">
+                          <FileText className="w-5 h-5 text-indigo-600 font-bold" />
+                        </div>
+                        <div className="min-w-0 text-left">
+                          <p className="text-xs font-black text-slate-800 truncate">{selectedReport.comiFile.name}</p>
+                          <p className="text-[10px] font-semibold text-slate-400">
+                            {(selectedReport.comiFile.size / 1024).toFixed(1)} KB • COMI-SM-5-2 Required Document
+                          </p>
+                        </div>
+                      </div>
+                      {selectedReport.comiFile.dataUrl && (
+                        <a
+                          href={selectedReport.comiFile.dataUrl}
+                          download={selectedReport.comiFile.name}
+                          className="bg-white border border-slate-200 hover:bg-slate-50 px-3 py-2 text-indigo-600 rounded-xl transition-colors shrink-0 flex items-center gap-1.5 text-xs font-bold shadow-sm"
+                        >
+                          <Download className="w-4 h-4 text-indigo-600" /> Download
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Action Taken & Mitigations */}
                 <div className="space-y-2">
@@ -1170,7 +1324,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
                       <Activity className="w-3.5 h-3.5" /> Start Investigation
                     </button>
                   )}
-                  {selectedReport.status !== 'Resolved' && (
+                  {selectedReport.status !== 'Resolved' && currentUser?.role !== 'vessel' && (
                     <button
                       onClick={() => handleResolveReport(selectedReport.id)}
                       className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm shadow-emerald-100"
