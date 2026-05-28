@@ -1877,7 +1877,14 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
   const notify = (type: 'success' | 'error' | 'info', message: string) => {
     const id = Date.now();
-    setNotifications(prev => [...prev, { id, type, message }]);
+    setNotifications(prev => {
+      const next = [...prev, { id, type, message }];
+      // Limit the number of toast messages to at most 3
+      if (next.length > 3) {
+        return next.slice(next.length - 3);
+      }
+      return next;
+    });
   };
 
   const removeNotification = (id: number) => {
@@ -7750,15 +7757,26 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      {canEditReport(report) && (
-                        <button 
-                          onClick={() => handleEdit(report)}
-                          className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="Edit Report"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1">
+                        {canEditReport(report) && (
+                          <button 
+                            onClick={() => handleEdit(report)}
+                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                            title="Edit Report"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                        )}
+                        {(user.role === 'admin' || user.role === 'team_pic') && (
+                          <button 
+                            onClick={() => handleDelete(report.id)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            title="Delete Report"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
