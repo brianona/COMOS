@@ -15,6 +15,7 @@ import {
   MessageSquare,
   Search,
   CheckCircle2,
+  CheckSquare,
   Clock,
   Trash2,
   File,
@@ -2925,7 +2926,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                             <tr className="bg-blue-50/10 text-[10px] uppercase font-bold tracking-wider text-slate-400">
                               <th className="px-6 py-3 min-w-[200px]">Vessel</th>
                               <th className="px-6 py-3 min-w-[200px]">Destination / Next Port</th>
-                              <th className="px-6 py-3 w-36">Status</th>
+                              <th className="px-6 py-3 w-52">Status</th>
                               <th className="px-6 py-3 w-40">Operation Type</th>
                               <th className="px-6 py-3 w-44">ETA / ATB (UTC)</th>
                               <th className="px-6 py-3 w-44">ETD/ATD at Arrival (UTC)</th>
@@ -6846,6 +6847,7 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
   const [data, setData] = useState<Record<string, any[]>>({});
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<string>('vessels');
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
 
   const fetchDeleted = useCallback(async () => {
     setLoading(true);
@@ -6869,42 +6871,58 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
     fetchDeleted();
   }, [fetchDeleted]);
 
-  const handleRestore = async (type: string, id: number) => {
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [activeTab]);
+
+  const handleRestore = async (type: string, idOrIds: number | number[]) => {
+    const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+    if (ids.length === 0) return;
     try {
       const res = await fetch('/api/admin/recycle-bin/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ type, id })
+        body: JSON.stringify({ type, ids })
       });
       if (res.ok) {
-        notify('success', `Item restored successfully`);
+        notify('success', `Successfully restored ${ids.length} item(s)`);
+        setSelectedIds(prev => prev.filter(selected => !ids.includes(selected)));
         fetchDeleted();
       } else {
         const error = await res.json();
-        notify('error', error.error || 'Failed to restore item');
+        notify('error', error.error || 'Failed to restore item(s)');
       }
     } catch (e) {
-      notify('error', 'Failed to restore item');
+      notify('error', 'Failed to restore item(s)');
     }
   };
 
-  const handlePermanentDelete = async (type: string, id: number) => {
-    if (!window.confirm('Are you sure you want to PERMANENTLY delete this item? This cannot be undone.')) return;
+  const handlePermanentDelete = async (type: string, idOrIds: number | number[]) => {
+    const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+    if (ids.length === 0) return;
+    
+    const message = ids.length === 1 
+      ? 'Are you sure you want to PERMANENTLY delete this item? This cannot be undone.'
+      : `Are you sure you want to PERMANENTLY delete these ${ids.length} items? This cannot be undone.`;
+      
+    if (!window.confirm(message)) return;
+    
     try {
       const res = await fetch('/api/admin/recycle-bin/permanent-delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ type, id })
+        body: JSON.stringify({ type, ids })
       });
       if (res.ok) {
-        notify('success', `Item permanently deleted`);
+        notify('success', `Permanently deleted ${ids.length} item(s)`);
+        setSelectedIds(prev => prev.filter(selected => !ids.includes(selected)));
         fetchDeleted();
       } else {
         const error = await res.json();
-        notify('error', error.error || 'Failed to delete item permanently');
+        notify('error', error.error || 'Failed to delete item(s) permanently');
       }
     } catch (e) {
-      notify('error', 'Failed to delete item permanently');
+      notify('error', 'Failed to delete item(s) permanently');
     }
   };
 
@@ -6920,6 +6938,31 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
   ];
 
   const currentItems = data[activeTab] || [];
+  const allCurrentSelected = currentItems.length > 0 && currentItems.every(item => selectedIds.includes(item.id));
+  const someCurrentSelected = currentItems.some(item => selectedIds.includes(item.id));
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      const newSelected = [...selectedIds];
+      currentItems.forEach(item => {
+        if (!newSelected.includes(item.id)) {
+          newSelected.push(item.id);
+        }
+      });
+      setSelectedIds(newSelected);
+    } else {
+      const itemIds = currentItems.map(item => item.id);
+      setSelectedIds(prev => prev.filter(id => !itemIds.includes(id)));
+    }
+  };
+
+  const handleSelectItem = (id: number, checked: boolean) => {
+    if (checked) {
+      setSelectedIds(prev => [...prev, id]);
+    } else {
+      setSelectedIds(prev => prev.filter(itemId => itemId !== id));
+    }
+  };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
@@ -6964,6 +7007,40 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
         })}
       </div>
 
+      {selectedIds.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-blue-50 border border-blue-100 rounded-2xl animate-in slide-in-from-top-4 duration-300">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-blue-600 text-white rounded-lg">
+              <CheckSquare className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-blue-900">{selectedIds.length} item(s) selected</p>
+              <p className="text-xs text-blue-600">Choose an action to perform on all selected items in this tab.</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <button
+              onClick={() => handleRestore(activeTab, selectedIds)}
+              className="flex items-center gap-2 px-3.5 py-2 bg-blue-600 text-white text-xs font-bold rounded-xl hover:bg-blue-700 transition-all shadow-sm"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Restore Selected
+            </button>
+            <button
+              onClick={() => handlePermanentDelete(activeTab, selectedIds)}
+              className="flex items-center gap-2 px-3.5 py-2 bg-red-600 text-white text-xs font-bold rounded-xl hover:bg-red-700 transition-all shadow-sm"
+            >
+              <Trash2 className="w-3.5 h-3.5" /> Permanently Delete Selected
+            </button>
+            <button
+              onClick={() => setSelectedIds([])}
+              className="px-3 py-2 text-xs font-bold text-slate-500 hover:text-slate-700 transition font-bold"
+            >
+              Clear selection
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
         {loading ? (
           <div className="p-20 flex flex-col items-center justify-center gap-4 text-slate-400">
@@ -6980,56 +7057,86 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50/50 border-b border-slate-100">
+                  <th className="px-6 py-4 w-12 text-center">
+                    <input 
+                      type="checkbox"
+                      className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500 cursor-pointer"
+                      checked={allCurrentSelected}
+                      ref={el => {
+                        if (el) {
+                          el.indeterminate = someCurrentSelected && !allCurrentSelected;
+                        }
+                      }}
+                      onChange={(e) => handleSelectAll(e.target.checked)}
+                    />
+                  </th>
                   <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-400">Item Details</th>
                   <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-wider text-slate-400">Deleted At</th>
                   <th className="px-6 py-4 text-right text-[10px] font-bold uppercase tracking-wider text-slate-400">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {currentItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group">
-                    <td className="px-6 py-4">
-                      <div className="flex flex-col">
-                        <span className="font-bold text-slate-900">
-                          {activeTab === 'vessels' && item.name}
-                          {activeTab === 'users' && item.username}
-                          {activeTab === 'certificates' && item.name}
-                          {activeTab === 'files' && item.original_name}
-                          {activeTab.includes('report') && `${item.vessel_name} - Voyage ${item.voyage_number || 'N/A'}`}
+                {currentItems.map((item) => {
+                  const isSelected = selectedIds.includes(item.id);
+                  return (
+                    <tr 
+                      key={item.id} 
+                      className={cn(
+                        "hover:bg-slate-50/50 transition-colors group",
+                        isSelected && "bg-blue-50/10"
+                      )}
+                    >
+                      <td className="px-6 py-4 text-center w-12">
+                        <input 
+                          type="checkbox"
+                          className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500 cursor-pointer"
+                          checked={isSelected}
+                          onChange={(e) => handleSelectItem(item.id, e.target.checked)}
+                        />
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-slate-900">
+                            {activeTab === 'vessels' && item.name}
+                            {activeTab === 'users' && item.username}
+                            {activeTab === 'certificates' && item.name}
+                            {activeTab === 'files' && item.original_name}
+                            {activeTab.includes('report') && `${item.vessel_name} - Voyage ${item.voyage_number || 'N/A'}`}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium">
+                            {activeTab === 'vessels' && `Owner: ${item.owner}`}
+                            {activeTab === 'users' && `Role: ${item.role}`}
+                            {activeTab === 'certificates' && `Vessel: ${item.vessel_name || 'Generic'}`}
+                            {activeTab === 'files' && `Certificate: ${item.certificate_name}`}
+                            {activeTab.includes('report') && `Date: ${format(new Date(item.utc_date_time), 'MMM dd, yyyy')}`}
+                            ID: {item.id}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-sm text-slate-500 font-medium font-mono">
+                          {item.deleted_at ? format(new Date(item.deleted_at), 'MMM dd, yyyy HH:mm') : 'Unknown'}
                         </span>
-                        <span className="text-[10px] text-slate-400 font-medium">
-                          {activeTab === 'vessels' && `Owner: ${item.owner}`}
-                          {activeTab === 'users' && `Role: ${item.role}`}
-                          {activeTab === 'certificates' && `Vessel: ${item.vessel_name || 'Generic'}`}
-                          {activeTab === 'files' && `Certificate: ${item.certificate_name}`}
-                          {activeTab.includes('report') && `Date: ${format(new Date(item.utc_date_time), 'MMM dd, yyyy')}`}
-                          ID: {item.id}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="text-sm text-slate-500 font-medium font-mono">
-                        {item.deleted_at ? format(new Date(item.deleted_at), 'MMM dd, yyyy HH:mm') : 'Unknown'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button
-                          onClick={() => handleRestore(activeTab, item.id)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold hover:bg-blue-100 transition-all"
-                        >
-                          <RefreshCw className="w-3 h-3" /> Restore
-                        </button>
-                        <button
-                          onClick={() => handlePermanentDelete(activeTab, item.id)}
-                          className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100 transition-all"
-                        >
-                          <Trash2 className="w-3 h-3" /> Permanent Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => handleRestore(activeTab, item.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold hover:bg-blue-100 transition-all"
+                          >
+                            <RefreshCw className="w-3 h-3" /> Restore
+                          </button>
+                          <button
+                            onClick={() => handlePermanentDelete(activeTab, item.id)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100 transition-all"
+                          >
+                            <Trash2 className="w-3 h-3" /> Permanent Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
