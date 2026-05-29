@@ -743,6 +743,30 @@ async function startServer() {
     next();
   });
 
+  // Content Security Policy (CSP) & Security Headers Middleware
+  app.use((req, res, next) => {
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; " +
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; " +
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; " +
+      "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://unpkg.com; " +
+      "font-src 'self' https://fonts.gstatic.com; " +
+      "connect-src 'self' ws: wss: https:; " +
+      "worker-src 'self' blob: https://unpkg.com; " +
+      "frame-src 'self'; " +
+      "object-src 'none'; " +
+      "base-uri 'self'; " +
+      "form-action 'self';"
+    );
+    // Other helpful security headers
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+
   app.use(cors());
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
