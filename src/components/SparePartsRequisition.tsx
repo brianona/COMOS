@@ -3,25 +3,19 @@ import {
   Package, 
   Plus, 
   Search, 
-  Filter, 
   X, 
   Upload, 
   FileText, 
-  Clock, 
-  CheckCircle2, 
-  Truck, 
-  AlertTriangle, 
   Download, 
   Eye, 
   Calendar, 
   Anchor, 
   Paperclip, 
-  Info,
-  Check,
-  ChevronRight,
-  User,
-  MapPin,
-  Trash2
+  Send,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  MessageSquare
 } from 'lucide-react';
 
 interface RequisitionItem {
@@ -31,6 +25,13 @@ interface RequisitionItem {
   maker: string;
   quantity: number;
   unit: string;
+}
+
+interface FileDoc {
+  name: string;
+  size: string;
+  dataUrl?: string;
+  uploadedAt?: number;
 }
 
 export interface SparePartsRequisition {
@@ -48,6 +49,29 @@ export interface SparePartsRequisition {
   documentDataUrl?: string;
   documentSize?: string;
   trackingNumber?: string;
+
+  // New requested state fields supporting multi-file uploads
+  subject?: string;
+  requisitionFiles?: FileDoc[];
+
+  quotationPoNumber?: string;
+  quotationDate?: string;
+  quotationFiles?: FileDoc[];
+
+  invoicePoNumber?: string;
+  invoiceDate?: string;
+  invoiceFiles?: FileDoc[];
+
+  deliveryNotePoNumber?: string;
+  deliveryNoteDate?: string;
+  deliveryNoteFiles?: FileDoc[];
+
+  messages?: Array<{
+    id: string;
+    sender: string;
+    text: string;
+    timestamp: string;
+  }>;
 }
 
 interface SparePartsRequisitionProps {
@@ -72,13 +96,48 @@ const INITIAL_REQUISITIONS: SparePartsRequisition[] = [
     dateRequested: '2026-05-10',
     targetPort: 'Singapore',
     eta: '2026-05-25',
-    remarks: 'Main Engine Cylinder Head O-Rings and gaskets required for routine maintenance.',
+    remarks: 'Main Engine Cylinder Head O-Rings and gaskets overhaul',
+    subject: 'Main Engine Cylinder Head O-Rings and gaskets overhaul',
     items: [
       { id: 'item-1', partNumber: 'ME-CO-010', name: 'O-Ring Cylinder Head', maker: 'MAN B&W', quantity: 12, unit: 'Pcs' },
       { id: 'item-2', partNumber: 'ME-GK-412', name: 'Gasket Exhaust Valve', maker: 'MAN B&W', quantity: 6, unit: 'Pcs' }
     ],
     documentName: 'ME_Cylinder_Head_Spares_V1.pdf',
     documentSize: '1.2 MB',
+    requisitionFiles: [
+      {
+        name: 'ME_Cylinder_Head_Spares_V1.pdf',
+        size: '1.2 MB'
+      }
+    ],
+    quotationPoNumber: 'PO-2026-441-ME',
+    quotationDate: '2026-05-12',
+    quotationFiles: [
+      {
+        name: 'OEM_MAN_Parts_Quotation.pdf',
+        size: '640 KB'
+      }
+    ],
+    invoicePoNumber: 'PO-2026-441-ME',
+    invoiceDate: '2026-05-14',
+    invoiceFiles: [
+      {
+        name: 'MAN_B&W_Invoice_Paid.pdf',
+        size: '410 KB'
+      }
+    ],
+    deliveryNotePoNumber: 'PO-2026-441-ME',
+    deliveryNoteDate: '2026-05-20',
+    deliveryNoteFiles: [
+      {
+        name: 'Singapore_Port_Delivery_Note.pdf',
+        size: '350 KB'
+      }
+    ],
+    messages: [
+      { id: 'm1', sender: 'Chief Engineer', text: 'Spares urgently required before the Singapore canal transit.', timestamp: '2026-05-10 09:30' },
+      { id: 'm2', sender: 'Superintendent', text: 'Quotation approved and PO dispatched. Please confirm delivery details once received.', timestamp: '2026-05-12 14:15' }
+    ],
     trackingNumber: 'XDY-27192-SIN'
   },
   {
@@ -90,13 +149,23 @@ const INITIAL_REQUISITIONS: SparePartsRequisition[] = [
     dateRequested: '2026-05-18',
     targetPort: 'Rotterdam',
     eta: '2026-06-02',
-    remarks: 'Emergency replenishment of hydraulic pump spares due to secondary line leakage.',
+    remarks: 'Emergency replenishment of hydraulic pump spares',
+    subject: 'Emergency hydraulic pump spares for steering gear system',
     items: [
       { id: 'item-3', partNumber: 'HY-PP-092', name: 'Hydraulic Seals Kit', maker: 'Rexroth', quantity: 2, unit: 'Set' },
       { id: 'item-4', partNumber: 'HY-VLV-11', name: 'Solenoid Directional Valve', maker: 'Rexroth', quantity: 1, unit: 'Pc' }
     ],
     documentName: 'Hydraulic_Pump_Req_Rotterdam.pdf',
-    documentSize: '840 KB'
+    documentSize: '840 KB',
+    requisitionFiles: [
+      {
+        name: 'Hydraulic_Pump_Req_Rotterdam.pdf',
+        size: '840 KB'
+      }
+    ],
+    messages: [
+      { id: 'm3', sender: 'Chief Engineer', text: 'Steering gear port side has high leakages. Emergency spares needed.', timestamp: '2026-05-18 11:22' }
+    ]
   },
   {
     id: 'req-3',
@@ -107,12 +176,30 @@ const INITIAL_REQUISITIONS: SparePartsRequisition[] = [
     dateRequested: '2026-05-15',
     targetPort: 'Houston',
     eta: '2026-06-10',
-    remarks: 'Purifier overhaul spares scheduled for next major drydock planning.',
+    remarks: 'Purifier overhaul spares scheduled for next major drydock planning',
+    subject: 'Purifier unit overhaul replacement spare parts pack',
     items: [
       { id: 'item-5', partNumber: 'PF-BRG-201', name: 'Bowl Spindle Bearing', maker: 'Alfa Laval', quantity: 4, unit: 'Pcs' }
     ],
     documentName: 'AlfaLaval_Purifier_Overhaul_Req.xlsx',
-    documentSize: '320 KB'
+    documentSize: '320 KB',
+    requisitionFiles: [
+      {
+        name: 'AlfaLaval_Purifier_Overhaul_Req.xlsx',
+        size: '320 KB'
+      }
+    ],
+    quotationPoNumber: 'PO-8827-C',
+    quotationDate: '2026-05-16',
+    quotationFiles: [
+      {
+        name: 'Alfa_Laval_Houston_Quote.pdf',
+        size: '220 KB'
+      }
+    ],
+    messages: [
+      { id: 'm4', sender: 'Superintendent', text: 'Spares cleared for transit planning. Delivery to Houston scheduled.', timestamp: '2026-05-17 16:40' }
+    ]
   }
 ];
 
@@ -125,40 +212,62 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
 
   const [requisitions, setRequisitions] = useState<SparePartsRequisition[]>(() => {
     const saved = localStorage.getItem('comos_spare_requisitions');
-    return saved ? JSON.parse(saved) : INITIAL_REQUISITIONS;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return parsed.map((r: any) => {
+          const norm: SparePartsRequisition = { ...r };
+          // Handle migration from single fields to array files key gracefully
+          if (r.requisitionFile && !r.requisitionFiles) {
+            norm.requisitionFiles = [r.requisitionFile];
+          }
+          if (r.quotationFile && !r.quotationFiles) {
+            norm.quotationFiles = [r.quotationFile];
+          }
+          if (r.invoiceFile && !r.invoiceFiles) {
+            norm.invoiceFiles = [r.invoiceFile];
+          }
+          if (r.deliveryNoteFile && !r.deliveryNoteFiles) {
+            norm.deliveryNoteFiles = [r.deliveryNoteFile];
+          }
+
+          // Ensure they are initialized as arrays
+          norm.requisitionFiles = norm.requisitionFiles || [];
+          norm.quotationFiles = norm.quotationFiles || [];
+          norm.invoiceFiles = norm.invoiceFiles || [];
+          norm.deliveryNoteFiles = norm.deliveryNoteFiles || [];
+          return norm;
+        });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    return INITIAL_REQUISITIONS;
   });
 
-  const [activeTab, setActiveTab] = useState<'All' | 'Pending Review' | 'Approved' | 'In Transit' | 'Delivered'>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterVessel, setFilterVessel] = useState(() => isVesselUser ? String(currentUser.vessel_id) : 'All');
-  const [filterPriority, setFilterPriority] = useState('All');
-  const [selectedReq, setSelectedReq] = useState<SparePartsRequisition | null>(null);
+  const [expandedReqId, setExpandedReqId] = useState<string | null>(null);
   const [showFormModal, setShowFormModal] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [msgTexts, setMsgTexts] = useState<{ [reqId: string]: string }>({});
 
-  // Form states
+  // Input creation form states
   const [formData, setFormData] = useState({
     vesselId: isVesselUser ? String(currentUser.vessel_id) : (vessels[0]?.id?.toString() || '1'),
+    dateRequested: new Date().toISOString().split('T')[0],
+    subject: '',
     requisitionRef: '',
     priority: 'Medium' as 'Low' | 'Medium' | 'High' | 'Emergency',
     targetPort: '',
-    eta: '',
     remarks: ''
   });
 
-  const [formItems, setFormItems] = useState<Omit<RequisitionItem, 'id'>[]>([
-    { partNumber: '', name: '', maker: '', quantity: 1, unit: 'Pcs' }
-  ]);
-
-  const [uploadedFile, setUploadedFile] = useState<{
+  const [uploadedFiles, setUploadedFiles] = useState<{
     name: string;
     size: string;
     dataUrl?: string;
-  } | null>(null);
-
-  // Admin and Team PIC transition state fields
-  const [tempTrackingNumber, setTempTrackingNumber] = useState('');
-  const [tempEta, setTempEta] = useState('');
+  }[]>([]);
 
   useEffect(() => {
     if (userVesselId) {
@@ -171,125 +280,112 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     localStorage.setItem('comos_spare_requisitions', JSON.stringify(requisitions));
   }, [requisitions]);
 
-  const addFormItemRow = () => {
-    setFormItems(prev => [...prev, { partNumber: '', name: '', maker: '', quantity: 1, unit: 'Pcs' }]);
+  const handleFileDropGeneral = (e: React.DragEvent) => {
+    e.preventDefault();
   };
 
-  const removeFormItemRow = (index: number) => {
-    if (formItems.length === 1) return;
-    setFormItems(prev => prev.filter((_, i) => i !== index));
+  const processCreationFiles = (filesList: FileList | null) => {
+    if (!filesList) return;
+    const filesArray = Array.from(filesList);
+    const baseTime = Date.now();
+    filesArray.forEach((file, index) => {
+      const sizeStr = file.size > 1024 * 1024 
+        ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
+        : `${(file.size / 1024).toFixed(0)} KB`;
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        setUploadedFiles(prev => {
+          const newList = [
+            ...prev,
+            {
+              name: file.name,
+              size: sizeStr,
+              dataUrl: reader.result as string,
+              uploadedAt: baseTime + index
+            }
+          ];
+          return newList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+        });
+      };
+      reader.readAsDataURL(file);
+    });
   };
 
-  const handleFormItemChange = (index: number, field: keyof Omit<RequisitionItem, 'id'>, value: any) => {
-    setFormItems(prev => prev.map((item, i) => {
-      if (i === index) {
-        return { ...item, [field]: value };
-      }
-      return item;
-    }));
-  };
-
-  const updateRequisitionStatus = (id: string, newStatus: SparePartsRequisition['status']) => {
+  const updateRequisitionField = (id: string, updates: Partial<SparePartsRequisition>) => {
     setRequisitions(prev => prev.map(r => {
       if (r.id === id) {
-        const updated: SparePartsRequisition = {
-          ...r,
-          status: newStatus
-        };
-        if (newStatus === 'In Transit' && tempTrackingNumber) {
-          updated.trackingNumber = tempTrackingNumber;
-        }
-        if (tempEta) {
-          updated.eta = tempEta;
-        }
-        return updated;
+        return { ...r, ...updates };
       }
       return r;
     }));
-
-    setSelectedReq(prev => {
-      if (prev && prev.id === id) {
-        const updated = { ...prev, status: newStatus };
-        if (newStatus === 'In Transit' && tempTrackingNumber) {
-          updated.trackingNumber = tempTrackingNumber;
-        }
-        if (tempEta) {
-          updated.eta = tempEta;
-        }
-        return updated;
-      }
-      return prev;
-    });
-
-    setTempTrackingNumber('');
-    setTempEta('');
   };
 
-  const deleteRequisition = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this requisition? This action is irreversible.')) {
-      setRequisitions(prev => prev.filter(r => r.id !== id));
-      setSelectedReq(null);
-    }
-  };
-
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true);
-    } else if (e.type === 'dragleave') {
-      setDragActive(false);
-    }
-  };
-
-  const processFile = (file: File) => {
+  const addFileToSection = (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', file: File) => {
     const sizeStr = file.size > 1024 * 1024 
       ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
       : `${(file.size / 1024).toFixed(0)} KB`;
 
     const reader = new FileReader();
     reader.onload = () => {
-      setUploadedFile({
-        name: file.name,
-        size: sizeStr,
-        dataUrl: reader.result as string
-      });
+      setRequisitions(prev => prev.map(r => {
+        if (r.id === reqId) {
+          const currentList = r[section] || [];
+          const updatedList = [
+            ...currentList,
+            {
+              name: file.name,
+              size: sizeStr,
+              dataUrl: reader.result as string,
+              uploadedAt: Date.now()
+            }
+          ];
+          updatedList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+          return {
+            ...r,
+            [section]: updatedList
+          };
+        }
+        return r;
+      }));
     };
     reader.readAsDataURL(file);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      processFile(e.dataTransfer.files[0]);
-    }
+  const removeFileFromSection = (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', fileIndex: number) => {
+    setRequisitions(prev => prev.map(r => {
+      if (r.id === reqId) {
+        const currentList = r[section] || [];
+        return {
+          ...r,
+          [section]: currentList.filter((_, idx) => idx !== fileIndex)
+        };
+      }
+      return r;
+    }));
   };
 
-  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      processFile(e.target.files[0]);
+  const deleteRequisition = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm('Are you sure you want to delete this requisition? This action is irreversible.')) {
+      setRequisitions(prev => prev.filter(r => r.id !== id));
+      if (expandedReqId === id) {
+        setExpandedReqId(null);
+      }
     }
   };
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!uploadedFile) {
-      alert('Please upload/attach the requisition document from the vessel.');
+    if (uploadedFiles.length === 0) {
+      setFormError('Please upload at least one requisition or ship document using the file upload button.');
       return;
     }
+    setFormError(null);
 
     const newRef = formData.requisitionRef || `REQ-${new Date().getFullYear()}-${String(requisitions.length + 101).padStart(3, '0')}`;
-
-    const itemsWithIds: RequisitionItem[] = formItems
-      .filter(item => item.name.trim() !== '')
-      .map((item, index) => ({
-        id: `item-${Date.now()}-${index}`,
-        ...item
-      }));
+    const finalSubject = formData.subject || `Requisition ${newRef}`;
 
     const newReq: SparePartsRequisition = {
       id: `req-${Date.now()}`,
@@ -297,137 +393,120 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
       vesselId: formData.vesselId,
       status: 'Pending Review',
       priority: formData.priority,
-      dateRequested: new Date().toISOString().split('T')[0],
+      dateRequested: formData.dateRequested,
       targetPort: formData.targetPort || 'Pending Port Confirmation',
-      eta: formData.eta || '',
+      eta: '',
       remarks: formData.remarks,
-      items: itemsWithIds,
-      documentName: uploadedFile.name,
-      documentSize: uploadedFile.size,
-      documentDataUrl: uploadedFile.dataUrl
+      subject: finalSubject,
+      items: [],
+      documentName: uploadedFiles[0]?.name || '',
+      documentSize: uploadedFiles[0]?.size || '',
+      documentDataUrl: uploadedFiles[0]?.dataUrl || '',
+      requisitionFiles: uploadedFiles,
+      messages: []
     };
 
     setRequisitions(prev => [newReq, ...prev]);
     setShowFormModal(false);
 
-    // Reset Form Fields
+    // Reset fields
     setFormData({
       vesselId: userVesselId || vessels[0]?.id?.toString() || '1',
+      dateRequested: new Date().toISOString().split('T')[0],
+      subject: '',
       requisitionRef: '',
       priority: 'Medium',
       targetPort: '',
-      eta: '',
       remarks: ''
     });
-    setFormItems([{ partNumber: '', name: '', maker: '', quantity: 1, unit: 'Pcs' }]);
-    setUploadedFile(null);
+    setUploadedFiles([]);
   };
 
-  // Restrict to accessible reports
+  const sendNewMessage = (reqId: string) => {
+    const text = msgTexts[reqId] || '';
+    if (!text.trim()) return;
+
+    const currentReq = requisitions.find(r => r.id === reqId);
+    if (!currentReq) return;
+
+    const senderRoleName = currentUser?.role === 'vessel' 
+      ? (vessels.find(v => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
+      : (currentUser?.username || 'Superintendent');
+
+    const newMsg = {
+      id: `m-${Date.now()}`,
+      sender: senderRoleName,
+      text: text,
+      timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
+    };
+
+    const updatedMessages = [...(currentReq.messages || []), newMsg];
+    updateRequisitionField(reqId, { messages: updatedMessages });
+    setMsgTexts(prev => ({ ...prev, [reqId]: '' }));
+  };
+
+  // Filter logic
   const accessibleRequisitions = isVesselUser 
     ? requisitions.filter(r => String(r.vesselId) === userVesselId)
     : requisitions;
 
   const filteredRequisitions = accessibleRequisitions.filter(r => {
-    const matchesTab = activeTab === 'All' || r.status === activeTab;
     const matchesVessel = filterVessel === 'All' || r.vesselId === filterVessel;
-    const matchesPriority = filterPriority === 'All' || r.priority === filterPriority;
-
+    const finalSubject = r.subject || r.remarks || '';
+    const reqVesselName = vessels.find(v => String(v.id) === String(r.vesselId))?.name || '';
+    
     const matchesSearch = 
       r.requisitionRef.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.remarks.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      r.items.some(item => 
-        item.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-        item.partNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        item.maker.toLowerCase().includes(searchQuery.toLowerCase())
-      );
+      finalSubject.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      reqVesselName.toLowerCase().includes(searchQuery.toLowerCase());
 
-    return matchesTab && matchesVessel && matchesPriority && matchesSearch;
+    return matchesVessel && matchesSearch;
   });
-
-  const stats = {
-    total: (filterVessel === 'All' ? accessibleRequisitions : accessibleRequisitions.filter(r => r.vesselId === filterVessel)).length,
-    pending: (filterVessel === 'All' ? accessibleRequisitions : accessibleRequisitions.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'Pending Review').length,
-    approved: (filterVessel === 'All' ? accessibleRequisitions : accessibleRequisitions.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'Approved').length,
-    inTransit: (filterVessel === 'All' ? accessibleRequisitions : accessibleRequisitions.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'In Transit').length,
-    delivered: (filterVessel === 'All' ? accessibleRequisitions : accessibleRequisitions.filter(r => r.vesselId === filterVessel)).filter(r => r.status === 'Delivered').length,
-    severe: (filterVessel === 'All' ? accessibleRequisitions : accessibleRequisitions.filter(r => r.vesselId === filterVessel)).filter(r => ['High', 'Emergency'].includes(r.priority)).length
-  };
 
   return (
     <div className="space-y-6">
-      {/* Visual Banner */}
-      <div className="bg-gradient-to-r from-blue-700 via-indigo-600 to-indigo-700 text-white rounded-3xl p-6 md:p-8 relative overflow-hidden shadow-lg border border-indigo-500/10">
-        <div className="absolute right-0 top-0 translate-x-10 -translate-y-10 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute left-1/2 bottom-0 -translate-x-1/2 w-80 h-32 bg-blue-400/10 rounded-full blur-2xl pointer-events-none" />
+      {/* Visual Header Banner */}
+      <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-3xl p-6 md:p-8 relative overflow-hidden shadow-lg border border-slate-700/50 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+        <div className="absolute right-0 top-0 translate-x-10 -translate-y-10 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
         
-        <div className="relative z-10 space-y-2">
-          <div className="bg-blue-500/30 text-blue-100 px-3 py-1 rounded-full text-xs font-semibold w-max uppercase tracking-wider">
-            Vessel Supply Chain
+        <div className="relative z-10 space-y-2 flex-1">
+          <div className="bg-blue-500/30 text-blue-100 px-3 py-1 rounded-full text-xs font-semibold w-max uppercase tracking-wider font-mono">
+            Supply Pipeline Manager
           </div>
-          <h1 className="text-2xl md:text-3xl font-black tracking-tight">Spare Parts Requisition</h1>
-          <p className="text-blue-100/90 text-sm max-w-2xl leading-relaxed">
-            Upload shipboard requisition records, specify materials/machinery spares, plan port deliveries, and monitor supply chains to ensure engine reliability.
+          <h1 className="text-2xl md:text-3xl font-black tracking-tight flex items-center gap-2">
+            Spare Parts Requisition Board
+          </h1>
+          <p className="text-slate-300 text-sm max-w-xl leading-relaxed font-medium">
+            Easily manage life-cycles of shipboard marine machinery orders. Track quotations, purchase accounts, and final delivery receipts inline.
           </p>
         </div>
 
         <button
           onClick={() => setShowFormModal(true)}
-          className="absolute right-6 bottom-6 md:right-8 md:bottom-8 bg-white hover:bg-slate-50 text-indigo-700 font-extrabold text-xs tracking-tight uppercase px-5 py-3 rounded-2xl transition-all shadow-md shadow-indigo-900/10 active:scale-95 flex items-center gap-2 cursor-pointer"
+          className="relative z-20 shrink-0 self-start md:self-center bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs tracking-tight uppercase px-5 py-3 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer hover:shadow-lg"
         >
-          <Plus className="w-4 h-4" /> Create Requisition
+          <Plus className="w-4 h-4" /> Log New Requisition
         </button>
       </div>
 
-      {/* Stats Widgets */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
-        {[
-          { label: 'Total Requests', value: stats.total, color: 'text-slate-700', bg: 'bg-slate-50' },
-          { label: 'Pending Review', value: stats.pending, color: 'text-amber-600', bg: 'bg-amber-50/40' },
-          { label: 'Approved Order', value: stats.approved, color: 'text-blue-600', bg: 'bg-blue-50/40' },
-          { label: 'In Transit', value: stats.inTransit, color: 'text-indigo-600', bg: 'bg-indigo-50/40' },
-          { label: 'Delivered', value: stats.delivered, color: 'text-emerald-700', bg: 'bg-emerald-50/40' },
-          { label: 'Critical / High', value: stats.severe, color: 'text-rose-600', bg: 'bg-rose-50/35' },
-        ].map((item, idx) => (
-          <div key={idx} className={`${item.bg} p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between`}>
-            <span className="text-[10px] font-black text-slate-400 tracking-wider uppercase block">{item.label}</span>
-            <span className={`text-2xl font-black mt-2 ${item.color}`}>{item.value}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Control Panel Filter Bar */}
+      {/* Filter and Control Panel bar */}
       <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-4 flex flex-col md:flex-row gap-4 items-center justify-between">
-        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-          {(['All', 'Pending Review', 'Approved', 'In Transit', 'Delivered'] as const).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold tracking-tight transition-all cursor-pointer ${
-                activeTab === tab 
-                  ? 'bg-blue-600 text-white shadow-md shadow-blue-100' 
-                  : 'text-slate-500 hover:bg-slate-50'
-              }`}
-            >
-              {tab === 'All' ? 'All Statuses' : tab}
-            </button>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 w-full md:w-auto md:min-w-[480px]">
+        <label className="text-xs font-bold text-slate-400 uppercase tracking-wider block">Requisition Fleet Overview</label>
+        
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 w-full md:w-auto md:min-w-[480px]">
           {/* Search Box */}
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search spare parts..."
+              placeholder="Search by vessel, reference, subject..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50/50 font-semibold text-slate-600 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50/50 font-semibold text-slate-700 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
             />
           </div>
 
-          {/* Vessel Selector / Filter status */}
+          {/* Vessel Selector */}
           <select
             value={filterVessel}
             onChange={(e) => setFilterVessel(e.target.value)}
@@ -439,381 +518,714 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
               <option key={v.id} value={v.id}>{v.name}</option>
             ))}
           </select>
-
-          {/* Priority filter */}
-          <select
-            value={filterPriority}
-            onChange={(e) => setFilterPriority(e.target.value)}
-            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50/50 font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-          >
-            <option value="All">All Priorities</option>
-            <option value="Low">Low Priority</option>
-            <option value="Medium">Medium Priority</option>
-            <option value="High">High Priority</option>
-            <option value="Emergency">Emergency Priority</option>
-          </select>
         </div>
       </div>
 
       {/* Requisitions List */}
-      <div className="space-y-3">
-          {filteredRequisitions.length === 0 ? (
-            <div className="p-12 bg-slate-50/50 border border-dashed border-slate-200 rounded-3xl text-center">
-              <Package className="w-8 h-8 text-slate-300 mx-auto mb-3" />
-              <p className="text-slate-600 font-bold text-sm">No Requisitions Found</p>
-              <p className="text-slate-400 text-xs mt-1">Try resetting the filters or upload a new vessel document.</p>
-            </div>
-          ) : (
-            filteredRequisitions.map(req => {
-              const reqVesselName = vessels.find(v => String(v.id) === String(req.vesselId))?.name || 'Unknown';
-              
-              const priorityStyles = {
-                Low: 'bg-slate-50 text-slate-500 border-slate-100',
-                Medium: 'bg-blue-50 text-blue-600 border-blue-100/50',
-                High: 'bg-amber-50 text-amber-600 border-amber-100/50',
-                Emergency: 'bg-rose-50 text-rose-600 border-rose-100 animate-pulse'
-              };
+      <div className="space-y-4">
+        {filteredRequisitions.length === 0 ? (
+          <div className="p-12 bg-slate-50/50 border border-dashed border-slate-200 rounded-3xl text-center">
+            <Package className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+            <p className="text-slate-600 font-bold text-sm">No Requisitions Found</p>
+            <p className="text-slate-400 text-xs mt-1">Reset your filters or add a new log to see results.</p>
+          </div>
+        ) : (
+          filteredRequisitions.map(req => {
+            const reqVesselName = vessels.find(v => String(v.id) === String(req.vesselId))?.name || 'Unknown Vessel';
+            const reqSubject = req.subject || req.remarks || 'No Subject Defined';
+            const isExpanded = expandedReqId === req.id;
 
-              const statusStyles = {
-                Draft: 'bg-slate-100 text-slate-600',
-                'Pending Review': 'bg-amber-100 text-amber-800',
-                Approved: 'bg-blue-100 text-blue-800',
-                'In Transit': 'bg-indigo-100 text-indigo-800',
-                Delivered: 'bg-emerald-100 text-emerald-800'
-              };
-
-              return (
+            return (
+              <div 
+                key={req.id} 
+                className={`bg-white rounded-2xl border transition-all overflow-hidden ${
+                  isExpanded 
+                    ? 'border-blue-500 ring-4 ring-blue-500/5 shadow-md' 
+                    : 'border-slate-100 hover:border-slate-200 shadow-sm'
+                }`}
+              >
+                {/* Minimized View Header (Always Visible) */}
                 <div 
-                  key={req.id}
-                  onClick={() => setSelectedReq(req)}
-                  className={`bg-white p-5 rounded-2xl border transition-all cursor-pointer ${
-                    selectedReq?.id === req.id 
-                      ? 'border-blue-500 ring-2 ring-blue-500/10 shadow-md' 
-                      : 'border-slate-100 hover:border-slate-300 shadow-sm'
-                  }`}
+                  onClick={() => setExpandedReqId(isExpanded ? null : req.id)}
+                  className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer select-none bg-white hover:bg-slate-50/10 transition-colors"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="space-y-1.5">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-black text-blue-600 tracking-tight">{req.requisitionRef}</span>
-                        <div className="h-1 w-1 bg-slate-300 rounded-full" />
-                        <span className="text-[10px] font-black uppercase text-slate-400">{reqVesselName}</span>
-                      </div>
-                      <h3 className="text-xs font-extrabold text-slate-700 max-w-md line-clamp-1">
-                        {req.remarks || `${req.items.length} materials requested`}
-                      </h3>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-black border uppercase px-2 py-0.5 rounded-lg ${priorityStyles[req.priority]}`}>
-                        {req.priority}
-                      </span>
-                      <span className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-lg ${statusStyles[req.status]}`}>
-                        {req.status}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* List of high-level sub-items */}
-                  <div className="flex flex-wrap items-center gap-1.5 mt-4">
-                    {req.items.slice(0, 3).map(item => (
-                      <span key={item.id} className="text-[10px] bg-slate-50 text-slate-500 px-2 py-1 rounded-md font-medium border border-slate-100">
-                        {item.name} ({item.quantity} {item.unit})
-                      </span>
-                    ))}
-                    {req.items.length > 3 && (
-                      <span className="text-[10px] font-bold text-slate-400 px-1">
-                        +{req.items.length - 3} more
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center justify-between text-[10px] text-slate-400 mt-4 pt-4 border-t border-slate-100/80">
-                    <div className="flex items-center gap-4">
-                      <span className="flex items-center gap-1">
-                        <Calendar className="w-3.5 h-3.5 text-slate-300" /> Req: {req.dateRequested}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <MapPin className="w-3.5 h-3.5 text-slate-300" /> Port: {req.targetPort}
-                      </span>
-                    </div>
-
-                    {req.documentName && (
-                      <span className="flex items-center gap-1 text-slate-400 font-bold">
-                        <Paperclip className="w-3 h-3" /> {req.documentName}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-
-        {/* Requisition Details Overlay Modal */}
-        {selectedReq && (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl border border-slate-100 overflow-hidden my-8 animate-in zoom-in-95 duration-200">
-              {/* Card Banner Header */}
-              <div className="bg-slate-900 text-white p-6 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-black uppercase tracking-wider bg-slate-800 border border-slate-700 px-2.5 py-1 rounded-lg">
-                    Requisition Card
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {currentUser?.role !== 'vessel' && (
-                      <button 
-                        onClick={() => {
-                          deleteRequisition(selectedReq.id);
-                          setSelectedReq(null);
-                        }}
-                        className="p-1 px-2.5 bg-rose-600 hover:bg-rose-700 transition-colors text-white rounded-lg text-[10px] font-extrabold flex items-center gap-1 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" /> Delete
-                      </button>
-                    )}
-                    <button 
-                      onClick={() => setSelectedReq(null)}
-                      className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span 
+                      id={`vessel-badge-${req.id}`}
+                      className="px-3 py-1 bg-slate-100 text-slate-700 text-xs font-black rounded-lg uppercase tracking-tight flex items-center gap-1 shrink-0"
                     >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base font-black tracking-tight text-white">{selectedReq.requisitionRef}</h2>
-                    <span className="h-1 w-1 bg-slate-600 rounded-full" />
-                    <span className="text-xs font-semibold text-slate-300">
-                      {vessels.find(v => String(v.id) === String(selectedReq.vesselId))?.name || 'Unknown'}
+                      <Anchor className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                      {reqVesselName}
+                    </span>
+                    <span 
+                      id={`date-badge-${req.id}`}
+                      className="text-slate-500 text-xs font-extrabold flex items-center gap-1 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-150"
+                    >
+                      <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                      {req.dateRequested}
+                    </span>
+                    <span className={`px-2.5 py-1 text-[10px] font-extrabold rounded-lg uppercase tracking-tight border ${
+                      req.priority === 'Emergency' ? 'bg-red-50 text-red-700 border-red-200' :
+                      req.priority === 'High' ? 'bg-orange-50 text-orange-700 border-orange-200' :
+                      req.priority === 'Medium' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                      'bg-slate-50 text-slate-600 border-slate-200'
+                    }`}>
+                      {req.priority}
+                    </span>
+                    <span className={`px-2.5 py-1 text-[10px] font-extrabold rounded-lg uppercase tracking-tight border ${
+                      req.status === 'Draft' || req.status === 'Pending Review' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                      req.status === 'Approved' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                      req.status === 'In Transit' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                      'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}>
+                      {req.status}
                     </span>
                   </div>
-                  <span className="text-[10px] text-slate-400 mt-1 block">Requested Date: {selectedReq.dateRequested}</span>
+
+                  <div className="flex-1 md:px-4 text-slate-800 text-sm font-bold tracking-tight">
+                    {reqSubject}
+                  </div>
+
+                  <div className="flex items-center gap-3 self-end md:self-auto">
+                    {currentUser?.role !== 'vessel' && (
+                      <button
+                        onClick={(e) => deleteRequisition(req.id, e)}
+                        className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer mr-1"
+                        title="Delete Requisition"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                    <span className="text-blue-600 text-xs font-extrabold flex items-center gap-1">
+                      {isExpanded ? (
+                        <>Collapse <ChevronUp className="w-4 h-4" /></>
+                      ) : (
+                        <>Expand <ChevronDown className="w-4 h-4" /></>
+                      )}
+                    </span>
+                  </div>
                 </div>
-              </div>
 
-              {/* Scrollable Modal Content */}
-              <div className="max-h-[60vh] overflow-y-auto divide-y divide-slate-150/40">
-                {/* Status Section */}
-                <div className="p-6 bg-slate-50/50">
-                  <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider block mb-4">Progress Chain</span>
-                  <div className="flex items-center justify-between gap-1.5 overflow-x-auto pb-1">
-                    {(['Pending Review', 'Approved', 'In Transit', 'Delivered'] as const).map((step, idx) => {
-                      const stepStatusOrder = ['Pending Review', 'Approved', 'In Transit', 'Delivered'];
-                      const currentIdx = stepStatusOrder.indexOf(selectedReq.status);
-                      const stepIdx = stepStatusOrder.indexOf(step);
-
-                      const isDone = stepIdx < currentIdx;
-                      const isCurrent = stepIdx === currentIdx;
-
-                      return (
-                        <div key={step} className="flex flex-col items-center flex-1 min-w-[50px]">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black ${
-                            isDone ? 'bg-emerald-500 text-white' :
-                            isCurrent ? 'bg-blue-600 text-white animate-pulse' :
-                            'bg-slate-200 text-slate-500'
+                {/* Expanded Sections (Visible only when expandedReqId === req.id) */}
+                {isExpanded && (
+                  <div className="border-t border-slate-100 bg-slate-55 p-5 md:p-6 space-y-6">
+                    {/* Interactive Pipeline State Bar */}
+                    <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-3xs flex flex-col md:flex-row md:items-center justify-between gap-6 animate-in fade-in duration-300">
+                      <div className="space-y-1 md:max-w-xs">
+                        <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">Current Status & Stage</span>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-black px-2.5 py-1 rounded-lg border uppercase tracking-tight ${
+                            req.status === 'Draft' || req.status === 'Pending Review' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                            req.status === 'Approved' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                            req.status === 'In Transit' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                            'bg-emerald-50 text-emerald-700 border-emerald-200'
                           }`}>
-                            {isDone ? <Check className="w-4 h-4" /> : (idx + 1)}
-                          </div>
-                          <span className={`text-[10px] mt-2 font-bold tracking-tight text-center ${
-                            isCurrent ? 'text-blue-600' :
-                            isDone ? 'text-emerald-600' :
-                            'text-slate-400'
-                          }`}>{step}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Specific Items Breakdown */}
-                <div className="p-6 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Itemized Spares ({selectedReq.items.length})</span>
-                    <Package className="w-4 h-4 text-slate-300" />
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pr-1">
-                    {selectedReq.items.map((item) => (
-                      <div key={item.id} className="p-3 bg-slate-50/80 rounded-xl border border-slate-100 flex items-start justify-between gap-3 text-xs">
-                        <div>
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-slate-700 font-extrabold">{item.name}</span>
-                            {item.partNumber && (
-                              <span className="text-[8px] font-mono bg-slate-200/60 font-medium text-slate-600 px-1 rounded">
-                                P/N: {item.partNumber}
-                              </span>
-                            )}
-                          </div>
-                          {item.maker && <span className="text-[10px] text-slate-400 block mt-0.5">Maker: {item.maker}</span>}
-                        </div>
-
-                        <span className="bg-blue-50 text-blue-700 px-2 py-1 rounded-lg font-black shrink-0 text-[11px]">
-                          {item.quantity} {item.unit}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Details & Port */}
-                <div className="p-6 space-y-4 text-xs">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider block">Target Port</span>
-                      <span className="font-extrabold text-slate-700 mt-1 block flex items-center gap-1.5">
-                        <MapPin className="w-4 h-4 text-slate-400 shrink-0" /> {selectedReq.targetPort}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider block">Est. Delivery / Arrival</span>
-                      <span className="font-extrabold text-slate-700 mt-1 block flex items-center gap-1.5">
-                        <Clock className="w-4 h-4 text-slate-400 shrink-0" /> {selectedReq.eta || 'Pending Schedule'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {selectedReq.trackingNumber && (
-                    <div className="p-3.5 bg-indigo-50/30 border border-indigo-100 rounded-xl">
-                      <span className="text-[10px] font-black text-indigo-700 uppercase block">Tracking / Logistic Reference</span>
-                      <span className="font-mono text-xs font-bold text-indigo-700 block mt-1">{selectedReq.trackingNumber}</span>
-                    </div>
-                  )}
-
-                  <div>
-                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider block">Request Remarks / Instructions</span>
-                    <p className="text-slate-600 bg-slate-50 p-4 rounded-2xl border border-slate-150/50 leading-relaxed mt-1 text-xs">
-                      {selectedReq.remarks || 'No remarks provided.'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Verified Requisition File From Vessel */}
-                {selectedReq.documentName && (
-                  <div className="p-6 space-y-3">
-                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider block">Original Ship Document</span>
-                    
-                    <div className="flex items-center justify-between p-4 bg-blue-50/30 rounded-2xl border border-blue-100/50">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-blue-100/60 rounded-xl flex items-center justify-center text-blue-600">
-                          <FileText className="w-5 h-5" />
-                        </div>
-                        <div className="min-w-0 max-w-[140px] md:max-w-[200px]">
-                          <span className="text-xs font-black text-slate-700 block truncate">{selectedReq.documentName}</span>
-                          <span className="text-[10px] text-slate-400 font-extrabold block uppercase mt-0.5">{selectedReq.documentSize}</span>
+                            {req.status}
+                          </span>
+                          <span className="text-slate-300">•</span>
+                          <span className="text-xs font-extrabold text-slate-500">Ref: {req.requisitionRef}</span>
                         </div>
                       </div>
 
-                      <div className="flex gap-1.5">
-                        {selectedReq.documentDataUrl && (
-                          <a 
-                            href={selectedReq.documentDataUrl} 
-                            download={selectedReq.documentName}
-                            className="p-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl shadow-xs transition-colors cursor-pointer text-slate-600"
-                            title="Download document"
-                          >
-                            <Download className="w-4 h-4" />
-                          </a>
+                      {/* Interactive Steps */}
+                      <div className="flex items-center gap-2 flex-wrap md:flex-nowrap flex-1 justify-end max-w-2xl">
+                        {(['Pending Review', 'Approved', 'In Transit', 'Delivered'] as const).map((st, sIdx) => {
+                          const stages = ['Pending Review', 'Approved', 'In Transit', 'Delivered'];
+                          const currentIdx = stages.indexOf(req.status);
+                          const thisIdx = stages.indexOf(st);
+                          const isDone = thisIdx <= currentIdx;
+                          const isActive = st === req.status;
+
+                          let colorClass = "bg-slate-50/50 text-slate-400 border-slate-205";
+                          if (isDone) {
+                            if (st === 'Pending Review') colorClass = "bg-blue-50 text-blue-700 border-blue-200";
+                            else if (st === 'Approved') colorClass = "bg-amber-50 text-amber-700 border-amber-200";
+                            else if (st === 'In Transit') colorClass = "bg-purple-50 text-purple-700 border-purple-200";
+                            else colorClass = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                          }
+
+                          return (
+                            <button
+                              key={st}
+                              onClick={() => {
+                                updateRequisitionField(req.id, { status: st });
+                                const senderName = currentUser?.role === 'vessel' 
+                                  ? (vessels.find(v => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
+                                  : (currentUser?.username || 'Superintendent');
+                                const logMsg = {
+                                  id: `msg-${Date.now()}`,
+                                  sender: 'System Log',
+                                  text: `${senderName} updated status to "${st}"`,
+                                  timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
+                                };
+                                const updatedMessages = [...(req.messages || []), logMsg];
+                                updateRequisitionField(req.id, { messages: updatedMessages });
+                              }}
+                              className={`px-3 py-1.5 rounded-xl border text-[11px] font-black tracking-tight transition-all cursor-pointer flex items-center justify-center gap-1.5 flex-1 shrink-0 ${colorClass} ${
+                                isActive ? 'ring-2 ring-offset-1' : ''
+                              } ${
+                                isActive && st === 'Pending Review' ? 'ring-blue-500/30 font-black' :
+                                isActive && st === 'Approved' ? 'ring-amber-500/30 font-black' :
+                                isActive && st === 'In Transit' ? 'ring-purple-500/30 font-black' :
+                                isActive && st === 'Delivered' ? 'ring-emerald-500/30 font-black' : ''
+                              } hover:scale-[1.02] active:scale-[0.98]`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                isDone 
+                                  ? (st === 'Pending Review' ? 'bg-blue-500' :
+                                     st === 'Approved' ? 'bg-amber-500' :
+                                     st === 'In Transit' ? 'bg-purple-500' : 'bg-emerald-500')
+                                  : 'bg-slate-300'
+                              } ${isActive ? 'animate-ping' : ''}`} />
+                              {st === 'Pending Review' ? 'Requisition' :
+                               st === 'Approved' ? 'Quotation' :
+                               st === 'In Transit' ? 'Logistics' : 'Delivery'}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* The Horizontal Split (4 Columns) */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      {/* Section 1: Requisition */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-md hover:shadow-lg flex flex-col justify-between space-y-4 transition-all duration-200">
+                        <div className="space-y-3.5">
+                          <h3 id={`req-sec-header-${req.id}`} className="text-xs font-black text-blue-800 bg-blue-50/70 border border-blue-100/80 px-3 py-2 rounded-lg uppercase tracking-wider flex items-center justify-between">
+                            <span className="flex items-center gap-1.5">
+                              <Paperclip className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                              Requisition
+                            </span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                          </h3>
+
+                          <div className="space-y-2.5 text-xs">
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Vessel Name</span>
+                              <span className="font-extrabold text-slate-800 mt-0.5 block">{reqVesselName}</span>
+                            </div>
+
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Date Requested</span>
+                              <input 
+                                type="date" 
+                                value={req.dateRequested || ''} 
+                                onChange={(e) => updateRequisitionField(req.id, { dateRequested: e.target.value })}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                              />
+                            </div>
+
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Subject</span>
+                              <textarea 
+                                value={req.subject || ''} 
+                                onChange={(e) => updateRequisitionField(req.id, { subject: e.target.value })}
+                                placeholder="Enter subject/summary..."
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1 h-16 resize-none leading-normal"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* File Upload / View for Section 1 */}
+                        <div className="pt-2 border-t border-slate-100 space-y-3">
+                          <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Attachments ({(req.requisitionFiles || []).length})</span>
+                          
+                          {(req.requisitionFiles && req.requisitionFiles.length > 0) ? (
+                            <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
+                              {req.requisitionFiles.map((f, idx) => (
+                                <div key={idx} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200/60 text-xs font-bold text-slate-600 space-y-1.5 shadow-3xs">
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <div className="flex items-center gap-1.5 truncate min-w-0 flex-1">
+                                      <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                      <span className="truncate text-slate-700 font-extrabold" title={f.name}>{f.name}</span>
+                                    </div>
+                                    <button 
+                                      type="button"
+                                      onClick={() => removeFileFromSection(req.id, 'requisitionFiles', idx)}
+                                      className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
+                                      title="Remove attachment"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[9px] text-slate-400 font-extrabold px-1 border-t border-slate-100/60 pt-1">
+                                    <span>{f.size}</span>
+                                    <div className="flex gap-2">
+                                      {f.dataUrl && (
+                                        <a 
+                                          href={f.dataUrl} 
+                                          download={f.name}
+                                          className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
+                                        >
+                                          <Download className="w-2.5 h-2.5" /> Get
+                                        </a>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (f.dataUrl) {
+                                            const newTab = window.open();
+                                            newTab?.document.write(`<iframe src="${f.dataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
+                                          } else {
+                                            alert("No preview is available for this template file. Use 'Get File' to download.");
+                                          }
+                                        }}
+                                        className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
+                                      >
+                                        <Eye className="w-2.5 h-2.5" /> View
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-slate-400 italic font-semibold">No files uploaded</p>
+                          )}
+
+                          <div className="relative">
+                            <input 
+                              type="file" 
+                              multiple
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              onChange={(e) => {
+                                if (e.target.files) {
+                                  Array.from(e.target.files).forEach((file: File) => {
+                                    addFileToSection(req.id, 'requisitionFiles', file);
+                                  });
+                                }
+                              }}
+                            />
+                            <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
+                              <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Section 2: Quotation */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-md hover:shadow-lg flex flex-col justify-between space-y-4 transition-all duration-200">
+                        <div className="space-y-3.5">
+                          <h3 id={`quote-sec-header-${req.id}`} className="text-xs font-black text-amber-800 bg-amber-50/70 border border-amber-100/80 px-3 py-2 rounded-lg uppercase tracking-wider flex items-center justify-between">
+                            <span className="flex items-center gap-1.5">
+                              <Paperclip className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                              Quotation
+                            </span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                          </h3>
+
+                          <div className="space-y-2.5 text-xs">
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">PO Number</span>
+                              <input 
+                                type="text" 
+                                placeholder="Enter PO Number..."
+                                value={req.quotationPoNumber || ''} 
+                                onChange={(e) => updateRequisitionField(req.id, { quotationPoNumber: e.target.value })}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                              />
+                            </div>
+
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Date</span>
+                              <input 
+                                type="date" 
+                                value={req.quotationDate || ''} 
+                                onChange={(e) => updateRequisitionField(req.id, { quotationDate: e.target.value })}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* File upload for Quotation */}
+                        <div className="pt-2 border-t border-slate-100 space-y-3">
+                          <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Attachments ({(req.quotationFiles || []).length})</span>
+                          
+                          {(req.quotationFiles && req.quotationFiles.length > 0) ? (
+                            <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
+                              {req.quotationFiles.map((f, idx) => (
+                                <div key={idx} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200/60 text-xs font-bold text-slate-600 space-y-1.5 shadow-3xs">
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <div className="flex items-center gap-1.5 truncate min-w-0 flex-1">
+                                      <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                      <span className="truncate text-slate-700 font-extrabold" title={f.name}>{f.name}</span>
+                                    </div>
+                                    <button 
+                                      type="button"
+                                      onClick={() => removeFileFromSection(req.id, 'quotationFiles', idx)}
+                                      className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
+                                      title="Remove attachment"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[9px] text-slate-400 font-extrabold px-1 border-t border-slate-100/60 pt-1">
+                                    <span>{f.size}</span>
+                                    <div className="flex gap-2">
+                                      {f.dataUrl && (
+                                        <a 
+                                          href={f.dataUrl} 
+                                          download={f.name}
+                                          className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
+                                        >
+                                          <Download className="w-2.5 h-2.5" /> Get
+                                        </a>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (f.dataUrl) {
+                                            const newTab = window.open();
+                                            newTab?.document.write(`<iframe src="${f.dataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
+                                          } else {
+                                            alert("No preview is available for this template file. Use 'Get File' to download.");
+                                          }
+                                        }}
+                                        className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
+                                      >
+                                        <Eye className="w-2.5 h-2.5" /> View
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-slate-400 italic font-semibold">No files uploaded</p>
+                          )}
+
+                          <div className="relative">
+                            <input 
+                              type="file" 
+                              multiple
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              onChange={(e) => {
+                                if (e.target.files) {
+                                  Array.from(e.target.files).forEach((file: File) => {
+                                    addFileToSection(req.id, 'quotationFiles', file);
+                                  });
+                                }
+                              }}
+                            />
+                            <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
+                              <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Section 3: Invoice */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-md hover:shadow-lg flex flex-col justify-between space-y-4 transition-all duration-200">
+                        <div className="space-y-3.5">
+                          <h3 id={`invoice-sec-header-${req.id}`} className="text-xs font-black text-purple-800 bg-purple-50/70 border border-purple-100/80 px-3 py-2 rounded-lg uppercase tracking-wider flex items-center justify-between">
+                            <span className="flex items-center gap-1.5">
+                              <Paperclip className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                              Invoice
+                            </span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse"></span>
+                          </h3>
+
+                          <div className="space-y-2.5 text-xs">
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">PO Number</span>
+                              <input 
+                                type="text" 
+                                placeholder="Enter PO Number..."
+                                value={req.invoicePoNumber || ''} 
+                                onChange={(e) => updateRequisitionField(req.id, { invoicePoNumber: e.target.value })}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                              />
+                            </div>
+
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Date</span>
+                              <input 
+                                type="date" 
+                                value={req.invoiceDate || ''} 
+                                onChange={(e) => updateRequisitionField(req.id, { invoiceDate: e.target.value })}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* File upload for Invoice */}
+                        <div className="pt-2 border-t border-slate-100 space-y-3">
+                          <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Attachments ({(req.invoiceFiles || []).length})</span>
+                          
+                          {(req.invoiceFiles && req.invoiceFiles.length > 0) ? (
+                            <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
+                              {req.invoiceFiles.map((f, idx) => (
+                                <div key={idx} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200/60 text-xs font-bold text-slate-600 space-y-1.5 shadow-3xs">
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <div className="flex items-center gap-1.5 truncate min-w-0 flex-1">
+                                      <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                      <span className="truncate text-slate-700 font-extrabold" title={f.name}>{f.name}</span>
+                                    </div>
+                                    <button 
+                                      type="button"
+                                      onClick={() => removeFileFromSection(req.id, 'invoiceFiles', idx)}
+                                      className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
+                                      title="Remove attachment"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[9px] text-slate-400 font-extrabold px-1 border-t border-slate-100/60 pt-1">
+                                    <span>{f.size}</span>
+                                    <div className="flex gap-2">
+                                      {f.dataUrl && (
+                                        <a 
+                                          href={f.dataUrl} 
+                                          download={f.name}
+                                          className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
+                                        >
+                                          <Download className="w-2.5 h-2.5" /> Get
+                                        </a>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (f.dataUrl) {
+                                            const newTab = window.open();
+                                            newTab?.document.write(`<iframe src="${f.dataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
+                                          } else {
+                                            alert("No preview is available for this template file. Use 'Get File' to download.");
+                                          }
+                                        }}
+                                        className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
+                                      >
+                                        <Eye className="w-2.5 h-2.5" /> View
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-slate-400 italic font-semibold">No files uploaded</p>
+                          )}
+
+                          <div className="relative">
+                            <input 
+                              type="file" 
+                              multiple
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              onChange={(e) => {
+                                if (e.target.files) {
+                                  Array.from(e.target.files).forEach((file: File) => {
+                                    addFileToSection(req.id, 'invoiceFiles', file);
+                                  });
+                                }
+                              }}
+                            />
+                            <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
+                              <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Section 4: Delivery Note */}
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-md hover:shadow-lg flex flex-col justify-between space-y-4 transition-all duration-200">
+                        <div className="space-y-3.5">
+                          <h3 id={`delivery-sec-header-${req.id}`} className="text-xs font-black text-emerald-800 bg-emerald-50/70 border border-emerald-100/80 px-3 py-2 rounded-lg uppercase tracking-wider flex items-center justify-between">
+                            <span className="flex items-center gap-1.5">
+                              <Paperclip className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              Delivery Note
+                            </span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                          </h3>
+
+                          <div className="space-y-2.5 text-xs">
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">PO Number</span>
+                              <input 
+                                type="text" 
+                                placeholder="Enter PO Number..."
+                                value={req.deliveryNotePoNumber || ''} 
+                                onChange={(e) => updateRequisitionField(req.id, { deliveryNotePoNumber: e.target.value })}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                              />
+                            </div>
+
+                            <div>
+                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Date</span>
+                              <input 
+                                type="date" 
+                                value={req.deliveryNoteDate || ''} 
+                                onChange={(e) => updateRequisitionField(req.id, { deliveryNoteDate: e.target.value })}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* File upload for Delivery Note */}
+                        <div className="pt-2 border-t border-slate-100 space-y-3">
+                          <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Attachments ({(req.deliveryNoteFiles || []).length})</span>
+                          
+                          {(req.deliveryNoteFiles && req.deliveryNoteFiles.length > 0) ? (
+                            <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
+                              {req.deliveryNoteFiles.map((f, idx) => (
+                                <div key={idx} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200/60 text-xs font-bold text-slate-600 space-y-1.5 shadow-3xs">
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <div className="flex items-center gap-1.5 truncate min-w-0 flex-1">
+                                      <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                      <span className="truncate text-slate-700 font-extrabold" title={f.name}>{f.name}</span>
+                                    </div>
+                                    <button 
+                                      type="button"
+                                      onClick={() => removeFileFromSection(req.id, 'deliveryNoteFiles', idx)}
+                                      className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
+                                      title="Remove attachment"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                  <div className="flex items-center justify-between text-[9px] text-slate-400 font-extrabold px-1 border-t border-slate-100/60 pt-1">
+                                    <span>{f.size}</span>
+                                    <div className="flex gap-2">
+                                      {f.dataUrl && (
+                                        <a 
+                                          href={f.dataUrl} 
+                                          download={f.name}
+                                          className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
+                                        >
+                                          <Download className="w-2.5 h-2.5" /> Get
+                                        </a>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (f.dataUrl) {
+                                            const newTab = window.open();
+                                            newTab?.document.write(`<iframe src="${f.dataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
+                                          } else {
+                                            alert("No preview is available for this template file. Use 'Get File' to download.");
+                                          }
+                                        }}
+                                        className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
+                                      >
+                                        <Eye className="w-2.5 h-2.5" /> View
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-slate-400 italic font-semibold">No files uploaded</p>
+                          )}
+
+                          <div className="relative">
+                            <input 
+                              type="file" 
+                              multiple
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                              onChange={(e) => {
+                                if (e.target.files) {
+                                  Array.from(e.target.files).forEach((file: File) => {
+                                    addFileToSection(req.id, 'deliveryNoteFiles', file);
+                                  });
+                                }
+                              }}
+                            />
+                            <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
+                              <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Bottom Section: Messaging Area */}
+                    <div className="bg-white p-5 rounded-xl border border-slate-200/80 shadow-3xs space-y-4">
+                      <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
+                        <MessageSquare className="w-4 h-4 text-slate-400" />
+                        <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Communication & Activity Logs</h4>
+                      </div>
+
+                      {/* Chat Messages Log */}
+                      <div className="space-y-2.5 max-h-[180px] overflow-y-auto pr-1">
+                        {(!req.messages || req.messages.length === 0) ? (
+                          <p className="text-xs text-slate-400 font-semibold italic text-center py-3">No log records or messages logged yet. Use the command box below to post update logs.</p>
+                        ) : (
+                          req.messages.map(msg => {
+                            const isSystem = msg.sender === 'System Log';
+                            if (isSystem) {
+                              return (
+                                <div key={msg.id} className="flex items-center justify-center p-2 my-1 bg-slate-50 border border-slate-150 rounded-xl px-4 py-1.5 w-max mx-auto text-[10px] font-extrabold text-slate-500 gap-1.5 shadow-3xs">
+                                  <span className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-pulse" />
+                                  <span>{msg.text}</span>
+                                  <span className="text-[9px] text-slate-400 font-extrabold">• {msg.timestamp}</span>
+                                </div>
+                              );
+                            }
+
+                            const isMe = msg.sender === (currentUser?.role === 'vessel' 
+                              ? (vessels.find(v => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
+                              : (currentUser?.username || 'Superintendent'));
+
+                            return (
+                              <div key={msg.id} className={`flex flex-col max-w-[85%] ${isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
+                                <div className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 mb-0.5">
+                                  <span>{msg.sender}</span>
+                                  <span>•</span>
+                                  <span>{msg.timestamp}</span>
+                                </div>
+                                <div className={`p-3 rounded-2xl text-xs font-semibold leading-relaxed shadow-3xs ${
+                                  isMe ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-slate-100 text-slate-800 rounded-tl-none'
+                                }`}>
+                                  {msg.text}
+                                </div>
+                              </div>
+                            );
+                          })
                         )}
-                        
-                        {selectedReq.documentDataUrl && (
-                          <button
-                            onClick={() => {
-                              const newTab = window.open();
-                              if (newTab) {
-                                newTab.document.write(`<iframe src="${selectedReq.documentDataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
-                              }
-                            }}
-                            className="p-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl shadow-xs transition-colors cursor-pointer text-slate-600"
-                            title="View document"
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
-                        )}
+                      </div>
+
+                      {/* Msg Input Area */}
+                      <div className="flex items-center gap-2 pt-2">
+                        <input
+                          type="text"
+                          placeholder="Post update details or type message..."
+                          value={msgTexts[req.id] || ''}
+                          onChange={(e) => setMsgTexts(prev => ({ ...prev, [req.id]: e.target.value }))}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              sendNewMessage(req.id);
+                            }
+                          }}
+                          className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-700 placeholder-slate-450 bg-slate-50"
+                        />
+                        <button
+                          onClick={() => sendNewMessage(req.id)}
+                          className="p-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md cursor-pointer transition-colors active:scale-95 flex items-center justify-center shrink-0"
+                          title="Post Log Message"
+                        >
+                          <Send className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
                   </div>
                 )}
-
-                {/* Admin Supply Chain Controls */}
-                {currentUser?.role !== 'vessel' && (
-                  <div className="p-6 bg-slate-50/80 space-y-4">
-                    <div className="flex items-center gap-2">
-                      <Info className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-600">Superintendent Pipeline Control</span>
-                    </div>
-
-                    <div className="space-y-3">
-                      {selectedReq.status === 'Pending Review' && (
-                        <button
-                          onClick={() => updateRequisitionStatus(selectedReq.id, 'Approved')}
-                          className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs transition-colors shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-4 h-4" /> Review & Approve Order
-                        </button>
-                      )}
-
-                      {selectedReq.status === 'Approved' && (
-                        <div className="space-y-2">
-                          <input
-                            type="text"
-                            placeholder="Log Logistics Tracking No. (e.g. DHL-291C)"
-                            value={tempTrackingNumber}
-                            onChange={(e) => setTempTrackingNumber(e.target.value)}
-                            className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                          />
-                          <button
-                            onClick={() => updateRequisitionStatus(selectedReq.id, 'In Transit')}
-                            disabled={!tempTrackingNumber}
-                            className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl font-bold text-xs transition-colors shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
-                          >
-                            <Truck className="w-4 h-4" /> Dispatch - Set In Transit
-                          </button>
-                        </div>
-                      )}
-
-                      {selectedReq.status === 'In Transit' && (
-                        <button
-                          onClick={() => updateRequisitionStatus(selectedReq.id, 'Delivered')}
-                          className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-colors shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-4 h-4" /> Finalize Delivery & Close-out
-                        </button>
-                      )}
-
-                      {selectedReq.status === 'Delivered' && (
-                        <div className="p-3 bg-emerald-50 text-emerald-800 text-[11px] font-semibold rounded-xl text-center flex items-center justify-center gap-1">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Completed and Delivered to Vessel
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
-
-              {/* Modal Footer */}
-              <div className="flex items-center justify-end gap-3 p-6 bg-slate-50 border-t border-slate-150/40">
-                <button
-                  type="button"
-                  onClick={() => setSelectedReq(null)}
-                  className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-100/50 text-slate-500 rounded-xl text-xs font-extrabold transition-colors cursor-pointer"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
+            );
+          })
         )}
+      </div>
 
-      {/* Requisition Document Upload & Creator Modal Form */}
+      {/* Creation Modal Form */}
       {showFormModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl border border-slate-100 overflow-hidden my-8 animate-in zoom-in-95 duration-200">
             {/* Modal Header */}
-            <div className="bg-gradient-to-r from-blue-700 to-indigo-700 text-white p-6 justify-between flex items-center">
+            <div className="bg-slate-900 text-white p-6 justify-between flex items-center">
               <div>
-                <span className="text-[10px] font-black uppercase tracking-wider bg-white/20 px-2 py-0.5 rounded">Store & Spares Form</span>
+                <span className="text-[10px] font-black uppercase tracking-wider bg-white/20 px-2.5 py-1 rounded-lg">Store & Spares Form</span>
                 <h2 className="text-lg font-black mt-1">Record Spare Parts Requisition</h2>
               </div>
               <button 
@@ -822,14 +1234,18 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
               >
                 <X className="w-5 h-5" />
               </button>
-            </div>
-
-            {/* Form body */}
+            </div>            {/* Form body */}
             <form onSubmit={handleFormSubmit} className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
-              {/* Form Upper Details */}
+              {formError && (
+                <div className="p-4 bg-red-50 text-red-650 border border-red-150 rounded-2xl text-xs font-bold flex items-start gap-2.5 shadow-3xs animate-in fade-in slide-in-from-top-2 duration-150">
+                  <span className="text-sm shrink-0">⚠️</span>
+                  <span className="leading-normal">{formError}</span>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1">
-                  <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">Requested Vessel</span>
+                  <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">Vessel Name *</span>
                   <select
                     value={formData.vesselId}
                     onChange={(e) => setFormData(p => ({ ...p, vesselId: e.target.value }))}
@@ -843,209 +1259,85 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                 </div>
 
                 <div className="space-y-1">
-                  <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">Requisition Ref. No (Optional)</span>
+                  <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">Date *</span>
                   <input
-                    type="text"
-                    placeholder="e.g. REQ-2026-XYZ (Leave blank for auto-gen)"
-                    value={formData.requisitionRef}
-                    onChange={(e) => setFormData(p => ({ ...p, requisitionRef: e.target.value }))}
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 text-slate-700 bg-slate-50/50"
+                    type="date"
+                    required
+                    value={formData.dateRequested}
+                    onChange={(e) => setFormData(p => ({ ...p, dateRequested: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-blue-500/10 text-slate-700 bg-slate-50"
                   />
                 </div>
 
-                <div className="space-y-1 col-span-1">
-                  <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider font-sans">Priority Level</span>
-                  <select
-                    value={formData.priority}
-                    onChange={(e) => setFormData(p => ({ ...p, priority: e.target.value as any }))}
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-slate-50"
-                  >
-                    <option value="Low">Low - routine storage</option>
-                    <option value="Medium">Medium - wear & tear scheduled</option>
-                    <option value="High">High - critical safety margin</option>
-                    <option value="Emergency">Emergency - secondary system failure</option>
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">Target delivery port</span>
+                <div className="space-y-1 col-span-1 md:col-span-2">
+                  <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">Subject *</span>
                   <input
                     type="text"
                     required
-                    placeholder="e.g. Singapore Port, Rotterdam Terminal"
-                    value={formData.targetPort}
-                    onChange={(e) => setFormData(p => ({ ...p, targetPort: e.target.value }))}
-                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 text-slate-700 bg-slate-50/50"
+                    placeholder="e.g. Heavy sea hydraulic lines rebuild components"
+                    value={formData.subject}
+                    onChange={(e) => setFormData(p => ({ ...p, subject: e.target.value }))}
+                    className="w-full px-4 py-3 rounded-xl border border-slate-200 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-blue-500/10 text-slate-750 bg-slate-50"
                   />
                 </div>
               </div>
 
-              {/* Document upload box */}
-              <div className="space-y-1.5">
-                <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider block">Req Document from Vessel (MANDATORY PDF/XLSX)</span>
-                
-                <div
-                  onDragEnter={handleDrag}
-                  onDragOver={handleDrag}
-                  onDragLeave={handleDrag}
-                  onDrop={handleDrop}
-                  className={`w-full border-2 border-dashed rounded-2xl p-6 text-center transition-all cursor-pointer relative ${
-                    dragActive 
-                      ? 'border-blue-500 bg-blue-50/20' 
-                      : uploadedFile 
-                        ? 'border-emerald-300 bg-emerald-50/10' 
-                        : 'border-slate-200 hover:border-slate-350 bg-slate-50/30'
-                  }`}
-                >
-                  <input
-                    type="file"
-                    id="req-file-input"
+              {/* Upload box */}
+              <div className="space-y-1.5" onDragOver={handleFileDropGeneral}>
+                <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider block">Upload file/s *</span>
+                <div className="relative border-2 border-dashed border-slate-200 hover:border-blue-500 rounded-2xl p-6 text-center transition-all cursor-pointer bg-slate-50/50">
+                  <input 
+                    type="file" 
+                    multiple
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    onChange={handleFileInput}
-                    accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg"
+                    onChange={(e) => {
+                      if (e.target.files) {
+                        processCreationFiles(e.target.files);
+                      }
+                    }}
+                    accept=".pdf,.xlsx,.xls,.png,.jpg,.jpeg,.doc,.docx"
                   />
-                  
-                  {uploadedFile ? (
-                    <div className="flex flex-col items-center gap-2">
-                      <div className="w-10 h-10 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center">
-                        <CheckCircle2 className="w-5 h-5" />
+                  {uploadedFiles && uploadedFiles.length > 0 ? (
+                    <div className="space-y-2">
+                      <div className="w-10 h-10 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center mx-auto mb-1">
+                        <FileText className="w-5 h-5" />
                       </div>
-                      <div>
-                        <p className="text-xs font-black text-slate-700">{uploadedFile.name}</p>
-                        <p className="text-[10px] text-slate-400 mt-0.5">Size: {uploadedFile.size} - Ready to submit</p>
-                      </div>
-                      <span className="text-[9px] font-sans font-extrabold text-blue-600 mt-2 bg-blue-50 px-2 py-0.5 rounded uppercase">Click or Drag to replace file</span>
+                      <p className="text-xs font-black text-slate-700">{uploadedFiles.length} file(s) selected:</p>
+                      <ul className="text-[10px] text-slate-550 list-disc list-inside space-y-0.5 text-left max-w-xs mx-auto overflow-hidden text-ellipsis">
+                        {uploadedFiles.map((file, idx) => (
+                          <li key={idx} className="truncate">{file.name} ({file.size})</li>
+                        ))}
+                      </ul>
                     </div>
                   ) : (
-                    <div className="flex flex-col items-center gap-2.5">
-                      <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center">
-                        <Upload className="w-4 h-4" />
+                    <div className="space-y-1.5">
+                      <div className="w-10 h-10 bg-slate-100 text-slate-500 rounded-xl flex items-center justify-center mx-auto">
+                        <Upload className="w-5 h-5" />
                       </div>
-                      <div className="space-y-1">
-                        <p className="text-xs font-bold text-slate-700">Drag & Drop Requisition Document</p>
-                        <p className="text-[10px] text-slate-400">PDF, Excel spreadsheet or scanned purchase sheet</p>
-                      </div>
-                      <span className="px-3 py-1 bg-white border border-slate-200 text-slate-600 text-[10px] font-extrabold rounded-lg shadow-2xs mt-1">Browse Ship Files</span>
+                      <p className="text-xs font-bold text-slate-700">Click to upload spreadsheet or requisition sheet</p>
+                      <p className="text-[10px] text-slate-400 font-semibold">Supports PDF, XLSX files up to 25MB each</p>
                     </div>
                   )}
                 </div>
-              </div>
-
-              {/* Dynamic Items list */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider block">Required Materials / Spare Parts</span>
-                  <button
-                    type="button"
-                    onClick={addFormItemRow}
-                    className="px-3 py-1 bg-blue-52 bg-blue-50 hover:bg-blue-100 text-blue-600 font-extrabold text-[10px] rounded-lg cursor-pointer transition-colors"
-                  >
-                    + Add Spare Item
-                  </button>
-                </div>
-
-                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
-                  {formItems.map((item, index) => (
-                    <div key={index} className="flex gap-2.5 items-center bg-slate-50/50 p-3 rounded-xl border border-slate-150/40 relative group">
-                      <div className="grid grid-cols-12 gap-2 flex-1">
-                        {/* Part No */}
-                        <div className="col-span-3">
-                          <input
-                            type="text"
-                            placeholder="Part Number"
-                            value={item.partNumber}
-                            onChange={(e) => handleFormItemChange(index, 'partNumber', e.target.value)}
-                            className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:outline-none"
-                          />
-                        </div>
-
-                        {/* Item Name */}
-                        <div className="col-span-4">
-                          <input
-                            type="text"
-                            required
-                            placeholder="Spare Name / Description *"
-                            value={item.name}
-                            onChange={(e) => handleFormItemChange(index, 'name', e.target.value)}
-                            className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold focus:outline-none"
-                          />
-                        </div>
-
-                        {/* Maker */}
-                        <div className="col-span-3">
-                          <input
-                            type="text"
-                            placeholder="Maker/Machinery"
-                            value={item.maker}
-                            onChange={(e) => handleFormItemChange(index, 'maker', e.target.value)}
-                            className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:outline-none"
-                          />
-                        </div>
-
-                        {/* Qty */}
-                        <div className="col-span-2 flex gap-1 items-center">
-                          <input
-                            type="number"
-                            required
-                            min="1"
-                            value={item.quantity}
-                            onChange={(e) => handleFormItemChange(index, 'quantity', Number(e.target.value))}
-                            className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-black text-center focus:outline-none"
-                          />
-                          <select
-                            value={item.unit}
-                            onChange={(e) => handleFormItemChange(index, 'unit', e.target.value)}
-                            className="px-1 py-1.5 bg-white border border-slate-250 border-slate-200 rounded-lg text-[10px] font-bold focus:outline-none text-slate-600"
-                          >
-                            <option value="Pcs">Pcs</option>
-                            <option value="Set">Set</option>
-                            <option value="Mtrs">Mtrs</option>
-                            <option value="Kgs">Kgs</option>
-                            <option value="Sets">Sets</option>
-                          </select>
-                        </div>
-                      </div>
-
-                      {formItems.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => removeFormItemRow(index)}
-                          className="p-1 px-2.5 bg-rose-50 border border-rose-100 hover:bg-rose-100 hover:border-rose-200 hover:text-rose-600 rounded-xl transition-all cursor-pointer text-slate-400 self-center"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Remarks block */}
-              <div className="space-y-1">
-                <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">Instructions or superintendent remarks</span>
-                <textarea
-                  rows={3}
-                  value={formData.remarks}
-                  onChange={(e) => setFormData(p => ({ ...p, remarks: e.target.value }))}
-                  placeholder="e.g. Include specific certifications requirements, supplier coordinates, or priority justifications..."
-                  className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold focus:outline-none text-slate-600 h-20 resize-none"
-                />
               </div>
 
               {/* Form buttons */}
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setShowFormModal(false)}
-                  className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-100/50 text-slate-500 rounded-xl text-xs font-extrabold transition-colors cursor-pointer"
+                  onClick={() => {
+                    setFormError(null);
+                    setShowFormModal(false);
+                  }}
+                  className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-500 rounded-xl text-xs font-extrabold transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold transition-colors shadow-md shadow-blue-100 flex items-center gap-1 cursor-pointer"
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-extrabold transition-colors shadow-md flex items-center gap-1 cursor-pointer"
                 >
-                  <Check className="w-4 h-4" /> Save Requisition
+                  Save Requisition
                 </button>
               </div>
             </form>
