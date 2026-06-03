@@ -705,14 +705,49 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                               <span className="font-extrabold text-slate-800 mt-0.5 block">{reqVesselName}</span>
                             </div>
 
-                            <div>
-                              <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Date Requested</span>
-                              <input 
-                                type="date" 
-                                value={req.dateRequested || ''} 
-                                onChange={(e) => updateRequisitionField(req.id, { dateRequested: e.target.value })}
-                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
-                              />
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Date Requested</span>
+                                <input 
+                                  type="date" 
+                                  value={req.dateRequested || ''} 
+                                  onChange={(e) => updateRequisitionField(req.id, { dateRequested: e.target.value })}
+                                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                                />
+                              </div>
+
+                              <div>
+                                <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Urgency / Importance</span>
+                                <select 
+                                  value={req.priority} 
+                                  onChange={(e) => {
+                                    const newPriority = e.target.value as 'Low' | 'Medium' | 'High' | 'Emergency';
+                                    updateRequisitionField(req.id, { priority: newPriority });
+                                    const senderName = currentUser?.role === 'vessel' 
+                                      ? (vessels.find(v => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
+                                      : (currentUser?.username || 'Superintendent');
+                                    const logMsg = {
+                                      id: `msg-${Date.now()}`,
+                                      sender: 'System Log',
+                                      text: `${senderName} changed urgency level to "${newPriority}"`,
+                                      timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
+                                    };
+                                    const updatedMessages = [...(req.messages || []), logMsg];
+                                    updateRequisitionField(req.id, { messages: updatedMessages });
+                                  }}
+                                  className={`w-full px-2 py-1.5 border rounded-lg text-xs font-extrabold focus:outline-none focus:ring-2 mt-1 cursor-pointer ${
+                                    req.priority === 'Emergency' ? 'bg-red-50 text-red-700 border-red-200 focus:ring-red-500/10' :
+                                    req.priority === 'High' ? 'bg-orange-50 text-orange-700 border-orange-200 focus:ring-orange-500/10' :
+                                    req.priority === 'Medium' ? 'bg-blue-50 text-blue-700 border-blue-200 focus:ring-blue-500/10' :
+                                    'bg-slate-50 text-slate-600 border-slate-200 focus:ring-slate-500/10'
+                                  }`}
+                                >
+                                  <option value="Low" className="bg-white text-slate-800">Low</option>
+                                  <option value="Medium" className="bg-white text-slate-800">Medium</option>
+                                  <option value="High" className="bg-white text-slate-800">High</option>
+                                  <option value="Emergency" className="bg-white text-slate-800">Emergency</option>
+                                </select>
+                              </div>
                             </div>
 
                             <div>
