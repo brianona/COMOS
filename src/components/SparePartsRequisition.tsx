@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Package, 
   Plus, 
@@ -203,6 +203,112 @@ const INITIAL_REQUISITIONS: SparePartsRequisition[] = [
   }
 ];
 
+interface CommunicationLogSectionProps {
+  req: SparePartsRequisition;
+  currentUser: any;
+  vessels: any[];
+  msgText: string;
+  setMsgText: (val: string) => void;
+  sendNewMessage: (reqId: string) => void;
+}
+
+const CommunicationLogSection: React.FC<CommunicationLogSectionProps> = ({
+  req,
+  currentUser,
+  vessels,
+  msgText,
+  setMsgText,
+  sendNewMessage,
+}) => {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = () => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    }
+  };
+
+  useEffect(() => {
+    scrollToBottom();
+    const timeout = setTimeout(scrollToBottom, 60);
+    return () => clearTimeout(timeout);
+  }, [req.messages]);
+
+  return (
+    <div className="bg-white p-5 rounded-xl border border-slate-200/80 shadow-3xs space-y-4">
+      <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
+        <MessageSquare className="w-4 h-4 text-slate-400" />
+        <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Communication & Activity Logs</h4>
+      </div>
+
+      {/* Chat Messages Log */}
+      <div 
+        ref={scrollContainerRef}
+        className="space-y-2.5 max-h-[180px] overflow-y-auto pr-1 scroll-smooth"
+      >
+        {(!req.messages || req.messages.length === 0) ? (
+          <p className="text-xs text-slate-400 font-semibold italic text-center py-3">No log records or messages logged yet. Use the command box below to post update logs.</p>
+        ) : (
+          req.messages.map(msg => {
+            const isSystem = msg.sender === 'System Log';
+            if (isSystem) {
+              return (
+                <div key={msg.id} className="flex items-center justify-center p-2 my-1 bg-slate-50 border border-slate-150 rounded-xl px-4 py-1.5 w-max mx-auto text-[10px] font-extrabold text-slate-500 gap-1.5 shadow-3xs">
+                  <span className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-pulse" />
+                  <span>{msg.text}</span>
+                  <span className="text-[9px] text-slate-400 font-extrabold">• {msg.timestamp}</span>
+                </div>
+              );
+            }
+
+            const isMe = msg.sender === (currentUser?.role === 'vessel' 
+              ? (vessels.find((v: any) => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
+              : (currentUser?.username || 'Superintendent'));
+
+            return (
+              <div key={msg.id} className={`flex flex-col max-w-[85%] ${isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
+                <div className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 mb-0.5">
+                  <span>{msg.sender}</span>
+                  <span>•</span>
+                  <span>{msg.timestamp}</span>
+                </div>
+                <div className={`p-3 rounded-2xl text-xs font-semibold leading-relaxed shadow-3xs ${
+                  isMe ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-slate-100 text-slate-800 rounded-tl-none'
+                }`}>
+                  {msg.text}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {/* Msg Input Area */}
+      <div className="flex items-center gap-2 pt-2">
+        <input
+          type="text"
+          placeholder="Post update details or type message..."
+          value={msgText}
+          onChange={(e) => setMsgText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              sendNewMessage(req.id);
+            }
+          }}
+          className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-700 placeholder-slate-450 bg-slate-50"
+        />
+        <button
+          onClick={() => sendNewMessage(req.id)}
+          className="p-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md cursor-pointer transition-colors active:scale-95 flex items-center justify-center shrink-0"
+          title="Post Log Message"
+        >
+          <Send className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
 export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = ({ vessels, currentUser }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
   const userVesselId = isVesselUser ? String(currentUser.vessel_id) : null;
@@ -251,6 +357,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
   const [showFormModal, setShowFormModal] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [msgTexts, setMsgTexts] = useState<{ [reqId: string]: string }>({});
+  const [previewFile, setPreviewFile] = useState<{ name: string; size: string; dataUrl?: string } | null>(null);
 
   // Input creation form states
   const [formData, setFormData] = useState({
@@ -717,7 +824,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                               </div>
 
                               <div>
-                                <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Urgency / Importance</span>
+                                <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Importance</span>
                                 <select 
                                   value={req.priority} 
                                   onChange={(e) => {
@@ -729,7 +836,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                     const logMsg = {
                                       id: `msg-${Date.now()}`,
                                       sender: 'System Log',
-                                      text: `${senderName} changed urgency level to "${newPriority}"`,
+                                      text: `${senderName} changed importance level to "${newPriority}"`,
                                       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
                                     };
                                     const updatedMessages = [...(req.messages || []), logMsg];
@@ -798,14 +905,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                       )}
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          if (f.dataUrl) {
-                                            const newTab = window.open();
-                                            newTab?.document.write(`<iframe src="${f.dataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
-                                          } else {
-                                            alert("No preview is available for this template file. Use 'Get File' to download.");
-                                          }
-                                        }}
+                                        onClick={() => setPreviewFile(f)}
                                         className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
                                       >
                                         <Eye className="w-2.5 h-2.5" /> View
@@ -910,14 +1010,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                       )}
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          if (f.dataUrl) {
-                                            const newTab = window.open();
-                                            newTab?.document.write(`<iframe src="${f.dataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
-                                          } else {
-                                            alert("No preview is available for this template file. Use 'Get File' to download.");
-                                          }
-                                        }}
+                                        onClick={() => setPreviewFile(f)}
                                         className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
                                       >
                                         <Eye className="w-2.5 h-2.5" /> View
@@ -1022,14 +1115,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                       )}
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          if (f.dataUrl) {
-                                            const newTab = window.open();
-                                            newTab?.document.write(`<iframe src="${f.dataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
-                                          } else {
-                                            alert("No preview is available for this template file. Use 'Get File' to download.");
-                                          }
-                                        }}
+                                        onClick={() => setPreviewFile(f)}
                                         className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
                                       >
                                         <Eye className="w-2.5 h-2.5" /> View
@@ -1134,14 +1220,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                       )}
                                       <button
                                         type="button"
-                                        onClick={() => {
-                                          if (f.dataUrl) {
-                                            const newTab = window.open();
-                                            newTab?.document.write(`<iframe src="${f.dataUrl}" style="border:0; top:0; left:0; bottom:0; right:0; width:100%; height:100%;" allowfullscreen></iframe>`);
-                                          } else {
-                                            alert("No preview is available for this template file. Use 'Get File' to download.");
-                                          }
-                                        }}
+                                        onClick={() => setPreviewFile(f)}
                                         className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
                                       >
                                         <Eye className="w-2.5 h-2.5" /> View
@@ -1177,74 +1256,14 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                     </div>
 
                     {/* Bottom Section: Messaging Area */}
-                    <div className="bg-white p-5 rounded-xl border border-slate-200/80 shadow-3xs space-y-4">
-                      <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
-                        <MessageSquare className="w-4 h-4 text-slate-400" />
-                        <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Communication & Activity Logs</h4>
-                      </div>
-
-                      {/* Chat Messages Log */}
-                      <div className="space-y-2.5 max-h-[180px] overflow-y-auto pr-1">
-                        {(!req.messages || req.messages.length === 0) ? (
-                          <p className="text-xs text-slate-400 font-semibold italic text-center py-3">No log records or messages logged yet. Use the command box below to post update logs.</p>
-                        ) : (
-                          req.messages.map(msg => {
-                            const isSystem = msg.sender === 'System Log';
-                            if (isSystem) {
-                              return (
-                                <div key={msg.id} className="flex items-center justify-center p-2 my-1 bg-slate-50 border border-slate-150 rounded-xl px-4 py-1.5 w-max mx-auto text-[10px] font-extrabold text-slate-500 gap-1.5 shadow-3xs">
-                                  <span className="w-1.5 h-1.5 bg-blue-600 rounded-full animate-pulse" />
-                                  <span>{msg.text}</span>
-                                  <span className="text-[9px] text-slate-400 font-extrabold">• {msg.timestamp}</span>
-                                </div>
-                              );
-                            }
-
-                            const isMe = msg.sender === (currentUser?.role === 'vessel' 
-                              ? (vessels.find(v => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
-                              : (currentUser?.username || 'Superintendent'));
-
-                            return (
-                              <div key={msg.id} className={`flex flex-col max-w-[85%] ${isMe ? 'ml-auto items-end' : 'mr-auto items-start'}`}>
-                                <div className="flex items-center gap-1.5 text-[9px] font-black text-slate-400 mb-0.5">
-                                  <span>{msg.sender}</span>
-                                  <span>•</span>
-                                  <span>{msg.timestamp}</span>
-                                </div>
-                                <div className={`p-3 rounded-2xl text-xs font-semibold leading-relaxed shadow-3xs ${
-                                  isMe ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-slate-100 text-slate-800 rounded-tl-none'
-                                }`}>
-                                  {msg.text}
-                                </div>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
-
-                      {/* Msg Input Area */}
-                      <div className="flex items-center gap-2 pt-2">
-                        <input
-                          type="text"
-                          placeholder="Post update details or type message..."
-                          value={msgTexts[req.id] || ''}
-                          onChange={(e) => setMsgTexts(prev => ({ ...prev, [req.id]: e.target.value }))}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              sendNewMessage(req.id);
-                            }
-                          }}
-                          className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-700 placeholder-slate-450 bg-slate-50"
-                        />
-                        <button
-                          onClick={() => sendNewMessage(req.id)}
-                          className="p-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md cursor-pointer transition-colors active:scale-95 flex items-center justify-center shrink-0"
-                          title="Post Log Message"
-                        >
-                          <Send className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
+                    <CommunicationLogSection
+                      req={req}
+                      currentUser={currentUser}
+                      vessels={vessels}
+                      msgText={msgTexts[req.id] || ''}
+                      setMsgText={(val) => setMsgTexts(prev => ({ ...prev, [req.id]: val }))}
+                      sendNewMessage={sendNewMessage}
+                    />
                   </div>
                 )}
               </div>
@@ -1376,6 +1395,123 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* File Preview Modal */}
+      {previewFile && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600 shrink-0 shadow-3xs">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-black text-slate-800 truncate" title={previewFile.name}>
+                    {previewFile.name}
+                  </h3>
+                  <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider">
+                    Attachment Preview • {previewFile.size}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewFile(null)}
+                className="p-1.5 hover:bg-slate-200/60 rounded-lg text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                title="Close Preview"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-auto bg-slate-50 flex flex-col">
+              {previewFile.dataUrl ? (
+                previewFile.dataUrl.startsWith('data:image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(previewFile.name) ? (
+                  <div className="flex-1 p-6 flex items-center justify-center min-h-[350px]">
+                    <img 
+                      src={previewFile.dataUrl} 
+                      alt={previewFile.name} 
+                      className="max-h-[60vh] max-w-full rounded-xl object-contain shadow-md border border-slate-100 animate-in fade-in zoom-in-95 duration-300"
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                ) : previewFile.dataUrl.startsWith('data:application/pdf') || /\.pdf$/i.test(previewFile.name) ? (
+                  <div className="flex-1 h-[60vh] md:h-[65vh] flex flex-col">
+                    <object 
+                      data={previewFile.dataUrl} 
+                      type="application/pdf" 
+                      className="w-full h-full"
+                    >
+                      <div className="flex flex-col items-center justify-center h-full p-12 text-center text-slate-500">
+                        <FileText className="w-12 h-12 text-slate-300 mb-3" />
+                        <span className="text-sm font-bold text-slate-700">PDF Preview</span>
+                        <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto mb-4">Your browser does not display static PDFs directly inside inline wrappers. You can download and inspect the file structure locally.</p>
+                        <a 
+                          href={previewFile.dataUrl} 
+                          download={previewFile.name}
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-2"
+                        >
+                          <Download className="w-3.5 h-3.5" /> Download File
+                        </a>
+                      </div>
+                    </object>
+                  </div>
+                ) : (
+                  /* Standard document fallback */
+                  <div className="flex-1 p-12 flex flex-col items-center justify-center text-center">
+                    <div className="w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600 mb-4 shadow-3xs">
+                      <FileText className="w-8 h-8" />
+                    </div>
+                    <h4 className="text-sm font-bold text-slate-800 truncate max-w-md">{previewFile.name}</h4>
+                    <p className="text-xs text-slate-400 mt-1">File Size: {previewFile.size}</p>
+                    <p className="text-xs text-slate-500 mt-4 max-w-md">No direct inline preview is available for this file type. Please click the button below to download and view.</p>
+                    
+                    <a 
+                      href={previewFile.dataUrl} 
+                      download={previewFile.name}
+                      className="mt-6 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-2"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Download File
+                    </a>
+                  </div>
+                )
+              ) : (
+                /* No dataUrl fallback representing default mock templates */
+                <div className="flex-1 p-12 flex flex-col items-center justify-center text-center">
+                  <div className="w-16 h-16 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mb-4 shadow-3xs">
+                    <FileText className="w-8 h-8" />
+                  </div>
+                  <h4 className="text-sm font-bold text-slate-800">{previewFile.name}</h4>
+                  <p className="text-xs text-slate-400 mt-1">Mock Template Reference File</p>
+                  <p className="text-xs text-slate-500 mt-4 max-w-md">This default template reference has no active binary payload to preview on-screen. You can retrieve its structure by downloading.</p>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-3 bg-slate-50">
+              <button
+                type="button"
+                onClick={() => setPreviewFile(null)}
+                className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-3xs"
+              >
+                Close Window
+              </button>
+              {previewFile.dataUrl && (
+                <a
+                  href={previewFile.dataUrl}
+                  download={previewFile.name}
+                  className="px-5 py-2.5 hover:opacity-90 bg-blue-600 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1.5"
+                >
+                  <Download className="w-3.5 h-3.5" /> Download
+                </a>
+              )}
+            </div>
           </div>
         </div>
       )}
