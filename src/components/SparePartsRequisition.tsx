@@ -84,6 +84,8 @@ interface SparePartsRequisitionProps {
     vessel_id?: number | null;
     email?: string;
   } | null;
+  title?: string;
+  storageKey?: string;
 }
 
 const INITIAL_REQUISITIONS: SparePartsRequisition[] = [
@@ -309,15 +311,21 @@ const CommunicationLogSection: React.FC<CommunicationLogSectionProps> = ({
   );
 };
 
-export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = ({ vessels, currentUser }) => {
+export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = ({ 
+  vessels, 
+  currentUser,
+  title = "Spare Parts Requisition Board",
+  storageKey = "comos_spare_requisitions"
+}) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
+  const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic';
   const userVesselId = isVesselUser ? String(currentUser.vessel_id) : null;
   const allowedVessels = isVesselUser 
     ? vessels.filter(v => String(v.id) === String(currentUser.vessel_id))
     : vessels;
 
   const [requisitions, setRequisitions] = useState<SparePartsRequisition[]>(() => {
-    const saved = localStorage.getItem('comos_spare_requisitions');
+    const saved = localStorage.getItem(storageKey);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -348,7 +356,35 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
         console.error(e);
       }
     }
-    return INITIAL_REQUISITIONS;
+    return storageKey === 'comos_spare_requisitions' ? INITIAL_REQUISITIONS : [
+      {
+        id: 'sc-1',
+        requisitionRef: 'REQ-SC-2026-001',
+        vesselId: '1',
+        status: 'In Transit',
+        priority: 'Medium',
+        dateRequested: '2026-05-12',
+        targetPort: 'Singapore',
+        eta: '2026-05-28',
+        remarks: 'Cabin stores, safety hand cleaners, and engine room degreaser chemicals.',
+        subject: 'Monthly Stores & Chemical Replenishment',
+        items: [
+          { id: 'sc-item-1', partNumber: 'SC-CAB-01', name: 'Hand Soap (Heavy Duty)', maker: 'Unitor', quantity: 10, unit: 'Cans' },
+          { id: 'sc-item-2', partNumber: 'SC-CHM-05', name: 'Oil & Degreaser Chemical', maker: 'Wilhelmsen', quantity: 5, unit: 'Drums' }
+        ],
+        documentName: 'Stores_Chemicals_Req_May2026.pdf',
+        documentSize: '450 KB',
+        requisitionFiles: [
+          {
+            name: 'Stores_Chemicals_Req_May2026.pdf',
+            size: '450 KB'
+          }
+        ],
+        messages: [
+          { id: 'sc-m1', sender: 'Chief Steward', text: 'Urgently needing cabin stores/soaps before Singapore.', timestamp: '2026-05-12 08:30' }
+        ]
+      }
+    ];
   });
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -384,8 +420,8 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
   }, [userVesselId]);
 
   useEffect(() => {
-    localStorage.setItem('comos_spare_requisitions', JSON.stringify(requisitions));
-  }, [requisitions]);
+    localStorage.setItem(storageKey, JSON.stringify(requisitions));
+  }, [requisitions, storageKey]);
 
   const handleFileDropGeneral = (e: React.DragEvent) => {
     e.preventDefault();
@@ -570,27 +606,45 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     return matchesVessel && matchesSearch;
   });
 
+  const isStoreChemicals = storageKey === 'comos_store_chemical_requisitions';
+
   return (
     <div className="space-y-6">
       {/* Visual Header Banner */}
-      <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-3xl p-6 md:p-8 relative overflow-hidden shadow-lg border border-slate-700/50 flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-        <div className="absolute right-0 top-0 translate-x-10 -translate-y-10 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
+      <div className={`bg-gradient-to-r text-white rounded-3xl p-6 md:p-8 relative overflow-hidden shadow-lg border flex flex-col md:flex-row md:items-center md:justify-between gap-6 ${
+        isStoreChemicals 
+          ? 'from-teal-950 to-emerald-900 border-teal-850/50' 
+          : 'from-slate-900 to-slate-800 border-slate-700/50'
+      }`}>
+        <div className={`absolute right-0 top-0 translate-x-10 -translate-y-10 w-96 h-96 rounded-full blur-3xl pointer-events-none ${
+          isStoreChemicals ? 'bg-emerald-500/10' : 'bg-blue-500/10'
+        }`} />
         
         <div className="relative z-10 space-y-2 flex-1">
-          <div className="bg-blue-500/30 text-blue-100 px-3 py-1 rounded-full text-xs font-semibold w-max uppercase tracking-wider font-mono">
-            Supply Pipeline Manager
+          <div className={`px-3 py-1 rounded-full text-xs font-semibold w-max uppercase tracking-wider font-mono ${
+            isStoreChemicals 
+              ? 'bg-emerald-500/30 text-emerald-100' 
+              : 'bg-blue-500/30 text-blue-100'
+          }`}>
+            {isStoreChemicals ? 'Store & Chemical Pipeline' : 'Supply Pipeline Manager'}
           </div>
           <h1 className="text-2xl md:text-3xl font-black tracking-tight flex items-center gap-2">
-            Spare Parts Requisition Board
+            {title}
           </h1>
           <p className="text-slate-300 text-sm max-w-xl leading-relaxed font-medium">
-            Easily manage life-cycles of shipboard marine machinery orders. Track quotations, purchase accounts, and final delivery receipts inline.
+            {isStoreChemicals 
+              ? 'Easily manage life-cycles of shipboard consumables and chemical orders. Track quotations, safety listings, and delivery notes.'
+              : 'Easily manage life-cycles of shipboard marine machinery orders. Track quotations, purchase accounts, and final delivery receipts inline.'}
           </p>
         </div>
 
         <button
           onClick={() => setShowFormModal(true)}
-          className="relative z-20 shrink-0 self-start md:self-center bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs tracking-tight uppercase px-5 py-3 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer hover:shadow-lg"
+          className={`relative z-20 shrink-0 self-start md:self-center text-white font-extrabold text-xs tracking-tight uppercase px-5 py-3 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer hover:shadow-lg ${
+            isStoreChemicals 
+              ? 'bg-emerald-600 hover:bg-emerald-700' 
+              : 'bg-blue-600 hover:bg-blue-700'
+          }`}
         >
           <Plus className="w-4 h-4" /> Log New Requisition
         </button>
@@ -955,10 +1009,11 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                               <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">PO Number</span>
                               <input 
                                 type="text" 
-                                placeholder="Enter PO Number..."
+                                placeholder={isAdminOrPic ? "Enter PO Number..." : "Not specified"}
                                 value={req.quotationPoNumber || ''} 
                                 onChange={(e) => updateRequisitionField(req.id, { quotationPoNumber: e.target.value })}
-                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                                disabled={!isAdminOrPic}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1 disabled:opacity-75 disabled:cursor-not-allowed"
                               />
                             </div>
 
@@ -968,7 +1023,8 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                 type="date" 
                                 value={req.quotationDate || ''} 
                                 onChange={(e) => updateRequisitionField(req.id, { quotationDate: e.target.value })}
-                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                                disabled={!isAdminOrPic}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1 disabled:opacity-75 disabled:cursor-not-allowed"
                               />
                             </div>
                           </div>
@@ -987,14 +1043,16 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                       <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                                       <span className="truncate text-slate-700 font-extrabold" title={f.name}>{f.name}</span>
                                     </div>
-                                    <button 
-                                      type="button"
-                                      onClick={() => removeFileFromSection(req.id, 'quotationFiles', idx)}
-                                      className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
-                                      title="Remove attachment"
-                                    >
-                                      <X className="w-3.5 h-3.5" />
-                                    </button>
+                                    {isAdminOrPic && (
+                                      <button 
+                                        type="button"
+                                        onClick={() => removeFileFromSection(req.id, 'quotationFiles', idx)}
+                                        className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
+                                        title="Remove attachment"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
                                   </div>
                                   <div className="flex items-center justify-between text-[9px] text-slate-400 font-extrabold px-1 border-t border-slate-100/60 pt-1">
                                     <span>{f.size}</span>
@@ -1024,23 +1082,25 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                             <p className="text-[10px] text-slate-400 italic font-semibold">No files uploaded</p>
                           )}
 
-                          <div className="relative">
-                            <input 
-                              type="file" 
-                              multiple
-                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                              onChange={(e) => {
-                                if (e.target.files) {
-                                  Array.from(e.target.files).forEach((file: File) => {
-                                    addFileToSection(req.id, 'quotationFiles', file);
-                                  });
-                                }
-                              }}
-                            />
-                            <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
-                              <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                          {isAdminOrPic && (
+                            <div className="relative">
+                              <input 
+                                type="file" 
+                                multiple
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                onChange={(e) => {
+                                  if (e.target.files) {
+                                    Array.from(e.target.files).forEach((file: File) => {
+                                      addFileToSection(req.id, 'quotationFiles', file);
+                                    });
+                                  }
+                                }}
+                              />
+                              <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
+                                <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                              </div>
                             </div>
-                          </div>
+                          )}
                         </div>
                       </div>
 
@@ -1060,10 +1120,11 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                               <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">PO Number</span>
                               <input 
                                 type="text" 
-                                placeholder="Enter PO Number..."
+                                placeholder={isAdminOrPic ? "Enter PO Number..." : "Not specified"}
                                 value={req.invoicePoNumber || ''} 
                                 onChange={(e) => updateRequisitionField(req.id, { invoicePoNumber: e.target.value })}
-                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                                disabled={!isAdminOrPic}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1 disabled:opacity-75 disabled:cursor-not-allowed"
                               />
                             </div>
 
@@ -1073,7 +1134,8 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                 type="date" 
                                 value={req.invoiceDate || ''} 
                                 onChange={(e) => updateRequisitionField(req.id, { invoiceDate: e.target.value })}
-                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1"
+                                disabled={!isAdminOrPic}
+                                className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/10 bg-slate-50 mt-1 disabled:opacity-75 disabled:cursor-not-allowed"
                               />
                             </div>
                           </div>
@@ -1092,14 +1154,16 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                       <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
                                       <span className="truncate text-slate-700 font-extrabold" title={f.name}>{f.name}</span>
                                     </div>
-                                    <button 
-                                      type="button"
-                                      onClick={() => removeFileFromSection(req.id, 'invoiceFiles', idx)}
-                                      className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
-                                      title="Remove attachment"
-                                    >
-                                      <X className="w-3.5 h-3.5" />
-                                    </button>
+                                    {isAdminOrPic && (
+                                      <button 
+                                        type="button"
+                                        onClick={() => removeFileFromSection(req.id, 'invoiceFiles', idx)}
+                                        className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
+                                        title="Remove attachment"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
                                   </div>
                                   <div className="flex items-center justify-between text-[9px] text-slate-400 font-extrabold px-1 border-t border-slate-100/60 pt-1">
                                     <span>{f.size}</span>
@@ -1129,23 +1193,25 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                             <p className="text-[10px] text-slate-400 italic font-semibold">No files uploaded</p>
                           )}
 
-                          <div className="relative">
-                            <input 
-                              type="file" 
-                              multiple
-                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                              onChange={(e) => {
-                                if (e.target.files) {
-                                  Array.from(e.target.files).forEach((file: File) => {
-                                    addFileToSection(req.id, 'invoiceFiles', file);
-                                  });
-                                }
-                              }}
-                            />
-                            <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
-                              <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                          {isAdminOrPic && (
+                            <div className="relative">
+                              <input 
+                                type="file" 
+                                multiple
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                onChange={(e) => {
+                                  if (e.target.files) {
+                                    Array.from(e.target.files).forEach((file: File) => {
+                                      addFileToSection(req.id, 'invoiceFiles', file);
+                                    });
+                                  }
+                                }}
+                              />
+                              <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
+                                <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                              </div>
                             </div>
-                          </div>
+                          )}
                         </div>
                       </div>
 

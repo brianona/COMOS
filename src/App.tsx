@@ -66,6 +66,7 @@ import { PDFViewer } from './components/PDFViewer';
 import { CrewListView, CrewComplianceView, AuditRegistryView, NonConformityTrackerView } from './components/CrewAndAudits';
 import { TroubleReportView } from './components/TroubleReport';
 import { SparePartsRequisitionView } from './components/SparePartsRequisition';
+import { BunkerBDNView } from './components/BunkerBDN';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -1125,7 +1126,7 @@ const SidebarContent = ({
           onClick={() => setIsMonitoringOpen(!isMonitoringOpen)}
           className={cn(
             "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_findings', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'lube_oil_ldr', 'store_chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_findings', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
           )}
         >
           <div className="flex items-center gap-3">
@@ -1164,19 +1165,19 @@ const SidebarContent = ({
                 <Package className="w-4 h-4" /> Spare Parts Requisition
               </button>
 
-              {/* Bunker */}
+              {/* Fuel collapsible under Monitoring */}
               <div className="space-y-1">
                 <button 
                   onClick={() => setIsBunkerOpen(!isBunkerOpen)}
                   className={cn(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
+                    "w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-bold transition-colors",
                     ['bunker_bdn', 'bunker_fuel_analysis'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                   )}
                 >
-                  <div className="flex items-center gap-3">
-                    <Droplets className="w-4 h-4" /> Bunker
+                  <div className="flex items-center gap-2.5">
+                    <Droplets className="w-4 h-4 text-slate-400" /> Fuel
                   </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isBunkerOpen ? "rotate-180" : "")} />
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200 text-slate-400", isBunkerOpen ? "rotate-180" : "")} />
                 </button>
                 <AnimatePresence>
                   {isBunkerOpen && (
@@ -1185,12 +1186,12 @@ const SidebarContent = ({
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1"
+                      className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
                     >
                       <button 
                         onClick={() => { setView('bunker_bdn'); setIsSidebarOpen(false); }}
                         className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
                           view === 'bunker_bdn' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                         )}
                       >
@@ -1199,7 +1200,7 @@ const SidebarContent = ({
                       <button 
                         onClick={() => { setView('bunker_fuel_analysis'); setIsSidebarOpen(false); }}
                         className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
                           view === 'bunker_fuel_analysis' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                         )}
                       >
@@ -1210,19 +1211,19 @@ const SidebarContent = ({
                 </AnimatePresence>
               </div>
 
-              {/* Lube Oil */}
+              {/* Lube Oil collapsible under Monitoring */}
               <div className="space-y-1">
                 <button 
                   onClick={() => setIsLubeOilOpen(!isLubeOilOpen)}
                   className={cn(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                    ['lube_oil_analysis', 'lube_oil_requisition'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                    "w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-bold transition-colors",
+                    ['lube_oil_analysis', 'lube_oil_ldr'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                   )}
                 >
-                  <div className="flex items-center gap-3">
-                    <Waves className="w-4 h-4" /> Lube Oil
+                  <div className="flex items-center gap-2.5">
+                    <Waves className="w-4 h-4 text-slate-400" /> Lube Oil
                   </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isLubeOilOpen ? "rotate-180" : "")} />
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200 text-slate-400", isLubeOilOpen ? "rotate-180" : "")} />
                 </button>
                 <AnimatePresence>
                   {isLubeOilOpen && (
@@ -1231,25 +1232,25 @@ const SidebarContent = ({
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1"
+                      className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
                     >
+                      <button 
+                        onClick={() => { setView('lube_oil_ldr'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
+                          view === 'lube_oil_ldr' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> LDR
+                      </button>
                       <button 
                         onClick={() => { setView('lube_oil_analysis'); setIsSidebarOpen(false); }}
                         className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
+                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
                           view === 'lube_oil_analysis' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                         )}
                       >
                         <div className="w-1 h-1 bg-current rounded-full" /> Lube Oil Analysis
-                      </button>
-                      <button 
-                        onClick={() => { setView('lube_oil_requisition'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'lube_oil_requisition' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Lube Oil Requisition
                       </button>
                     </motion.div>
                   )}
@@ -1257,50 +1258,15 @@ const SidebarContent = ({
               </div>
 
               {/* Store and Chemicals */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setIsStoreChemicalsOpen(!isStoreChemicalsOpen)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                    ['store_requisition', 'chemical_requisition'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    <FlaskConical className="w-4 h-4" /> Store and Chemicals
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isStoreChemicalsOpen ? "rotate-180" : "")} />
-                </button>
-                <AnimatePresence>
-                  {isStoreChemicalsOpen && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1"
-                    >
-                      <button 
-                        onClick={() => { setView('store_requisition'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'store_requisition' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Store Requisition
-                      </button>
-                      <button 
-                        onClick={() => { setView('chemical_requisition'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'chemical_requisition' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Chemical Requisition
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
+              <button 
+                onClick={() => { setView('store_chemical_requisition'); setIsSidebarOpen(false); }}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-left",
+                  view === 'store_chemical_requisition' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                )}
+              >
+                <FlaskConical className="w-4 h-4" /> Store and Chemicals
+              </button>
 
               {/* Crew */}
               <div className="space-y-1">
@@ -1579,7 +1545,7 @@ const SidebarContent = ({
 );
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'store_requisition' | 'chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_findings' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_findings' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational'>('dashboard');
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -3116,7 +3082,27 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             </div>
           )}
 
-          {['defects_1_6', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'store_requisition', 'chemical_requisition'].includes(view) && (
+          {view === 'store_chemical_requisition' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <SparePartsRequisitionView 
+                vessels={vessels} 
+                currentUser={user} 
+                title="Store and Chemical Requisition" 
+                storageKey="comos_store_chemical_requisitions" 
+              />
+            </div>
+          )}
+
+          {view === 'bunker_bdn' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <BunkerBDNView 
+                vessels={vessels} 
+                currentUser={user} 
+              />
+            </div>
+          )}
+
+          {['defects_1_6', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'lube_oil_ldr'].includes(view) && (
             <div className="bg-white p-12 rounded-3xl border border-blue-100 shadow-sm flex flex-col items-center justify-center text-center animate-in fade-in zoom-in duration-500">
                <div className="w-20 h-20 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
                  {view.startsWith('defects') ? <AlertTriangle className="w-10 h-10 text-blue-600" /> : 
