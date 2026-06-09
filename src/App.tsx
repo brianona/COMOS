@@ -67,6 +67,8 @@ import { CrewListView, CrewComplianceView, AuditRegistryView, NonConformityTrack
 import { TroubleReportView } from './components/TroubleReport';
 import { SparePartsRequisitionView } from './components/SparePartsRequisition';
 import { BunkerBDNView } from './components/BunkerBDN';
+import { LubeOilLDRView } from './components/LubeOilLDR';
+import { BunkerFuelAnalysisView } from './components/BunkerFuelAnalysis';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -3102,7 +3104,25 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             </div>
           )}
 
-          {['defects_1_6', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'lube_oil_ldr'].includes(view) && (
+          {view === 'lube_oil_ldr' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <LubeOilLDRView 
+                vessels={vessels} 
+                currentUser={user} 
+              />
+            </div>
+          )}
+
+          {view === 'bunker_fuel_analysis' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <BunkerFuelAnalysisView 
+                vessels={vessels} 
+                currentUser={user} 
+              />
+            </div>
+          )}
+
+          {['defects_1_6', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'lube_oil_analysis', 'lube_oil_requisition'].includes(view) && (
             <div className="bg-white p-12 rounded-3xl border border-blue-100 shadow-sm flex flex-col items-center justify-center text-center animate-in fade-in zoom-in duration-500">
                <div className="w-20 h-20 bg-blue-50 rounded-2xl flex items-center justify-center mb-6">
                  {view.startsWith('defects') ? <AlertTriangle className="w-10 h-10 text-blue-600" /> : 
