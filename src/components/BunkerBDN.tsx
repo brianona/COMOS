@@ -52,6 +52,7 @@ interface BunkerBDNProps {
   currentUser: User;
   title?: string;
   storageKey?: string;
+  token?: string;
 }
 
 const COMMON_FUEL_TYPES = [
@@ -118,7 +119,8 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
   vessels,
   currentUser,
   title = "Bunker Delivery Note (BDN) Registry",
-  storageKey = "comos_bunker_bdn_logs"
+  storageKey = "comos_bunker_bdn_logs",
+  token
 }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
   const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic';
@@ -127,22 +129,55 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
     ? vessels.filter(v => String(v.id) === String(currentUser.vessel_id))
     : vessels;
 
-  // State initialization
-  const [logs, setLogs] = useState<BDNLog[]>(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse BDN logs from storage:", e);
-      }
+  // Real-time server-side helper
+  const getFileUrl = (url: string | undefined) => {
+    if (!url) return '';
+    if (url.startsWith('data:')) return url;
+    if (token) {
+      const glue = url.includes('?') ? '&' : '?';
+      return `${url}${glue}token=${encodeURIComponent(token)}`;
     }
-    return INITIAL_BDN_LOGS;
-  });
+    return url;
+  };
+
+  // State initialization
+  const [logs, setLogs] = useState<BDNLog[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchLogs = async () => {
+    if (!token) {
+      const saved = localStorage.getItem(storageKey);
+      setLogs(saved ? JSON.parse(saved) : INITIAL_BDN_LOGS);
+      return;
+    }
+    setLoading(true);
+    try {
+      const resp = await fetch('/api/bunker-bdn-reports', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setLogs(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch bunker BDN logs:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(logs));
-  }, [logs, storageKey]);
+    fetchLogs();
+  }, [token]);
+
+  // Save/upload list is now done on-the-fly via REST API endpoints.
+  // We keep localStorage for fallback, but main is server.
+  const saveLogsFallback = (newLogs: BDNLog[]) => {
+    setLogs(newLogs);
+    if (!token) {
+      localStorage.setItem(storageKey, JSON.stringify(newLogs));
+    }
+  };
 
   // Delete State
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -199,7 +234,7 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
   });
 
   // Handle Form Submission
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.bdnNumber.trim()) {
       alert("Please provide a BDN Number.");
@@ -218,7 +253,28 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
       files: formFiles.length > 0 ? formFiles : undefined
     };
 
-    setLogs([newLog, ...logs]);
+    if (token) {
+      try {
+        const resp = await fetch('/api/bunker-bdn-reports', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(newLog)
+        });
+        if (resp.ok) {
+          fetchLogs();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to save report: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to post bunker BDN log:', err);
+      }
+    } else {
+      saveLogsFallback([newLog, ...logs]);
+    }
     
     // Clear Form
     setFormData({
@@ -255,8 +311,22 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
   };
 
   // Delete BDN record
-  const handleDeleteLog = (id: string) => {
-    setLogs(logs.filter(log => log.id !== id));
+  const handleDeleteLog = async (id: string) => {
+    if (token) {
+      try {
+        const resp = await fetch(`/api/bunker-bdn-reports/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          fetchLogs();
+        }
+      } catch (err) {
+        console.error('Failed to delete log:', err);
+      }
+    } else {
+      saveLogsFallback(logs.filter(log => log.id !== id));
+    }
   };
 
   // Start Editing a BDN log
@@ -275,7 +345,7 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
   };
 
   // Handle Edit Form Submission
-  const handleEditSubmit = (e: React.FormEvent) => {
+  const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingLog) return;
     if (!editFormData.bdnNumber.trim()) {
@@ -284,23 +354,47 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
     }
 
     const selectedVessel = vessels.find(v => String(v.id) === String(editFormData.vesselId));
-    const updatedLogs = logs.map(log => {
-      if (log.id === editingLog.id) {
-        return {
-          ...log,
-          vesselId: editFormData.vesselId,
-          vesselName: selectedVessel ? selectedVessel.name : 'Unknown Vessel',
-          date: editFormData.date,
-          bdnNumber: editFormData.bdnNumber.trim(),
-          fuelType: editFormData.fuelType.trim(),
-          quantity: editFormData.quantity.trim() ? `${editFormData.quantity.trim()} MT` : undefined,
-          files: editFormFiles.length > 0 ? editFormFiles : undefined
-        };
-      }
-      return log;
-    });
+    const payload = {
+      vesselId: editFormData.vesselId,
+      vesselName: selectedVessel ? selectedVessel.name : 'Unknown Vessel',
+      date: editFormData.date,
+      bdnNumber: editFormData.bdnNumber.trim(),
+      fuelType: editFormData.fuelType.trim(),
+      quantity: editFormData.quantity.trim() ? `${editFormData.quantity.trim()} MT` : undefined,
+      files: editFormFiles
+    };
 
-    setLogs(updatedLogs);
+    if (token) {
+      try {
+        const resp = await fetch(`/api/bunker-bdn-reports/${editingLog.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+        if (resp.ok) {
+          fetchLogs();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to edit report: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to edit log:', err);
+      }
+    } else {
+      const updatedLogs = logs.map(log => {
+        if (log.id === editingLog.id) {
+          return {
+            ...log,
+            ...payload
+          };
+        }
+        return log;
+      });
+      saveLogsFallback(updatedLogs);
+    }
     setEditingLog(null);
   };
 
@@ -571,7 +665,7 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
                     <div className="flex items-center gap-1.5 shrink-0">
                       {log.files[0].dataUrl && (
                         <a 
-                          href={log.files[0].dataUrl}
+                          href={getFileUrl(log.files[0].dataUrl)}
                           download={log.files[0].name}
                           className="p-1 px-1.5 bg-white text-blue-600 rounded border border-blue-100 hover:bg-blue-50 hover:text-blue-700 transition-colors text-[10px] font-black flex items-center gap-0.5"
                           title="Download PDF"
@@ -960,13 +1054,13 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
               {previewFile.dataUrl ? (
                 previewFile.dataUrl.startsWith('data:image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(previewFile.name) ? (
                   <img 
-                    src={previewFile.dataUrl} 
+                    src={getFileUrl(previewFile.dataUrl)} 
                     alt={previewFile.name} 
                     className="max-h-full max-w-full object-contain rounded-2xl shadow-2xl border border-white/5"
                   />
                 ) : previewFile.dataUrl.startsWith('data:application/pdf') || /\.pdf$/i.test(previewFile.name) ? (
                   <object 
-                    data={previewFile.dataUrl} 
+                    data={getFileUrl(previewFile.dataUrl)} 
                     type="application/pdf"
                     className="w-full h-full max-w-4xl rounded-2xl border border-white/10 shadow-2xl"
                   >
@@ -975,7 +1069,7 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
                       <h4 className="text-sm font-bold truncate">{previewFile.name}</h4>
                       <p className="text-xs text-slate-400 mt-2">Your current environment does not support direct PDF sandbox execution. Please retrieve the document below.</p>
                       <a 
-                        href={previewFile.dataUrl} 
+                        href={getFileUrl(previewFile.dataUrl)} 
                         download={previewFile.name}
                         className="mt-6 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 inline-flex items-center gap-2"
                       >
@@ -992,7 +1086,7 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
                     <p className="text-xs text-slate-400 mt-1">Size: {previewFile.size}</p>
                     <p className="text-xs text-slate-400 mt-4 leading-relaxed">No direct inline preview is present for this binary type. You can retrieve its structure by downloading.</p>
                     <a 
-                      href={previewFile.dataUrl} 
+                      href={getFileUrl(previewFile.dataUrl)} 
                       download={previewFile.name}
                       className="mt-6 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 inline-flex items-center gap-2"
                     >

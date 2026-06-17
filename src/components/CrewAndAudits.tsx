@@ -290,11 +290,35 @@ const INITIAL_NCS: NonConformity[] = [
 ];
 
 // 1. Crew ListView Component
-export const CrewListView = ({ vessels }: { vessels: any[] }) => {
-  const [crew, setCrew] = useState<CrewMember[]>(() => {
-    const saved = localStorage.getItem('comos_crew_list');
-    return saved ? JSON.parse(saved) : INITIAL_CREW;
-  });
+export const CrewListView = ({ vessels, token }: { vessels: any[], token?: string }) => {
+  const [crew, setCrew] = useState<CrewMember[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchCrew = async () => {
+    if (!token) {
+      const saved = localStorage.getItem('comos_crew_list');
+      setCrew(saved ? JSON.parse(saved) : INITIAL_CREW);
+      return;
+    }
+    setLoading(true);
+    try {
+      const resp = await fetch('/api/crew-members', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setCrew(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch crew:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchCrew();
+  }, [token]);
 
   const [search, setSearch] = useState('');
   const [filterRank, setFilterRank] = useState('All');
@@ -316,11 +340,14 @@ export const CrewListView = ({ vessels }: { vessels: any[] }) => {
     vesselId: 'all'
   });
 
-  useEffect(() => {
-    localStorage.setItem('comos_crew_list', JSON.stringify(crew));
-  }, [crew]);
+  const saveCrewFallback = (newCrewList: CrewMember[]) => {
+    setCrew(newCrewList);
+    if (!token) {
+      localStorage.setItem('comos_crew_list', JSON.stringify(newCrewList));
+    }
+  };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.rank) return;
 
@@ -356,7 +383,29 @@ export const CrewListView = ({ vessels }: { vessels: any[] }) => {
       vesselId: formData.vesselId
     };
 
-    setCrew([newCrew, ...crew]);
+    if (token) {
+      try {
+        const resp = await fetch('/api/crew-members', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(newCrew)
+        });
+        if (resp.ok) {
+          fetchCrew();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to save crew: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to post crew:', err);
+      }
+    } else {
+      saveCrewFallback([newCrew, ...crew]);
+    }
+
     setShowModal(false);
     setFormData({
       name: '',
@@ -372,9 +421,22 @@ export const CrewListView = ({ vessels }: { vessels: any[] }) => {
     });
   };
 
-  const handleDelete = (id: string) => {
-    if (confirm('Are you sure you want to remove this crew member?')) {
-      setCrew(crew.filter(c => c.id !== id));
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to remove this crew member?')) return;
+    if (token) {
+      try {
+        const resp = await fetch(`/api/crew-members/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          fetchCrew();
+        }
+      } catch (err) {
+        console.error('Failed to delete crew member:', err);
+      }
+    } else {
+      saveCrewFallback(crew.filter(c => c.id !== id));
     }
   };
 
@@ -725,11 +787,30 @@ export const CrewListView = ({ vessels }: { vessels: any[] }) => {
 
 
 // 2. Crew Compliance View Component
-export const CrewComplianceView = ({ vessels }: { vessels: any[] }) => {
-  const [crew] = useState<CrewMember[]>(() => {
-    const saved = localStorage.getItem('comos_crew_list');
-    return saved ? JSON.parse(saved) : INITIAL_CREW;
-  });
+export const CrewComplianceView = ({ vessels, token }: { vessels: any[], token?: string }) => {
+  const [crew, setCrew] = useState<CrewMember[]>([]);
+
+  useEffect(() => {
+    const fetchCrew = async () => {
+      if (!token) {
+        const saved = localStorage.getItem('comos_crew_list');
+        setCrew(saved ? JSON.parse(saved) : INITIAL_CREW);
+        return;
+      }
+      try {
+        const resp = await fetch('/api/crew-members', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setCrew(data);
+        }
+      } catch (err) {
+        console.error('Failed to fetch crew for compliance:', err);
+      }
+    };
+    fetchCrew();
+  }, [token]);
 
   const now = new Date('2026-05-21'); // Current mock date context
 
@@ -908,11 +989,35 @@ export const CrewComplianceView = ({ vessels }: { vessels: any[] }) => {
 
 
 // 3. Audit Registry View Component
-export const AuditRegistryView = ({ vessels, prefilteredType }: { vessels: any[], prefilteredType?: string }) => {
-  const [audits, setAudits] = useState<AuditRecord[]>(() => {
-    const saved = localStorage.getItem('comos_audits_list');
-    return saved ? JSON.parse(saved) : INITIAL_AUDITS;
-  });
+export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels: any[], prefilteredType?: string, token?: string }) => {
+  const [audits, setAudits] = useState<AuditRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchAudits = async () => {
+    if (!token) {
+      const saved = localStorage.getItem('comos_audits_list');
+      setAudits(saved ? JSON.parse(saved) : INITIAL_AUDITS);
+      return;
+    }
+    setLoading(true);
+    try {
+      const resp = await fetch('/api/audit-records', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setAudits(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch audits:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAudits();
+  }, [token]);
 
   const [filterType, setFilterType] = useState(prefilteredType || 'All');
   const [filterStatus, setFilterStatus] = useState('All');
@@ -937,11 +1042,14 @@ export const AuditRegistryView = ({ vessels, prefilteredType }: { vessels: any[]
     vesselId: 'all'
   });
 
-  useEffect(() => {
-    localStorage.setItem('comos_audits_list', JSON.stringify(audits));
-  }, [audits]);
+  const saveAuditsFallback = (newAudits: AuditRecord[]) => {
+    setAudits(newAudits);
+    if (!token) {
+      localStorage.setItem('comos_audits_list', JSON.stringify(newAudits));
+    }
+  };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.inspectorName || !formData.date) return;
 
@@ -957,7 +1065,29 @@ export const AuditRegistryView = ({ vessels, prefilteredType }: { vessels: any[]
       scope: formData.scope || 'General Safety compliance audit'
     };
 
-    setAudits([newAudit, ...audits]);
+    if (token) {
+      try {
+        const resp = await fetch('/api/audit-records', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(newAudit)
+        });
+        if (resp.ok) {
+          fetchAudits();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to save audit: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to post audit:', err);
+      }
+    } else {
+      saveAuditsFallback([newAudit, ...audits]);
+    }
+
     setShowModal(false);
     setFormData({
       type: 'Internal Audit',
@@ -1226,11 +1356,35 @@ export const AuditRegistryView = ({ vessels, prefilteredType }: { vessels: any[]
 
 
 // 4. Non-Conformity Tracker View Component
-export const NonConformityTrackerView = ({ vessels }: { vessels: any[] }) => {
-  const [ncs, setNcs] = useState<NonConformity[]>(() => {
-    const saved = localStorage.getItem('comos_ncs_list');
-    return saved ? JSON.parse(saved) : INITIAL_NCS;
-  });
+export const NonConformityTrackerView = ({ vessels, token }: { vessels: any[], token?: string }) => {
+  const [ncs, setNcs] = useState<NonConformity[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchNcs = async () => {
+    if (!token) {
+      const saved = localStorage.getItem('comos_ncs_list');
+      setNcs(saved ? JSON.parse(saved) : INITIAL_NCS);
+      return;
+    }
+    setLoading(true);
+    try {
+      const resp = await fetch('/api/non-conformities', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setNcs(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch NCs:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchNcs();
+  }, [token]);
 
   const [filterCategory, setFilterCategory] = useState('All');
   const [filterSource, setFilterSource] = useState('All');
@@ -1249,11 +1403,14 @@ export const NonConformityTrackerView = ({ vessels }: { vessels: any[] }) => {
     vesselId: 'all'
   });
 
-  useEffect(() => {
-    localStorage.setItem('comos_ncs_list', JSON.stringify(ncs));
-  }, [ncs]);
+  const saveNcsFallback = (newNcs: NonConformity[]) => {
+    setNcs(newNcs);
+    if (!token) {
+      localStorage.setItem('comos_ncs_list', JSON.stringify(newNcs));
+    }
+  };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.description || !formData.dueDate) return;
 
@@ -1271,7 +1428,29 @@ export const NonConformityTrackerView = ({ vessels }: { vessels: any[] }) => {
       inspectorName: formData.inspectorName || 'HSEQ Manager'
     };
 
-    setNcs([newNc, ...ncs]);
+    if (token) {
+      try {
+        const resp = await fetch('/api/non-conformities', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(newNc)
+        });
+        if (resp.ok) {
+          fetchNcs();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to save non-conformity: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to post non-conformity:', err);
+      }
+    } else {
+      saveNcsFallback([newNc, ...ncs]);
+    }
+
     setShowModal(false);
     setFormData({
       sourceType: 'Internal',
@@ -1285,21 +1464,42 @@ export const NonConformityTrackerView = ({ vessels }: { vessels: any[] }) => {
     });
   };
 
-  const handleCloseout = (id: string) => {
+  const handleCloseout = async (id: string) => {
     const action = prompt('Enter closeout action/corrective comments:');
     if (action === null) return; // cancel
 
-    setNcs(ncs.map(item => {
-      if (item.id === id) {
-        return {
-          ...item,
-          status: 'Closed',
-          closeoutDate: new Date().toISOString().split('T')[0],
-          actionPlan: action || item.actionPlan
-        };
+    const itemToClose = ncs.find(item => item.id === id);
+    if (!itemToClose) return;
+
+    const updatedItem = {
+      ...itemToClose,
+      status: 'Closed' as const,
+      closeoutDate: new Date().toISOString().split('T')[0],
+      actionPlan: action || itemToClose.actionPlan
+    };
+
+    if (token) {
+      try {
+        const resp = await fetch(`/api/non-conformities/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updatedItem)
+        });
+        if (resp.ok) {
+          fetchNcs();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to closeout non-conformity: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to close NC:', err);
       }
-      return item;
-    }));
+    } else {
+      setNcs(ncs.map(item => item.id === id ? updatedItem : item));
+    }
   };
 
   const filteredNcs = ncs.filter(nc => {

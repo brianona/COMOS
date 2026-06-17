@@ -102,6 +102,18 @@ const handleFileUpload = async (filename: string, mimetype: string, buffer: Buff
   return buffer;
 };
 
+// Parses base64 data URL into binary buffer and mimetype
+const parseBase64DataUrl = (dataUrl: string) => {
+  const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (matches) {
+    return {
+      mimetype: matches[1],
+      buffer: Buffer.from(matches[2], 'base64')
+    };
+  }
+  return null;
+};
+
 // Checks if the retrieved DB data is a reference pointer to B2 and resolves it, or returns raw DB buffer
 const handleFileRetrieve = async (dbData: any): Promise<Buffer> => {
   if (!dbData) return dbData;
@@ -415,7 +427,8 @@ async function startServer() {
       const tables = [
         'teams', 'users', 'vessels', 'certificates', 'notes', 'files',
         'departure_attachments', 'departure_reports', 'arrival_attachments',
-        'noon_attachments', 'arrival_reports', 'noon_reports', 'other_reports'
+        'noon_attachments', 'arrival_reports', 'noon_reports', 'other_reports',
+        'fuel_analysis_reports', 'lube_oil_ldr_reports'
       ];
       
       for (const table of tables) {
@@ -626,6 +639,198 @@ async function startServer() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (vessel_id) REFERENCES vessels(id),
         FOREIGN KEY (user_id) REFERENCES users(id)
+      )
+    `);
+
+    // Create tables for Fuel Analysis reports
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fuel_analysis_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        date DATE NOT NULL,
+        bdn_number VARCHAR(255) NOT NULL,
+        analysis_ref_number VARCHAR(255) NOT NULL,
+        product_name VARCHAR(255) NOT NULL,
+        viscosity VARCHAR(255) NULL,
+        density VARCHAR(255) NULL,
+        water_content VARCHAR(255) NULL,
+        sulfur_content VARCHAR(255) NULL,
+        status VARCHAR(50) NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fuel_analysis_files (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        report_id INT NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        size VARCHAR(50) NOT NULL,
+        mimetype VARCHAR(255) NULL,
+        data LONGBLOB NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (report_id) REFERENCES fuel_analysis_reports(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create tables for Lube Oil LDR reports
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS lube_oil_ldr_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        date DATE NOT NULL,
+        ldr_number VARCHAR(255) NOT NULL,
+        product_type VARCHAR(255) NOT NULL,
+        quantity VARCHAR(255) NULL,
+        supplier VARCHAR(255) NULL,
+        viscosity VARCHAR(255) NULL,
+        density VARCHAR(255) NULL,
+        sulfur_content VARCHAR(255) NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS lube_oil_ldr_files (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        report_id INT NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        size VARCHAR(50) NOT NULL,
+        mimetype VARCHAR(255) NULL,
+        data LONGBLOB NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (report_id) REFERENCES lube_oil_ldr_reports(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create tables for Bunker BDN
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bunker_bdn_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        date DATE NOT NULL,
+        bdn_number VARCHAR(255) NOT NULL,
+        fuel_type VARCHAR(255) NOT NULL,
+        quantity VARCHAR(255) NULL,
+        supplier VARCHAR(255) NULL,
+        viscosity VARCHAR(255) NULL,
+        density VARCHAR(255) NULL,
+        sulfur_content VARCHAR(255) NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bunker_bdn_files (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        report_id INT NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        size VARCHAR(50) NOT NULL,
+        mimetype VARCHAR(255) NULL,
+        data LONGBLOB NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (report_id) REFERENCES bunker_bdn_reports(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create table for Crew Members
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS crew_members (
+        id VARCHAR(100) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        rank_name VARCHAR(255) NOT NULL,
+        nationality VARCHAR(255) NOT NULL,
+        sign_on_date DATE NOT NULL,
+        passport_no VARCHAR(100) NOT NULL,
+        seaman_book_no VARCHAR(100) NOT NULL,
+        status VARCHAR(50) NOT NULL,
+        contract_duration INT NOT NULL,
+        next_medical_exam DATE NOT NULL,
+        next_safety_training DATE NOT NULL,
+        vessel_id VARCHAR(50) NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Audit Records
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS audit_records (
+        id VARCHAR(100) PRIMARY KEY,
+        type VARCHAR(255) NOT NULL,
+        vessel_id VARCHAR(100) NOT NULL,
+        date DATE NOT NULL,
+        inspector_name VARCHAR(255) NOT NULL,
+        inspector_organization VARCHAR(255) NOT NULL,
+        status VARCHAR(50) NOT NULL,
+        findings_count INT NOT NULL,
+        scope TEXT NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Non Conformities (Audits settings)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS non_conformities (
+        id VARCHAR(100) PRIMARY KEY,
+        audit_id VARCHAR(100) NOT NULL,
+        vessel_id VARCHAR(100) NOT NULL,
+        source_type VARCHAR(50) NOT NULL,
+        category VARCHAR(100) NOT NULL,
+        description TEXT NOT NULL,
+        raised_date DATE NOT NULL,
+        due_date DATE NOT NULL,
+        closeout_date DATE NULL,
+        status VARCHAR(50) NOT NULL,
+        action_plan TEXT NOT NULL,
+        inspector_name VARCHAR(255) NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Trouble Reports (Defects)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS trouble_reports (
+        id VARCHAR(100) PRIMARY KEY,
+        vessel_id VARCHAR(100) NOT NULL,
+        deficiency_number VARCHAR(255) NOT NULL,
+        date_found DATE NOT NULL,
+        deficiency TEXT NOT NULL,
+        classification VARCHAR(255) NOT NULL,
+        sub_classification VARCHAR(255) NULL,
+        others_detail VARCHAR(255) NULL,
+        status VARCHAR(50) NOT NULL,
+        action_taken TEXT NULL,
+        date_resolved DATE NULL,
+        reporter_name VARCHAR(255) NOT NULL,
+        pms_code VARCHAR(100) NULL,
+        rectification_file_name VARCHAR(255) NULL,
+        rectification_file_size VARCHAR(50) NULL,
+        rectification_file_data LONGBLOB NULL,
+        comi_file_name VARCHAR(255) NULL,
+        comi_file_size VARCHAR(50) NULL,
+        comi_file_data LONGBLOB NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Spare Parts Requisitions
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS spare_parts_requisitions (
+        id VARCHAR(100) PRIMARY KEY,
+        storage_key VARCHAR(255) NOT NULL,
+        data_json LONGTEXT NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -3177,6 +3382,1200 @@ Generated by COMOS System
         await pool.execute(`DELETE FROM ${type} WHERE id = ?`, [targetId]);
         await logAudit(req.user.id, req.user.username, 'PERMANENT_DELETE', `Permanently deleted ${type} ID ${targetId}`);
       }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // FUEL ANALYSIS REPORTS ROUTES
+  // ==========================================
+  app.get('/api/fuel-analysis-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT fa.*, v.name as vessel_name
+        FROM fuel_analysis_reports fa
+        JOIN vessels v ON fa.vessel_id = v.id
+        WHERE fa.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND fa.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY fa.date DESC, fa.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      const reportsWithFiles = [];
+      for (const report of reports) {
+        const [files]: any = await pool.execute(
+          'SELECT id, filename, size FROM fuel_analysis_files WHERE report_id = ?',
+          [report.id]
+        );
+        reportsWithFiles.push({
+          id: String(report.id),
+          vesselId: String(report.vessel_id),
+          vesselName: report.vessel_name,
+          date: report.date ? new Date(report.date).toISOString().split('T')[0] : '',
+          bdnNumber: report.bdn_number,
+          analysisRefNumber: report.analysis_ref_number,
+          productName: report.product_name,
+          viscosity: report.viscosity,
+          density: report.density,
+          waterContent: report.water_content,
+          sulfurContent: report.sulfur_content,
+          status: report.status,
+          files: files.map((f: any) => ({
+            id: String(f.id),
+            name: f.filename,
+            size: f.size,
+            dataUrl: `/api/fuel-analysis-files/${f.id}`
+          }))
+        });
+      }
+      res.json(reportsWithFiles);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/fuel-analysis-files/:id', authenticate, async (req, res) => {
+    try {
+      const [files]: any = await pool.execute(
+        'SELECT * FROM fuel_analysis_files WHERE id = ?',
+        [req.params.id]
+      );
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/fuel-analysis-reports', authenticate, async (req: any, res) => {
+    const {
+      vesselId,
+      date,
+      bdnNumber,
+      analysisRefNumber,
+      productName,
+      viscosity,
+      density,
+      waterContent,
+      sulfurContent,
+      status,
+      files
+    } = req.body;
+
+    try {
+      const [result]: any = await pool.execute(
+        `INSERT INTO fuel_analysis_reports (
+          vessel_id, date, bdn_number, analysis_ref_number, product_name,
+          viscosity, density, water_content, sulfur_content, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          bdnNumber ?? null,
+          analysisRefNumber ?? null,
+          productName ?? null,
+          viscosity ?? null,
+          density ?? null,
+          waterContent ?? null,
+          sulfurContent ?? null,
+          status ?? null
+        ]
+      );
+      const reportId = result.insertId;
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(file.dataUrl);
+            if (parsed) {
+              const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'fuel-analysis');
+              await pool.execute(
+                'INSERT INTO fuel_analysis_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+                [reportId, file.name, file.size, parsed.mimetype, finalBuffer]
+              );
+            }
+          }
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_FUEL_ANALYSIS_REPORT', `Created fuel analysis report ID ${reportId}`);
+      res.status(201).json({ success: true, id: reportId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/fuel-analysis-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId,
+      date,
+      bdnNumber,
+      analysisRefNumber,
+      productName,
+      viscosity,
+      density,
+      waterContent,
+      sulfurContent,
+      status,
+      files
+    } = req.body;
+
+    try {
+      await pool.execute(
+        `UPDATE fuel_analysis_reports SET 
+          vessel_id = ?, date = ?, bdn_number = ?, analysis_ref_number = ?, product_name = ?, 
+          viscosity = ?, density = ?, water_content = ?, sulfur_content = ?, status = ?
+         WHERE id = ?`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          bdnNumber ?? null,
+          analysisRefNumber ?? null,
+          productName ?? null,
+          viscosity ?? null,
+          density ?? null,
+          waterContent ?? null,
+          sulfurContent ?? null,
+          status ?? null,
+          id
+        ]
+      );
+
+      const keptFileIds: string[] = [];
+      const newFilesToUpload = [];
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.id) {
+            keptFileIds.push(file.id);
+          } else if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            newFilesToUpload.push(file);
+          }
+        }
+      }
+
+      if (keptFileIds.length > 0) {
+        const placeholders = keptFileIds.map(() => '?').join(',');
+        await pool.execute(
+          `DELETE FROM fuel_analysis_files WHERE report_id = ? AND id NOT IN (${placeholders})`,
+          [id, ...keptFileIds]
+        );
+      } else {
+        await pool.execute(
+          'DELETE FROM fuel_analysis_files WHERE report_id = ?',
+          [id]
+        );
+      }
+
+      for (const file of newFilesToUpload) {
+        const parsed = parseBase64DataUrl(file.dataUrl);
+        if (parsed) {
+          const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'fuel-analysis');
+          await pool.execute(
+            'INSERT INTO fuel_analysis_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+            [id, file.name, file.size, parsed.mimetype, finalBuffer]
+          );
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_FUEL_ANALYSIS_REPORT', `Updated fuel analysis report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/fuel-analysis-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE fuel_analysis_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_FUEL_ANALYSIS_REPORT', `Soft deleted fuel analysis report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // LUBE OIL LDR REPORTS ROUTES
+  // ==========================================
+  app.get('/api/lube-oil-ldr-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT ldr.*, v.name as vessel_name
+        FROM lube_oil_ldr_reports ldr
+        JOIN vessels v ON ldr.vessel_id = v.id
+        WHERE ldr.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND ldr.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY ldr.date DESC, ldr.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      const reportsWithFiles = [];
+      for (const report of reports) {
+        const [files]: any = await pool.execute(
+          'SELECT id, filename, size FROM lube_oil_ldr_files WHERE report_id = ?',
+          [report.id]
+        );
+        reportsWithFiles.push({
+          id: String(report.id),
+          vesselId: String(report.vessel_id),
+          vesselName: report.vessel_name,
+          date: report.date ? new Date(report.date).toISOString().split('T')[0] : '',
+          ldrNumber: report.ldr_number,
+          productType: report.product_type,
+          quantity: report.quantity,
+          supplier: report.supplier,
+          viscosity: report.viscosity,
+          density: report.density,
+          sulfurContent: report.sulfur_content,
+          files: files.map((f: any) => ({
+            id: String(f.id),
+            name: f.filename,
+            size: f.size,
+            dataUrl: `/api/lube-oil-ldr-files/${f.id}`
+          }))
+        });
+      }
+      res.json(reportsWithFiles);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/lube-oil-ldr-files/:id', authenticate, async (req, res) => {
+    try {
+      const [files]: any = await pool.execute(
+        'SELECT * FROM lube_oil_ldr_files WHERE id = ?',
+        [req.params.id]
+      );
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/lube-oil-ldr-reports', authenticate, async (req: any, res) => {
+    const {
+      vesselId,
+      date,
+      ldrNumber,
+      productType,
+      quantity,
+      supplier,
+      viscosity,
+      density,
+      sulfurContent,
+      files
+    } = req.body;
+
+    try {
+      const [result]: any = await pool.execute(
+        `INSERT INTO lube_oil_ldr_reports (
+          vessel_id, date, ldr_number, product_type, quantity, supplier, viscosity, density, sulfur_content
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          ldrNumber ?? null,
+          productType ?? null,
+          quantity ?? null,
+          supplier ?? null,
+          viscosity ?? null,
+          density ?? null,
+          sulfurContent ?? null
+        ]
+      );
+      const reportId = result.insertId;
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(file.dataUrl);
+            if (parsed) {
+              const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'lube-oil-ldr');
+              await pool.execute(
+                'INSERT INTO lube_oil_ldr_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+                [reportId, file.name, file.size, parsed.mimetype, finalBuffer]
+              );
+            }
+          }
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_LUBE_OIL_LDR_REPORT', `Created lube oil LDR report ID ${reportId}`);
+      res.status(201).json({ success: true, id: reportId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/lube-oil-ldr-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId,
+      date,
+      ldrNumber,
+      productType,
+      quantity,
+      supplier,
+      viscosity,
+      density,
+      sulfurContent,
+      files
+    } = req.body;
+
+    try {
+      await pool.execute(
+        `UPDATE lube_oil_ldr_reports SET 
+          vessel_id = ?, date = ?, ldr_number = ?, product_type = ?, quantity = ?, 
+          supplier = ?, viscosity = ?, density = ?, sulfur_content = ?
+         WHERE id = ?`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          ldrNumber ?? null,
+          productType ?? null,
+          quantity ?? null,
+          supplier ?? null,
+          viscosity ?? null,
+          density ?? null,
+          sulfurContent ?? null,
+          id
+        ]
+      );
+
+      const keptFileIds: string[] = [];
+      const newFilesToUpload = [];
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.id) {
+            keptFileIds.push(file.id);
+          } else if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            newFilesToUpload.push(file);
+          }
+        }
+      }
+
+      if (keptFileIds.length > 0) {
+        const placeholders = keptFileIds.map(() => '?').join(',');
+        await pool.execute(
+          `DELETE FROM lube_oil_ldr_files WHERE report_id = ? AND id NOT IN (${placeholders})`,
+          [id, ...keptFileIds]
+        );
+      } else {
+        await pool.execute(
+          'DELETE FROM lube_oil_ldr_files WHERE report_id = ?',
+          [id]
+        );
+      }
+
+      for (const file of newFilesToUpload) {
+        const parsed = parseBase64DataUrl(file.dataUrl);
+        if (parsed) {
+          const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'lube-oil-ldr');
+          await pool.execute(
+            'INSERT INTO lube_oil_ldr_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+            [id, file.name, file.size, parsed.mimetype, finalBuffer]
+          );
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_LUBE_OIL_LDR_REPORT', `Updated lube oil LDR report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/lube-oil-ldr-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE lube_oil_ldr_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_LUBE_OIL_LDR_REPORT', `Soft deleted lube oil LDR report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // BUNKER BDN REPORTS ROUTES
+  // ==========================================
+  app.get('/api/bunker-bdn-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT b.*, v.name as vessel_name
+        FROM bunker_bdn_reports b
+        JOIN vessels v ON b.vessel_id = v.id
+        WHERE b.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND b.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY b.date DESC, b.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      const reportsWithFiles = [];
+      for (const report of reports) {
+        const [files]: any = await pool.execute(
+          'SELECT id, filename, size FROM bunker_bdn_files WHERE report_id = ?',
+          [report.id]
+        );
+        reportsWithFiles.push({
+          id: String(report.id),
+          vesselId: String(report.vessel_id),
+          vesselName: report.vessel_name,
+          date: report.date ? new Date(report.date).toISOString().split('T')[0] : '',
+          bdnNumber: report.bdn_number,
+          fuelType: report.fuel_type,
+          quantity: report.quantity,
+          supplier: report.supplier,
+          viscosity: report.viscosity,
+          density: report.density,
+          sulfurContent: report.sulfur_content,
+          files: files.map((f: any) => ({
+            id: String(f.id),
+            name: f.filename,
+            size: f.size,
+            dataUrl: `/api/bunker-bdn-files/${f.id}`
+          }))
+        });
+      }
+      res.json(reportsWithFiles);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/bunker-bdn-files/:id', authenticate, async (req, res) => {
+    try {
+      const [files]: any = await pool.execute(
+        'SELECT * FROM bunker_bdn_files WHERE id = ?',
+        [req.params.id]
+      );
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/bunker-bdn-reports', authenticate, async (req: any, res) => {
+    const {
+      vesselId,
+      date,
+      bdnNumber,
+      fuelType,
+      quantity,
+      supplier,
+      viscosity,
+      density,
+      sulfurContent,
+      files
+    } = req.body;
+    try {
+      const [result]: any = await pool.execute(
+        `INSERT INTO bunker_bdn_reports (
+          vessel_id, date, bdn_number, fuel_type, quantity,
+          supplier, viscosity, density, sulfur_content
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          bdnNumber ?? null,
+          fuelType ?? null,
+          quantity ?? null,
+          supplier ?? null,
+          viscosity ?? null,
+          density ?? null,
+          sulfurContent ?? null
+        ]
+      );
+      const reportId = result.insertId;
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(file.dataUrl);
+            if (parsed) {
+              const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'bunker-bdn');
+              await pool.execute(
+                'INSERT INTO bunker_bdn_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+                [reportId, file.name, file.size, parsed.mimetype, finalBuffer]
+              );
+            }
+          }
+        }
+      }
+      await logAudit(req.user.id, req.user.username, 'CREATE_BUNKER_BDN_REPORT', `Created Bunker BDN report ID ${reportId}`);
+      res.status(201).json({ success: true, id: reportId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/bunker-bdn-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId,
+      date,
+      bdnNumber,
+      fuelType,
+      quantity,
+      supplier,
+      viscosity,
+      density,
+      sulfurContent,
+      files
+    } = req.body;
+    try {
+      await pool.execute(
+        `UPDATE bunker_bdn_reports SET 
+          vessel_id = ?, date = ?, bdn_number = ?, fuel_type = ?, quantity = ?, 
+          supplier = ?, viscosity = ?, density = ?, sulfur_content = ?
+         WHERE id = ?`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          bdnNumber ?? null,
+          fuelType ?? null,
+          quantity ?? null,
+          supplier ?? null,
+          viscosity ?? null,
+          density ?? null,
+          sulfurContent ?? null,
+          id
+        ]
+      );
+
+      const keptFileIds: string[] = [];
+      const newFilesToUpload = [];
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.id) {
+            keptFileIds.push(file.id);
+          } else if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            newFilesToUpload.push(file);
+          }
+        }
+      }
+
+      if (keptFileIds.length > 0) {
+        const placeholders = keptFileIds.map(() => '?').join(',');
+        await pool.execute(
+          `DELETE FROM bunker_bdn_files WHERE report_id = ? AND id NOT IN (${placeholders})`,
+          [id, ...keptFileIds]
+        );
+      } else {
+        await pool.execute('DELETE FROM bunker_bdn_files WHERE report_id = ?', [id]);
+      }
+
+      for (const file of newFilesToUpload) {
+        const parsed = parseBase64DataUrl(file.dataUrl);
+        if (parsed) {
+          const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'bunker-bdn');
+          await pool.execute(
+            'INSERT INTO bunker_bdn_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+            [id, file.name, file.size, parsed.mimetype, finalBuffer]
+          );
+        }
+      }
+      await logAudit(req.user.id, req.user.username, 'UPDATE_BUNKER_BDN_REPORT', `Updated Bunker BDN report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/bunker-bdn-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE bunker_bdn_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_BUNKER_BDN_REPORT', `Soft deleted Bunker BDN report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // CREW MEMBERS ROUTES
+  // ==========================================
+  app.get('/api/crew-members', authenticate, async (req: any, res) => {
+    try {
+      let query = 'SELECT * FROM crew_members WHERE deleted_at IS NULL';
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND vessel_id = ?';
+        params.push(String(req.user.vessel_id));
+      }
+      query += ' ORDER BY created_at DESC';
+      const [members]: any = await pool.execute(query, params);
+      res.json(members.map((m: any) => ({
+        id: m.id,
+        name: m.name,
+        rank: m.rank_name,
+        nationality: m.nationality,
+        signOnDate: m.sign_on_date ? new Date(m.sign_on_date).toISOString().split('T')[0] : '',
+        passportNo: m.passport_no,
+        seamanBookNo: m.seaman_book_no,
+        status: m.status,
+        contractDuration: m.contract_duration,
+        nextMedicalExam: m.next_medical_exam ? new Date(m.next_medical_exam).toISOString().split('T')[0] : '',
+        nextSafetyTraining: m.next_safety_training ? new Date(m.next_safety_training).toISOString().split('T')[0] : '',
+        vesselId: m.vessel_id
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/crew-members', authenticate, async (req: any, res) => {
+    const {
+      id, name, rank, nationality, signOnDate, passportNo, seamanBookNo,
+      status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId
+    } = req.body;
+    try {
+      await pool.execute(
+        `INSERT INTO crew_members (
+          id, name, rank_name, nationality, sign_on_date, passport_no, seaman_book_no,
+          status, contract_duration, next_medical_exam, next_safety_training, vessel_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, name, rank, nationality, signOnDate, passportNo, seamanBookNo, status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_CREW_MEMBER', `Created crew member ID ${id}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/crew-members/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      name, rank, nationality, signOnDate, passportNo, seamanBookNo,
+      status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId
+    } = req.body;
+    try {
+      await pool.execute(
+        `UPDATE crew_members SET 
+          name = ?, rank_name = ?, nationality = ?, sign_on_date = ?, passport_no = ?, seaman_book_no = ?,
+          status = ?, contract_duration = ?, next_medical_exam = ?, next_safety_training = ?, vessel_id = ?
+         WHERE id = ?`,
+        [name, rank, nationality, signOnDate, passportNo, seamanBookNo, status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId, id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_CREW_MEMBER', `Updated crew member ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/crew-members/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE crew_members SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_CREW_MEMBER', `Soft deleted crew member ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // AUDIT RECORDS ROUTES
+  // ==========================================
+  app.get('/api/audit-records', authenticate, async (req: any, res) => {
+    try {
+      let query = 'SELECT * FROM audit_records WHERE deleted_at IS NULL';
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND vessel_id = ?';
+        params.push(String(req.user.vessel_id));
+      }
+      query += ' ORDER BY date DESC';
+      const [records]: any = await pool.execute(query, params);
+      res.json(records.map((r: any) => ({
+        id: r.id,
+        type: r.type,
+        vesselId: r.vessel_id,
+        date: r.date ? new Date(r.date).toISOString().split('T')[0] : '',
+        inspectorName: r.inspector_name,
+        inspectorOrganization: r.inspector_organization,
+        status: r.status,
+        findingsCount: r.findings_count,
+        scope: r.scope
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/audit-records', authenticate, async (req: any, res) => {
+    const {
+      id, type, vesselId, date, inspectorName, inspectorOrganization, status, findingsCount, scope
+    } = req.body;
+    try {
+      await pool.execute(
+        `INSERT INTO audit_records (
+          id, type, vessel_id, date, inspector_name, inspector_organization, status, findings_count, scope
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, type, vesselId, date, inspectorName, inspectorOrganization, status, findingsCount, scope]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_AUDIT_RECORD', `Created Audit Record ID ${id}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/audit-records/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      type, vesselId, date, inspectorName, inspectorOrganization, status, findingsCount, scope
+    } = req.body;
+    try {
+      await pool.execute(
+        `UPDATE audit_records SET 
+          type = ?, vessel_id = ?, date = ?, inspector_name = ?, inspector_organization = ?, 
+          status = ?, findings_count = ?, scope = ?
+         WHERE id = ?`,
+        [type, vesselId, date, inspectorName, inspectorOrganization, status, findingsCount, scope, id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_AUDIT_RECORD', `Updated Audit Record ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/audit-records/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE audit_records SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_AUDIT_RECORD', `Soft deleted Audit Record ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // NON-CONFORMITIES ROUTES
+  // ==========================================
+  app.get('/api/non-conformities', authenticate, async (req: any, res) => {
+    try {
+      let query = 'SELECT * FROM non_conformities WHERE deleted_at IS NULL';
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND vessel_id = ?';
+        params.push(String(req.user.vessel_id));
+      }
+      query += ' ORDER BY raised_date DESC';
+      const [records]: any = await pool.execute(query, params);
+      res.json(records.map((nc: any) => ({
+        id: nc.id,
+        auditId: nc.audit_id,
+        vesselId: nc.vessel_id,
+        sourceType: nc.source_type,
+        category: nc.category,
+        description: nc.description,
+        raisedDate: nc.raised_date ? new Date(nc.raised_date).toISOString().split('T')[0] : '',
+        dueDate: nc.due_date ? new Date(nc.due_date).toISOString().split('T')[0] : '',
+        closeoutDate: nc.closeout_date ? new Date(nc.closeout_date).toISOString().split('T')[0] : undefined,
+        status: nc.status,
+        actionPlan: nc.action_plan,
+        inspectorName: nc.inspector_name
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/non-conformities', authenticate, async (req: any, res) => {
+    const {
+      id, auditId, vesselId, sourceType, category, description, raisedDate, dueDate, closeoutDate, status, actionPlan, inspectorName
+    } = req.body;
+    try {
+      await pool.execute(
+        `INSERT INTO non_conformities (
+          id, audit_id, vessel_id, source_type, category, description, raised_date, due_date, closeout_date, status, action_plan, inspector_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, auditId, vesselId, sourceType, category, description, raisedDate, dueDate, closeoutDate || null, status, actionPlan, inspectorName]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_NC', `Created Non-Conformity ID ${id}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/non-conformities/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      auditId, vesselId, sourceType, category, description, raisedDate, dueDate, closeoutDate, status, actionPlan, inspectorName
+    } = req.body;
+    try {
+      await pool.execute(
+        `UPDATE non_conformities SET 
+          audit_id = ?, vessel_id = ?, source_type = ?, category = ?, description = ?, 
+          raised_date = ?, due_date = ?, closeout_date = ?, status = ?, action_plan = ?, inspector_name = ?
+         WHERE id = ?`,
+        [auditId, vesselId, sourceType, category, description, raisedDate, dueDate, closeoutDate || null, status, actionPlan, inspectorName, id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_NC', `Updated Non-Conformity ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/non-conformities/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE non_conformities SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_NC', `Soft deleted Non-Conformity ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // TROUBLE REPORTS (DEFECTS) ROUTES
+  // ==========================================
+  app.get('/api/trouble-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT tr.*, v.name as vessel_name
+        FROM trouble_reports tr
+        JOIN vessels v ON tr.vessel_id = v.id
+        WHERE tr.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND tr.vessel_id = ?';
+        params.push(String(req.user.vessel_id));
+      } else if (req.user.role === 'team_pic') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY tr.date_found DESC, tr.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      res.json(reports.map((r: any) => ({
+        id: r.id,
+        vesselId: String(r.vessel_id),
+        vesselName: r.vessel_name,
+        deficiencyNumber: r.deficiency_number,
+        dateFound: r.date_found ? new Date(r.date_found).toISOString().split('T')[0] : '',
+        deficiency: r.deficiency,
+        classification: r.classification,
+        subClassification: r.sub_classification || undefined,
+        othersDetail: r.others_detail || undefined,
+        status: r.status,
+        actionTaken: r.action_taken || undefined,
+        dateResolved: r.date_resolved ? new Date(r.date_resolved).toISOString().split('T')[0] : undefined,
+        reporterName: r.reporter_name,
+        pmsCode: r.pms_code || undefined,
+        rectificationFile: r.rectification_file_name ? {
+          name: r.rectification_file_name,
+          size: r.rectification_file_size || '0 KB',
+          dataUrl: `/api/trouble-reports-files/${r.id}/rectification`
+        } : undefined,
+        comiFile: r.comi_file_name ? {
+          name: r.comi_file_name,
+          size: r.comi_file_size || '0 KB',
+          dataUrl: `/api/trouble-reports-files/${r.id}/comi`
+        } : undefined
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/trouble-reports-files/:id/:fileType', authenticate, async (req, res) => {
+    const { id, fileType } = req.params;
+    try {
+      const fieldData = fileType === 'comi' ? 'comi_file_data' : 'rectification_file_data';
+      const fieldName = fileType === 'comi' ? 'comi_file_name' : 'rectification_file_name';
+
+      const [rows]: any = await pool.execute(
+        `SELECT ${fieldName} as filename, ${fieldData} as val FROM trouble_reports WHERE id = ?`,
+        [id]
+      );
+      if (rows.length > 0 && rows[0].val) {
+        const file = rows[0];
+        const retrievedData = await handleFileRetrieve(file.val);
+        const mimetype = file.filename.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
+        res.setHeader('Content-Type', mimetype);
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/trouble-reports', authenticate, async (req: any, res) => {
+    const {
+      id, vesselId, deficiencyNumber, dateFound, deficiency, classification,
+      subClassification, othersDetail, status, actionTaken, dateResolved, reporterName, pmsCode,
+      rectificationFile, comiFile
+    } = req.body;
+
+    try {
+      let rectDataBuffer: any = null;
+      let comiDataBuffer: any = null;
+
+      if (rectificationFile && rectificationFile.dataUrl && rectificationFile.dataUrl.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(rectificationFile.dataUrl);
+        if (parsed) {
+          rectDataBuffer = await handleFileUpload(rectificationFile.name, parsed.mimetype, parsed.buffer, 'defects');
+        }
+      }
+      if (comiFile && comiFile.dataUrl && comiFile.dataUrl.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(comiFile.dataUrl);
+        if (parsed) {
+          comiDataBuffer = await handleFileUpload(comiFile.name, parsed.mimetype, parsed.buffer, 'defects');
+        }
+      }
+
+      await pool.execute(
+        `INSERT INTO trouble_reports (
+          id, vessel_id, deficiency_number, date_found, deficiency, classification,
+          sub_classification, others_detail, status, action_taken, date_resolved, reporter_name, pms_code,
+          rectification_file_name, rectification_file_size, rectification_file_data,
+          comi_file_name, comi_file_size, comi_file_data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, vesselId, deficiencyNumber, dateFound, deficiency, classification,
+          subClassification || null, othersDetail || null, status, actionTaken || null, dateResolved || null, reporterName, pmsCode || null,
+          rectificationFile ? rectificationFile.name : null, rectificationFile ? rectificationFile.size : null, rectDataBuffer,
+          comiFile ? comiFile.name : null, comiFile ? comiFile.size : null, comiDataBuffer
+        ]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_TROUBLE_REPORT', `Created Trouble Report ID ${id}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/trouble-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId, deficiencyNumber, dateFound, deficiency, classification,
+      subClassification, othersDetail, status, actionTaken, dateResolved, reporterName, pmsCode,
+      rectificationFile, comiFile
+    } = req.body;
+
+    try {
+      const [existing]: any = await pool.execute(
+        'SELECT rectification_file_name, rectification_file_size, rectification_file_data, comi_file_name, comi_file_size, comi_file_data FROM trouble_reports WHERE id = ?',
+        [id]
+      );
+
+      let rectName = existing[0]?.rectification_file_name || null;
+      let rectSize = existing[0]?.rectification_file_size || null;
+      let rectData = existing[0]?.rectification_file_data || null;
+
+      let comiName = existing[0]?.comi_file_name || null;
+      let comiSize = existing[0]?.comi_file_size || null;
+      let comiData = existing[0]?.comi_file_data || null;
+
+      if (rectificationFile) {
+        if (rectificationFile.dataUrl) {
+          if (rectificationFile.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(rectificationFile.dataUrl);
+            if (parsed) {
+              rectName = rectificationFile.name;
+              rectSize = rectificationFile.size;
+              rectData = await handleFileUpload(rectificationFile.name, parsed.mimetype, parsed.buffer, 'defects');
+            }
+          }
+        } else {
+          rectName = rectificationFile.name;
+          rectSize = rectificationFile.size;
+        }
+      } else {
+        rectName = null; rectSize = null; rectData = null;
+      }
+
+      if (comiFile) {
+        if (comiFile.dataUrl) {
+          if (comiFile.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(comiFile.dataUrl);
+            if (parsed) {
+              comiName = comiFile.name;
+              comiSize = comiFile.size;
+              comiData = await handleFileUpload(comiFile.name, parsed.mimetype, parsed.buffer, 'defects');
+            }
+          }
+        } else {
+          comiName = comiFile.name;
+          comiSize = comiFile.size;
+        }
+      } else {
+        comiName = null; comiSize = null; comiData = null;
+      }
+
+      await pool.execute(
+        `UPDATE trouble_reports SET 
+          vessel_id = ?, deficiency_number = ?, date_found = ?, deficiency = ?, classification = ?,
+          sub_classification = ?, others_detail = ?, status = ?, action_taken = ?, date_resolved = ?, reporter_name = ?, pms_code = ?,
+          rectification_file_name = ?, rectification_file_size = ?, rectification_file_data = ?,
+          comi_file_name = ?, comi_file_size = ?, comi_file_data = ?
+         WHERE id = ?`,
+        [
+          vesselId, deficiencyNumber, dateFound, deficiency, classification,
+          subClassification || null, othersDetail || null, status, actionTaken || null, dateResolved || null, reporterName, pmsCode || null,
+          rectName, rectSize, rectData,
+          comiName, comiSize, comiData,
+          id
+        ]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_TROUBLE_REPORT', `Updated trouble report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/trouble-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE trouble_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_TROUBLE_REPORT', `Soft deleted trouble report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // SPARE PARTS REQUISITIONS ROUTES
+  // ==========================================
+  app.get('/api/spare-parts-requisitions', authenticate, async (req: any, res) => {
+    const { storageKey } = req.query;
+    try {
+      let query = 'SELECT * FROM spare_parts_requisitions WHERE deleted_at IS NULL';
+      let params: any[] = [];
+      if (storageKey) {
+        query += ' AND storage_key = ?';
+        params.push(storageKey);
+      }
+      const [rows]: any = await pool.execute(query, params);
+      
+      const parsedList = rows.map((r: any) => {
+        try {
+          const parsed = JSON.parse(r.data_json);
+          parsed.id = r.id; 
+          return parsed;
+        } catch (err) {
+          return null;
+        }
+      }).filter(Boolean);
+
+      let filtered = parsedList;
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        filtered = parsedList.filter((x: any) => String(x.vesselId) === String(req.user.vessel_id));
+      } else if (req.user.role === 'team_pic') {
+        const [vessels]: any = await pool.execute('SELECT id FROM vessels WHERE team_id IN (?)', [req.user.team_ids]);
+        const vesselIds = vessels.map((v: any) => String(v.id));
+        filtered = parsedList.filter((x: any) => vesselIds.includes(String(x.vesselId)));
+      }
+
+      res.json(filtered);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/spare-parts-requisitions', authenticate, async (req: any, res) => {
+    try {
+      // Direct body is data, query storageKey contains target sheet
+      const payload = req.body;
+      const id = payload.id;
+      const storageKey = req.query.storageKey || payload.storageKey || 'comos_spare_requisitions';
+      const dataStr = JSON.stringify(payload);
+      
+      await pool.execute(
+        'INSERT INTO spare_parts_requisitions (id, storage_key, data_json) VALUES (?, ?, ?)',
+        [id, storageKey, dataStr]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_REQUISITION', `Created Requisition ID ${id} under ${storageKey}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/spare-parts-requisitions/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const payload = req.body;
+      const storageKey = req.query.storageKey || payload.storageKey || 'comos_spare_requisitions';
+      const dataStr = JSON.stringify(payload);
+
+      await pool.execute(
+        'UPDATE spare_parts_requisitions SET storage_key = ?, data_json = ? WHERE id = ?',
+        [storageKey, dataStr, id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_REQUISITION', `Updated Requisition ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/spare-parts-requisitions/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE spare_parts_requisitions SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_REQUISITION', `Deleted Requisition ID ${req.params.id}`);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });

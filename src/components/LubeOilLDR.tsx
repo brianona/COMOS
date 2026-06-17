@@ -50,6 +50,7 @@ export interface LDRLog {
 interface LubeOilLDRProps {
   vessels: Vessel[];
   currentUser: User;
+  token: string;
   title?: string;
   storageKey?: string;
 }
@@ -63,44 +64,10 @@ const COMMON_PRODUCT_TYPES = [
   'Hydraulic Lube Oil'
 ];
 
-const INITIAL_LDR_LOGS: LDRLog[] = [
-  {
-    id: 'ldr-1',
-    vesselId: '1',
-    vesselName: 'Ocean Star',
-    date: '2026-05-20',
-    ldrNumber: 'LDR-SGP-77211',
-    productType: 'Cylinder Oil (SAE 50)',
-    quantity: '12',
-    supplier: 'Shell Marine Lube Supplies',
-    viscosity: '145 cSt at 40°C',
-    density: '895.0 kg/m³',
-    sulfurContent: '1.20%',
-    files: [
-      { name: 'LDR_OceanStar_77211.pdf', size: '142 KB' }
-    ]
-  },
-  {
-    id: 'ldr-2',
-    vesselId: '2',
-    vesselName: 'Pacific Glory',
-    date: '2026-05-28',
-    ldrNumber: 'LDR-ROT-66120',
-    productType: 'System Oil (SAE 30)',
-    quantity: '8',
-    supplier: 'Chevron Marine Lubricants',
-    viscosity: '105 cSt at 40°C',
-    density: '888.2 kg/m³',
-    sulfurContent: '0.85%',
-    files: [
-      { name: 'LDR_PacGlory_66120.pdf', size: '195 KB' }
-    ]
-  }
-];
-
 export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
   vessels,
   currentUser,
+  token,
   title = "Lube Oil Delivery Receipt (LDR) Registry",
   storageKey = "comos_lube_oil_ldr_logs"
 }) => {
@@ -112,21 +79,35 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
     : vessels;
 
   // State initialization
-  const [logs, setLogs] = useState<LDRLog[]>(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse LDR logs from storage:", e);
+  const [logs, setLogs] = useState<LDRLog[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchLogs = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/lube-oil-ldr-reports', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setLogs(data);
       }
+    } catch (e) {
+      console.error("Failed to load LDR logs from server:", e);
+    } finally {
+      setLoading(false);
     }
-    return INITIAL_LDR_LOGS;
-  });
+  };
 
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(logs));
-  }, [logs, storageKey]);
+    fetchLogs();
+  }, [token]);
+
+  const getFileUrl = (url?: string) => {
+    if (!url) return '';
+    if (url.startsWith('data:')) return url;
+    return `${url}?token=${token}`;
+  };
 
   // Delete State
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -190,30 +171,44 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
       return;
     }
 
-    const selectedVessel = vessels.find(v => String(v.id) === String(formData.vesselId));
-    const newLog: LDRLog = {
-      id: `ldr-${Date.now()}`,
+    const payload = {
       vesselId: formData.vesselId,
-      vesselName: selectedVessel ? selectedVessel.name : 'Unknown Vessel',
       date: formData.date,
       ldrNumber: formData.ldrNumber.trim(),
       productType: formData.productType.trim(),
       quantity: formData.quantity.trim() ? `${formData.quantity.trim()} MT` : undefined,
-      files: formFiles.length > 0 ? formFiles : undefined
+      files: formFiles.length > 0 ? formFiles : []
     };
 
-    setLogs([newLog, ...logs]);
-    
-    // Clear Form
-    setFormData({
-      vesselId: userVesselId || (vessels[0] ? String(vessels[0].id) : ''),
-      date: new Date().toISOString().split('T')[0],
-      ldrNumber: '',
-      productType: '',
-      quantity: ''
+    fetch('/api/lube-oil-ldr-reports', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    })
+    .then(res => {
+      if (res.ok) {
+        fetchLogs();
+        // Clear Form
+        setFormData({
+          vesselId: userVesselId || (vessels[0] ? String(vessels[0].id) : ''),
+          date: new Date().toISOString().split('T')[0],
+          ldrNumber: '',
+          productType: '',
+          quantity: ''
+        });
+        setFormFiles([]);
+        setShowFormModal(false);
+      } else {
+        alert("Failed to save report to server.");
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      alert("Error saving report.");
     });
-    setFormFiles([]);
-    setShowFormModal(false);
   };
 
   // Handle File upload in create form
@@ -240,7 +235,21 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
 
   // Delete LDR record
   const handleDeleteLog = (id: string) => {
-    setLogs(logs.filter(log => log.id !== id));
+    fetch(`/api/lube-oil-ldr-reports/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    .then(res => {
+      if (res.ok) {
+        fetchLogs();
+      } else {
+        alert("Failed to delete report.");
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      alert("Error deleting report.");
+    });
   };
 
   // Start Editing an LDR log
@@ -267,25 +276,35 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
       return;
     }
 
-    const selectedVessel = vessels.find(v => String(v.id) === String(editFormData.vesselId));
-    const updatedLogs = logs.map(log => {
-      if (log.id === editingLog.id) {
-        return {
-          ...log,
-          vesselId: editFormData.vesselId,
-          vesselName: selectedVessel ? selectedVessel.name : 'Unknown Vessel',
-          date: editFormData.date,
-          ldrNumber: editFormData.ldrNumber.trim(),
-          productType: editFormData.productType.trim(),
-          quantity: editFormData.quantity.trim() ? `${editFormData.quantity.trim()} MT` : undefined,
-          files: editFormFiles.length > 0 ? editFormFiles : undefined
-        };
-      }
-      return log;
-    });
+    const payload = {
+      vesselId: editFormData.vesselId,
+      date: editFormData.date,
+      ldrNumber: editFormData.ldrNumber.trim(),
+      productType: editFormData.productType.trim(),
+      quantity: editFormData.quantity.trim() ? `${editFormData.quantity.trim()} MT` : undefined,
+      files: editFormFiles
+    };
 
-    setLogs(updatedLogs);
-    setEditingLog(null);
+    fetch(`/api/lube-oil-ldr-reports/${editingLog.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    })
+    .then(res => {
+      if (res.ok) {
+        fetchLogs();
+        setEditingLog(null);
+      } else {
+        alert("Failed to update report.");
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      alert("Error updating report.");
+    });
   };
 
   // Handle File upload in edit form
@@ -555,7 +574,7 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
                     <div className="flex items-center gap-1.5 shrink-0">
                       {log.files[0].dataUrl && (
                         <a 
-                          href={log.files[0].dataUrl}
+                          href={getFileUrl(log.files[0].dataUrl)}
                           download={log.files[0].name}
                           className="p-1 px-1.5 bg-white text-blue-600 rounded border border-blue-100 hover:bg-blue-50 hover:text-blue-700 transition-colors text-[10px] font-black flex items-center gap-0.5"
                           title="Download PDF"
@@ -944,13 +963,13 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
               {previewFile.dataUrl ? (
                 previewFile.dataUrl.startsWith('data:image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(previewFile.name) ? (
                   <img 
-                    src={previewFile.dataUrl} 
+                    src={getFileUrl(previewFile.dataUrl)} 
                     alt={previewFile.name} 
                     className="max-h-full max-w-full object-contain rounded-2xl shadow-2xl border border-white/5"
                   />
                 ) : previewFile.dataUrl.startsWith('data:application/pdf') || /\.pdf$/i.test(previewFile.name) ? (
                   <object 
-                    data={previewFile.dataUrl} 
+                    data={getFileUrl(previewFile.dataUrl)} 
                     type="application/pdf"
                     className="w-full h-full max-w-4xl rounded-2xl border border-white/10 shadow-2xl"
                   >
@@ -959,7 +978,7 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
                       <h4 className="text-sm font-bold truncate">{previewFile.name}</h4>
                       <p className="text-xs text-slate-400 mt-2">Your current environment does not support direct PDF sandbox execution. Please retrieve the document below.</p>
                       <a 
-                        href={previewFile.dataUrl} 
+                        href={getFileUrl(previewFile.dataUrl)} 
                         download={previewFile.name}
                         className="mt-6 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 inline-flex items-center gap-2"
                       >
@@ -976,7 +995,7 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
                     <p className="text-xs text-slate-400 mt-1">Size: {previewFile.size}</p>
                     <p className="text-xs text-slate-400 mt-4 leading-relaxed">No direct inline preview is present for this binary type. You can retrieve its structure by downloading.</p>
                     <a 
-                      href={previewFile.dataUrl} 
+                      href={getFileUrl(previewFile.dataUrl)} 
                       download={previewFile.name}
                       className="mt-6 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 inline-flex items-center gap-2"
                     >
@@ -1000,7 +1019,7 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
             <div className="flex items-center justify-center gap-4 shrink-0 w-full pt-4 border-t border-white/10">
               {previewFile.dataUrl && (
                 <a 
-                  href={previewFile.dataUrl}
+                  href={getFileUrl(previewFile.dataUrl)}
                   download={previewFile.name}
                   className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1.5"
                 >

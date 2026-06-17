@@ -86,6 +86,7 @@ interface SparePartsRequisitionProps {
   } | null;
   title?: string;
   storageKey?: string;
+  token?: string;
 }
 
 const INITIAL_REQUISITIONS: SparePartsRequisition[] = [
@@ -315,7 +316,8 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
   vessels, 
   currentUser,
   title = "Spare Parts Requisition Board",
-  storageKey = "comos_spare_requisitions"
+  storageKey = "comos_spare_requisitions",
+  token
 }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
   const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic';
@@ -324,68 +326,101 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     ? vessels.filter(v => String(v.id) === String(currentUser.vessel_id))
     : vessels;
 
-  const [requisitions, setRequisitions] = useState<SparePartsRequisition[]>(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        return parsed.map((r: any) => {
-          const norm: SparePartsRequisition = { ...r };
-          // Handle migration from single fields to array files key gracefully
-          if (r.requisitionFile && !r.requisitionFiles) {
-            norm.requisitionFiles = [r.requisitionFile];
-          }
-          if (r.quotationFile && !r.quotationFiles) {
-            norm.quotationFiles = [r.quotationFile];
-          }
-          if (r.invoiceFile && !r.invoiceFiles) {
-            norm.invoiceFiles = [r.invoiceFile];
-          }
-          if (r.deliveryNoteFile && !r.deliveryNoteFiles) {
-            norm.deliveryNoteFiles = [r.deliveryNoteFile];
-          }
+  const [requisitions, setRequisitions] = useState<SparePartsRequisition[]>([]);
+  const [loading, setLoading] = useState(false);
 
-          // Ensure they are initialized as arrays
-          norm.requisitionFiles = norm.requisitionFiles || [];
-          norm.quotationFiles = norm.quotationFiles || [];
-          norm.invoiceFiles = norm.invoiceFiles || [];
-          norm.deliveryNoteFiles = norm.deliveryNoteFiles || [];
-          return norm;
-        });
-      } catch (e) {
-        console.error(e);
-      }
+  // Secure file pointer helper URL resolver
+  const getFileUrl = (url: string | undefined) => {
+    if (!url) return '';
+    if (url.startsWith('data:')) return url;
+    if (token) {
+      const glue = url.includes('?') ? '&' : '?';
+      return `${url}${glue}token=${encodeURIComponent(token)}`;
     }
-    return storageKey === 'comos_spare_requisitions' ? INITIAL_REQUISITIONS : [
-      {
-        id: 'sc-1',
-        requisitionRef: 'REQ-SC-2026-001',
-        vesselId: '1',
-        status: 'In Transit',
-        priority: 'Medium',
-        dateRequested: '2026-05-12',
-        targetPort: 'Singapore',
-        eta: '2026-05-28',
-        remarks: 'Cabin stores, safety hand cleaners, and engine room degreaser chemicals.',
-        subject: 'Monthly Stores & Chemical Replenishment',
-        items: [
-          { id: 'sc-item-1', partNumber: 'SC-CAB-01', name: 'Hand Soap (Heavy Duty)', maker: 'Unitor', quantity: 10, unit: 'Cans' },
-          { id: 'sc-item-2', partNumber: 'SC-CHM-05', name: 'Oil & Degreaser Chemical', maker: 'Wilhelmsen', quantity: 5, unit: 'Drums' }
-        ],
-        documentName: 'Stores_Chemicals_Req_May2026.pdf',
-        documentSize: '450 KB',
-        requisitionFiles: [
-          {
-            name: 'Stores_Chemicals_Req_May2026.pdf',
-            size: '450 KB'
-          }
-        ],
-        messages: [
-          { id: 'sc-m1', sender: 'Chief Steward', text: 'Urgently needing cabin stores/soaps before Singapore.', timestamp: '2026-05-12 08:30' }
-        ]
+    return url;
+  };
+
+  const fetchRequisitions = async () => {
+    if (!token) {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const normed = parsed.map((r: any) => {
+            const norm: SparePartsRequisition = { ...r };
+            if (r.requisitionFile && !r.requisitionFiles) {
+              norm.requisitionFiles = [r.requisitionFile];
+            }
+            if (r.quotationFile && !r.quotationFiles) {
+              norm.quotationFiles = [r.quotationFile];
+            }
+            if (r.invoiceFile && !r.invoiceFiles) {
+              norm.invoiceFiles = [r.invoiceFile];
+            }
+            if (r.deliveryNoteFile && !r.deliveryNoteFiles) {
+              norm.deliveryNoteFiles = [r.deliveryNoteFile];
+            }
+            norm.requisitionFiles = norm.requisitionFiles || [];
+            norm.quotationFiles = norm.quotationFiles || [];
+            norm.invoiceFiles = norm.invoiceFiles || [];
+            norm.deliveryNoteFiles = norm.deliveryNoteFiles || [];
+            return norm;
+          });
+          setRequisitions(normed);
+          return;
+        } catch (e) {
+          console.error(e);
+        }
       }
-    ];
-  });
+      const initial = storageKey === 'comos_spare_requisitions' ? INITIAL_REQUISITIONS : [
+        {
+          id: 'sc-1',
+          requisitionRef: 'REQ-SC-2026-001',
+          vesselId: '1',
+          status: 'In Transit',
+          priority: 'Medium',
+          dateRequested: '2026-05-12',
+          targetPort: 'Singapore',
+          eta: '2026-05-28',
+          remarks: 'Cabin stores, safety hand cleaners, and engine room degreaser chemicals.',
+          subject: 'Monthly Stores & Chemical Replenishment',
+          items: [
+            { id: 'sc-item-1', partNumber: 'SC-CAB-01', name: 'Hand Soap (Heavy Duty)', maker: 'Unitor', quantity: 10, unit: 'Cans' },
+            { id: 'sc-item-2', partNumber: 'SC-CHM-05', name: 'Oil & Degreaser Chemical', maker: 'Wilhelmsen', quantity: 5, unit: 'Drums' }
+          ],
+          documentName: 'Stores_Chemicals_Req_May2026.pdf',
+          documentSize: '450 KB',
+          requisitionFiles: [
+            {
+              name: 'Stores_Chemicals_Req_May2026.pdf',
+              size: '450 KB'
+            }
+          ],
+          messages: []
+        }
+      ];
+      setRequisitions(initial as any);
+      return;
+    }
+    setLoading(true);
+    try {
+      const resp = await fetch(`/api/spare-parts-requisitions?storageKey=${encodeURIComponent(storageKey)}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setRequisitions(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch requisitions:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchRequisitions();
+  }, [token, storageKey]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterVessel, setFilterVessel] = useState(() => isVesselUser ? String(currentUser.vessel_id) : 'All');
@@ -455,13 +490,33 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     });
   };
 
-  const updateRequisitionField = (id: string, updates: Partial<SparePartsRequisition>) => {
-    setRequisitions(prev => prev.map(r => {
-      if (r.id === id) {
-        return { ...r, ...updates };
+  const updateRequisitionField = async (id: string, updates: Partial<SparePartsRequisition>) => {
+    const currentReq = requisitions.find(r => r.id === id);
+    if (!currentReq) return;
+    const updated = { ...currentReq, ...updates };
+
+    if (token) {
+      try {
+        const resp = await fetch(`/api/spare-parts-requisitions/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updated)
+        });
+        if (resp.ok) {
+          fetchRequisitions();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to update requisition: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to update requisition:', err);
       }
-      return r;
-    }));
+    } else {
+      setRequisitions(prev => prev.map(r => r.id === id ? updated : r));
+    }
   };
 
   const addFileToSection = (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', file: File) => {
@@ -471,46 +526,57 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
 
     const reader = new FileReader();
     reader.onload = () => {
-      setRequisitions(prev => prev.map(r => {
-        if (r.id === reqId) {
-          const currentList = r[section] || [];
-          const updatedList = [
-            ...currentList,
-            {
-              name: file.name,
-              size: sizeStr,
-              dataUrl: reader.result as string,
-              uploadedAt: Date.now()
-            }
-          ];
-          updatedList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
-          return {
-            ...r,
-            [section]: updatedList
-          };
+      const currentReq = requisitions.find(r => r.id === reqId);
+      if (!currentReq) return;
+
+      const currentList = currentReq[section] || [];
+      const updatedList = [
+        ...currentList,
+        {
+          name: file.name,
+          size: sizeStr,
+          dataUrl: reader.result as string,
+          uploadedAt: Date.now()
         }
-        return r;
-      }));
+      ];
+      updatedList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+      updateRequisitionField(reqId, { [section]: updatedList });
     };
     reader.readAsDataURL(file);
   };
 
   const removeFileFromSection = (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', fileIndex: number) => {
-    setRequisitions(prev => prev.map(r => {
-      if (r.id === reqId) {
-        const currentList = r[section] || [];
-        return {
-          ...r,
-          [section]: currentList.filter((_, idx) => idx !== fileIndex)
-        };
-      }
-      return r;
-    }));
+    const currentReq = requisitions.find(r => r.id === reqId);
+    if (!currentReq) return;
+
+    const currentList = currentReq[section] || [];
+    const updatedList = currentList.filter((_, idx) => idx !== fileIndex);
+    updateRequisitionField(reqId, { [section]: updatedList });
   };
 
-  const deleteRequisition = (id: string, e: React.MouseEvent) => {
+  const deleteRequisition = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (window.confirm('Are you sure you want to delete this requisition? This action is irreversible.')) {
+    if (!window.confirm('Are you sure you want to delete this requisition? This action is irreversible.')) return;
+
+    if (token) {
+      try {
+        const resp = await fetch(`/api/spare-parts-requisitions/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          fetchRequisitions();
+          if (expandedReqId === id) {
+            setExpandedReqId(null);
+          }
+        } else {
+          const err = await resp.json();
+          alert(`Failed to delete requisition: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to delete requisition:', err);
+      }
+    } else {
       setRequisitions(prev => prev.filter(r => r.id !== id));
       if (expandedReqId === id) {
         setExpandedReqId(null);
@@ -518,7 +584,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     }
   };
 
-  const handleFormSubmit = (e: React.FormEvent) => {
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (uploadedFiles.length === 0) {
@@ -549,7 +615,29 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
       messages: []
     };
 
-    setRequisitions(prev => [newReq, ...prev]);
+    if (token) {
+      try {
+        const resp = await fetch(`/api/spare-parts-requisitions?storageKey=${encodeURIComponent(storageKey)}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(newReq)
+        });
+        if (resp.ok) {
+          fetchRequisitions();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to create requisition: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to post requisition:', err);
+      }
+    } else {
+      setRequisitions(prev => [newReq, ...prev]);
+    }
+
     setShowFormModal(false);
 
     // Reset fields
@@ -565,7 +653,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     setUploadedFiles([]);
   };
 
-  const sendNewMessage = (reqId: string) => {
+  const sendNewMessage = async (reqId: string) => {
     const text = msgTexts[reqId] || '';
     if (!text.trim()) return;
 
@@ -584,7 +672,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     };
 
     const updatedMessages = [...(currentReq.messages || []), newMsg];
-    updateRequisitionField(reqId, { messages: updatedMessages });
+    await updateRequisitionField(reqId, { messages: updatedMessages });
     setMsgTexts(prev => ({ ...prev, [reqId]: '' }));
   };
 
@@ -950,7 +1038,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                     <div className="flex gap-2">
                                       {f.dataUrl && (
                                         <a 
-                                          href={f.dataUrl} 
+                                          href={getFileUrl(f.dataUrl)} 
                                           download={f.name}
                                           className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
                                         >
@@ -1059,7 +1147,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                     <div className="flex gap-2">
                                       {f.dataUrl && (
                                         <a 
-                                          href={f.dataUrl} 
+                                          href={getFileUrl(f.dataUrl)} 
                                           download={f.name}
                                           className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
                                         >
@@ -1170,7 +1258,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                     <div className="flex gap-2">
                                       {f.dataUrl && (
                                         <a 
-                                          href={f.dataUrl} 
+                                          href={getFileUrl(f.dataUrl)} 
                                           download={f.name}
                                           className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
                                         >
@@ -1277,7 +1365,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                     <div className="flex gap-2">
                                       {f.dataUrl && (
                                         <a 
-                                          href={f.dataUrl} 
+                                          href={getFileUrl(f.dataUrl)} 
                                           download={f.name}
                                           className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
                                         >
@@ -1500,7 +1588,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                 previewFile.dataUrl.startsWith('data:image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(previewFile.name) ? (
                   <div className="flex-1 p-6 flex items-center justify-center min-h-[350px]">
                     <img 
-                      src={previewFile.dataUrl} 
+                      src={getFileUrl(previewFile.dataUrl)} 
                       alt={previewFile.name} 
                       className="max-h-[60vh] max-w-full rounded-xl object-contain shadow-md border border-slate-100 animate-in fade-in zoom-in-95 duration-300"
                       referrerPolicy="no-referrer"
@@ -1509,16 +1597,16 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                 ) : previewFile.dataUrl.startsWith('data:application/pdf') || /\.pdf$/i.test(previewFile.name) ? (
                   <div className="flex-1 h-[60vh] md:h-[65vh] flex flex-col">
                     <object 
-                      data={previewFile.dataUrl} 
+                      data={getFileUrl(previewFile.dataUrl)} 
                       type="application/pdf" 
                       className="w-full h-full"
                     >
                       <div className="flex flex-col items-center justify-center h-full p-12 text-center text-slate-500">
-                        <FileText className="w-12 h-12 text-slate-300 mb-3" />
+                        <FileText className="w-12 h-12 text-slate-330 mb-3" />
                         <span className="text-sm font-bold text-slate-700">PDF Preview</span>
                         <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto mb-4">Your browser does not display static PDFs directly inside inline wrappers. You can download and inspect the file structure locally.</p>
                         <a 
-                          href={previewFile.dataUrl} 
+                          href={getFileUrl(previewFile.dataUrl)} 
                           download={previewFile.name}
                           className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-2"
                         >
@@ -1538,7 +1626,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                     <p className="text-xs text-slate-500 mt-4 max-w-md">No direct inline preview is available for this file type. Please click the button below to download and view.</p>
                     
                     <a 
-                      href={previewFile.dataUrl} 
+                      href={getFileUrl(previewFile.dataUrl)} 
                       download={previewFile.name}
                       className="mt-6 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-2"
                     >
@@ -1570,7 +1658,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
               </button>
               {previewFile.dataUrl && (
                 <a
-                  href={previewFile.dataUrl}
+                  href={getFileUrl(previewFile.dataUrl)}
                   download={previewFile.name}
                   className="px-5 py-2.5 hover:opacity-90 bg-blue-600 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-1.5"
                 >

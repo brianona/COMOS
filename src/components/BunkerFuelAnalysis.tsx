@@ -52,67 +52,15 @@ export interface FuelAnalysisLog {
 interface BunkerFuelAnalysisProps {
   vessels: Vessel[];
   currentUser: User;
+  token: string;
   title?: string;
   storageKey?: string;
 }
 
-const INITIAL_ANALYSIS_LOGS: FuelAnalysisLog[] = [
-  {
-    id: 'fa-1',
-    vesselId: '1',
-    vesselName: 'Ocean Star',
-    date: '2026-05-20',
-    bdnNumber: 'BDN-SGP-98212',
-    analysisRefNumber: 'LAB-AN-77012',
-    productName: 'VLSFO (0.50% Max S)',
-    viscosity: '378 cSt at 50°C',
-    density: '984.8 kg/m³',
-    waterContent: '0.12%',
-    sulfurContent: '0.47%',
-    status: 'Pass',
-    files: [
-      { name: 'Fuel_Analysis_OceanStar_77012.pdf', size: '245 KB' }
-    ]
-  },
-  {
-    id: 'fa-2',
-    vesselId: '2',
-    vesselName: 'Pacific Glory',
-    date: '2026-05-26',
-    bdnNumber: 'BDN-ROT-88344',
-    analysisRefNumber: 'LAB-AN-77149',
-    productName: 'LSMGO (0.10% Max S)',
-    viscosity: '11.8 cSt at 40°C',
-    density: '844.7 kg/m³',
-    waterContent: '0.05%',
-    sulfurContent: '0.08%',
-    status: 'Pass',
-    files: [
-      { name: 'Fuel_Analysis_PacGlory_77149.pdf', size: '198 KB' }
-    ]
-  },
-  {
-    id: 'fa-3',
-    vesselId: '3',
-    vesselName: 'Atlantic Explorer',
-    date: '2026-06-03',
-    bdnNumber: 'BDN-HOU-12903',
-    analysisRefNumber: 'LAB-AN-77290',
-    productName: 'HSFO (3.50% Max S)',
-    viscosity: '498 cSt at 50°C',
-    density: '992.1 kg/m³',
-    waterContent: '0.45%',
-    sulfurContent: '3.62%',
-    status: 'Fail',
-    files: [
-      { name: 'Fuel_Analysis_AtlExplorer_77290.pdf', size: '280 KB' }
-    ]
-  }
-];
-
 export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
   vessels,
   currentUser,
+  token,
   title = "Fuel Analysis Report Registry",
   storageKey = "comos_bunker_fuel_analysis_logs"
 }) => {
@@ -124,21 +72,35 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
     : vessels;
 
   // State initialization
-  const [logs, setLogs] = useState<FuelAnalysisLog[]>(() => {
-    const saved = localStorage.getItem(storageKey);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse Fuel Analysis logs from storage:", e);
+  const [logs, setLogs] = useState<FuelAnalysisLog[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchLogs = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/fuel-analysis-reports', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setLogs(data);
       }
+    } catch (e) {
+      console.error("Failed to load logs from server:", e);
+    } finally {
+      setLoading(false);
     }
-    return INITIAL_ANALYSIS_LOGS;
-  });
+  };
 
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(logs));
-  }, [logs, storageKey]);
+    fetchLogs();
+  }, [token]);
+
+  const getFileUrl = (url?: string) => {
+    if (!url) return '';
+    if (url.startsWith('data:')) return url;
+    return `${url}?token=${token}`;
+  };
 
   // Delete State
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -220,11 +182,8 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
       return;
     }
 
-    const selectedVessel = vessels.find(v => String(v.id) === String(formData.vesselId));
-    const newLog: FuelAnalysisLog = {
-      id: `fa-${Date.now()}`,
+    const payload = {
       vesselId: formData.vesselId,
-      vesselName: selectedVessel ? selectedVessel.name : 'Unknown Vessel',
       date: formData.date,
       bdnNumber: formData.bdnNumber.trim(),
       analysisRefNumber: formData.analysisRefNumber.trim(),
@@ -234,26 +193,43 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
       waterContent: formData.waterContent.trim() || undefined,
       sulfurContent: formData.sulfurContent.trim() || undefined,
       status: formData.status,
-      files: formFiles.length > 0 ? formFiles : undefined
+      files: formFiles.length > 0 ? formFiles : []
     };
 
-    setLogs([newLog, ...logs]);
-    
-    // Clear Form
-    setFormData({
-      vesselId: userVesselId || (vessels[0] ? String(vessels[0].id) : ''),
-      date: new Date().toISOString().split('T')[0],
-      bdnNumber: '',
-      analysisRefNumber: '',
-      productName: '',
-      viscosity: '',
-      density: '',
-      waterContent: '',
-      sulfurContent: '',
-      status: 'Pass'
+    fetch('/api/fuel-analysis-reports', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    })
+    .then(res => {
+      if (res.ok) {
+        fetchLogs();
+        // Clear Form
+        setFormData({
+          vesselId: userVesselId || (vessels[0] ? String(vessels[0].id) : ''),
+          date: new Date().toISOString().split('T')[0],
+          bdnNumber: '',
+          analysisRefNumber: '',
+          productName: '',
+          viscosity: '',
+          density: '',
+          waterContent: '',
+          sulfurContent: '',
+          status: 'Pass'
+        });
+        setFormFiles([]);
+        setShowFormModal(false);
+      } else {
+        alert("Failed to save report to server.");
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      alert("Error saving report.");
     });
-    setFormFiles([]);
-    setShowFormModal(false);
   };
 
   // Handle File upload in create form
@@ -280,7 +256,21 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
 
   // Delete Fuel Analysis record
   const handleDeleteLog = (id: string) => {
-    setLogs(logs.filter(log => log.id !== id));
+    fetch(`/api/fuel-analysis-reports/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    .then(res => {
+      if (res.ok) {
+        fetchLogs();
+      } else {
+        alert("Failed to delete report.");
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      alert("Error deleting report.");
+    });
   };
 
   // Start Editing an Analysis log
@@ -318,30 +308,40 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
       return;
     }
 
-    const selectedVessel = vessels.find(v => String(v.id) === String(editFormData.vesselId));
-    const updatedLogs = logs.map(log => {
-      if (log.id === editingLog.id) {
-        return {
-          ...log,
-          vesselId: editFormData.vesselId,
-          vesselName: selectedVessel ? selectedVessel.name : 'Unknown Vessel',
-          date: editFormData.date,
-          bdnNumber: editFormData.bdnNumber.trim(),
-          analysisRefNumber: editFormData.analysisRefNumber.trim(),
-          productName: editFormData.productName.trim(),
-          viscosity: editFormData.viscosity.trim() || undefined,
-          density: editFormData.density.trim() || undefined,
-          waterContent: editFormData.waterContent.trim() || undefined,
-          sulfurContent: editFormData.sulfurContent.trim() || undefined,
-          status: editFormData.status,
-          files: editFormFiles.length > 0 ? editFormFiles : undefined
-        };
-      }
-      return log;
-    });
+    const payload = {
+      vesselId: editFormData.vesselId,
+      date: editFormData.date,
+      bdnNumber: editFormData.bdnNumber.trim(),
+      analysisRefNumber: editFormData.analysisRefNumber.trim(),
+      productName: editFormData.productName.trim(),
+      viscosity: editFormData.viscosity.trim() || undefined,
+      density: editFormData.density.trim() || undefined,
+      waterContent: editFormData.waterContent.trim() || undefined,
+      sulfurContent: editFormData.sulfurContent.trim() || undefined,
+      status: editFormData.status,
+      files: editFormFiles
+    };
 
-    setLogs(updatedLogs);
-    setEditingLog(null);
+    fetch(`/api/fuel-analysis-reports/${editingLog.id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    })
+    .then(res => {
+      if (res.ok) {
+        fetchLogs();
+        setEditingLog(null);
+      } else {
+        alert("Failed to update report.");
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      alert("Error updating report.");
+    });
   };
 
   // Handle File upload in edit form
@@ -634,9 +634,9 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
                     <div className="flex items-center gap-1.5 shrink-0">
                       {log.files[0].dataUrl && (
                         <a 
-                          href={log.files[0].dataUrl}
+                          href={getFileUrl(log.files[0].dataUrl)}
                           download={log.files[0].name}
-                          className="p-1 px-1.5 bg-white text-amber-655 rounded border border-amber-100 hover:bg-amber-50 hover:text-amber-700 transition-colors text-[10px] font-black flex items-center gap-0.5"
+                          className="p-1 px-1.5 bg-white text-block text-amber-655 rounded border border-amber-100 hover:bg-amber-50 hover:text-amber-700 transition-colors text-[10px] font-black flex items-center gap-0.5"
                           title="Download PDF"
                         >
                           <Download className="w-3 h-3" /> Get
@@ -1015,29 +1015,27 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
               >
                 <X className="w-5 h-5" />
               </button>
-            </div>
-
-            {/* Content canvas */}
+            </div>            {/* Content canvas */}
             <div className="flex-1 flex items-center justify-center overflow-hidden my-6 w-full">
               {previewFile.dataUrl ? (
                 previewFile.dataUrl.startsWith('data:image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(previewFile.name) ? (
                   <img 
-                    src={previewFile.dataUrl} 
+                    src={getFileUrl(previewFile.dataUrl)} 
                     alt={previewFile.name} 
                     className="max-h-full max-w-full object-contain rounded-2xl shadow-2xl border border-white/5"
                   />
                 ) : previewFile.dataUrl.startsWith('data:application/pdf') || /\.pdf$/i.test(previewFile.name) ? (
                   <object 
-                    data={previewFile.dataUrl} 
+                    data={getFileUrl(previewFile.dataUrl)} 
                     type="application/pdf"
                     className="w-full h-full max-w-4xl rounded-2xl border border-white/10 shadow-2xl"
                   >
                     <div className="text-center text-white p-8 bg-slate-900 border border-slate-800 rounded-3xl max-w-md">
                       <ShieldAlert className="w-12 h-12 text-rose-555 mx-auto mb-4" />
                       <h4 className="text-sm font-bold truncate">{previewFile.name}</h4>
-                      <p className="text-xs text-slate-400 mt-2">Your current environment does not support direct PDF sandbox execution. Please retrieve the document below.</p>
+                      <p className="text-xs text-slate-405 mt-2">Your current environment does not support direct PDF sandbox execution. Please retrieve the document below.</p>
                       <a 
-                        href={previewFile.dataUrl} 
+                        href={getFileUrl(previewFile.dataUrl)} 
                         download={previewFile.name}
                         className="mt-6 px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 inline-flex items-center gap-2"
                       >
@@ -1054,7 +1052,7 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
                     <p className="text-xs text-slate-405 mt-1">Size: {previewFile.size}</p>
                     <p className="text-xs text-slate-400 mt-4 leading-relaxed">No direct inline preview is present for this binary type. You can retrieve its structure by downloading.</p>
                     <a 
-                      href={previewFile.dataUrl} 
+                      href={getFileUrl(previewFile.dataUrl)} 
                       download={previewFile.name}
                       className="mt-6 px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 inline-flex items-center gap-2"
                     >
@@ -1074,7 +1072,7 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
             <div className="pt-4 border-t border-white/10 flex justify-end shrink-0 w-full">
               {previewFile.dataUrl && (
                 <a 
-                  href={previewFile.dataUrl}
+                  href={getFileUrl(previewFile.dataUrl)}
                   download={previewFile.name}
                   className="px-6 py-3 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer"
                 >

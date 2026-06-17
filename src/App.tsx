@@ -3026,61 +3026,61 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'crew_list' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <CrewListView vessels={vessels} />
+              <CrewListView vessels={vessels} token={token} />
             </div>
           )}
 
           {view === 'crew_compliance' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <CrewComplianceView vessels={vessels} />
+              <CrewComplianceView vessels={vessels} token={token} />
             </div>
           )}
 
           {view === 'audit_list' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} />
+              <AuditRegistryView vessels={vessels} token={token} />
             </div>
           )}
 
           {view === 'audit_internal' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} prefilteredType="Internal Audit" />
+              <AuditRegistryView vessels={vessels} prefilteredType="Internal Audit" token={token} />
             </div>
           )}
 
           {view === 'audit_external' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} prefilteredType="External Audit" />
+              <AuditRegistryView vessels={vessels} prefilteredType="External Audit" token={token} />
             </div>
           )}
 
           {view === 'audit_vir' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} prefilteredType="VIR" />
+              <AuditRegistryView vessels={vessels} prefilteredType="VIR" token={token} />
             </div>
           )}
 
           {view === 'audit_navigational' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} prefilteredType="Navigational Audit" />
+              <AuditRegistryView vessels={vessels} prefilteredType="Navigational Audit" token={token} />
             </div>
           )}
 
           {view === 'audit_findings' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <NonConformityTrackerView vessels={vessels} />
+              <NonConformityTrackerView vessels={vessels} token={token} />
             </div>
           )}
 
           {view === 'defects_5_2' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <TroubleReportView vessels={vessels} currentUser={user} />
+              <TroubleReportView vessels={vessels} currentUser={user} token={token} />
             </div>
           )}
 
           {view === 'spare_requisition_ship' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <SparePartsRequisitionView vessels={vessels} currentUser={user} />
+              <SparePartsRequisitionView vessels={vessels} currentUser={user} token={token} />
             </div>
           )}
 
@@ -3091,6 +3091,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 currentUser={user} 
                 title="Store and Chemical Requisition" 
                 storageKey="comos_store_chemical_requisitions" 
+                token={token}
               />
             </div>
           )}
@@ -3100,6 +3101,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               <BunkerBDNView 
                 vessels={vessels} 
                 currentUser={user} 
+                token={token}
               />
             </div>
           )}
@@ -3109,6 +3111,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               <LubeOilLDRView 
                 vessels={vessels} 
                 currentUser={user} 
+                token={token}
               />
             </div>
           )}
@@ -3118,6 +3121,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               <BunkerFuelAnalysisView 
                 vessels={vessels} 
                 currentUser={user} 
+                token={token}
               />
             </div>
           )}

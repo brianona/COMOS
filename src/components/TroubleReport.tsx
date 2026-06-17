@@ -109,19 +109,55 @@ interface TroubleReportViewProps {
     vessel_id?: number | null;
     email?: string;
   } | null;
+  token?: string;
 }
 
-export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, currentUser }) => {
+export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, currentUser, token }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
   const userVesselId = isVesselUser ? String(currentUser.vessel_id) : null;
   const allowedVessels = isVesselUser 
     ? vessels.filter(v => String(v.id) === String(currentUser.vessel_id))
     : vessels;
 
-  const [reports, setReports] = useState<TroubleReport[]>(() => {
-    const saved = localStorage.getItem('comos_trouble_reports');
-    return saved ? JSON.parse(saved) : INITIAL_REPORTS;
-  });
+  const [reports, setReports] = useState<TroubleReport[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // Secure file payload helper URL getter
+  const getFileUrl = (url: string | undefined) => {
+    if (!url) return '';
+    if (url.startsWith('data:')) return url;
+    if (token) {
+      const glue = url.includes('?') ? '&' : '?';
+      return `${url}${glue}token=${encodeURIComponent(token)}`;
+    }
+    return url;
+  };
+
+  const fetchReports = async () => {
+    if (!token) {
+      const saved = localStorage.getItem('comos_trouble_reports');
+      setReports(saved ? JSON.parse(saved) : INITIAL_REPORTS);
+      return;
+    }
+    setLoading(true);
+    try {
+      const resp = await fetch('/api/trouble-reports', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setReports(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch trouble reports:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchReports();
+  }, [token]);
 
   const [activeTab, setActiveTab] = useState<'all' | 'Submitted' | 'In Progress' | 'Resolved'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -165,11 +201,14 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
     }
   }, [userVesselId]);
 
-  useEffect(() => {
-    localStorage.setItem('comos_trouble_reports', JSON.stringify(reports));
-  }, [reports]);
+  const saveReportsFallback = (newReportsList: TroubleReport[]) => {
+    setReports(newReportsList);
+    if (!token) {
+      localStorage.setItem('comos_trouble_reports', JSON.stringify(newReportsList));
+    }
+  };
 
-  const handleCreateReport = (e: React.FormEvent) => {
+  const handleCreateReport = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.deficiencyNumber.trim()) {
       alert('Please fill out the deficiency number.');
@@ -202,7 +241,29 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
       comiFile: newReportComiFile
     };
 
-    setReports([newReport, ...reports]);
+    if (token) {
+      try {
+        const resp = await fetch('/api/trouble-reports', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(newReport)
+        });
+        if (resp.ok) {
+          fetchReports();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to save report: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to post trouble report:', err);
+      }
+    } else {
+      saveReportsFallback([newReport, ...reports]);
+    }
+
     setShowFormModal(false);
     setNewReportComiFile(null);
     
@@ -220,9 +281,25 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
     });
   };
 
-  const handleDeleteReport = (id: string, e: React.MouseEvent) => {
+  const handleDeleteReport = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm('Are you sure you want to delete this trouble report?')) {
+    if (!confirm('Are you sure you want to delete this trouble report?')) return;
+    if (token) {
+      try {
+        const resp = await fetch(`/api/trouble-reports/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          fetchReports();
+          if (selectedReport?.id === id) {
+            setSelectedReport(null);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to delete report:', err);
+      }
+    } else {
       setReports(reports.filter(r => r.id !== id));
       if (selectedReport?.id === id) {
         setSelectedReport(null);
@@ -242,22 +319,35 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
     setRectificationDate(new Date().toISOString().split('T')[0]);
   };
 
-  const handleSaveActionTaken = (id: string, actionText: string) => {
-    setReports(reports.map(r => {
-      if (r.id === id) {
-        return {
-          ...r,
-          actionTaken: actionText
-        };
-      }
-      return r;
-    }));
+  const handleSaveActionTaken = async (id: string, actionText: string) => {
+    const reportVal = reports.find(r => r.id === id);
+    if (!reportVal) return;
+    const updated = { ...reportVal, actionTaken: actionText };
 
-    if (selectedReport?.id === id) {
-      setSelectedReport(prev => prev ? {
-        ...prev,
-        actionTaken: actionText
-      } : null);
+    if (token) {
+      try {
+        const resp = await fetch(`/api/trouble-reports/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updated)
+        });
+        if (resp.ok) {
+          fetchReports();
+          if (selectedReport?.id === id) {
+            setSelectedReport(prev => prev ? { ...prev, actionTaken: actionText } : null);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to save action taken:', err);
+      }
+    } else {
+      setReports(reports.map(r => r.id === id ? updated : r));
+      if (selectedReport?.id === id) {
+        setSelectedReport(prev => prev ? { ...prev, actionTaken: actionText } : null);
+      }
     }
     setEditingActionId(null);
   };
@@ -301,7 +391,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
     reader.readAsDataURL(file);
   };
 
-  const handleSubmitRectification = (e: React.FormEvent) => {
+  const handleSubmitRectification = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!rectifyingReportId) return;
     if (!rectificationActions.trim()) {
@@ -317,27 +407,44 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
       return;
     }
 
-    setReports(reports.map(r => {
-      if (r.id === rectifyingReportId) {
-        return {
-          ...r,
-          status: 'Resolved',
-          actionTaken: rectificationActions.trim(),
-          dateResolved: rectificationDate,
-          rectificationFile: rectificationFile
-        };
-      }
-      return r;
-    }));
+    const reportVal = reports.find(r => r.id === rectifyingReportId);
+    if (!reportVal) return;
 
-    if (selectedReport?.id === rectifyingReportId) {
-      setSelectedReport(prev => prev ? {
-        ...prev,
-        status: 'Resolved',
-        actionTaken: rectificationActions.trim(),
-        dateResolved: rectificationDate,
-        rectificationFile: rectificationFile
-      } : null);
+    const updated = {
+      ...reportVal,
+      status: 'Resolved' as const,
+      actionTaken: rectificationActions.trim(),
+      dateResolved: rectificationDate,
+      rectificationFile: rectificationFile
+    };
+
+    if (token) {
+      try {
+        const resp = await fetch(`/api/trouble-reports/${rectifyingReportId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updated)
+        });
+        if (resp.ok) {
+          fetchReports();
+          if (selectedReport?.id === rectifyingReportId) {
+            setSelectedReport(updated);
+          }
+        } else {
+          const err = await resp.json();
+          alert(`Failed to resolve: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to update resolve:', err);
+      }
+    } else {
+      setReports(reports.map(r => r.id === rectifyingReportId ? updated : r));
+      if (selectedReport?.id === rectifyingReportId) {
+        setSelectedReport(updated);
+      }
     }
 
     setRectifyingReportId(null);
@@ -346,19 +453,36 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
     setRectificationDate('');
   };
 
-  const handleStartInvestigation = (id: string) => {
-    setReports(reports.map(r => {
-      if (r.id === id) {
-        return {
-          ...r,
-          status: 'In Progress'
-        };
-      }
-      return r;
-    }));
+  const handleStartInvestigation = async (id: string) => {
+    const reportVal = reports.find(r => r.id === id);
+    if (!reportVal) return;
 
-    if (selectedReport?.id === id) {
-      setSelectedReport(prev => prev ? { ...prev, status: 'In Progress' } : null);
+    const updated = { ...reportVal, status: 'In Progress' as const };
+
+    if (token) {
+      try {
+        const resp = await fetch(`/api/trouble-reports/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updated)
+        });
+        if (resp.ok) {
+          fetchReports();
+          if (selectedReport?.id === id) {
+            setSelectedReport(prev => prev ? { ...prev, status: 'In Progress' } : null);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to start investigation:', err);
+      }
+    } else {
+      setReports(reports.map(r => r.id === id ? updated : r));
+      if (selectedReport?.id === id) {
+        setSelectedReport(prev => prev ? { ...prev, status: 'In Progress' } : null);
+      }
     }
   };
 
@@ -1179,7 +1303,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
                       </div>
                       {selectedReport.comiFile.dataUrl && (
                         <a
-                          href={selectedReport.comiFile.dataUrl}
+                          href={getFileUrl(selectedReport.comiFile.dataUrl)}
                           download={selectedReport.comiFile.name}
                           className="bg-white border border-slate-200 hover:bg-slate-50 px-3 py-2 text-indigo-600 rounded-xl transition-colors shrink-0 flex items-center gap-1.5 text-xs font-bold shadow-sm"
                         >
@@ -1266,7 +1390,7 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
                           </div>
                           {selectedReport.rectificationFile.dataUrl && (
                             <a
-                              href={selectedReport.rectificationFile.dataUrl}
+                              href={getFileUrl(selectedReport.rectificationFile.dataUrl)}
                               download={selectedReport.rectificationFile.name}
                               className="bg-white border border-slate-200 hover:bg-slate-50 p-2 rounded-xl text-blue-600 transition-colors shrink-0 flex items-center gap-1.5 text-xs font-bold shadow-sm"
                             >
