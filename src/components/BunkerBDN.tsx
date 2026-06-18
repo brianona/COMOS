@@ -175,7 +175,19 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
   const saveLogsFallback = (newLogs: BDNLog[]) => {
     setLogs(newLogs);
     if (!token) {
-      localStorage.setItem(storageKey, JSON.stringify(newLogs));
+      try {
+        const sanitized = JSON.stringify(newLogs, (key, value) => {
+          if (typeof value === 'string' && (key.toLowerCase().includes('dataurl') || key.toLowerCase().includes('base64') || value.startsWith('data:'))) {
+            if (value.length > 200) {
+              return "[omitted base64 payload]";
+            }
+          }
+          return value;
+        });
+        localStorage.setItem(storageKey, sanitized);
+      } catch (err) {
+        console.warn("localStorage quota exceeded, skipped local persistence of bunker logs:", err);
+      }
     }
   };
 

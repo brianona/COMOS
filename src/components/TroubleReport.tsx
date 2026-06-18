@@ -204,7 +204,19 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
   const saveReportsFallback = (newReportsList: TroubleReport[]) => {
     setReports(newReportsList);
     if (!token) {
-      localStorage.setItem('comos_trouble_reports', JSON.stringify(newReportsList));
+      try {
+        const sanitized = JSON.stringify(newReportsList, (key, value) => {
+          if (typeof value === 'string' && (key.toLowerCase().includes('dataurl') || key.toLowerCase().includes('base64') || value.startsWith('data:'))) {
+            if (value.length > 200) {
+              return "[omitted base64 payload]";
+            }
+          }
+          return value;
+        });
+        localStorage.setItem('comos_trouble_reports', sanitized);
+      } catch (err) {
+        console.warn("localStorage quota exceeded, skipped local persistence of trouble reports:", err);
+      }
     }
   };
 

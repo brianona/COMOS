@@ -218,7 +218,7 @@ interface CommunicationLogSectionProps {
 const CommunicationLogSection: React.FC<CommunicationLogSectionProps> = ({
   req,
   currentUser,
-  vessels,
+  vessels = [],
   msgText,
   setMsgText,
   sendNewMessage,
@@ -265,7 +265,7 @@ const CommunicationLogSection: React.FC<CommunicationLogSectionProps> = ({
             }
 
             const isMe = msg.sender === (currentUser?.role === 'vessel' 
-              ? (vessels.find((v: any) => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
+              ? ((vessels || []).find((v: any) => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
               : (currentUser?.username || 'Superintendent'));
 
             return (
@@ -313,7 +313,7 @@ const CommunicationLogSection: React.FC<CommunicationLogSectionProps> = ({
 };
 
 export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = ({ 
-  vessels, 
+  vessels = [], 
   currentUser,
   title = "Spare Parts Requisition Board",
   storageKey = "comos_spare_requisitions",
@@ -323,8 +323,8 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
   const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic';
   const userVesselId = isVesselUser ? String(currentUser.vessel_id) : null;
   const allowedVessels = isVesselUser 
-    ? vessels.filter(v => String(v.id) === String(currentUser.vessel_id))
-    : vessels;
+    ? (vessels || []).filter(v => String(v.id) === String(currentUser.vessel_id))
+    : (vessels || []);
 
   const [requisitions, setRequisitions] = useState<SparePartsRequisition[]>([]);
   const [loading, setLoading] = useState(false);
@@ -455,7 +455,19 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
   }, [userVesselId]);
 
   useEffect(() => {
-    localStorage.setItem(storageKey, JSON.stringify(requisitions));
+    try {
+      const sanitized = JSON.stringify(requisitions, (key, value) => {
+        if (typeof value === 'string' && (key.toLowerCase().includes('dataurl') || key.toLowerCase().includes('base64') || value.startsWith('data:'))) {
+          if (value.length > 200) {
+            return "[omitted base64 payload]";
+          }
+        }
+        return value;
+      });
+      localStorage.setItem(storageKey, sanitized);
+    } catch (err) {
+      console.warn("localStorage quota exceeded, skipped local persistence of requisitions list:", err);
+    }
   }, [requisitions, storageKey]);
 
   const handleFileDropGeneral = (e: React.DragEvent) => {
@@ -836,7 +848,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                   </div>
 
                   <div className="flex items-center gap-3 self-end md:self-auto">
-                    {currentUser?.role !== 'vessel' && (
+                    {(isAdminOrPic || (isVesselUser && String(req.vesselId) === userVesselId) || !currentUser) && (
                       <button
                         onClick={(e) => deleteRequisition(req.id, e)}
                         className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer mr-1"
