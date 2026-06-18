@@ -572,7 +572,16 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
-              {filteredCrew.length === 0 ? (
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="px-6 py-16 text-center">
+                    <div className="flex flex-col items-center justify-center gap-3">
+                      <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
+                      <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Crew Registry from Database...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : filteredCrew.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic">
                     No crew members found matching filters.
@@ -1203,41 +1212,58 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
-              {filteredAudits.map(audit => (
-                <tr key={audit.id} className="hover:bg-slate-50 transition-colors">
-                  <td className="px-6 py-4">
-                    <div className="font-bold text-slate-900">{audit.type}</div>
-                    <div className="text-xs font-mono font-semibold text-slate-400 mt-0.5">{audit.date}</div>
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="font-medium text-slate-800">{audit.inspectorName}</div>
-                    <div className="text-xs text-slate-400">{audit.inspectorOrganization}</div>
-                  </td>
-                  <td className="px-6 py-4 text-xs font-semibold text-slate-500">
-                    {getVesselName(audit.vesselId)}
-                  </td>
-                  <td className="px-6 py-4 text-xs text-slate-500 max-w-xs truncate">
-                    {audit.scope}
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${
-                      audit.findingsCount > 0 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'
-                    }`}>
-                      {audit.findingsCount} Deficiencies
-                    </span>
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${
-                      audit.status === 'Completed' ? 'bg-green-50 text-green-700' :
-                      audit.status === 'Overdue' ? 'bg-red-50 text-red-700' :
-                      audit.status === 'In Progress' ? 'bg-amber-50 text-amber-700' :
-                      'bg-blue-50 text-blue-700'
-                    }`}>
-                      {audit.status}
-                    </span>
+              {loading ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-16 text-center">
+                    <div className="flex flex-col items-center justify-center gap-3">
+                      <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
+                      <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Audits & Inspections from Database...</span>
+                    </div>
                   </td>
                 </tr>
-              ))}
+              ) : filteredAudits.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-slate-400 italic font-medium">
+                    No matching audit records or inspections registered yet.
+                  </td>
+                </tr>
+              ) : (
+                filteredAudits.map(audit => (
+                  <tr key={audit.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-6 py-4">
+                      <div className="font-bold text-slate-900">{audit.type}</div>
+                      <div className="text-xs font-mono font-semibold text-slate-400 mt-0.5">{audit.date}</div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="font-medium text-slate-800">{audit.inspectorName}</div>
+                      <div className="text-xs text-slate-400">{audit.inspectorOrganization}</div>
+                    </td>
+                    <td className="px-6 py-4 text-xs font-semibold text-slate-500">
+                      {getVesselName(audit.vesselId)}
+                    </td>
+                    <td className="px-6 py-4 text-xs text-slate-500 max-w-xs truncate">
+                      {audit.scope}
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${
+                        audit.findingsCount > 0 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'
+                      }`}>
+                        {audit.findingsCount} Deficiencies
+                      </span>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${
+                        audit.status === 'Completed' ? 'bg-green-50 text-green-700' :
+                        audit.status === 'Overdue' ? 'bg-red-50 text-red-700' :
+                        audit.status === 'In Progress' ? 'bg-amber-50 text-amber-700' :
+                        'bg-blue-50 text-blue-700'
+                      }`}>
+                        {audit.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -1631,7 +1657,16 @@ export const NonConformityTrackerView = ({ vessels, token }: { vessels: any[], t
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
-              {filteredNcs.length === 0 ? (
+              {loading ? (
+                <tr>
+                  <td colSpan={7} className="px-6 py-16 text-center">
+                    <div className="flex flex-col items-center justify-center gap-3">
+                      <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
+                      <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Non-Conformities database...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : filteredNcs.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic">No Non-Conformity reports matching filters.</td>
                 </tr>

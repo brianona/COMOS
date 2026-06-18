@@ -37,6 +37,7 @@ import {
   Map as MapIcon,
   Activity,
   Anchor,
+  Database,
   Package,
   Save,
   Monitor,
@@ -1560,6 +1561,14 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [isCrewOpen, setIsCrewOpen] = useState(false);
   const [isAuditsOpen, setIsAuditsOpen] = useState(false);
   
+  const [loadingStates, setLoadingStates] = useState({
+    global: false,
+    departure: false,
+    arrival: false,
+    noon: false,
+    other: false,
+  });
+
   const getLatestArrivalOperationType = (vesselId: number) => {
     const reports = arrivalReports
       .filter(r => r.vessel_id === vesselId)
@@ -1862,6 +1871,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   };
 
   const fetchData = useCallback(async () => {
+    setLoadingStates(prev => ({ ...prev, global: true }));
     const headers = { Authorization: `Bearer ${token}` };
     try {
       const [certsRes, vesselsRes, teamsRes] = await Promise.all([
@@ -1896,6 +1906,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       ]);
     } catch (err) {
       console.error('Failed to fetch data:', err);
+    } finally {
+      setLoadingStates(prev => ({ ...prev, global: false }));
     }
   }, [token]);
 
@@ -2209,6 +2221,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const expiringCerts = certs.filter(c => getStatus(c.expiration_date) !== 'active');
 
   const fetchDepartureReports = useCallback(async () => {
+    setLoadingStates(prev => ({ ...prev, departure: true }));
     const headers = { Authorization: `Bearer ${token}` };
     try {
       const res = await fetch('/api/departure-reports', { headers });
@@ -2217,10 +2230,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       }
     } catch (err) {
       console.error('Failed to fetch departure reports:', err);
+    } finally {
+      setLoadingStates(prev => ({ ...prev, departure: false }));
     }
   }, [token]);
 
   const fetchArrivalReports = useCallback(async () => {
+    setLoadingStates(prev => ({ ...prev, arrival: true }));
     const headers = { Authorization: `Bearer ${token}` };
     try {
       const res = await fetch('/api/arrival-reports', { headers });
@@ -2229,10 +2245,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       }
     } catch (err) {
       console.error('Failed to fetch arrival reports:', err);
+    } finally {
+      setLoadingStates(prev => ({ ...prev, arrival: false }));
     }
   }, [token]);
 
   const fetchNoonReports = useCallback(async () => {
+    setLoadingStates(prev => ({ ...prev, noon: true }));
     const headers = { Authorization: `Bearer ${token}` };
     try {
       const res = await fetch('/api/noon-reports', { headers });
@@ -2241,10 +2260,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       }
     } catch (err) {
       console.error('Failed to fetch noon reports:', err);
+    } finally {
+      setLoadingStates(prev => ({ ...prev, noon: false }));
     }
   }, [token]);
 
   const fetchOtherReports = useCallback(async () => {
+    setLoadingStates(prev => ({ ...prev, other: true }));
     const headers = { Authorization: `Bearer ${token}` };
     try {
       const res = await fetch('/api/other-reports', { headers });
@@ -2253,6 +2275,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       }
     } catch (err) {
       console.error('Failed to fetch other reports:', err);
+    } finally {
+      setLoadingStates(prev => ({ ...prev, other: false }));
     }
   }, [token]);
 
@@ -2404,6 +2428,24 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       {/* Main Content */}
       <main className="flex-1 min-w-0">
         <div className="p-4 md:p-8 max-w-7xl mx-auto">
+          {Object.values(loadingStates).some(Boolean) && (
+            <div className="mb-6 bg-blue-50/75 border border-blue-100/60 rounded-2xl p-4 flex items-center justify-between shadow-xs animate-in slide-in-from-top-4 fade-in duration-300">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-100 rounded-xl">
+                  <Database className="w-4 h-4 text-blue-600 animate-pulse shrink-0" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-black text-blue-950 tracking-wider uppercase">Loading database content...</h4>
+                  <p className="text-[10px] text-blue-600/80 font-bold mt-0.5">Fetching latest vessel statistics, logs, and report registries from the cloud database.</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 bg-blue-100/70 border border-blue-200/40 px-3 py-1.5 rounded-xl text-[10px] font-black text-blue-700 tracking-tight leading-none uppercase select-none">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-ping shrink-0" />
+                Sync Active
+              </div>
+            </div>
+          )}
+
           {view === 'dashboard' && (
             <div className="space-y-8">
               <header>
@@ -2799,6 +2841,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               reports={departureReports}
               onRefresh={fetchDepartureReports}
               notify={notify}
+              isLoading={loadingStates.departure}
             />
           )}
 
@@ -2811,6 +2854,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               departureReports={departureReports}
               onRefresh={fetchArrivalReports}
               notify={notify}
+              isLoading={loadingStates.arrival}
             />
           )}
 
@@ -2822,6 +2866,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               reports={otherReports}
               onRefresh={fetchOtherReports}
               notify={notify}
+              isLoading={loadingStates.other}
             />
           )}
 
@@ -2833,6 +2878,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               reports={noonReports}
               onRefresh={fetchNoonReports}
               notify={notify}
+              isLoading={loadingStates.noon}
             />
           )}
 
@@ -4963,13 +5009,14 @@ const FuelConsumptionView = ({ vessels, departureReports, arrivalReports }: {
   );
 };
 
-const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: { 
+const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLoading }: { 
   user: User, 
   token: string, 
   vessels: Vessel[], 
   reports: NoonReport[],
   onRefresh: () => void,
-  notify: (type: 'success' | 'error', message: string) => void
+  notify: (type: 'success' | 'error', message: string) => void,
+  isLoading?: boolean
   }) => {
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -5691,13 +5738,22 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     </td>
                   </tr>
                 ))}
-                {reports.length === 0 && (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={9} className="px-6 py-16 text-center">
+                      <div className="flex flex-col items-center justify-center gap-3">
+                        <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
+                        <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Noon to Noon Reports...</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : reports.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="px-6 py-12 text-center text-slate-400 font-medium">
                       No noon reports found.
                     </td>
                   </tr>
-                )}
+                ) : null}
               </tbody>
             </table>
           </div>
@@ -5745,13 +5801,14 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify }: {
   );
 };
 
-const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: { 
+const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify, isLoading }: { 
   user: User, 
   token: string, 
   vessels: Vessel[], 
   reports: OtherReport[],
   onRefresh: () => void,
-  notify: (type: 'success' | 'error', message: string) => void
+  notify: (type: 'success' | 'error', message: string) => void,
+  isLoading?: boolean
 }) => {
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -6182,13 +6239,22 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     </td>
                   </tr>
                 ))}
-                {reports.length === 0 && (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={9} className="px-6 py-16 text-center">
+                      <div className="flex flex-col items-center justify-center gap-3">
+                        <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
+                        <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Marine Voyage Reports...</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : reports.length === 0 ? (
                   <tr>
                     <td colSpan={9} className="px-6 py-12 text-center text-slate-400 font-medium">
                       No reports found.
                     </td>
                   </tr>
-                )}
+                ) : null}
               </tbody>
             </table>
           </div>
@@ -6199,14 +6265,15 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify }: {
   );
 };
 
-const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefresh, notify }: { 
+const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefresh, notify, isLoading }: { 
   user: User, 
   token: string, 
   vessels: Vessel[], 
   reports: ArrivalReport[],
   departureReports: DepartureReport[],
   onRefresh: () => void,
-  notify: (type: 'success' | 'error', message: string) => void
+  notify: (type: 'success' | 'error', message: string) => void,
+  isLoading?: boolean
 }) => {
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -6847,13 +6914,22 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                     </td>
                   </tr>
                 ))}
-                {reports.length === 0 && (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={12} className="px-6 py-16 text-center">
+                      <div className="flex flex-col items-center justify-center gap-3">
+                        <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
+                        <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Vessel Arrival Reports...</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : reports.length === 0 ? (
                   <tr>
                     <td colSpan={12} className="px-6 py-12 text-center text-slate-400 font-medium">
                       No arrival reports found.
                     </td>
                   </tr>
-                )}
+                ) : null}
               </tbody>
             </table>
           </div>
@@ -7359,13 +7435,14 @@ const VesselRoutingUserView = ({
   );
 };
 
-const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: { 
+const DepartureView = ({ user, token, vessels, reports, onRefresh, notify, isLoading }: { 
   user: User, 
   token: string, 
   vessels: Vessel[], 
   reports: DepartureReport[],
   onRefresh: () => void,
-  notify: (type: 'success' | 'error', message: string) => void
+  notify: (type: 'success' | 'error', message: string) => void,
+  isLoading?: boolean
 }) => {
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -7908,13 +7985,22 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify }: {
                     </td>
                   </tr>
                 ))}
-                {reports.length === 0 && (
+                {isLoading ? (
+                  <tr>
+                    <td colSpan={10} className="px-6 py-16 text-center">
+                      <div className="flex flex-col items-center justify-center gap-3">
+                        <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
+                        <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Vessel Departure Reports...</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : reports.length === 0 ? (
                   <tr>
                     <td colSpan={10} className="px-6 py-12 text-center text-slate-400 font-medium">
                       No departure reports found.
                     </td>
                   </tr>
-                )}
+                ) : null}
               </tbody>
             </table>
           </div>

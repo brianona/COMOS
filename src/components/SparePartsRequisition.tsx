@@ -784,7 +784,14 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
 
       {/* Requisitions List */}
       <div className="space-y-4">
-        {filteredRequisitions.length === 0 ? (
+        {loading ? (
+          <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-16 flex flex-col items-center justify-center">
+            <div className="w-10 h-10 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin mb-4" />
+            <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">
+              Retrieving {isStoreChemicals ? 'Store & Chemical Requisitions' : 'Spare Parts Requisitions'}...
+            </span>
+          </div>
+        ) : filteredRequisitions.length === 0 ? (
           <div className="p-12 bg-slate-50/50 border border-dashed border-slate-200 rounded-3xl text-center">
             <Package className="w-8 h-8 text-slate-300 mx-auto mb-3" />
             <p className="text-slate-600 font-bold text-sm">No Requisitions Found</p>

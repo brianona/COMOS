@@ -513,7 +513,12 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
       </div>
 
             {/* Main List Grid */}
-      {filteredLogs.length > 0 ? (
+      {loading ? (
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-16 flex flex-col items-center justify-center">
+          <div className="w-10 h-10 border-4 border-amber-600/10 border-t-amber-600 rounded-full animate-spin mb-4" />
+          <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Bunker Delivery Notes (BDN)...</span>
+        </div>
+      ) : filteredLogs.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredLogs.map(log => {
             const hasExtraSpecs = log.viscosity || log.density || log.sulfurContent;
