@@ -1593,6 +1593,11 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [noonReports, setNoonReports] = useState<NoonReport[]>([]);
   const [otherReports, setOtherReports] = useState<OtherReport[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
+  const [crewMembers, setCrewMembers] = useState<any[]>([]);
+  const [auditRecords, setAuditRecords] = useState<any[]>([]);
+  const [nonConformities, setNonConformities] = useState<any[]>([]);
+  const [troubleReports, setTroubleReports] = useState<any[]>([]);
+  const [spareRequisitions, setSpareRequisitions] = useState<any[]>([]);
   const [selectedCert, setSelectedCert] = useState<Certificate | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [files, setFiles] = useState<FileData[]>([]);
@@ -1884,10 +1889,32 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     setLoadingStates(prev => ({ ...prev, global: true }));
     const headers = { Authorization: `Bearer ${token}` };
     try {
-      const [certsRes, vesselsRes, teamsRes] = await Promise.all([
+      const [
+        certsRes,
+        vesselsRes,
+        teamsRes,
+        crewRes,
+        auditsRes,
+        ncRes,
+        troubleRes,
+        spareRes,
+        depRes,
+        arrRes,
+        noonRes,
+        otherRes,
+      ] = await Promise.all([
         fetch('/api/certificates', { headers }),
         fetch('/api/vessels', { headers }),
         fetch('/api/teams', { headers }),
+        fetch('/api/crew-members', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/audit-records', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/non-conformities', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/trouble-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/spare-parts-requisitions', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/departure-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/arrival-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/noon-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/other-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
       ]);
       
       const processResponse = async (res: Response, setter: (data: any) => void, name: string) => {
@@ -1904,8 +1931,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             console.error(`Failed to parse JSON for ${name}:`, e);
           }
         } else {
-          const text = await res.text();
-          console.error(`Expected JSON for ${name} but got ${contentType}:`, text.substring(0, 100));
+          try {
+            const text = await res.text();
+            console.error(`Expected JSON for ${name} but got ${contentType}:`, text.substring(0, 100));
+          } catch (e) {}
         }
       };
 
@@ -1913,6 +1942,15 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         processResponse(certsRes, setCerts, 'certificates'),
         processResponse(vesselsRes, setVessels, 'vessels'),
         processResponse(teamsRes, setTeams, 'teams'),
+        processResponse(crewRes, setCrewMembers, 'crew'),
+        processResponse(auditsRes, setAuditRecords, 'audits'),
+        processResponse(ncRes, setNonConformities, 'nonconformities'),
+        processResponse(troubleRes, setTroubleReports, 'troublereports'),
+        processResponse(spareRes, setSpareRequisitions, 'sparerequisitions'),
+        processResponse(depRes, setDepartureReports, 'departurereports'),
+        processResponse(arrRes, setArrivalReports, 'arrivalreports'),
+        processResponse(noonRes, setNoonReports, 'noonreports'),
+        processResponse(otherRes, setOtherReports, 'otherreports'),
       ]);
     } catch (err) {
       console.error('Failed to fetch data:', err);
@@ -2462,46 +2500,515 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'dashboard' && (
             <div className="space-y-8">
-              <header>
-                <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Fleet Overview</h1>
-                <p className="text-slate-500">Monitor certificate statuses and upcoming expirations.</p>
-              </header>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm transition-all hover:shadow-md hover:border-blue-200 group">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="p-2 bg-red-50 rounded-lg group-hover:scale-110 transition-transform"><AlertTriangle className="text-red-500 w-4 h-4" /></div>
-                    <span className="text-xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'expired').length}</span>
+              {/* Top Welcome & Control Header */}
+              <div className="bg-gradient-to-r from-blue-900 to-indigo-950 p-6 rounded-3xl text-white shadow-xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-80 h-80 bg-[radial-gradient(circle_at_100%_0%,#3b82f6,transparent_60%)] opacity-30 pointer-events-none" />
+                <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                  <div>
+                    <div className="flex items-center gap-2 text-blue-200 text-xs font-black uppercase tracking-widest mb-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                      Live Fleet Telemetry Portal
+                    </div>
+                    <h1 className="text-3xl font-black tracking-tight text-white mb-2">Fleet Command & Control</h1>
+                    <p className="text-blue-100/70 text-sm max-w-xl">
+                      Welcome back, <span className="text-white font-bold">{user.username}</span>. You have administrative PIC oversight for assigned vessels, compliance documents, technical defect management, and logistics reports.
+                    </p>
                   </div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Expired</p>
-                </div>
-                <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm transition-all hover:shadow-md hover:border-blue-200 group">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="p-2 bg-orange-50 rounded-lg group-hover:scale-110 transition-transform"><Clock className="text-orange-500 w-4 h-4" /></div>
-                    <span className="text-xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'expiring soon').length}</span>
+                  <div className="flex flex-wrap gap-2 shrink-0">
+                    <button 
+                      onClick={() => fetchData()}
+                      className="px-4 py-2.5 bg-white/10 hover:bg-white/20 active:scale-95 text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all backdrop-blur-md border border-white/10"
+                    >
+                      <RefreshCw className={cn("w-3.5 h-3.5", loadingStates.global && "animate-spin")} />
+                      Refresh Data
+                    </button>
+                    <button 
+                      onClick={() => setView('vessels')}
+                      className="px-4 py-2.5 bg-blue-500 hover:bg-blue-600 active:scale-95 text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20"
+                    >
+                      <Ship className="w-3.5 h-3.5" />
+                      Manage Vessels
+                    </button>
                   </div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Expiring soon</p>
-                </div>
-                <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm transition-all hover:shadow-md hover:border-blue-200 group">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="p-2 bg-amber-50 rounded-lg group-hover:scale-110 transition-transform"><Clock className="text-amber-500 w-4 h-4" /></div>
-                    <span className="text-xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'expiring').length}</span>
-                  </div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Expiring</p>
-                </div>
-                <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm transition-all hover:shadow-md hover:border-blue-200 group">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="p-2 bg-blue-50 rounded-lg group-hover:scale-110 transition-transform"><CheckCircle2 className="text-blue-500 w-4 h-4" /></div>
-                    <span className="text-xl font-bold text-slate-900">{certs.filter(c => getStatus(c.expiration_date) === 'active').length}</span>
-                  </div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Valid</p>
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
+              {/* Bento Grid Metrics Indicator */}
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                {/* 1. Vessels List KPI */}
+                <div 
+                  onClick={() => setView('vessels')}
+                  className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="p-2.5 bg-blue-50 rounded-xl text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all">
+                      <Ship className="w-5 h-5" />
+                    </div>
+                    <span className="text-2xl font-black text-slate-800 tracking-tight">{vessels.length}</span>
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Fleet Vessels</h3>
+                    <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Core registered vessels</p>
+                  </div>
+                </div>
+
+                {/* 2. Expired / Expiring Certs KPI */}
+                <div 
+                  onClick={() => {
+                    const el = document.getElementById('certs-section');
+                    if (el) el.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
+                >
+                  {(() => {
+                    const expired = certs.filter(c => getStatus(c.expiration_date) === 'expired').length;
+                    const expiring = certs.filter(c => getStatus(c.expiration_date) === 'expiring soon' || getStatus(c.expiration_date) === 'expiring').length;
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-4">
+                          <div className={cn(
+                            "p-2.5 rounded-xl transition-all", 
+                            expired > 0 ? "bg-red-50 text-red-600 group-hover:bg-red-600 group-hover:text-white" : "bg-orange-50 text-orange-600 group-hover:bg-orange-600 group-hover:text-white"
+                          )}>
+                            <ShieldAlert className="w-5 h-5" />
+                          </div>
+                          <div className="text-right">
+                            <span className="text-2xl font-black text-slate-800 tracking-tight leading-none block">{expired + expiring}</span>
+                            <span className="text-[9px] text-red-500 font-bold uppercase mt-0.5 block">{expired} Urgent</span>
+                          </div>
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Certificates</h3>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium">{expiring} Expiry Warning</p>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+
+                {/* 3. Defects (Trouble Reports) KPI */}
+                <div 
+                  onClick={() => setView('defects_5_2')}
+                  className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
+                >
+                  {(() => {
+                    const activeDefects = troubleReports.filter(r => r.status !== 'Resolved').length;
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="p-2.5 bg-amber-50 rounded-xl text-amber-600 group-hover:bg-amber-600 group-hover:text-white transition-all">
+                            <Wrench className="w-5 h-5" />
+                          </div>
+                          <span className="text-2xl font-black text-slate-800 tracking-tight">{activeDefects}</span>
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Active Defects</h3>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium font-semibold">Unresolved reports</p>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+
+                {/* 4. Crew Compliance KPI */}
+                <div 
+                  onClick={() => setView('crew_compliance')}
+                  className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
+                >
+                  {(() => {
+                    const issues = crewMembers.filter(c => c.status === 'Expired' || c.status === 'Warning').length;
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="p-2.5 bg-purple-50 rounded-xl text-purple-600 group-hover:bg-purple-600 group-hover:text-white transition-all">
+                            <Users className="w-5 h-5" />
+                          </div>
+                          <span className="text-2xl font-black text-slate-800 tracking-tight">{issues}</span>
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Manning Alert</h3>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Expired/Warning docs</p>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+
+                {/* 5. Pending Requisitions KPI */}
+                <div 
+                  onClick={() => setView('spare_requisition_ship')}
+                  className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
+                >
+                  {(() => {
+                    const reqCount = spareRequisitions.filter(r => r.status === 'Pending Review' || r.status === 'Draft').length;
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="p-2.5 bg-emerald-50 rounded-xl text-emerald-600 group-hover:bg-emerald-600 group-hover:text-white transition-all">
+                            <Package className="w-5 h-5" />
+                          </div>
+                          <span className="text-2xl font-black text-slate-800 tracking-tight">{reqCount}</span>
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Spare Requisitions</h3>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium">In review or draft</p>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+
+                {/* 6. Audits & Findings KPI */}
+                <div 
+                  onClick={() => setView('audit_findings')}
+                  className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
+                >
+                  {(() => {
+                    const openNC = nonConformities.filter(nc => nc.status === 'Open' || nc.status === 'Overdue').length;
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="p-2.5 bg-rose-50 rounded-xl text-rose-600 group-hover:bg-rose-600 group-hover:text-white transition-all">
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <span className="text-2xl font-black text-slate-800 tracking-tight">{openNC}</span>
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Audit Findings</h3>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Open non-conformities</p>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* Master Dashboard Split Layout (2/3 vs 1/3) */}
+              <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                {/* WIDER LEFT PANEL: Operations & Timeline trackers */}
+                <div className="xl:col-span-2 space-y-6">
+                  {/* Fleet Tracking Panel */}
+                  <div className="bg-white rounded-2xl border border-blue-100/70 shadow-sm overflow-hidden">
+                    <div className="p-5 border-b border-blue-50/50 flex items-center justify-between">
+                      <div>
+                        <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                          <Anchor className="w-4 h-4 text-blue-500" />
+                          Fleet Dispatch & Routing Status
+                        </h2>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">Real-time routing logs from vessels</p>
+                      </div>
+                      <button 
+                        onClick={() => setView('routing')}
+                        className="text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors flex items-center gap-1"
+                      >
+                        Manage Routing <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left font-sans">
+                        <thead>
+                          <tr className="bg-blue-50/35 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                            <th className="px-5 py-3">Vessel / Team</th>
+                            <th className="px-5 py-3">Status</th>
+                            <th className="px-5 py-3">Target Destination / ETA</th>
+                            <th className="px-5 py-3">Cargo Spec</th>
+                            <th className="px-5 py-3 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-blue-50/40">
+                          {vessels.length === 0 ? (
+                            <tr>
+                              <td colSpan={5} className="px-5 py-8 text-center text-slate-400 text-xs font-medium">
+                                No vessel registration found.
+                              </td>
+                            </tr>
+                          ) : (
+                            vessels.slice(0, 5).map(v => {
+                              const routeStatusColors: Record<string, string> = {
+                                'Underway': 'bg-emerald-50 text-emerald-700 border-emerald-100',
+                                'At Port': 'bg-blue-50 text-blue-700 border-blue-100',
+                                'Anchored': 'bg-amber-50 text-amber-700 border-amber-100',
+                                'Drifting': 'bg-indigo-50 text-indigo-700 border-indigo-100',
+                                'Standby': 'bg-purple-50 text-purple-700 border-purple-100',
+                              };
+                              return (
+                                <tr key={v.id} className="hover:bg-blue-50/20 transition-colors">
+                                  <td className="px-5 py-4">
+                                    <div className="font-bold text-slate-800 text-sm leading-tight">{v.name}</div>
+                                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{v.team_name} ({v.owner || 'Nissen'})</div>
+                                  </td>
+                                  <td className="px-5 py-4">
+                                    <span className={cn(
+                                      "inline-block px-2.5 py-0.5 rounded-full border text-[10px] font-bold",
+                                      routeStatusColors[v.route_status || ''] || 'bg-slate-50 text-slate-600 border-slate-100'
+                                    )}>
+                                      {v.route_status || 'Standby'}
+                                    </span>
+                                  </td>
+                                  <td className="px-5 py-4">
+                                    <div className="font-semibold text-slate-700 text-xs flex items-center gap-1">
+                                      <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                                      {v.next_port || 'Not Scheduled'}
+                                    </div>
+                                    <div className="text-[10px] font-medium text-slate-500 font-mono mt-0.5">
+                                      {v.eta_atb ? `ETA: ${v.eta_atb}` : 'N/A'}
+                                    </div>
+                                  </td>
+                                  <td className="px-5 py-4 text-xs font-medium text-slate-600">
+                                    {v.cargo || 'Ballast'}
+                                  </td>
+                                  <td className="px-5 py-4 text-right">
+                                    <button 
+                                      onClick={() => {
+                                        setSelectedVessel(v);
+                                        setRouteForm({
+                                          next_port: v.next_port || '',
+                                          route_status: v.route_status || '',
+                                          eta_atb: v.eta_atb || '',
+                                          etd_atd: v.etd_atd || '',
+                                          cargo: v.cargo || ''
+                                        });
+                                        setIsEditingRoute(true);
+                                      }}
+                                      className="px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors"
+                                    >
+                                      Edit Route
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Operational Voyage Timeline Log */}
+                  <div className="bg-white rounded-2xl border border-blue-100/70 shadow-sm overflow-hidden">
+                    <div className="p-5 border-b border-blue-50/50 flex items-center justify-between">
+                      <div>
+                        <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                          <Activity className="w-4 h-4 text-emerald-500" />
+                          Vessel Voyage & Operations Timeline
+                        </h2>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">Chronological timeline of arrival, departure, and noon-to-noon logs</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => setView('noon_to_noon')}
+                          className="px-2 py-1 hover:bg-slate-50 rounded text-[10px] font-bold text-slate-500"
+                        >
+                          Noon
+                        </button>
+                        <span className="text-slate-200">|</span>
+                        <button 
+                          onClick={() => setView('arrival')}
+                          className="px-2 py-1 hover:bg-slate-50 rounded text-[10px] font-bold text-slate-500"
+                        >
+                          Arrivals
+                        </button>
+                        <span className="text-slate-200">|</span>
+                        <button 
+                          onClick={() => setView('departure')}
+                          className="px-2 py-1 hover:bg-slate-50 rounded text-[10px] font-bold text-slate-500"
+                        >
+                          Departures
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-5">
+                      <div className="relative border-l-2 border-blue-50 pl-4 space-y-6">
+                        {(() => {
+                          const compiledReports = [
+                            ...departureReports.map(r => ({ ...r, type: 'Departure', iconColor: 'bg-indigo-50 text-indigo-600', text: `Departed ${r.departure_port || 'Unknown'} for ${r.next_port || 'Unknown'}`, date: r.utc_date_time || r.atd_utc || r.created_at || '' })),
+                            ...arrivalReports.map(r => ({ ...r, type: 'Arrival', iconColor: 'bg-emerald-50 text-emerald-600', text: `Arrived at ${r.arrival_port || 'Unknown'} (${r.operation_type || 'Cargo Ops'})`, date: r.utc_date_time || r.atb_utc || r.created_at || '' })),
+                            ...noonReports.map(r => ({ ...r, type: 'Noon-to-Noon', iconColor: 'bg-amber-50 text-amber-600', text: `Noon-to-Noon report submitted (Speed: ${r.speed_over_ground || 'N/A'} kts)`, date: r.utc_date_time || r.created_at || '' })),
+                            ...otherReports.map(r => ({ ...r, type: 'Other Report', iconColor: 'bg-slate-50 text-slate-600', text: `Other report submitted: ${r.subject || 'Technical File'}`, date: r.utc_date_time || r.created_at || '' }))
+                          ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5);
+
+                          if (compiledReports.length === 0) {
+                            return <p className="text-slate-400 text-xs italic text-center py-4">No voyage reports submitted recently.</p>;
+                          }
+
+                          return compiledReports.map((report, i) => (
+                            <div key={i} className="relative group">
+                              <div className="absolute -left-[23px] top-1 w-2.5 h-2.5 rounded-full bg-blue-500 border-2 border-white ring-4 ring-blue-50 group-hover:scale-125 transition-transform animate-none" />
+                              <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 pl-2">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-slate-800 text-xs shrink-0">{report.vessel_name}</span>
+                                    <span className={cn("px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider", report.iconColor)}>
+                                      {report.type}
+                                    </span>
+                                  </div>
+                                  <p className="text-slate-600 text-xs mt-1 font-medium">{report.text}</p>
+                                </div>
+                                <div className="text-[10px] font-semibold text-slate-400 font-mono text-left md:text-right shrink-0">
+                                  {report.date ? format(new Date(report.date), 'yyyy-MM-dd HH:mm') : 'N/A'}
+                                </div>
+                              </div>
+                            </div>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* SIDEBAR RIGHT PANEL: Compliance Alerts, Defects & Requisitions */}
+                <div className="xl:col-span-1 space-y-6">
+                  {/* Urgent Compliance Tracker */}
+                  <div className="bg-white rounded-2xl border border-blue-100/70 shadow-sm p-5 space-y-4">
+                    <div>
+                      <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-red-500" />
+                        Urgent Certificate Renewals
+                      </h2>
+                      <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">Certificates expired or renewing in &lt; 90 Days</p>
+                    </div>
+
+                    <div className="space-y-3">
+                      {certs.filter(c => getStatus(c.expiration_date) !== 'active').length === 0 ? (
+                        <div className="bg-blue-50/30 p-4 rounded-xl text-center border border-blue-100/30">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-500 mx-auto mb-2" />
+                          <p className="text-xs text-slate-500 font-semibold">All certificates are healthy and compliant</p>
+                        </div>
+                      ) : (
+                        certs.filter(c => getStatus(c.expiration_date) !== 'active').slice(0, 4).map(c => {
+                          const status = getStatus(c.expiration_date);
+                          return (
+                            <div 
+                              key={c.id} 
+                              onClick={() => fetchCertDetails(c)}
+                              className="p-3 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-100/60 cursor-pointer transition-all flex items-center justify-between gap-2 group"
+                            >
+                              <div className="min-w-0">
+                                <h3 className="font-bold text-slate-800 text-xs truncate group-hover:text-blue-600 transition-colors">{c.name}</h3>
+                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 leading-none">{c.vessel_name || 'Vessel'}</div>
+                                <div className="text-[9px] font-medium text-slate-500 font-mono mt-1">Exp: {c.expiration_date}</div>
+                              </div>
+                              <span className={cn(
+                                "shrink-0 inline-block px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border",
+                                status === 'expired' ? "bg-red-50 text-red-700 border-red-100" :
+                                "bg-amber-50 text-amber-700 border-amber-100"
+                              )}>
+                                {status}
+                              </span>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Active Defect Deficiency Tracker */}
+                  <div className="bg-white rounded-2xl border border-blue-100/70 shadow-sm p-5 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                          <Wrench className="w-4 h-4 text-orange-500" />
+                          Unresolved Technical Defects
+                        </h2>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">Active technical vessel damage logs</p>
+                      </div>
+                      <button 
+                        onClick={() => setView('defects_5_2')}
+                        className="text-[10px] font-bold text-blue-600 hover:underline"
+                      >
+                        All
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {troubleReports.filter(r => r.status !== 'Resolved').length === 0 ? (
+                        <p className="text-slate-400 text-xs italic text-center py-2">No active defects recorded.</p>
+                      ) : (
+                        troubleReports.filter(r => r.status !== 'Resolved').slice(0, 3).map(r => (
+                          <div 
+                            key={r.id} 
+                            onClick={() => setView('defects_5_2')}
+                            className="p-3 bg-blue-50/20 hover:bg-blue-50/50 rounded-xl border border-blue-100/30 cursor-pointer transition-all space-y-1.5"
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <h3 className="font-bold text-slate-800 text-xs line-clamp-1">{r.deficiency}</h3>
+                              <span className={cn(
+                                "shrink-0 inline-block px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wide",
+                                r.status === 'Submitted' ? "bg-rose-50 text-rose-700 border border-rose-100" : "bg-orange-50 text-orange-700 border border-orange-100"
+                              )}>
+                                {r.status}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center text-[9px] text-slate-500 font-semibold uppercase">
+                              <span>Vessel: {r.vesselName}</span>
+                              <span className="font-mono text-[8px] text-slate-400 font-normal">PMS: {r.pmsCode || 'N/A'}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* High Priority Spare Parts Requisitions */}
+                  <div className="bg-white rounded-2xl border border-blue-100/70 shadow-sm p-5 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                          <Package className="w-4 h-4 text-purple-500" />
+                          Urgent Parts Logistics
+                        </h2>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">High/Emergency priority requisitions</p>
+                      </div>
+                      <button 
+                        onClick={() => setView('spare_requisition_ship')}
+                        className="text-[10px] font-bold text-blue-600 hover:underline"
+                      >
+                        All
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {spareRequisitions.filter(r => r.priority === 'High' || r.priority === 'Emergency').length === 0 ? (
+                        <p className="text-slate-400 text-xs italic text-center py-2">No urgent spare parts requests.</p>
+                      ) : (
+                        spareRequisitions.filter(r => r.priority === 'High' || r.priority === 'Emergency').slice(0, 3).map(r => (
+                          <div 
+                            key={r.id} 
+                            onClick={() => setView('spare_requisition_ship')}
+                            className="p-3 bg-purple-50/15 hover:bg-purple-50/30 rounded-xl border border-purple-100/20 cursor-pointer transition-all space-y-1"
+                          >
+                            <div className="flex justify-between items-center">
+                              <span className="font-extrabold text-xs text-slate-800">{r.requisitionRef}</span>
+                              <span className="px-1.5 py-0.5 bg-red-100 text-red-700 font-black rounded text-[8px] uppercase tracking-wide">
+                                {r.priority}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-600 line-clamp-1">{r.remarks || 'No remarks provided'}</p>
+                            <div className="text-[9px] text-slate-400 font-semibold uppercase flex justify-between">
+                              <span>Port: {r.targetPort || 'TBD'}</span>
+                              <span>ETA: {r.eta || 'N/A'}</span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Collapsible / Database panel containing original Certificates List */}
+              <div id="certs-section" className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-blue-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <h2 className="font-bold text-slate-900">All Certificates/Service Reports</h2>
-                  <div className="flex items-center gap-2">
+                  <div>
+                    <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                      <FileText className="w-5 h-5 text-blue-500" />
+                      Certificates & Service Reports Registry
+                    </h2>
+                    <p className="text-[10px] font-black uppercase text-slate-400 mt-0.5">Fully searchable global compliance registry</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
                       <input 
@@ -2533,7 +3040,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   </div>
                 </div>
                 <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
-                  <table className="w-full text-left">
+                  <table className="w-full text-left font-sans">
                     <thead>
                       <tr className="bg-blue-50/30 text-[10px] uppercase font-bold tracking-wider text-slate-400">
                         <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('vessel_name')}>

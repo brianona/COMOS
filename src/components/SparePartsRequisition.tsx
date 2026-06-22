@@ -15,7 +15,8 @@ import {
   Trash2,
   ChevronDown,
   ChevronUp,
-  MessageSquare
+  MessageSquare,
+  Lock
 } from 'lucide-react';
 
 interface RequisitionItem {
@@ -1141,72 +1142,84 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                         <div className="pt-2 border-t border-slate-100 space-y-3">
                           <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Attachments ({(req.quotationFiles || []).length})</span>
                           
-                          {(req.quotationFiles && req.quotationFiles.length > 0) ? (
-                            <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
-                              {req.quotationFiles.map((f, idx) => (
-                                <div key={idx} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200/60 text-xs font-bold text-slate-600 space-y-1.5 shadow-3xs">
-                                  <div className="flex items-center justify-between gap-1.5">
-                                    <div className="flex items-center gap-1.5 truncate min-w-0 flex-1">
-                                      <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                                      <span className="truncate text-slate-700 font-extrabold" title={f.name}>{f.name}</span>
-                                    </div>
-                                    {isAdminOrPic && (
-                                      <button 
-                                        type="button"
-                                        onClick={() => removeFileFromSection(req.id, 'quotationFiles', idx)}
-                                        className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
-                                        title="Remove attachment"
-                                      >
-                                        <X className="w-3.5 h-3.5" />
-                                      </button>
-                                    )}
-                                  </div>
-                                  <div className="flex items-center justify-between text-[9px] text-slate-400 font-extrabold px-1 border-t border-slate-100/60 pt-1">
-                                    <span>{f.size}</span>
-                                    <div className="flex gap-2">
-                                      {f.dataUrl && (
-                                        <a 
-                                          href={getFileUrl(f.dataUrl)} 
-                                          download={f.name}
-                                          className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
-                                        >
-                                          <Download className="w-2.5 h-2.5" /> Get
-                                        </a>
-                                      )}
-                                      <button
-                                        type="button"
-                                        onClick={() => setPreviewFile(f)}
-                                        className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
-                                      >
-                                        <Eye className="w-2.5 h-2.5" /> View
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
+                          {!isAdminOrPic ? (
+                            <div className="p-3 bg-red-50/45 rounded-xl border border-red-100/30 text-center space-y-1">
+                              <Lock className="w-3.5 h-3.5 text-red-500 mx-auto" />
+                              <p className="text-[10px] text-red-700 font-extrabold uppercase tracking-wider">Restricted Access</p>
+                              <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
+                                Quotation attachments restrictively paired to Admin and PIC users.
+                              </p>
                             </div>
                           ) : (
-                            <p className="text-[10px] text-slate-400 italic font-semibold">No files uploaded</p>
-                          )}
+                            <>
+                              {(req.quotationFiles && req.quotationFiles.length > 0) ? (
+                                <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
+                                  {req.quotationFiles.map((f, idx) => (
+                                    <div key={idx} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200/60 text-xs font-bold text-slate-600 space-y-1.5 shadow-3xs">
+                                      <div className="flex items-center justify-between gap-1.5">
+                                        <div className="flex items-center gap-1.5 truncate min-w-0 flex-1">
+                                          <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                                          <span className="truncate text-slate-700 font-extrabold" title={f.name}>{f.name}</span>
+                                        </div>
+                                        {isAdminOrPic && (
+                                          <button 
+                                            type="button"
+                                            onClick={() => removeFileFromSection(req.id, 'quotationFiles', idx)}
+                                            className="text-slate-400 hover:text-red-500 p-0.5 shrink-0 hover:bg-slate-200/50 rounded transition-colors"
+                                            title="Remove attachment"
+                                          >
+                                            <X className="w-3.5 h-3.5" />
+                                          </button>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center justify-between text-[9px] text-slate-400 font-extrabold px-1 border-t border-slate-100/60 pt-1">
+                                        <span>{f.size}</span>
+                                        <div className="flex gap-2">
+                                          {f.dataUrl && (
+                                            <a 
+                                              href={getFileUrl(f.dataUrl)} 
+                                              download={f.name}
+                                              className="text-blue-600 hover:text-blue-800 flex items-center gap-0.5"
+                                            >
+                                              <Download className="w-2.5 h-2.5" /> Get
+                                            </a>
+                                          )}
+                                          <button
+                                            type="button"
+                                            onClick={() => setPreviewFile(f)}
+                                            className="text-slate-500 hover:text-slate-700 font-black flex items-center gap-0.5"
+                                          >
+                                            <Eye className="w-2.5 h-2.5" /> View
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-[10px] text-slate-400 italic font-semibold">No files uploaded</p>
+                              )}
 
-                          {isAdminOrPic && (
-                            <div className="relative">
-                              <input 
-                                type="file" 
-                                multiple
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                                onChange={(e) => {
-                                  if (e.target.files) {
-                                    Array.from(e.target.files).forEach((file: File) => {
-                                      addFileToSection(req.id, 'quotationFiles', file);
-                                    });
-                                  }
-                                }}
-                              />
-                              <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
-                                <Upload className="w-3 h-3 text-slate-400" /> + Add File
-                              </div>
-                            </div>
+                              {isAdminOrPic && (
+                                <div className="relative">
+                                  <input 
+                                    type="file" 
+                                    multiple
+                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                    onChange={(e) => {
+                                      if (e.target.files) {
+                                        Array.from(e.target.files).forEach((file: File) => {
+                                          addFileToSection(req.id, 'quotationFiles', file);
+                                        });
+                                      }
+                                    }}
+                                  />
+                                  <div className="w-full py-1.5 px-3 border border-dashed border-slate-200 hover:border-blue-500 rounded-lg text-center text-[10px] font-black text-slate-550 cursor-pointer flex items-center justify-center gap-1 transition-all bg-slate-50/50 hover:bg-white">
+                                    <Upload className="w-3 h-3 text-slate-400" /> + Add File
+                                  </div>
+                                </div>
+                              )}
+                            </>
                           )}
                         </div>
                       </div>
