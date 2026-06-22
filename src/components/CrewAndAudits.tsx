@@ -25,6 +25,14 @@ import {
   Ship
 } from 'lucide-react';
 
+interface User {
+  id: number;
+  username: string;
+  role: 'admin' | 'user' | 'vessel' | 'team_pic';
+  team_ids: number[];
+  vessel_id?: number | null;
+}
+
 // Definitions
 export interface CrewMember {
   id: string;
@@ -342,10 +350,24 @@ export const calculateAge = (birthdateStr?: string): number | string => {
 };
 
 // 1. Crew ListView Component
-export const CrewListView = ({ vessels, token }: { vessels: any[], token?: string }) => {
+export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], token?: string, currentUser?: User }) => {
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [loading, setLoading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+
+  // Find activeUser with fallback to localStorage
+  const activeUser = (() => {
+    if (currentUser) return currentUser;
+    try {
+      const saved = localStorage.getItem('user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  })();
+  const isVesselUser = activeUser?.role === 'vessel' && activeUser?.vessel_id;
+  const isAdminOrPic = activeUser?.role === 'admin' || activeUser?.role === 'team_pic';
+  const userVesselId = isVesselUser ? String(activeUser.vessel_id) : '';
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -412,9 +434,18 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
   const [filterRank, setFilterRank] = useState('All');
   const [filterStatus, setFilterStatus] = useState('All');
   const [showModal, setShowModal] = useState(false);
-  const [filterVessel, setFilterVessel] = useState('All');
+  const [filterVessel, setFilterVessel] = useState(() => {
+    return isVesselUser ? userVesselId : 'All';
+  });
+
+  useEffect(() => {
+    if (isVesselUser && userVesselId) {
+      setFilterVessel(userVesselId);
+    }
+  }, [isVesselUser, userVesselId]);
 
   // Form State
+  const [editingCrew, setEditingCrew] = useState<CrewMember | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     rank: '',
@@ -422,9 +453,24 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
     contactNumber: '',
     signOnDate: '',
     contractDuration: '',
-    vesselId: '',
+    vesselId: isVesselUser ? userVesselId : '',
     photo: ''
   });
+
+  const handleCloseModal = () => {
+    setShowModal(false);
+    setEditingCrew(null);
+    setFormData({
+      name: '',
+      rank: '',
+      birthdate: '',
+      contactNumber: '',
+      signOnDate: '',
+      contractDuration: '',
+      vesselId: isVesselUser ? userVesselId : '',
+      photo: ''
+    });
+  };
 
   const saveCrewFallback = (newCrewList: CrewMember[]) => {
     setCrew(newCrewList);
@@ -437,60 +483,104 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
     e.preventDefault();
     if (!formData.name || !formData.rank) return;
 
-    const newCrew: CrewMember = {
-      id: 'c_' + Date.now(),
-      name: formData.name,
-      rank: formData.rank,
-      nationality: 'Unknown',
-      signOnDate: formData.signOnDate || '',
-      passportNo: 'N/A',
-      seamanBookNo: 'N/A',
-      status: 'Compliant',
-      contractDuration: formData.contractDuration ? Number(formData.contractDuration) : 0,
-      nextMedicalExam: '',
-      nextSafetyTraining: '',
-      vesselId: formData.vesselId || '',
-      birthdate: formData.birthdate || '',
-      contactNumber: formData.contactNumber || '',
-      photo: formData.photo || 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&h=150&fit=crop&q=80',
-      hiringStatus: 'for rehire',
-      siComments: ''
-    };
+    if (editingCrew) {
+      // Edit flow
+      const updatedCrew: CrewMember = {
+        ...editingCrew,
+        name: formData.name,
+        rank: formData.rank,
+        signOnDate: formData.signOnDate || '',
+        contractDuration: formData.contractDuration ? Number(formData.contractDuration) : 0,
+        vesselId: isVesselUser ? userVesselId : (formData.vesselId || ''),
+        birthdate: formData.birthdate || '',
+        contactNumber: formData.contactNumber || '',
+        photo: formData.photo || 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&h=150&fit=crop&q=80'
+      };
 
-    if (token) {
-      try {
-        const resp = await fetch('/api/crew-members', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(newCrew)
-        });
-        if (resp.ok) {
-          fetchCrew();
-        } else {
-          const err = await resp.json();
-          alert(`Failed to save crew: ${err.error || 'Server error'}`);
+      if (token) {
+        try {
+          const resp = await fetch(`/api/crew-members/${editingCrew.id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(updatedCrew)
+          });
+          if (resp.ok) {
+            fetchCrew();
+          } else {
+            const err = await resp.json();
+            alert(`Failed to update crew: ${err.error || 'Server error'}`);
+          }
+        } catch (err) {
+          console.error('Failed to update crew member:', err);
         }
-      } catch (err) {
-        console.error('Failed to post crew:', err);
+      } else {
+        saveCrewFallback(crew.map(c => c.id === editingCrew.id ? updatedCrew : c));
       }
     } else {
-      saveCrewFallback([newCrew, ...crew]);
+      // Create flow
+      const newCrew: CrewMember = {
+        id: 'c_' + Date.now(),
+        name: formData.name,
+        rank: formData.rank,
+        nationality: 'Unknown',
+        signOnDate: formData.signOnDate || '',
+        passportNo: 'N/A',
+        seamanBookNo: 'N/A',
+        status: 'Compliant',
+        contractDuration: formData.contractDuration ? Number(formData.contractDuration) : 0,
+        nextMedicalExam: '',
+        nextSafetyTraining: '',
+        vesselId: isVesselUser ? userVesselId : (formData.vesselId || ''),
+        birthdate: formData.birthdate || '',
+        contactNumber: formData.contactNumber || '',
+        photo: formData.photo || 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&h=150&fit=crop&q=80',
+        hiringStatus: 'for rehire',
+        siComments: ''
+      };
+
+      if (token) {
+        try {
+          const resp = await fetch('/api/crew-members', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(newCrew)
+          });
+          if (resp.ok) {
+            fetchCrew();
+          } else {
+            const err = await resp.json();
+            alert(`Failed to save crew: ${err.error || 'Server error'}`);
+          }
+        } catch (err) {
+          console.error('Failed to post crew:', err);
+        }
+      } else {
+        saveCrewFallback([newCrew, ...crew]);
+      }
     }
 
-    setShowModal(false);
+    handleCloseModal();
+  };
+
+  const handleEditClick = (member: CrewMember) => {
+    setEditingCrew(member);
     setFormData({
-      name: '',
-      rank: '',
-      birthdate: '',
-      contactNumber: '',
-      signOnDate: '',
-      contractDuration: '',
-      vesselId: '',
-      photo: ''
+      name: member.name || '',
+      rank: member.rank || '',
+      birthdate: member.birthdate || '',
+      contactNumber: member.contactNumber || '',
+      signOnDate: member.signOnDate || '',
+      contractDuration: member.contractDuration ? String(member.contractDuration) : '',
+      vesselId: String(member.vesselId || ''),
+      photo: member.photo || ''
     });
+    setShowModal(true);
   };
 
   const handleDelete = async (id: string) => {
@@ -518,9 +608,15 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
                           member.nationality.toLowerCase().includes(search.toLowerCase());
     const matchesRank = filterRank === 'All' || member.rank === filterRank;
     const matchesStatus = filterStatus === 'All' || member.status === filterStatus;
-    const matchesVessel = filterVessel === 'All' || member.vesselId === filterVessel;
+    
+    const effectiveVesselId = isVesselUser ? userVesselId : filterVessel;
+    const matchesVessel = effectiveVesselId === 'All' || String(member.vesselId) === String(effectiveVesselId);
     return matchesSearch && matchesRank && matchesStatus && matchesVessel;
   });
+
+  const vesselCrewOnly = isVesselUser 
+    ? crew.filter(c => String(c.vesselId) === String(userVesselId))
+    : crew;
 
   const getVesselName = (id: string) => {
     if (id === 'all' || id === 'any') return 'Global Pool / Unassigned';
@@ -547,7 +643,26 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
         </div>
 
         <button 
-          onClick={() => setShowModal(true)}
+          onClick={() => {
+            setEditingCrew(null);
+            setFormData({
+              name: '',
+              rank: '',
+              nationality: '',
+              passportNo: '',
+              seamanBookNo: '',
+              status: 'Compliant',
+              birthdate: '',
+              contactNumber: '',
+              signOnDate: '',
+              contractDuration: '',
+              nextMedicalExam: '',
+              nextSafetyTraining: '',
+              vesselId: isVesselUser ? userVesselId : '',
+              photo: ''
+            });
+            setShowModal(true);
+          }}
           className="relative z-20 shrink-0 self-start md:self-center bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs tracking-tight uppercase px-5 py-3.5 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer hover:shadow-lg hover:shadow-blue-900/20"
         >
           <Plus className="w-4 h-4" /> Sign On Crew
@@ -562,7 +677,7 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
           </div>
           <div>
             <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Total Crew Onboard</p>
-            <h3 className="text-xl font-bold text-slate-850 mt-0.5">{crew.length} Crew</h3>
+            <h3 className="text-xl font-bold text-slate-850 mt-0.5">{vesselCrewOnly.length} Crew</h3>
           </div>
         </div>
         <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
@@ -571,7 +686,7 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
           </div>
           <div>
             <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Fully Compliant</p>
-            <h3 className="text-xl font-bold text-emerald-700 mt-0.5">{crew.filter(c => c.status === 'Compliant').length} Active</h3>
+            <h3 className="text-xl font-bold text-emerald-700 mt-0.5">{vesselCrewOnly.filter(c => c.status === 'Compliant').length} Active</h3>
           </div>
         </div>
         <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
@@ -580,7 +695,7 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
           </div>
           <div>
             <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Expiring & Warning</p>
-            <h3 className="text-xl font-bold text-amber-700 mt-0.5">{crew.filter(c => c.status !== 'Compliant').length} Alert</h3>
+            <h3 className="text-xl font-bold text-amber-700 mt-0.5">{vesselCrewOnly.filter(c => c.status !== 'Compliant').length} Alert</h3>
           </div>
         </div>
       </div>
@@ -626,20 +741,22 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
             <option value="Expired">Expired</option>
           </select>
 
-          <div className="flex items-center gap-1">
-            <Ship className="w-3.5 h-3.5 text-slate-400" />
-            <select 
-              value={filterVessel}
-              onChange={(e) => setFilterVessel(e.target.value)}
-              className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/15 focus:border-blue-500 bg-white"
-            >
-              <option value="All">All Vessels</option>
-              <option value="all">Global Pool</option>
-              {vessels.map(v => (
-                <option key={v.id} value={String(v.id)}>{v.name}</option>
-              ))}
-            </select>
-          </div>
+          {!isVesselUser && (
+            <div className="flex items-center gap-1">
+              <Ship className="w-3.5 h-3.5 text-slate-400" />
+              <select 
+                value={filterVessel}
+                onChange={(e) => setFilterVessel(e.target.value)}
+                className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/15 focus:border-blue-500 bg-white"
+              >
+                <option value="All">All Vessels</option>
+                <option value="all">Global Pool</option>
+                {vessels.map(v => (
+                  <option key={v.id} value={String(v.id)}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
@@ -655,13 +772,13 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
                 <th className="px-6 py-4">Contact Info</th>
                 <th className="px-6 py-4">Assigned Vessel</th>
                 <th className="px-6 py-4">Sign On Details</th>
-                <th className="px-6 py-4 text-center">Action</th>
+                {!isVesselUser && <th className="px-6 py-4 text-center">Action</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-sm text-slate-700">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-16 text-center">
+                  <td colSpan={isVesselUser ? 6 : 7} className="px-6 py-16 text-center">
                     <div className="flex flex-col items-center justify-center gap-3">
                       <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
                       <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Crew Registry from Database...</span>
@@ -670,7 +787,7 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
                 </tr>
               ) : filteredCrew.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-slate-400 italic">
+                  <td colSpan={isVesselUser ? 6 : 7} className="px-6 py-12 text-center text-slate-400 italic">
                     No crew members found matching filters.
                   </td>
                 </tr>
@@ -708,21 +825,34 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
                       {member.signOnDate ? (
                         <>
                           <div className="font-semibold text-slate-600 font-semibold">On: {member.signOnDate}</div>
-                          <div className="text-slate-400">Duration: {member.contractDuration || 'N/A'} Months</div>
+                           <div className="text-slate-400">Duration: {member.contractDuration || 'N/A'} Months</div>
                         </>
                       ) : (
                         <span className="text-xs text-slate-400 italic font-semibold">Unassigned (No Sign-on)</span>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-center">
-                      <button 
-                        onClick={() => handleDelete(member.id)}
-                        className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors"
-                        title="Remove Crew"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </td>
+                    {!isVesselUser && (
+                      <td className="px-6 py-4 text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          {isAdminOrPic && (
+                            <button 
+                              onClick={() => handleEditClick(member)}
+                              className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors"
+                              title="Edit Crew"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          <button 
+                            onClick={() => handleDelete(member.id)}
+                            className="p-1.5 text-slate-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors"
+                            title="Remove Crew"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))
               )}
@@ -737,10 +867,10 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
           <div className="bg-white rounded-2xl w-full max-w-xl shadow-2xl border border-slate-100 flex flex-col overflow-hidden max-h-[90vh]">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                <Users className="w-5 h-5 text-blue-600" /> Sign On New Crew Member
+                <Users className="w-5 h-5 text-blue-600" /> {editingCrew ? `Edit Crew Member: ${editingCrew.name}` : 'Sign On New Crew Member'}
               </h2>
               <button 
-                onClick={() => setShowModal(false)}
+                onClick={handleCloseModal}
                 className="p-1.5 text-slate-400 hover:bg-slate-150 rounded-lg hover:text-slate-700"
               >
                 <X className="w-5 h-5" />
@@ -873,7 +1003,7 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
                   />
                 </div>
 
-                {/* Contract duration */}
+                 {/* Contract duration */}
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Contract Duration <span className="text-[10px] text-slate-400 normal-case font-normal">(Optional, Months)</span></label>
                   <input 
@@ -906,7 +1036,7 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
               <div className="border-t border-slate-100 pt-4 flex gap-2 justify-end">
                 <button 
                   type="button" 
-                  onClick={() => setShowModal(false)}
+                  onClick={handleCloseModal}
                   className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-50 transition-colors"
                 >
                   Cancel
@@ -915,7 +1045,7 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
                   type="submit" 
                   className="px-5 py-2 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 transition-colors shadow-md shadow-blue-100"
                 >
-                  Register Onboard
+                  {editingCrew ? 'Save Changes' : 'Register Onboard'}
                 </button>
               </div>
             </form>
@@ -928,10 +1058,23 @@ export const CrewListView = ({ vessels, token }: { vessels: any[], token?: strin
 
 
 // 2. Crew Employment Status View Component
-export const CrewEmploymentStatusView = ({ vessels, token }: { vessels: any[], token?: string }) => {
+export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vessels: any[], token?: string, currentUser?: User }) => {
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedCrew, setSelectedCrew] = useState<CrewMember | null>(null);
+
+  // Find activeUser with fallback to localStorage
+  const activeUser = (() => {
+    if (currentUser) return currentUser;
+    try {
+      const saved = localStorage.getItem('user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  })();
+  const isVesselUser = activeUser?.role === 'vessel' && activeUser?.vessel_id;
+  const userVesselId = isVesselUser ? String(activeUser.vessel_id) : '';
 
   // States for updating Superintendent (SI) comments & Hiring status
   const [isEditing, setIsEditing] = useState(false);
@@ -941,7 +1084,15 @@ export const CrewEmploymentStatusView = ({ vessels, token }: { vessels: any[], t
   // Search & Filter state
   const [search, setSearch] = useState('');
   const [filterHiringStatus, setFilterHiringStatus] = useState('All');
-  const [filterVessel, setFilterVessel] = useState('All');
+  const [filterVessel, setFilterVessel] = useState(() => {
+    return isVesselUser ? userVesselId : 'All';
+  });
+
+  useEffect(() => {
+    if (isVesselUser && userVesselId) {
+      setFilterVessel(userVesselId);
+    }
+  }, [isVesselUser, userVesselId]);
 
   const fetchCrew = async () => {
     if (!token) {
@@ -1040,6 +1191,32 @@ export const CrewEmploymentStatusView = ({ vessels, token }: { vessels: any[], t
     return med < now || safety < now;
   });
 
+  const filteredCrew = crew.filter(member => {
+    // 1. Search matching name, rank or nationality
+    const matchesSearch = 
+      (member.name || '').toLowerCase().includes(search.toLowerCase()) ||
+      (member.rank || '').toLowerCase().includes(search.toLowerCase()) ||
+      (member.nationality || '').toLowerCase().includes(search.toLowerCase());
+    
+    // 2. Hiring status filter
+    const matchesHiringStatus = 
+      filterHiringStatus === 'All' || 
+      (member.hiringStatus || 'for rehire') === filterHiringStatus;
+    
+    // 3. Vessel filter
+    const effectiveVesselId = isVesselUser ? userVesselId : filterVessel;
+    const matchesVessel = 
+      effectiveVesselId === 'All' || 
+      (effectiveVesselId === 'all' && (!member.vesselId || member.vesselId === 'all')) ||
+      String(member.vesselId) === String(effectiveVesselId);
+      
+    return matchesSearch && matchesHiringStatus && matchesVessel;
+  });
+
+  const vesselCrewOnly = isVesselUser 
+    ? crew.filter(c => String(c.vesselId) === String(userVesselId))
+    : crew;
+
   return (
     <div className="space-y-6">
       {/* Visual Header Banner - Sleek Dark Navy theme */}
@@ -1067,7 +1244,7 @@ export const CrewEmploymentStatusView = ({ vessels, token }: { vessels: any[], t
           </div>
           <div>
             <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Assessed Fleet Crew</p>
-            <h3 className="text-xl font-bold text-slate-850 mt-0.5">{crew.length} Evaluated</h3>
+            <h3 className="text-xl font-bold text-slate-850 mt-0.5">{vesselCrewOnly.length} Evaluated</h3>
           </div>
         </div>
         <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
@@ -1076,7 +1253,7 @@ export const CrewEmploymentStatusView = ({ vessels, token }: { vessels: any[], t
           </div>
           <div>
             <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Approved for Rehire</p>
-            <h3 className="text-xl font-bold text-emerald-700 mt-0.5">{crew.filter(c => (c.hiringStatus || 'for rehire') === 'for rehire').length} Active</h3>
+            <h3 className="text-xl font-bold text-emerald-700 mt-0.5">{vesselCrewOnly.filter(c => (c.hiringStatus || 'for rehire') === 'for rehire').length} Active</h3>
           </div>
         </div>
         <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
@@ -1085,7 +1262,7 @@ export const CrewEmploymentStatusView = ({ vessels, token }: { vessels: any[], t
           </div>
           <div>
             <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono font-semibold">Pending Debriefing</p>
-            <h3 className="text-xl font-bold text-amber-700 mt-0.5">{crew.filter(c => c.hiringStatus === 'for debriefing').length} Crew</h3>
+            <h3 className="text-xl font-bold text-amber-700 mt-0.5">{vesselCrewOnly.filter(c => c.hiringStatus === 'for debriefing').length} Crew</h3>
           </div>
         </div>
       </div>
@@ -1117,20 +1294,22 @@ export const CrewEmploymentStatusView = ({ vessels, token }: { vessels: any[], t
             </select>
           </div>
 
-          <div className="flex items-center gap-1">
-            <Ship className="w-3.5 h-3.5 text-slate-400" />
-            <select 
-              value={filterVessel}
-              onChange={(e) => setFilterVessel(e.target.value)}
-              className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500/15 focus:border-indigo-500 bg-white"
-            >
-              <option value="All">All Vessels</option>
-              <option value="all">Global Pool</option>
-              {vessels.map(v => (
-                <option key={v.id} value={String(v.id)}>{v.name}</option>
-              ))}
-            </select>
-          </div>
+          {!isVesselUser && (
+            <div className="flex items-center gap-1">
+              <Ship className="w-3.5 h-3.5 text-slate-400" />
+              <select 
+                value={filterVessel}
+                onChange={(e) => setFilterVessel(e.target.value)}
+                className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500/15 focus:border-indigo-500 bg-white"
+              >
+                <option value="All">All Vessels</option>
+                <option value="all">Global Pool</option>
+                {vessels.map(v => (
+                  <option key={v.id} value={String(v.id)}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </div>
 

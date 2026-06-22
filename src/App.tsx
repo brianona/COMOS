@@ -3087,13 +3087,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'crew_list' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <CrewListView vessels={vessels} token={token} />
+              <CrewListView vessels={vessels} token={token} currentUser={user} />
             </div>
           )}
 
           {view === 'crew_compliance' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <CrewEmploymentStatusView vessels={vessels} token={token} />
+              <CrewEmploymentStatusView vessels={vessels} token={token} currentUser={user} />
             </div>
           )}
 
