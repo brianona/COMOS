@@ -64,7 +64,7 @@ import { format, isBefore, addDays, parseISO } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
-import { CrewListView, CrewComplianceView, AuditRegistryView, NonConformityTrackerView } from './components/CrewAndAudits';
+import { CrewListView, CrewEmploymentStatusView, AuditRegistryView, NonConformityTrackerView } from './components/CrewAndAudits';
 import { TroubleReportView } from './components/TroubleReport';
 import { SparePartsRequisitionView } from './components/SparePartsRequisition';
 import { BunkerBDNView } from './components/BunkerBDN';
@@ -991,7 +991,7 @@ const ChangePasswordModal: React.FC<{
 
 
 const SidebarContent = ({ 
-  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, onLogout, setIsChangePasswordOpen 
+  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, isCertificatesOpen, setIsCertificatesOpen, onLogout, setIsChangePasswordOpen 
 }: { 
   view: string, 
   setView: (v: any) => void, 
@@ -1017,6 +1017,8 @@ const SidebarContent = ({
   setIsCrewOpen: (v: boolean) => void,
   isAuditsOpen: boolean,
   setIsAuditsOpen: (v: boolean) => void,
+  isCertificatesOpen: boolean,
+  setIsCertificatesOpen: (v: boolean) => void,
   onLogout: () => void,
   setIsChangePasswordOpen: (v: boolean) => void
 }) => (
@@ -1130,7 +1132,7 @@ const SidebarContent = ({
           onClick={() => setIsMonitoringOpen(!isMonitoringOpen)}
           className={cn(
             "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'lube_oil_ldr', 'store_chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_findings', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'lube_oil_ldr', 'store_chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_findings', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational', 'admin_add_cert', 'admin_cert_list'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
           )}
         >
           <div className="flex items-center gap-3">
@@ -1261,6 +1263,52 @@ const SidebarContent = ({
                 </AnimatePresence>
               </div>
 
+              {/* Certificates collapsible under Monitoring */}
+              <div className="space-y-1">
+                <button 
+                  onClick={() => setIsCertificatesOpen(!isCertificatesOpen)}
+                  className={cn(
+                    "w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-bold transition-colors",
+                    ['admin_add_cert', 'admin_cert_list'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  )}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <FileText className="w-4 h-4 text-slate-400" /> Certificates
+                  </div>
+                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200 text-slate-400", isCertificatesOpen ? "rotate-180" : "")} />
+                </button>
+                <AnimatePresence>
+                  {isCertificatesOpen && (
+                    <motion.div 
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
+                    >
+                      <button 
+                        onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
+                          view === 'admin_add_cert' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Add Cert/Service Report
+                      </button>
+                      <button 
+                        onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
+                          view === 'admin_cert_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                        )}
+                      >
+                        <div className="w-1 h-1 bg-current rounded-full" /> Cert/Service Report List
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
               {/* Store and Chemicals */}
               <button 
                 onClick={() => { setView('store_chemical_requisition'); setIsSidebarOpen(false); }}
@@ -1311,7 +1359,7 @@ const SidebarContent = ({
                           view === 'crew_compliance' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                         )}
                       >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Compliance & Status
+                        <div className="w-1 h-1 bg-current rounded-full" /> Crew Employment Status
                       </button>
                     </motion.div>
                   )}
@@ -1404,28 +1452,7 @@ const SidebarContent = ({
         </AnimatePresence>
       </div>
 
-      {user.role === 'vessel' && (
-        <>
-          <button 
-            onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
-            className={cn(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-              view === 'admin_add_cert' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-            )}
-          >
-            <Plus className="w-4 h-4" /> Add Certificate/Service Report
-          </button>
-          <button 
-            onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
-            className={cn(
-              "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-              view === 'admin_cert_list' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-            )}
-          >
-            <FileText className="w-4 h-4" /> Certificate/Service Report List
-          </button>
-        </>
-      )}
+
       {user.role === 'admin' || user.role === 'team_pic' ? (
         <div className="space-y-1">
           <button 
@@ -1460,15 +1487,6 @@ const SidebarContent = ({
                   <Plus className="w-3 h-3" /> New Vessel
                 </button>
                 <button 
-                  onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                    view === 'admin_add_cert' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <Plus className="w-3 h-3" /> Add Certificate/Service Report
-                </button>
-                <button 
                   onClick={() => { setView('admin_vessel_list'); setIsSidebarOpen(false); }}
                   className={cn(
                     "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
@@ -1476,15 +1494,6 @@ const SidebarContent = ({
                   )}
                 >
                   <Ship className="w-3 h-3" /> Vessel List
-                </button>
-                <button 
-                  onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                    view === 'admin_cert_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <FileText className="w-3 h-3" /> Certificate/Service Report List
                 </button>
                 <button 
                   onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
@@ -1560,6 +1569,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [isStoreChemicalsOpen, setIsStoreChemicalsOpen] = useState(false);
   const [isCrewOpen, setIsCrewOpen] = useState(false);
   const [isAuditsOpen, setIsAuditsOpen] = useState(false);
+  const [isCertificatesOpen, setIsCertificatesOpen] = useState(false);
   
   const [loadingStates, setLoadingStates] = useState({
     global: false,
@@ -2354,6 +2364,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           setIsCrewOpen={setIsCrewOpen}
           isAuditsOpen={isAuditsOpen}
           setIsAuditsOpen={setIsAuditsOpen}
+          isCertificatesOpen={isCertificatesOpen}
+          setIsCertificatesOpen={setIsCertificatesOpen}
           onLogout={onLogout}
           setIsChangePasswordOpen={setIsChangePasswordOpen}
         />
@@ -2416,6 +2428,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   setIsCrewOpen={setIsCrewOpen}
                   isAuditsOpen={isAuditsOpen}
                   setIsAuditsOpen={setIsAuditsOpen}
+                  isCertificatesOpen={isCertificatesOpen}
+                  setIsCertificatesOpen={setIsCertificatesOpen}
                   onLogout={onLogout}
                   setIsChangePasswordOpen={setIsChangePasswordOpen}
                 />
@@ -3079,7 +3093,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'crew_compliance' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <CrewComplianceView vessels={vessels} token={token} />
+              <CrewEmploymentStatusView vessels={vessels} token={token} />
             </div>
           )}
 
@@ -8727,7 +8741,7 @@ const AdminPanel = ({
             )}
 
             {/* Add Cert */}
-            {((!subView || subView === 'admin') || subView === 'admin_add_cert') && (
+            {subView === 'admin_add_cert' && (
               <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
               <h2 className="font-bold mb-6 flex items-center gap-2 text-blue-900">
                 <FileText className="w-5 h-5" /> Add Certificate/Service Report to Vessel/Team
@@ -9060,7 +9074,7 @@ const AdminPanel = ({
             )}
 
             {/* Cert List */}
-            {((!subView || subView === 'admin') || subView === 'admin_cert_list') && (
+            {subView === 'admin_cert_list' && (
               <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="font-bold flex items-center gap-2 text-blue-900"><FileText className="w-5 h-5" /> Certificate/Service Report List</h2>
