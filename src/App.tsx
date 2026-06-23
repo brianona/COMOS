@@ -64,7 +64,7 @@ import { format, isBefore, addDays, parseISO } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
-import { CrewListView, CrewEmploymentStatusView, AuditRegistryView, NonConformityTrackerView } from './components/CrewAndAudits';
+import { CrewListView, CrewEmploymentStatusView, AuditRegistryView } from './components/CrewAndAudits';
 import { TroubleReportView } from './components/TroubleReport';
 import { SparePartsRequisitionView } from './components/SparePartsRequisition';
 import { BunkerBDNView } from './components/BunkerBDN';
@@ -1132,7 +1132,7 @@ const SidebarContent = ({
           onClick={() => setIsMonitoringOpen(!isMonitoringOpen)}
           className={cn(
             "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'lube_oil_ldr', 'store_chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_findings', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational', 'admin_add_cert', 'admin_cert_list'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'lube_oil_ldr', 'store_chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational', 'admin_add_cert', 'admin_cert_list'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
           )}
         >
           <div className="flex items-center gap-3">
@@ -1372,7 +1372,7 @@ const SidebarContent = ({
                   onClick={() => setIsAuditsOpen(!isAuditsOpen)}
                   className={cn(
                     "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                    ['audit_list', 'audit_findings', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                    ['audit_list', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
                   )}
                 >
                   <div className="flex items-center gap-3">
@@ -1433,15 +1433,6 @@ const SidebarContent = ({
                         )}
                       >
                         <div className="w-1 h-1 bg-current rounded-full" /> Navigational Audit
-                      </button>
-                      <button 
-                        onClick={() => { setView('audit_findings'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'audit_findings' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Non-Conformity Tracker
                       </button>
                     </motion.div>
                   )}
@@ -1558,7 +1549,7 @@ const SidebarContent = ({
 );
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_findings' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational'>('dashboard');
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -2658,24 +2649,24 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   })()}
                 </div>
 
-                {/* 6. Audits & Findings KPI */}
+                {/* 6. Audits & Inspections KPI */}
                 <div 
-                  onClick={() => setView('audit_findings')}
+                  onClick={() => setView('audit_list')}
                   className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
                 >
                   {(() => {
-                    const openNC = nonConformities.filter(nc => nc.status === 'Open' || nc.status === 'Overdue').length;
+                    const pendingAudits = (auditRecords || []).filter(a => a.status === 'Scheduled' || a.status === 'In Progress' || a.status === 'Overdue').length;
                     return (
                       <>
                         <div className="flex items-center justify-between mb-4">
-                          <div className="p-2.5 bg-rose-50 rounded-xl text-rose-600 group-hover:bg-rose-600 group-hover:text-white transition-all">
-                            <FileText className="w-5 h-5" />
+                          <div className="p-2.5 bg-blue-50 rounded-xl text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all">
+                            <ShieldCheck className="w-5 h-5" />
                           </div>
-                          <span className="text-2xl font-black text-slate-800 tracking-tight">{openNC}</span>
+                          <span className="text-2xl font-black text-slate-800 tracking-tight">{pendingAudits}</span>
                         </div>
                         <div>
-                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Audit Findings</h3>
-                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Open non-conformities</p>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Pending Audits</h3>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Scheduled & Overdue</p>
                         </div>
                       </>
                     );
@@ -3606,37 +3597,31 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'audit_list' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} token={token} />
+              <AuditRegistryView vessels={vessels} token={token} currentUser={user} />
             </div>
           )}
 
           {view === 'audit_internal' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} prefilteredType="Internal Audit" token={token} />
+              <AuditRegistryView vessels={vessels} prefilteredType="Internal Audit" token={token} currentUser={user} />
             </div>
           )}
 
           {view === 'audit_external' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} prefilteredType="External Audit" token={token} />
+              <AuditRegistryView vessels={vessels} prefilteredType="External Audit" token={token} currentUser={user} />
             </div>
           )}
 
           {view === 'audit_vir' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} prefilteredType="VIR" token={token} />
+              <AuditRegistryView vessels={vessels} prefilteredType="VIR" token={token} currentUser={user} />
             </div>
           )}
 
           {view === 'audit_navigational' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <AuditRegistryView vessels={vessels} prefilteredType="Navigational Audit" token={token} />
-            </div>
-          )}
-
-          {view === 'audit_findings' && (
-            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <NonConformityTrackerView vessels={vessels} token={token} />
+              <AuditRegistryView vessels={vessels} prefilteredType="Navigational Audit" token={token} currentUser={user} />
             </div>
           )}
 

@@ -22,7 +22,11 @@ import {
   MessageSquare,
   Send,
   Upload,
-  Ship
+  Ship,
+  Compass,
+  ClipboardList,
+  Paperclip,
+  Download
 } from 'lucide-react';
 
 interface User {
@@ -1567,9 +1571,12 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
 
 
 // 3. Audit Registry View Component
-export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels: any[], prefilteredType?: string, token?: string }) => {
+export const AuditRegistryView = ({ vessels, prefilteredType, token, currentUser }: { vessels: any[], prefilteredType?: string, token?: string, currentUser?: User }) => {
   const [audits, setAudits] = useState<AuditRecord[]>([]);
   const [loading, setLoading] = useState(false);
+
+  const [isEditingAudit, setIsEditingAudit] = useState(false);
+  const [editAuditData, setEditAuditData] = useState<AuditRecord | null>(null);
 
   const fetchAudits = async () => {
     if (!token) {
@@ -1597,11 +1604,133 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
     fetchAudits();
   }, [token]);
 
-  const [filterType, setFilterType] = useState(prefilteredType || 'All');
+  const handleUpdateAudit = async (updatedAudit: AuditRecord) => {
+    if (token) {
+      try {
+        const resp = await fetch(`/api/audit-records/${updatedAudit.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updatedAudit)
+        });
+        if (resp.ok) {
+          fetchAudits();
+          setSelectedDetailAudit(updatedAudit);
+          setIsEditingAudit(false);
+          setEditAuditData(null);
+        } else {
+          const err = await resp.json();
+          alert(`Failed to update audit: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to update audit:', err);
+      }
+    } else {
+      const updatedList = audits.map(a => a.id === updatedAudit.id ? updatedAudit : a);
+      saveAuditsFallback(updatedList);
+      setSelectedDetailAudit(updatedAudit);
+      setIsEditingAudit(false);
+      setEditAuditData(null);
+    }
+  };
+
+  const [filterVessel, setFilterVessel] = useState('All');
   const [filterStatus, setFilterStatus] = useState('All');
   const [showModal, setShowModal] = useState(false);
 
+  // Reset filters and sync form data type when prefilteredType changes
+  useEffect(() => {
+    setFilterVessel('All');
+    setFilterStatus('All');
+  }, [prefilteredType]);
+
+  useEffect(() => {
+    if (showModal) {
+      setFormData(prev => ({
+        ...prev,
+        type: prefilteredType || 'Internal Audit'
+      }));
+    }
+  }, [showModal, prefilteredType]);
+
   const [selectedDetailAudit, setSelectedDetailAudit] = useState<AuditRecord | null>(null);
+  const [uploadingReport, setUploadingReport] = useState(false);
+
+  const handleUploadReport = async (file: File) => {
+    if (!selectedDetailAudit) return;
+    setUploadingReport(true);
+    if (token) {
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const resp = await fetch(`/api/audit-records/${selectedDetailAudit.id}/report`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          body: formData
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          const updated = { ...selectedDetailAudit, reportFileName: data.reportFileName };
+          setAudits(prev => prev.map(a => a.id === selectedDetailAudit.id ? updated : a));
+          setSelectedDetailAudit(updated);
+        } else {
+          alert('Failed to upload report file');
+        }
+      } catch (e) {
+        console.error(e);
+        alert('An error occurred during upload.');
+      } finally {
+        setUploadingReport(false);
+      }
+    } else {
+      const updated = { ...selectedDetailAudit, reportFileName: file.name };
+      setAudits(prev => {
+        const next = prev.map(a => a.id === selectedDetailAudit.id ? updated : a);
+        localStorage.setItem('comos_audits_list', JSON.stringify(next));
+        return next;
+      });
+      setSelectedDetailAudit(updated);
+      setUploadingReport(false);
+    }
+  };
+
+  const handleDeleteReport = async () => {
+    if (!selectedDetailAudit) return;
+    if (!window.confirm('Are you sure you want to delete this report file?')) return;
+    if (token) {
+      try {
+        const resp = await fetch(`/api/audit-records/${selectedDetailAudit.id}/report`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        if (resp.ok) {
+          const updated = { ...selectedDetailAudit, reportFileName: undefined };
+          setAudits(prev => prev.map(a => a.id === selectedDetailAudit.id ? updated : a));
+          setSelectedDetailAudit(updated);
+        } else {
+          alert('Failed to delete report file');
+        }
+      } catch (e) {
+        console.error(e);
+        alert('An error occurred during deletion.');
+      }
+    } else {
+      const updated = { ...selectedDetailAudit, reportFileName: undefined };
+      setAudits(prev => {
+        const next = prev.map(a => a.id === selectedDetailAudit.id ? updated : a);
+        localStorage.setItem('comos_audits_list', JSON.stringify(next));
+        return next;
+      });
+      setSelectedDetailAudit(updated);
+    }
+  };
+
   const [selectedAuditComments, setSelectedAuditComments] = useState<any[]>([]);
   const [newCommentText, setNewCommentText] = useState('');
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -1675,23 +1804,18 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
     }
   };
 
-  // Sync state if prefilteredType changes
-  useEffect(() => {
-    if (prefilteredType) {
-      setFilterType(prefilteredType);
-    } else {
-      setFilterType('All');
-    }
-  }, [prefilteredType]);
+
 
   // Form State
   const [formData, setFormData] = useState({
-    type: 'Internal Audit',
+    type: prefilteredType || 'Internal Audit',
     date: '',
     inspectorName: '',
     inspectorOrganization: '',
     scope: '',
-    vesselId: 'all'
+    vesselId: 'all',
+    status: 'Scheduled',
+    findingsCount: 0
   });
 
   const saveAuditsFallback = (newAudits: AuditRecord[]) => {
@@ -1712,8 +1836,8 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
       date: formData.date,
       inspectorName: formData.inspectorName,
       inspectorOrganization: formData.inspectorOrganization || 'Classification Society',
-      status: 'Scheduled',
-      findingsCount: 0,
+      status: formData.status as any,
+      findingsCount: Number(formData.findingsCount) || 0,
       scope: formData.scope || 'General Safety compliance audit'
     };
 
@@ -1742,19 +1866,22 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
 
     setShowModal(false);
     setFormData({
-      type: 'Internal Audit',
+      type: prefilteredType || 'Internal Audit',
       date: '',
       inspectorName: '',
       inspectorOrganization: '',
       scope: '',
-      vesselId: 'all'
+      vesselId: 'all',
+      status: 'Scheduled',
+      findingsCount: 0
     });
   };
 
   const filteredAudits = audits.filter(audit => {
-    const matchesType = filterType === 'All' || audit.type === filterType;
+    const matchesType = prefilteredType ? audit.type === prefilteredType : true;
+    const matchesVessel = filterVessel === 'All' || audit.vesselId === filterVessel;
     const matchesStatus = filterStatus === 'All' || audit.status === filterStatus;
-    return matchesType && matchesStatus;
+    return matchesType && matchesVessel && matchesStatus;
   });
 
   const getVesselName = (id: string) => {
@@ -1763,14 +1890,54 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
     return found ? found.name : 'Unknown Vessel';
   };
 
+  const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic';
+
+  // Get dynamic header configuration based on view/prefilteredType
+  const getHeaderInfo = () => {
+    switch (prefilteredType) {
+      case 'Internal Audit':
+        return {
+          title: 'Internal Audits',
+          description: 'Track and manage internal safety management and environmental compliance audits.',
+          icon: <FileText className="w-6 h-6 text-blue-600" />
+        };
+      case 'External Audit':
+        return {
+          title: 'External Audits',
+          description: 'Record and review official third-party and classification society statutory audits.',
+          icon: <ShieldCheck className="w-6 h-6 text-blue-600" />
+        };
+      case 'VIR':
+        return {
+          title: 'Vessel Inspection Reports (VIR)',
+          description: 'Manage physical vessel condition surveys and routine compliance inspections.',
+          icon: <ClipboardList className="w-6 h-6 text-blue-600" />
+        };
+      case 'Navigational Audit':
+        return {
+          title: 'Navigational Audits',
+          description: 'Monitor navigational bridge procedures, watchkeeping standards, and bridge checklists.',
+          icon: <Compass className="w-6 h-6 text-blue-600" />
+        };
+      default:
+        return {
+          title: 'Audit Registry',
+          description: 'Comprehensive registry of all fleet surveys, audits, and statutory inspections.',
+          icon: <ShieldCheck className="w-6 h-6 text-blue-600" />
+        };
+    }
+  };
+
+  const header = getHeaderInfo();
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <ShieldCheck className="w-6 h-6 text-blue-600" /> Fleet Audits & Inspections
+            {header.icon} {header.title}
           </h1>
-          <p className="text-sm text-slate-500">Record regulatory surveys, Port State Controls, Class Audits, and Vetting Inspections.</p>
+          <p className="text-sm text-slate-500">{header.description}</p>
         </div>
         <button 
           onClick={() => setShowModal(true)}
@@ -1784,24 +1951,24 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
           <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total Audits</p>
-          <h3 className="text-2xl font-extrabold text-slate-800 mt-1">{audits.length} Surveys</h3>
+          <h3 className="text-2xl font-extrabold text-slate-800 mt-1">{filteredAudits.length} Surveys</h3>
         </div>
         <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
           <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Completed</p>
           <h3 className="text-2xl font-extrabold text-emerald-600 mt-1">
-            {audits.filter(a => a.status === 'Completed').length} Audits
+            {filteredAudits.filter(a => a.status === 'Completed').length} Audits
           </h3>
         </div>
         <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
           <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Scheduled Surveys</p>
           <h3 className="text-2xl font-extrabold text-blue-600 mt-1">
-            {audits.filter(a => a.status === 'Scheduled' || a.status === 'In Progress').length} Pending
+            {filteredAudits.filter(a => a.status === 'Scheduled' || a.status === 'In Progress').length} Pending
           </h3>
         </div>
         <div className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
           <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">Overdue Tasks</p>
           <h3 className="text-2xl font-extrabold text-red-600 mt-1">
-            {audits.filter(a => a.status === 'Overdue').length} Overdue
+            {filteredAudits.filter(a => a.status === 'Overdue').length} Overdue
           </h3>
         </div>
       </div>
@@ -1813,23 +1980,20 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
         </div>
         <div className="flex gap-2">
           <select 
-            value={filterType}
-            onChange={(e) => setFilterType(e.target.value)}
-            className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs bg-slate-50 focus:outline-none"
+            value={filterVessel}
+            onChange={(e) => setFilterVessel(e.target.value)}
+            className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs bg-slate-50 focus:outline-none text-slate-700 font-medium"
           >
-            <option value="All">All Types</option>
-            <option value="Internal Audit">Internal Audit</option>
-            <option value="External Audit">External Audit</option>
-            <option value="PSC Inspection">PSC Inspection</option>
-            <option value="Vetting Inspection">Vetting Inspection</option>
-            <option value="VIR">VIR</option>
-            <option value="Navigational Audit">Navigational Audit</option>
+            <option value="All">All Vessels</option>
+            {vessels.map(v => (
+              <option key={v.id} value={String(v.id)}>{v.name}</option>
+            ))}
           </select>
 
           <select 
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
-            className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs bg-slate-50 focus:outline-none"
+            className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs bg-slate-50 focus:outline-none text-slate-700 font-medium"
           >
             <option value="All">All Statuses</option>
             <option value="Completed">Completed</option>
@@ -1879,11 +2043,16 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
                     title="Click to view details and comments"
                   >
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <div className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors">{audit.type}</div>
                         {['Internal Audit', 'External Audit', 'VIR', 'Navigational Audit'].includes(audit.type) && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded-md text-[10px] font-bold">
                             <MessageSquare className="w-3 h-3" /> View & Comment
+                          </span>
+                        )}
+                        {audit.reportFileName && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-md text-[10px] font-bold" title={`Report file attached: ${audit.reportFileName}`}>
+                            <Paperclip className="w-3 h-3" /> Report Attached
                           </span>
                         )}
                       </div>
@@ -1946,7 +2115,10 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
                   <select 
                     value={formData.type}
                     onChange={(e) => setFormData({...formData, type: e.target.value})}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
+                    disabled={!!prefilteredType}
+                    className={`w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800 ${
+                      prefilteredType ? "bg-slate-50 border-slate-150 text-slate-400 cursor-not-allowed font-semibold" : ""
+                    }`}
                   >
                     <option value="Internal Audit">Internal Audit</option>
                     <option value="External Audit">External Audit</option>
@@ -1977,7 +2149,7 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
                   />
                 </div>
-                <div className="col-span-2">
+                <div className="col-span-2 font-medium">
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Organization / Society</label>
                   <input 
                     type="text"
@@ -1985,6 +2157,30 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
                     onChange={(e) => setFormData({...formData, inspectorOrganization: e.target.value})}
                     placeholder="e.g. DNV Classification Society / Paris MOU PSC"
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Audit Status</label>
+                  <select 
+                    value={formData.status}
+                    onChange={(e) => setFormData({...formData, status: e.target.value})}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800"
+                  >
+                    <option value="Scheduled">Scheduled</option>
+                    <option value="In Progress">In Progress</option>
+                    <option value="Completed">Completed</option>
+                    <option value="Overdue">Overdue</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Deficiencies / Findings Found</label>
+                  <input 
+                    type="number"
+                    min="0"
+                    value={formData.findingsCount}
+                    onChange={(e) => setFormData({...formData, findingsCount: Math.max(0, parseInt(e.target.value) || 0)})}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-800"
+                    placeholder="0"
                   />
                 </div>
                 <div className="col-span-2">
@@ -2030,9 +2226,7 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
             </form>
           </div>
         </div>
-      )}
-
-      {/* Audit Detail & Comments Modal */}
+      )}      {/* Audit Detail & Comments Modal */}
       {selectedDetailAudit && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-[999] animate-in fade-in duration-200">
           <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl border border-slate-100 flex flex-col overflow-hidden max-h-[90vh]">
@@ -2045,76 +2239,273 @@ export const AuditRegistryView = ({ vessels, prefilteredType, token }: { vessels
                   <p className="text-[11px] text-slate-500 font-medium font-mono">Record ID: {selectedDetailAudit.id}</p>
                 </div>
               </div>
-              <button 
-                onClick={() => {
-                  setSelectedDetailAudit(null);
-                  setSelectedAuditComments([]);
-                  setNewCommentText('');
-                }}
-                className="p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2">
+                {isAdminOrPic && !isEditingAudit && (
+                  <button
+                    onClick={() => {
+                      setIsEditingAudit(true);
+                      setEditAuditData({ ...selectedDetailAudit });
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded-lg text-xs transition-all shadow-xs"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                    Edit Entry
+                  </button>
+                )}
+                <button 
+                  onClick={() => {
+                    setSelectedDetailAudit(null);
+                    setSelectedAuditComments([]);
+                    setNewCommentText('');
+                    setIsEditingAudit(false);
+                    setEditAuditData(null);
+                  }}
+                  className="p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             {/* Split Content layout */}
             <div className="grid grid-cols-1 md:grid-cols-5 flex-1 overflow-hidden min-h-0">
-              {/* Left Column: Audit Info Details */}
-              <div className="md:col-span-2 p-6 bg-slate-50/50 border-r border-slate-150 overflow-y-auto space-y-5">
-                <div>
-                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold leading-none ${
-                    selectedDetailAudit.status === 'Completed' ? 'bg-green-50 text-green-700 border border-green-200/50' :
-                    selectedDetailAudit.status === 'Overdue' ? 'bg-red-50 text-red-700 border border-red-200/50' :
-                    selectedDetailAudit.status === 'In Progress' ? 'bg-amber-50 text-amber-700 border border-amber-200/50' :
-                    'bg-blue-50 text-blue-700 border border-blue-200/50'
-                  }`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${
-                      selectedDetailAudit.status === 'Completed' ? 'bg-green-500' :
-                      selectedDetailAudit.status === 'Overdue' ? 'bg-red-500' :
-                      selectedDetailAudit.status === 'In Progress' ? 'bg-amber-500' :
-                      'bg-blue-500'
-                    }`} />
-                    {selectedDetailAudit.status}
-                  </span>
+              {/* Left Column: Audit Info Details (Editable or Static) */}
+              {isEditingAudit && editAuditData ? (
+                <div className="md:col-span-2 p-6 bg-slate-50 border-r border-slate-150 overflow-y-auto space-y-4">
+                  <div className="flex items-center justify-between border-b pb-2 mb-3">
+                    <h3 className="text-sm font-bold text-slate-900">Edit Audit Information</h3>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 font-mono">Editing Mode</span>
+                  </div>
                   
-                  <h3 className="text-xl font-bold text-slate-900 mt-2.5 leading-snug">{selectedDetailAudit.type}</h3>
-                  <div className="flex items-center gap-1.5 text-slate-400 mt-1 font-mono text-xs font-semibold">
-                    <Calendar className="w-3.5 h-3.5" />
-                    <span>Conducted on: {selectedDetailAudit.date}</span>
-                  </div>
-                </div>
-
-                <div className="space-y-3.5 border-t border-slate-150 pt-4">
                   <div>
-                    <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Vessel Coverage</h4>
-                    <p className="text-sm font-semibold text-slate-800 mt-0.5">{getVesselName(selectedDetailAudit.vesselId)}</p>
-                  </div>
-
-                  <div>
-                    <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Lead Inspector</h4>
-                    <p className="text-sm font-semibold text-slate-800 mt-0.5">{selectedDetailAudit.inspectorName}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">{selectedDetailAudit.inspectorOrganization}</p>
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">Audit Type</label>
+                    <select
+                      value={editAuditData.type}
+                      onChange={(e) => setEditAuditData({ ...editAuditData, type: e.target.value as any })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800"
+                    >
+                      <option value="Internal Audit">Internal Audit</option>
+                      <option value="External Audit">External Audit</option>
+                      <option value="PSC Inspection">PSC Inspection</option>
+                      <option value="Vetting Inspection">Vetting Inspection</option>
+                      <option value="VIR">VIR</option>
+                      <option value="Navigational Audit">Navigational Audit</option>
+                    </select>
                   </div>
 
                   <div>
-                    <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Findings / Deficiencies</h4>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-extrabold ${
-                        selectedDetailAudit.findingsCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-800'
-                      }`}>
-                        {selectedDetailAudit.findingsCount} Deficiencies Found
-                      </span>
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">Conducted Date</label>
+                    <input
+                      type="date"
+                      value={editAuditData.date}
+                      onChange={(e) => setEditAuditData({ ...editAuditData, date: e.target.value })}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">Vessel Coverage</label>
+                    <select
+                      value={editAuditData.vesselId}
+                      onChange={(e) => setEditAuditData({ ...editAuditData, vesselId: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800"
+                    >
+                      <option value="all">Universal Fleet (All Vessels)</option>
+                      {vessels.map(v => (
+                        <option key={v.id} value={String(v.id)}>{v.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">Lead Inspector</label>
+                    <input
+                      type="text"
+                      value={editAuditData.inspectorName}
+                      onChange={(e) => setEditAuditData({ ...editAuditData, inspectorName: e.target.value })}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">Organization / Society</label>
+                    <input
+                      type="text"
+                      value={editAuditData.inspectorOrganization}
+                      onChange={(e) => setEditAuditData({ ...editAuditData, inspectorOrganization: e.target.value })}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">Status</label>
+                      <select
+                        value={editAuditData.status}
+                        onChange={(e) => setEditAuditData({ ...editAuditData, status: e.target.value as any })}
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800"
+                      >
+                        <option value="Scheduled">Scheduled</option>
+                        <option value="In Progress">In Progress</option>
+                        <option value="Completed">Completed</option>
+                        <option value="Overdue">Overdue</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">Deficiencies</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={editAuditData.findingsCount}
+                        onChange={(e) => setEditAuditData({ ...editAuditData, findingsCount: Math.max(0, parseInt(e.target.value) || 0) })}
+                        className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-white font-medium text-slate-800"
+                      />
                     </div>
                   </div>
 
                   <div>
-                    <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Scope Checklist</h4>
-                    <p className="text-xs text-slate-600 bg-white p-3 border border-slate-200/60 rounded-xl mt-1.5 leading-relaxed shadow-xs">
-                      {selectedDetailAudit.scope || 'No scope details configured for this registered regulatory audit.'}
-                    </p>
+                    <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">Scope description</label>
+                    <textarea
+                      value={editAuditData.scope}
+                      onChange={(e) => setEditAuditData({ ...editAuditData, scope: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white font-medium text-slate-800 h-20 resize-none"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-3 border-t border-slate-200 mt-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingAudit(false);
+                        setEditAuditData(null);
+                      }}
+                      className="flex-1 py-2 text-center border border-slate-200 hover:bg-slate-50 text-slate-600 rounded-lg text-xs font-semibold transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleUpdateAudit(editAuditData)}
+                      className="flex-1 py-2 text-center bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                    >
+                      Save Changes
+                    </button>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className="md:col-span-2 p-6 bg-slate-50/50 border-r border-slate-150 overflow-y-auto space-y-5">
+                  <div>
+                    <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold leading-none ${
+                      selectedDetailAudit.status === 'Completed' ? 'bg-green-50 text-green-700 border border-green-200/50' :
+                      selectedDetailAudit.status === 'Overdue' ? 'bg-red-50 text-red-700 border border-red-200/50' :
+                      selectedDetailAudit.status === 'In Progress' ? 'bg-amber-50 text-amber-700 border border-amber-200/50' :
+                      'bg-blue-50 text-blue-700 border border-blue-200/50'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${
+                        selectedDetailAudit.status === 'Completed' ? 'bg-green-500' :
+                        selectedDetailAudit.status === 'Overdue' ? 'bg-red-500' :
+                        selectedDetailAudit.status === 'In Progress' ? 'bg-amber-500' :
+                        'bg-blue-500'
+                      }`} />
+                      {selectedDetailAudit.status}
+                    </span>
+                    
+                    <h3 className="text-xl font-bold text-slate-900 mt-2.5 leading-snug">{selectedDetailAudit.type}</h3>
+                    <div className="flex items-center gap-1.5 text-slate-400 mt-1 font-mono text-xs font-semibold">
+                      <Calendar className="w-3.5 h-3.5" />
+                      <span>Conducted on: {selectedDetailAudit.date}</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3.5 border-t border-slate-150 pt-4">
+                    <div>
+                      <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Vessel Coverage</h4>
+                      <p className="text-sm font-semibold text-slate-800 mt-0.5">{getVesselName(selectedDetailAudit.vesselId)}</p>
+                    </div>
+
+                    <div>
+                      <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Lead Inspector</h4>
+                      <p className="text-sm font-semibold text-slate-800 mt-0.5">{selectedDetailAudit.inspectorName}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{selectedDetailAudit.inspectorOrganization}</p>
+                    </div>
+
+                    <div>
+                      <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Findings / Deficiencies</h4>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className={`inline-flex px-2 py-0.5 rounded-md text-xs font-extrabold ${
+                          selectedDetailAudit.findingsCount > 0 ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-800'
+                        }`}>
+                          {selectedDetailAudit.findingsCount} Deficiencies Found
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Scope Checklist</h4>
+                      <p className="text-xs text-slate-600 bg-white p-3 border border-slate-200/60 rounded-xl mt-1.5 leading-relaxed shadow-xs">
+                        {selectedDetailAudit.scope || 'No scope details configured for this registered regulatory audit.'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <h4 className="text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1.5">Audit Report File</h4>
+                      {selectedDetailAudit.reportFileName ? (
+                        <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs space-y-2.5">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Paperclip className="w-4 h-4 text-slate-400 shrink-0" />
+                              <span className="text-xs font-semibold text-slate-700 truncate">{selectedDetailAudit.reportFileName}</span>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <a
+                                href={token ? `/api/audit-records/${selectedDetailAudit.id}/report?token=${encodeURIComponent(token)}` : '#'}
+                                download={selectedDetailAudit.reportFileName}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-1 px-2 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-105 text-[10px] font-bold transition-colors inline-flex items-center gap-1"
+                              >
+                                <Download className="w-3.5 h-3.5" /> View / Download
+                              </a>
+                              <button
+                                onClick={handleDeleteReport}
+                                className="p-1 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors"
+                                title="Delete report file"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-white border border-dashed border-slate-300 rounded-xl p-5 text-center shadow-xs flex flex-col items-center justify-center gap-2">
+                          <Upload className="w-6 h-6 text-slate-400" />
+                          <div>
+                            <p className="text-xs font-semibold text-slate-600">No report file uploaded yet</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">Upload a PDF or document summary</p>
+                          </div>
+                          <label className="mt-2 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg cursor-pointer transition-colors inline-flex items-center gap-1 shadow-sm">
+                            <Paperclip className="w-3.5 h-3.5" />
+                            {uploadingReport ? 'Uploading...' : 'Browse File'}
+                            <input
+                              type="file"
+                              className="hidden"
+                              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.tiff"
+                              disabled={uploadingReport}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  handleUploadReport(file);
+                                }
+                              }}
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Right Column: Comments section */}
               <div className="md:col-span-3 flex flex-col overflow-hidden bg-white">
