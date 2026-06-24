@@ -57,7 +57,8 @@ import {
   Waves,
   Camera,
   Image,
-  Fuel
+  Fuel,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isBefore, addDays, parseISO } from 'date-fns';
@@ -65,6 +66,7 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
 import { CrewListView, CrewEmploymentStatusView, AuditRegistryView } from './components/CrewAndAudits';
+import { AboutView } from './components/AboutView';
 import { TroubleReportView } from './components/TroubleReport';
 import { SparePartsRequisitionView } from './components/SparePartsRequisition';
 import { BunkerBDNView } from './components/BunkerBDN';
@@ -1021,535 +1023,436 @@ const SidebarContent = ({
   setIsCertificatesOpen: (v: boolean) => void,
   onLogout: () => void,
   setIsChangePasswordOpen: (v: boolean) => void
-}) => (
-  <>
-    <button 
-      onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
-      className="p-6 flex items-center gap-3 hover:opacity-80 transition-opacity text-left w-full"
-    >
-      <LogoContainer size="sm" className="border-none shadow-none" />
-      <span className="font-bold text-lg tracking-tight text-blue-900">COMOS</span>
-    </button>
-    
-    <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
+}) => {
+  // Beautiful interactive helper styling functions
+  const getTopLevelClass = (active: boolean) => cn(
+    "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200 text-left cursor-pointer",
+    active 
+      ? "bg-blue-600 text-white shadow-lg shadow-blue-600/10 hover:bg-blue-700" 
+      : "text-slate-600 hover:bg-slate-50 hover:text-blue-600"
+  );
+
+  const getCategoryToggleClass = (active: boolean, isOpen: boolean) => cn(
+    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200 text-left cursor-pointer",
+    active 
+      ? "bg-blue-50/70 text-blue-700 font-bold" 
+      : isOpen
+        ? "text-slate-800 bg-slate-50"
+        : "text-slate-600 hover:bg-slate-50 hover:text-blue-600"
+  );
+
+  const getSubItemClass = (active: boolean) => cn(
+    "w-full flex items-center gap-3 pl-9 pr-4 py-2.5 rounded-lg text-xs font-semibold transition-all duration-200 text-left relative cursor-pointer",
+    active 
+      ? "bg-blue-50/50 text-blue-700 font-black border-l-2 border-blue-600 pl-[34px]" 
+      : "text-slate-500 hover:bg-slate-50/40 hover:text-blue-600 hover:pl-[38px]"
+  );
+
+  return (
+    <>
       <button 
         onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
-        className={cn(
-          "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-          view === 'dashboard' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-        )}
+        className="p-6 flex items-center gap-3 hover:opacity-80 transition-opacity text-left w-full cursor-pointer"
       >
-        <Clock className="w-4 h-4" /> Dashboard
+        <LogoContainer size="sm" className="border-none shadow-none" />
+        <span className="font-bold text-lg tracking-tight text-blue-900">COMOS</span>
       </button>
-      {user.role !== 'vessel' && (
+      
+      <nav className="flex-1 px-4 space-y-1 overflow-y-auto custom-scrollbar">
+        {/* Core Navigation Section */}
         <button 
-          onClick={() => { setView('vessels'); setIsSidebarOpen(false); }}
-          className={cn(
-            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            view === 'vessels' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-          )}
+          onClick={() => { setView('dashboard'); setIsSidebarOpen(false); }}
+          className={getTopLevelClass(view === 'dashboard')}
         >
-          <Ship className="w-4 h-4" /> Vessels
+          <Clock className="w-4 h-4" /> Dashboard
         </button>
-      )}
-      <button 
-        onClick={() => { setView('routing'); setIsSidebarOpen(false); }}
-        className={cn(
-          "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-          view === 'routing' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+
+        {user.role !== 'vessel' && (
+          <button 
+            onClick={() => { setView('vessels'); setIsSidebarOpen(false); }}
+            className={getTopLevelClass(view === 'vessels')}
+          >
+            <Ship className="w-4 h-4" /> Vessels
+          </button>
         )}
-      >
-        <Compass className="w-4 h-4" /> Vessel Routing
-      </button>
 
-      <div className="space-y-1">
         <button 
-          onClick={() => setIsVoyageReportOpen(!isVoyageReportOpen)}
-          className={cn(
-            "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            ['departure', 'arrival', 'noon_to_noon', 'other_report'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-          )}
+          onClick={() => { setView('routing'); setIsSidebarOpen(false); }}
+          className={getTopLevelClass(view === 'routing')}
         >
-          <div className="flex items-center gap-3">
-            <FileText className="w-4 h-4" /> Voyage Report
-          </div>
-          <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isVoyageReportOpen ? "rotate-180" : "")} />
+          <Compass className="w-4 h-4" /> Vessel Routing
         </button>
-        
-        <AnimatePresence>
-          {isVoyageReportOpen && (
-            <motion.div 
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="overflow-hidden pl-4 space-y-1"
-            >
-              <button 
-                onClick={() => { setView('noon_to_noon'); setIsSidebarOpen(false); }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                  view === 'noon_to_noon' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                )}
-              >
-                <Clock className="w-3 h-3" /> Noon to Noon
-              </button>
-              <button 
-                onClick={() => { setView('arrival'); setIsSidebarOpen(false); }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                  view === 'arrival' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                )}
-              >
-                <MapIcon className="w-3 h-3" /> Arrival
-              </button>
-              <button 
-                onClick={() => { setView('departure'); setIsSidebarOpen(false); }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                  view === 'departure' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                )}
-              >
-                <Navigation className="w-3 h-3" /> Departure
-              </button>
-              <button 
-                onClick={() => { setView('other_report'); setIsSidebarOpen(false); }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                  view === 'other_report' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                )}
-              >
-                <File className="w-3 h-3" /> Other Report
-              </button>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
 
-      {/* Monitoring Group */}
-      <div className="space-y-1">
-        <button 
-          onClick={() => setIsMonitoringOpen(!isMonitoringOpen)}
-          className={cn(
-            "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            isMonitoringOpen || ['defects_5_2', 'defects_1_6', 'spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_analysis', 'lube_oil_requisition', 'lube_oil_ldr', 'store_chemical_requisition', 'crew_list', 'crew_compliance', 'audit_list', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational', 'admin_add_cert', 'admin_cert_list'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-          )}
-        >
-          <div className="flex items-center gap-3">
-            <Activity className="w-4 h-4" /> Monitoring
-          </div>
-          <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isMonitoringOpen ? "rotate-180" : "")} />
-        </button>
-        <AnimatePresence>
-          {isMonitoringOpen && (
-            <motion.div 
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
-            >
-              {/* Defects */}
-              <button 
-                onClick={() => { setView('defects_5_2'); setIsSidebarOpen(false); }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                  view === 'defects_5_2' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                )}
-              >
-                <AlertTriangle className="w-4 h-4" /> Defects
-              </button>
-
-              {/* Spare Parts Requisition */}
-              <button 
-                onClick={() => { setView('spare_requisition_ship'); setIsSidebarOpen(false); }}
-                className={cn(
-                  "w-full flex items-center gap-1.5 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                  ['spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship'].includes(view) ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                )}
-              >
-                <Package className="w-4 h-4" /> Spare Parts Requisition
-              </button>
-
-              {/* Fuel collapsible under Monitoring */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setIsBunkerOpen(!isBunkerOpen)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-bold transition-colors",
-                    ['bunker_bdn', 'bunker_fuel_analysis'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Droplets className="w-4 h-4 text-slate-400" /> Fuel
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200 text-slate-400", isBunkerOpen ? "rotate-180" : "")} />
-                </button>
-                <AnimatePresence>
-                  {isBunkerOpen && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
-                    >
-                      <button 
-                        onClick={() => { setView('bunker_bdn'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
-                          view === 'bunker_bdn' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> BDN
-                      </button>
-                      <button 
-                        onClick={() => { setView('bunker_fuel_analysis'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
-                          view === 'bunker_fuel_analysis' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Fuel Analysis
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Lube Oil collapsible under Monitoring */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setIsLubeOilOpen(!isLubeOilOpen)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-bold transition-colors",
-                    ['lube_oil_analysis', 'lube_oil_ldr'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Waves className="w-4 h-4 text-slate-400" /> Lube Oil
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200 text-slate-400", isLubeOilOpen ? "rotate-180" : "")} />
-                </button>
-                <AnimatePresence>
-                  {isLubeOilOpen && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
-                    >
-                      <button 
-                        onClick={() => { setView('lube_oil_ldr'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
-                          view === 'lube_oil_ldr' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> LDR
-                      </button>
-                      <button 
-                        onClick={() => { setView('lube_oil_analysis'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
-                          view === 'lube_oil_analysis' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Lube Oil Analysis
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Certificates collapsible under Monitoring */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setIsCertificatesOpen(!isCertificatesOpen)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-bold transition-colors",
-                    ['admin_add_cert', 'admin_cert_list'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <FileText className="w-4 h-4 text-slate-400" /> Certificates
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200 text-slate-400", isCertificatesOpen ? "rotate-180" : "")} />
-                </button>
-                <AnimatePresence>
-                  {isCertificatesOpen && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1 border-l border-slate-100 ml-4"
-                    >
-                      <button 
-                        onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
-                          view === 'admin_add_cert' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Add Cert/Service Report
-                      </button>
-                      <button 
-                        onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2 rounded-xl text-[11px] font-medium transition-colors",
-                          view === 'admin_cert_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Cert/Service Report List
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Store and Chemicals */}
-              <button 
-                onClick={() => { setView('store_chemical_requisition'); setIsSidebarOpen(false); }}
-                className={cn(
-                  "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors text-left",
-                  view === 'store_chemical_requisition' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                )}
-              >
-                <FlaskConical className="w-4 h-4" /> Store and Chemicals
-              </button>
-
-              {/* Crew */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setIsCrewOpen(!isCrewOpen)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                    ['crew_list', 'crew_compliance'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    <Users className="w-4 h-4" /> Crew
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isCrewOpen ? "rotate-180" : "")} />
-                </button>
-                <AnimatePresence>
-                  {isCrewOpen && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1"
-                    >
-                      <button 
-                        onClick={() => { setView('crew_list'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'crew_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Crew List
-                      </button>
-                      <button 
-                        onClick={() => { setView('crew_compliance'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'crew_compliance' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Crew Employment Status
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* Audits */}
-              <div className="space-y-1">
-                <button 
-                  onClick={() => setIsAuditsOpen(!isAuditsOpen)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-                    ['audit_list', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view) ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    <ShieldCheck className="w-4 h-4" /> Audits
-                  </div>
-                  <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isAuditsOpen ? "rotate-180" : "")} />
-                </button>
-                <AnimatePresence>
-                  {isAuditsOpen && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden pl-4 space-y-1"
-                    >
-                      <button 
-                        onClick={() => { setView('audit_list'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'audit_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Audit Registry
-                      </button>
-                      <button 
-                        onClick={() => { setView('audit_internal'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'audit_internal' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Internal Audit
-                      </button>
-                      <button 
-                        onClick={() => { setView('audit_external'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'audit_external' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> External Audit
-                      </button>
-                      <button 
-                        onClick={() => { setView('audit_vir'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'audit_vir' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> VIR
-                      </button>
-                      <button 
-                        onClick={() => { setView('audit_navigational'); setIsSidebarOpen(false); }}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                          view === 'audit_navigational' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                        )}
-                      >
-                        <div className="w-1 h-1 bg-current rounded-full" /> Navigational Audit
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-
-      {user.role === 'admin' || user.role === 'team_pic' ? (
+        {/* Voyage Report collapsible */}
         <div className="space-y-1">
           <button 
-            onClick={() => setIsAdminTreeOpen(!isAdminTreeOpen)}
-            className={cn(
-              "w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-              view.startsWith('admin') ? "bg-blue-50 text-blue-600" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+            onClick={() => setIsVoyageReportOpen(!isVoyageReportOpen)}
+            className={getCategoryToggleClass(
+              ['departure', 'arrival', 'noon_to_noon', 'other_report'].includes(view),
+              isVoyageReportOpen
             )}
           >
             <div className="flex items-center gap-3">
-              <Users className="w-4 h-4" /> Admin Panel
+              <FileText className="w-4 h-4" /> Voyage Report
             </div>
-            <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", isAdminTreeOpen ? "rotate-180" : "")} />
+            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isVoyageReportOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
           </button>
           
           <AnimatePresence>
-            {isAdminTreeOpen && (
+            {isVoyageReportOpen && (
               <motion.div 
                 initial={{ height: 0, opacity: 0 }}
                 animate={{ height: 'auto', opacity: 1 }}
                 exit={{ height: 0, opacity: 0 }}
                 transition={{ duration: 0.2 }}
-                className="overflow-hidden pl-4 space-y-1"
+                className="overflow-hidden pl-1 space-y-1"
               >
                 <button 
-                  onClick={() => { setView('admin_new_vessel'); setIsSidebarOpen(false); }}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                    view === 'admin_new_vessel' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
+                  onClick={() => { setView('noon_to_noon'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'noon_to_noon')}
                 >
-                  <Plus className="w-3 h-3" /> New Vessel
+                  <Clock className="w-3.5 h-3.5 shrink-0" /> Noon to Noon
                 </button>
                 <button 
-                  onClick={() => { setView('admin_vessel_list'); setIsSidebarOpen(false); }}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                    view === 'admin_vessel_list' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
+                  onClick={() => { setView('arrival'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'arrival')}
                 >
-                  <Ship className="w-3 h-3" /> Vessel List
+                  <MapIcon className="w-3.5 h-3.5 shrink-0" /> Arrival
                 </button>
                 <button 
-                  onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                    view === 'admin' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  )}
+                  onClick={() => { setView('departure'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'departure')}
                 >
-                  <Settings className="w-3 h-3" /> All Admin Settings
+                  <Navigation className="w-3.5 h-3.5 shrink-0" /> Departure
                 </button>
-                {(user.role === 'admin' || user.role === 'team_pic') && (
-                  <button 
-                    onClick={() => { setView('admin_recycle_bin'); setIsSidebarOpen(false); }}
-                    className={cn(
-                      "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-medium transition-colors",
-                      view === 'admin_recycle_bin' ? "bg-blue-600 text-white shadow-md shadow-blue-100" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                    )}
-                  >
-                    <Trash2 className="w-3 h-3" /> Recycle Bin
-                  </button>
-                )}
+                <button 
+                  onClick={() => { setView('other_report'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'other_report')}
+                >
+                  <File className="w-3.5 h-3.5 shrink-0" /> Other Report
+                </button>
               </motion.div>
             )}
           </AnimatePresence>
         </div>
-      ) : null}
-      {user.role !== 'vessel' && (
-        <button 
-          onClick={() => { setView('slideshow'); setIsSidebarOpen(false); }}
-          className={cn(
-            "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors",
-            view === 'slideshow' ? "bg-blue-600 text-white shadow-lg shadow-blue-100 hover:bg-blue-800" : "text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-          )}
-        >
-          <Monitor className="w-4 h-4" /> Slideshow
-        </button>
-      )}
-    </nav>
 
-    <div className="p-4 border-t border-blue-50">
-      <button 
-        onClick={() => { setIsChangePasswordOpen(true); setIsSidebarOpen(false); }}
-        className="w-full flex items-center gap-3 px-4 py-3 mb-2 rounded-xl hover:bg-blue-50 transition-colors text-left group"
-      >
-        <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 group-hover:bg-blue-200 transition-colors">
-          {user.username[0].toUpperCase()}
+        {/* Monitoring & Operations group (Fully flattened child items for exceptional usability!) */}
+        <div className="space-y-1">
+          <button 
+            onClick={() => setIsMonitoringOpen(!isMonitoringOpen)}
+            className={getCategoryToggleClass(
+              ['defects_5_2', 'spare_requisition_ship', 'bunker_bdn', 'bunker_fuel_analysis', 'lube_oil_ldr', 'lube_oil_analysis', 'store_chemical_requisition'].includes(view),
+              isMonitoringOpen
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <Activity className="w-4 h-4" /> Operations &amp; Monitoring
+            </div>
+            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isMonitoringOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+          </button>
+          
+          <AnimatePresence>
+            {isMonitoringOpen && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden pl-1 space-y-1"
+              >
+                <button 
+                  onClick={() => { setView('defects_5_2'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'defects_5_2')}
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-500" /> Defects &amp; Troubles
+                </button>
+
+                <button 
+                  onClick={() => { setView('spare_requisition_ship'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(['spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship'].includes(view))}
+                >
+                  <Package className="w-3.5 h-3.5 shrink-0" /> Spare Requisitions
+                </button>
+
+                <button 
+                  onClick={() => { setView('bunker_bdn'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'bunker_bdn')}
+                >
+                  <Fuel className="w-3.5 h-3.5 shrink-0" /> Bunker BDN Logs
+                </button>
+
+                <button 
+                  onClick={() => { setView('bunker_fuel_analysis'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'bunker_fuel_analysis')}
+                >
+                  <Droplets className="w-3.5 h-3.5 shrink-0 text-sky-500" /> Fuel Lab Analysis
+                </button>
+
+                <button 
+                  onClick={() => { setView('lube_oil_ldr'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'lube_oil_ldr')}
+                >
+                  <Waves className="w-3.5 h-3.5 shrink-0 text-blue-400" /> Lube Oil LDR
+                </button>
+
+                <button 
+                  onClick={() => { setView('lube_oil_analysis'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'lube_oil_analysis')}
+                >
+                  <Activity className="w-3.5 h-3.5 shrink-0" /> Lube Oil Analysis
+                </button>
+
+                <button 
+                  onClick={() => { setView('store_chemical_requisition'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'store_chemical_requisition')}
+                >
+                  <FlaskConical className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Store &amp; Chemicals
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-bold truncate">{user.username}</p>
-          <p className="text-[10px] text-gray-400 uppercase font-bold tracking-wider">{user.role}</p>
+
+        {/* Certificates Group - Now elevated to top-level category for immediate action */}
+        <div className="space-y-1">
+          <button 
+            onClick={() => setIsCertificatesOpen(!isCertificatesOpen)}
+            className={getCategoryToggleClass(
+              ['admin_add_cert', 'admin_cert_list'].includes(view),
+              isCertificatesOpen
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <FileText className="w-4 h-4" /> Certificates &amp; Reports
+            </div>
+            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isCertificatesOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+          </button>
+          
+          <AnimatePresence>
+            {isCertificatesOpen && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden pl-1 space-y-1"
+              >
+                <button 
+                  onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'admin_add_cert')}
+                >
+                  <Plus className="w-3.5 h-3.5 shrink-0" /> Add Cert/Report
+                </button>
+                <button 
+                  onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'admin_cert_list')}
+                >
+                  <FileText className="w-3.5 h-3.5 shrink-0" /> Service Report Registry
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
-        <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
-      </button>
-      <button 
-        onClick={onLogout}
-        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-red-500 hover:bg-red-50 transition-colors"
-      >
-        <LogOut className="w-4 h-4" /> Logout
-      </button>
-    </div>
-  </>
-);
+
+        {/* Crew Group */}
+        <div className="space-y-1">
+          <button 
+            onClick={() => setIsCrewOpen(!isCrewOpen)}
+            className={getCategoryToggleClass(
+              ['crew_list', 'crew_compliance'].includes(view),
+              isCrewOpen
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <Users className="w-4 h-4" /> Crew Management
+            </div>
+            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isCrewOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+          </button>
+          
+          <AnimatePresence>
+            {isCrewOpen && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden pl-1 space-y-1"
+              >
+                <button 
+                  onClick={() => { setView('crew_list'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'crew_list')}
+                >
+                  <Users className="w-3.5 h-3.5 shrink-0" /> Crew List
+                </button>
+                <button 
+                  onClick={() => { setView('crew_compliance'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'crew_compliance')}
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Crew Employment Status
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Audits Group */}
+        <div className="space-y-1">
+          <button 
+            onClick={() => setIsAuditsOpen(!isAuditsOpen)}
+            className={getCategoryToggleClass(
+              ['audit_list', 'audit_internal', 'audit_external', 'audit_vir', 'audit_navigational'].includes(view),
+              isAuditsOpen
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <ShieldCheck className="w-4 h-4" /> Audits &amp; Inspections
+            </div>
+            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isAuditsOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+          </button>
+          
+          <AnimatePresence>
+            {isAuditsOpen && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden pl-1 space-y-1"
+              >
+                <button 
+                  onClick={() => { setView('audit_list'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'audit_list')}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" /> Audit Registry
+                </button>
+                <button 
+                  onClick={() => { setView('audit_internal'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'audit_internal')}
+                >
+                  <CheckSquare className="w-3.5 h-3.5 shrink-0" /> Internal Audit
+                </button>
+                <button 
+                  onClick={() => { setView('audit_external'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'audit_external')}
+                >
+                  <FileText className="w-3.5 h-3.5 shrink-0" /> External Audit
+                </button>
+                <button 
+                  onClick={() => { setView('audit_vir'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'audit_vir')}
+                >
+                  <Search className="w-3.5 h-3.5 shrink-0" /> VIR Report
+                </button>
+                <button 
+                  onClick={() => { setView('audit_navigational'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'audit_navigational')}
+                >
+                  <Compass className="w-3.5 h-3.5 shrink-0 text-blue-500" /> Navigational Audit
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Administration panel */}
+        {(user.role === 'admin' || user.role === 'team_pic') && (
+          <div className="space-y-1">
+            <button 
+              onClick={() => setIsAdminTreeOpen(!isAdminTreeOpen)}
+              className={getCategoryToggleClass(
+                view.startsWith('admin'),
+                isAdminTreeOpen
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <Settings className="w-4 h-4" /> Admin Panel
+              </div>
+              <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isAdminTreeOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+            </button>
+            
+            <AnimatePresence>
+              {isAdminTreeOpen && (
+                <motion.div 
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden pl-1 space-y-1"
+                >
+                  <button 
+                    onClick={() => { setView('admin_new_vessel'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'admin_new_vessel')}
+                  >
+                    <Plus className="w-3.5 h-3.5 shrink-0" /> New Vessel
+                  </button>
+                  <button 
+                    onClick={() => { setView('admin_vessel_list'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'admin_vessel_list')}
+                  >
+                    <Ship className="w-3.5 h-3.5 shrink-0" /> Vessel List
+                  </button>
+                  <button 
+                    onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'admin')}
+                  >
+                    <Settings className="w-3.5 h-3.5 shrink-0" /> Admin Settings
+                  </button>
+                  <button 
+                    onClick={() => { setView('admin_recycle_bin'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'admin_recycle_bin')}
+                  >
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" /> Recycle Bin
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+
+        {user.role !== 'vessel' && (
+          <button 
+            onClick={() => { setView('slideshow'); setIsSidebarOpen(false); }}
+            className={getTopLevelClass(view === 'slideshow')}
+          >
+            <Monitor className="w-4 h-4" /> Slideshow
+          </button>
+        )}
+
+        <button 
+          onClick={() => { setView('about'); setIsSidebarOpen(false); }}
+          className={getTopLevelClass(view === 'about')}
+        >
+          <Info className="w-4 h-4" /> About COMOS
+        </button>
+      </nav>
+
+      <div className="p-4 border-t border-slate-100 bg-white/80 backdrop-blur-md">
+        <button 
+          onClick={() => { setIsChangePasswordOpen(true); setIsSidebarOpen(false); }}
+          className="w-full flex items-center gap-3 px-3 py-2.5 mb-2 rounded-xl hover:bg-slate-50 transition-colors text-left group cursor-pointer"
+        >
+          <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 group-hover:bg-blue-200 transition-colors">
+            {user.username[0].toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold truncate text-slate-800">{user.username}</p>
+            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{user.role}</p>
+          </div>
+          <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
+        </button>
+        <button 
+          onClick={onLogout}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold text-red-500 hover:bg-red-50/70 transition-colors cursor-pointer"
+        >
+          <LogOut className="w-4 h-4" /> Logout
+        </button>
+      </div>
+    </>
+  );
+};
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about'>('dashboard');
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -3580,6 +3483,12 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 noonReports={noonReports}
                 otherReports={otherReports}
               />
+            </div>
+          )}
+
+          {view === 'about' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <AboutView />
             </div>
           )}
 
