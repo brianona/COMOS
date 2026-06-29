@@ -8596,6 +8596,7 @@ const AdminPanel = ({
   const [newUserTeams, setNewUserTeams] = useState<number[]>([]);
   const [newUserVessel, setNewUserVessel] = useState<number | null>(null);
   const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserNotify, setNewUserNotify] = useState(true);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -8861,6 +8862,10 @@ const AdminPanel = ({
       notify('error', 'Username and password are required');
       return;
     }
+    if (!editingUser && newUserNotify && !email) {
+      notify('error', 'Email address is required when notification is checked');
+      return;
+    }
     try {
       const url = editingUser ? `/api/users/${editingUser.id}` : '/api/users';
       const method = editingUser ? 'PUT' : 'POST';
@@ -8874,6 +8879,7 @@ const AdminPanel = ({
           team_ids: teamIds,
           vessel_id: role === 'vessel' ? (vesselId ? Number(vesselId) : null) : null,
           email: email,
+          notify: editingUser ? false : newUserNotify,
           device_id: editingUser ? editingUser.device_id : null,
           is_verified: editingUser ? !!editingUser.is_verified : false
         }),
@@ -8886,6 +8892,7 @@ const AdminPanel = ({
         setNewUserTeams([]);
         setNewUserVessel(null);
         setNewUserEmail('');
+        setNewUserNotify(true);
         setEditingUser(null);
         fetchUsers();
       } else {
@@ -9621,20 +9628,47 @@ const AdminPanel = ({
                   onChange={(e) => setNewUsername(e.target.value)}
                   className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                 />
-                <input 
-                  type="password" 
-                  placeholder="Password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                />
+                <div className="flex gap-2 items-center">
+                  <input 
+                    type="text" 
+                    placeholder="Password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="flex-1 px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%&*';
+                      let pass = '';
+                      for (let i = 0; i < 10; i++) {
+                        pass += chars.charAt(Math.floor(Math.random() * chars.length));
+                      }
+                      setNewPassword(pass);
+                    }}
+                    className="px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-xs font-bold transition-colors whitespace-nowrap"
+                  >
+                    Generate Random Password
+                  </button>
+                </div>
                 <input 
                   type="email" 
-                  placeholder="Email Address (for Alerts)" 
+                  placeholder="Email Address (for Alerts & Notifications)" 
                   value={newUserEmail}
                   onChange={(e) => setNewUserEmail(e.target.value)}
                   className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                 />
+                <label className="flex items-start gap-2 pt-1 px-1 cursor-pointer select-none">
+                  <input 
+                    type="checkbox"
+                    checked={newUserNotify}
+                    onChange={(e) => setNewUserNotify(e.target.checked)}
+                    className="mt-0.5 rounded text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-xs text-slate-700 font-medium leading-relaxed">
+                    Notify newly created user via email containing their username and initial password (access via https://comos.cc)
+                  </span>
+                </label>
                 <div className="grid grid-cols-2 gap-4">
                   <select 
                     value={newUserRole}

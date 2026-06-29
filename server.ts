@@ -1518,8 +1518,8 @@ async function startServer() {
     }
   });
 
-  app.post('/api/users', authenticate, isAdmin, async (req, res) => {
-    const { username, password, role, team_ids, vessel_id, email } = req.body;
+  app.post('/api/users', authenticate, isTeamPicOrAdmin, async (req, res) => {
+    const { username, password, role, team_ids, vessel_id, email, notify } = req.body;
     const hashedPassword = bcrypt.hashSync(password, 10);
     const conn = await pool.getConnection();
     try {
@@ -1535,6 +1535,33 @@ async function startServer() {
       
       await conn.commit();
       await logAudit((req as any).user.id, (req as any).user.username, 'CREATE_USER', `Created user: ${username} with role ${role}`);
+      
+      if (notify && email) {
+        try {
+          await sendEmail({
+            to: email,
+            subject: 'Welcome to COMOS - Account Credentials',
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+                <h2 style="color: #2563eb;">Welcome to COMOS</h2>
+                <p>Hello,</p>
+                <p>An account has been created for you on the COMOS platform.</p>
+                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+                  <p style="margin: 0 0 8px 0;"><strong>Username:</strong> ${username}</p>
+                  <p style="margin: 0;"><strong>Initial Password:</strong> ${password}</p>
+                </div>
+                <p>You can access COMOS via <a href="https://comos.cc" style="color: #2563eb; text-decoration: none; font-weight: bold;">https://comos.cc</a></p>
+                <p>Please log in and change your password if needed.</p>
+                <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+                <p style="font-size: 12px; color: #64748b;">Automated notification from COMOS System.</p>
+              </div>
+            `
+          });
+        } catch (err: any) {
+          console.error('Failed to send welcome email notification:', err);
+        }
+      }
+
       res.json({ success: true });
     } catch (e: any) {
       await conn.rollback();
