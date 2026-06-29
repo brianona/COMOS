@@ -179,7 +179,7 @@ const DeviceRegistration = ({ user, token, onLogout, onVerified }: { user: User,
 
             <div className="space-y-4">
               <p className="text-xs text-slate-500 text-center italic">
-                Provide this code to your TEAM PIC or Admin to verify your device.
+                Provide this code to your Management or Admin to verify your device.
               </p>
               
               {error && (
@@ -266,6 +266,16 @@ interface User {
   device_id?: string | null;
   is_verified?: boolean;
 }
+
+const getRoleLabel = (role: string) => {
+  switch (role) {
+    case 'admin': return 'Admin';
+    case 'team_pic': return 'Management';
+    case 'user': return 'PIC';
+    case 'vessel': return 'Vessel';
+    default: return role;
+  }
+};
 
 interface DeviceRegistrationRequest {
   id: number;
@@ -1436,7 +1446,7 @@ const SidebarContent = ({
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold truncate text-slate-800">{user.username}</p>
-            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{user.role}</p>
+            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{getRoleLabel(user.role)}</p>
           </div>
           <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
         </button>
@@ -2504,29 +2514,6 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   })()}
                 </div>
 
-                {/* 4. Crew Compliance KPI */}
-                <div 
-                  onClick={() => setView('crew_compliance')}
-                  className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
-                >
-                  {(() => {
-                    const issues = crewMembers.filter(c => c.status === 'Expired' || c.status === 'Warning').length;
-                    return (
-                      <>
-                        <div className="flex items-center justify-between mb-4">
-                          <div className="p-2.5 bg-purple-50 rounded-xl text-purple-600 group-hover:bg-purple-600 group-hover:text-white transition-all">
-                            <Users className="w-5 h-5" />
-                          </div>
-                          <span className="text-2xl font-black text-slate-800 tracking-tight">{issues}</span>
-                        </div>
-                        <div>
-                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Manning Alert</h3>
-                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Expired/Warning docs</p>
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
 
                 {/* 5. Pending Requisitions KPI */}
                 <div 
@@ -7617,7 +7604,7 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
                           </span>
                           <span className="text-[10px] text-slate-400 font-medium">
                             {activeTab === 'vessels' && `Owner: ${item.owner}`}
-                            {activeTab === 'users' && `Role: ${item.role}`}
+                            {activeTab === 'users' && `Role: ${getRoleLabel(item.role)}`}
                             {activeTab === 'certificates' && `Vessel: ${item.vessel_name || 'Generic'}`}
                             {activeTab === 'files' && `Certificate: ${item.certificate_name}`}
                             {activeTab.includes('report') && `Date: ${format(new Date(item.utc_date_time), 'MMM dd, yyyy')}`}
@@ -9675,9 +9662,9 @@ const AdminPanel = ({
                     onChange={(e) => setNewUserRole(e.target.value as any)}
                     className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                   >
-                    <option value="user">User Role</option>
+                    <option value="user">PIC Role</option>
                     <option value="admin">Admin Role</option>
-                    <option value="team_pic">Team PIC Role</option>
+                    <option value="team_pic">Management Role</option>
                     <option value="vessel">Vessel Role</option>
                   </select>
                   {newUserRole === 'vessel' && (
@@ -9730,7 +9717,7 @@ const AdminPanel = ({
                     <div>
                       <p className="text-sm font-bold text-slate-900">{u.username}</p>
                       <div className="flex items-center gap-2">
-                        <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{u.role}</p>
+                        <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{getRoleLabel(u.role)}</p>
                         {u.role === 'vessel' && (
                           <>
                             <span className="text-slate-300">•</span>
@@ -10389,9 +10376,9 @@ const AdminPanel = ({
                         onChange={(e) => setEditingUser({...editingUser, role: e.target.value as any})}
                         className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                       >
-                        <option value="user">User</option>
+                        <option value="user">PIC</option>
                         <option value="admin">Admin</option>
-                        <option value="team_pic">Team PIC</option>
+                        <option value="team_pic">Management</option>
                         <option value="vessel">Vessel</option>
                       </select>
                     </div>

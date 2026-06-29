@@ -1536,8 +1536,10 @@ async function startServer() {
       await conn.commit();
       await logAudit((req as any).user.id, (req as any).user.username, 'CREATE_USER', `Created user: ${username} with role ${role}`);
       
+      console.log(`Debug: Creating user. Notify: ${notify}, Email: ${email}`);
       if (notify && email) {
         try {
+          console.log(`Debug: Attempting to send email to ${email}`);
           await sendEmail({
             to: email,
             subject: 'Welcome to COMOS - Account Credentials',
@@ -1557,6 +1559,7 @@ async function startServer() {
               </div>
             `
           });
+          console.log(`Debug: Email sent successfully to ${email}`);
         } catch (err: any) {
           console.error('Failed to send welcome email notification:', err);
         }
