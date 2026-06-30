@@ -3232,6 +3232,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               notify={notify}
               previewFile={previewFile}
               setPreviewFile={setPreviewFile}
+              tempPreviewUrl={tempPreviewUrl}
               setTempPreviewUrl={setTempPreviewUrl}
               isRecognizing={isRecognizing}
               setIsRecognizing={setIsRecognizing}
@@ -3990,7 +3991,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           </>
         )}
 
-        {(selectedCert || previewFile) && (
+        {(selectedCert || (previewFile && view !== 'admin_add_cert')) && (
           <>
             <motion.div 
               initial={{ opacity: 0 }}
@@ -8492,7 +8493,7 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify, isLoa
 
 const AdminPanel = ({ 
   token, teams, vessels, certs, setCerts, onRefresh, notify,
-  previewFile, setPreviewFile, setTempPreviewUrl, isRecognizing, setIsRecognizing,
+  previewFile, setPreviewFile, tempPreviewUrl, setTempPreviewUrl, isRecognizing, setIsRecognizing,
   subView,
   editingVessel, setEditingVessel, editingVesselPhoto, setEditingVesselPhoto, handleUpdateVessel, handleDeleteVessel,
   editingCert, setEditingCert, newCertFile, setNewCertFile, handleUpdateCert, handleDeleteCert,
@@ -8510,6 +8511,7 @@ const AdminPanel = ({
   notify: (type: 'success' | 'error' | 'info', message: string) => void,
   previewFile: FileData | null,
   setPreviewFile: (file: FileData | null) => void,
+  tempPreviewUrl: string | null,
   setTempPreviewUrl: (url: string | null) => void,
   isRecognizing: boolean,
   setIsRecognizing: (val: boolean) => void,
@@ -8906,6 +8908,8 @@ const AdminPanel = ({
         setNewCertTeam('');
         setNewCertAccessType('office');
         setNewCertFile(null);
+        setPreviewFile(null);
+        setTempPreviewUrl(null);
         onRefresh();
       } else {
         notify('error', 'Failed to assign certificate/service report');
@@ -9121,7 +9125,8 @@ const AdminPanel = ({
           {(!subView || subView === 'admin' || subView === 'admin_new_vessel' || subView === 'admin_add_cert') && (
             <div className={cn(
               "grid grid-cols-1 lg:grid-cols-2 gap-8",
-              (subView === 'admin_new_vessel' || subView === 'admin_add_cert') && "lg:grid-cols-1 max-w-2xl"
+              (subView === 'admin_new_vessel' || (subView === 'admin_add_cert' && !newCertFile)) && "lg:grid-cols-1 max-w-2xl",
+              (subView === 'admin_add_cert' && newCertFile) && "max-w-none w-full"
             )}>
               {/* Add Vessel */}
               {((!subView || subView === 'admin') || subView === 'admin_new_vessel') && !isVessel && (
@@ -9422,6 +9427,79 @@ const AdminPanel = ({
                 >
                   Add Certificate/Service Report
                 </button>
+              </div>
+            </section>
+          )}
+
+          {subView === 'admin_add_cert' && newCertFile && (
+            <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm h-full flex flex-col">
+              <div className="flex items-center justify-between mb-4 border-b border-blue-50 pb-3">
+                <div>
+                  <h2 className="font-bold text-blue-900 flex items-center gap-2">
+                    <Eye className="w-5 h-5" /> Document Preview
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1 truncate max-w-[250px]" title={newCertFile.name}>
+                    {newCertFile.name}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {isRecognizing && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 animate-pulse flex items-center gap-1">
+                      <RefreshCw className="w-3 h-3 animate-spin" /> Auto-filling...
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewCertFile(null);
+                      setPreviewFile(null);
+                      setTempPreviewUrl(null);
+                    }}
+                    className="p-1.5 hover:bg-red-50 text-red-500 hover:text-red-700 rounded-lg transition-colors text-xs font-bold uppercase tracking-wider flex items-center gap-1"
+                  >
+                    <X className="w-4 h-4" /> Remove File
+                  </button>
+                </div>
+              </div>
+              
+              <div className="flex-1 min-h-[450px] lg:min-h-[550px] overflow-hidden rounded-xl border border-blue-50 bg-slate-50 relative">
+                {(() => {
+                  const ext = newCertFile.name.split('.').pop()?.toLowerCase();
+                  const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
+                  const isPdf = ext === 'pdf';
+                  
+                  if (isImage && tempPreviewUrl) {
+                    return (
+                      <div className="w-full h-full flex items-center justify-center p-4 overflow-auto">
+                        <img 
+                          src={tempPreviewUrl} 
+                          alt={newCertFile.name} 
+                          className="max-w-full max-h-[500px] object-contain rounded shadow-md"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                    );
+                  } else if (isPdf && tempPreviewUrl) {
+                    return (
+                      <div className="w-full h-full">
+                        <PDFViewer 
+                          url={tempPreviewUrl} 
+                          title={newCertFile.name} 
+                        />
+                      </div>
+                    );
+                  } else {
+                    return (
+                      <div className="w-full h-full flex flex-col items-center justify-center text-center p-8 gap-3">
+                        <File className="w-12 h-12 text-blue-300" />
+                        <p className="text-xs text-slate-500">
+                          Preview not available for this file type.<br/>
+                          <span className="font-mono font-bold text-blue-600">{newCertFile.name}</span>
+                        </p>
+                      </div>
+                    );
+                  }
+                })()}
               </div>
             </section>
           )}
