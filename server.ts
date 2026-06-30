@@ -1308,6 +1308,36 @@ async function startServer() {
     const { device_id, device_code } = req.body;
     const user_id = req.user.id;
     try {
+      // For vessel users, check if they already have 2 verified devices
+      const [userRows]: any = await pool.execute(
+        'SELECT device_id, is_verified, role FROM users WHERE id = ?',
+        [user_id]
+      );
+      if (userRows.length > 0) {
+        const user = userRows[0];
+        if (user.role === 'vessel') {
+          let registeredDevices: string[] = [];
+          if (user.is_verified && user.device_id) {
+            if (user.device_id.startsWith('[') && user.device_id.endsWith(']')) {
+              try {
+                registeredDevices = JSON.parse(user.device_id);
+              } catch (e) {}
+            } else {
+              registeredDevices = user.device_id.split(',').map((s: string) => s.trim()).filter(Boolean);
+            }
+          }
+
+          // If the device being registered is already verified, no need to register it again
+          if (registeredDevices.includes(device_id)) {
+            return res.json({ success: true, already_registered: true });
+          }
+
+          if (registeredDevices.length >= 2) {
+            return res.status(400).json({ error: 'You have reached the maximum limit of 2 registered devices for this vessel account. Please contact an Administrator to remove an existing device.' });
+          }
+        }
+      }
+
       // Clear any pending requests for this user first
       await pool.execute("DELETE FROM device_registration_requests WHERE user_id = ? AND status = 'pending'", [user_id]);
       
@@ -1399,10 +1429,36 @@ async function startServer() {
         );
         const request = requests[0];
         if (request) {
-          await pool.execute(
-            'UPDATE users SET device_id = ?, is_verified = TRUE WHERE id = ?',
-            [request.device_id, request.user_id]
+          const [userRows]: any = await pool.execute(
+            'SELECT device_id, is_verified, role FROM users WHERE id = ?',
+            [request.user_id]
           );
+          if (userRows.length > 0) {
+            const user = userRows[0];
+            let registeredDevices: string[] = [];
+            if (user.is_verified && user.device_id) {
+              if (user.device_id.startsWith('[') && user.device_id.endsWith(']')) {
+                try {
+                  registeredDevices = JSON.parse(user.device_id);
+                } catch (e) {}
+              } else {
+                registeredDevices = user.device_id.split(',').map((s: string) => s.trim()).filter(Boolean);
+              }
+            }
+
+            if (!registeredDevices.includes(request.device_id)) {
+              if (user.role === 'vessel' && registeredDevices.length >= 2) {
+                return res.status(400).json({ error: 'Maximum registered devices (2) limit reached for this vessel account. Please remove an existing device first.' });
+              }
+              registeredDevices.push(request.device_id);
+            }
+
+            const newDeviceIdStr = JSON.stringify(registeredDevices);
+            await pool.execute(
+              'UPDATE users SET device_id = ?, is_verified = TRUE WHERE id = ?',
+              [newDeviceIdStr, request.user_id]
+            );
+          }
         }
       }
       await pool.execute(

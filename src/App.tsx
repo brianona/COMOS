@@ -87,6 +87,32 @@ const getDeviceId = () => {
   return deviceId;
 };
 
+const isDeviceRegistered = (registeredIds: string | null | undefined, currentId: string) => {
+  if (!registeredIds) return false;
+  if (registeredIds.startsWith('[') && registeredIds.endsWith(']')) {
+    try {
+      const arr = JSON.parse(registeredIds);
+      if (Array.isArray(arr)) {
+        return arr.includes(currentId);
+      }
+    } catch (e) {}
+  }
+  return registeredIds.split(',').map(s => s.trim()).includes(currentId);
+};
+
+const formatDeviceIds = (device_id: string | null | undefined) => {
+  if (!device_id) return '-';
+  if (device_id.startsWith('[') && device_id.endsWith(']')) {
+    try {
+      const arr = JSON.parse(device_id);
+      if (Array.isArray(arr)) {
+        return arr.join(', ');
+      }
+    } catch (e) {}
+  }
+  return device_id;
+};
+
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 
 const DeviceRegistration = ({ user, token, onLogout, onVerified }: { user: User, token: string, onLogout: () => void, onVerified: (isVerified: boolean, deviceId: string) => void }) => {
@@ -101,7 +127,7 @@ const DeviceRegistration = ({ user, token, onLogout, onVerified }: { user: User,
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
-      if (data.is_verified && data.device_id === deviceId) {
+      if (data.is_verified && isDeviceRegistered(data.device_id, deviceId)) {
         onVerified(true, deviceId);
       } else if (data.has_pending_request) {
         setStatus('pending');
@@ -10314,8 +10340,8 @@ const AdminPanel = ({
                           <p className="font-bold text-slate-900">{device.vessel_name || 'No Vessel Assigned'}</p>
                           <p className="text-xs text-slate-500">User: {device.username}</p>
                         </td>
-                        <td className="px-6 py-4 font-mono text-[10px] text-slate-400 max-w-[250px] truncate">
-                          {device.device_id}
+                        <td className="px-6 py-4 font-mono text-[10px] text-slate-400 max-w-[250px] truncate" title={formatDeviceIds(device.device_id)}>
+                          {formatDeviceIds(device.device_id)}
                         </td>
                         <td className="px-6 py-4">
                           <span className="px-2 py-1 bg-green-100 text-green-700 text-[10px] font-bold rounded-full uppercase tracking-wider">
@@ -10451,7 +10477,7 @@ const AdminPanel = ({
                     <div className="p-3 bg-blue-50 rounded-xl flex items-center justify-between">
                       <div>
                         <p className="text-xs font-bold text-blue-900">Device Verified</p>
-                        <p className="text-[10px] text-blue-600 font-mono truncate max-w-[200px]">ID: {editingUser.device_id}</p>
+                        <p className="text-[10px] text-blue-600 font-mono truncate max-w-[200px]" title={formatDeviceIds(editingUser.device_id)}>ID: {formatDeviceIds(editingUser.device_id)}</p>
                       </div>
                       <button
                         onClick={() => setEditingUser({ ...editingUser, is_verified: false, device_id: null })}
@@ -10600,7 +10626,7 @@ export default function App() {
   // Vessel Device Verification Check
   if (user.role === 'vessel') {
     const currentDeviceId = getDeviceId();
-    if (!user.is_verified || user.device_id !== currentDeviceId) {
+    if (!user.is_verified || !isDeviceRegistered(user.device_id, currentDeviceId)) {
        return (
          <DeviceRegistration 
            user={user} 
