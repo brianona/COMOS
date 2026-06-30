@@ -417,6 +417,9 @@ interface NoonReport {
   wave_scale?: string | null;
   weather_image?: string | null;
   remarks?: string | null;
+  destination_port?: string | null;
+  eta_utc?: string | null;
+  agent_details?: string | null;
 }
 
 interface OtherReport {
@@ -5439,7 +5442,10 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
     wind_scale: '',
     wave_scale: '',
     weather_image: '',
-    remarks: ''
+    remarks: '',
+    destination_port: '',
+    eta_utc: '',
+    agent_details: ''
   };
   const [form, setForm] = useState(defaultForm);
   const [file, setFile] = useState<File | null>(null);
@@ -5493,7 +5499,7 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
 
       const formData = new FormData();
       Object.entries(form).forEach(([key, val]) => {
-        if (key === 'utc_date_time') {
+        if ((key === 'utc_date_time' || key === 'eta_utc') && val) {
           formData.append(key, String(val).replace('T', ' '));
         } else {
           formData.append(key, String(val));
@@ -5572,7 +5578,10 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
       wind_scale: report.wind_scale || '',
       wave_scale: report.wave_scale || '',
       weather_image: report.weather_image || '',
-      remarks: report.remarks || ''
+      remarks: report.remarks || '',
+      destination_port: report.destination_port || '',
+      eta_utc: report.eta_utc ? report.eta_utc.slice(0, 16) : '',
+      agent_details: report.agent_details || ''
     });
     setActiveTab('form');
   };
@@ -5745,6 +5754,38 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
                       <option value="laden">LADEN</option>
                     </select>
                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Destination Port</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. Singapore"
+                      value={form.destination_port}
+                      onChange={(e) => setForm({ ...form, destination_port: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">ETA (UTC)</label>
+                    <input 
+                      type="datetime-local" 
+                      value={form.eta_utc}
+                      onChange={(e) => setForm({ ...form, eta_utc: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Agent Details</label>
+                  <textarea 
+                    placeholder="Enter local agent contact details, address, etc."
+                    value={form.agent_details || ''}
+                    onChange={(e) => setForm({ ...form, agent_details: e.target.value })}
+                    className="w-full px-4 text-slate-900 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none h-20 placeholder-slate-400 font-bold"
+                  />
                 </div>
 
                 <div>
@@ -6044,6 +6085,9 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
                     <th className="px-6 py-4">Vessel</th>
                     <th className="px-6 py-4">Voyage</th>
                     <th className="px-6 py-4">Position</th>
+                    <th className="px-6 py-4">Destination</th>
+                    <th className="px-6 py-4">ETA (UTC)</th>
+                    <th className="px-6 py-4">Agent</th>
                     <th className="px-6 py-4">DTG</th>
                     <th className="px-6 py-4">Cargo</th>
                     <th className="px-6 py-4">Weather</th>
@@ -6061,6 +6105,13 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
                     <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
                     <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
                     <td className="px-6 py-4 font-mono text-xs">{report.position_lat} / {report.position_long}</td>
+                    <td className="px-6 py-4 font-bold text-slate-700">{report.destination_port || '-'}</td>
+                    <td className="px-6 py-4 font-mono text-xs">
+                      {report.eta_utc ? format(parseISO(report.eta_utc), 'MMM dd, HH:mm') : '-'}
+                    </td>
+                    <td className="px-6 py-4 text-xs max-w-[150px] truncate" title={report.agent_details || ''}>
+                      {report.agent_details || '-'}
+                    </td>
                     <td className="px-6 py-4">{report.distance_to_go} nm</td>
                     <td className="px-6 py-4 uppercase text-[10px] font-bold text-slate-500">{report.cargo_status}</td>
                     <td className="px-6 py-4">
