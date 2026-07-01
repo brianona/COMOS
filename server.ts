@@ -24,41 +24,69 @@ const JWT_SECRET = process.env.JWT_SECRET || 'vessel-cert-secret-key';
 
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
-const isB2Configured = () => {
-  return !!(
-    process.env.B2_APPLICATION_KEY_ID &&
-    process.env.B2_APPLICATION_KEY &&
-    process.env.B2_BUCKET_NAME &&
-    process.env.B2_ENDPOINT
-  );
+let globalPool: mysql.Pool | null = null;
+
+const getB2Settings = async () => {
+  let b2KeyId = process.env.B2_APPLICATION_KEY_ID || '';
+  let b2Key = process.env.B2_APPLICATION_KEY || '';
+  let b2Bucket = process.env.B2_BUCKET_NAME || '';
+  let b2Endpoint = process.env.B2_ENDPOINT || '';
+
+  if (globalPool) {
+    try {
+      const [rows] = await globalPool.query(
+        'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("B2_APPLICATION_KEY_ID", "B2_APPLICATION_KEY", "B2_BUCKET_NAME", "B2_ENDPOINT")'
+      );
+      for (const row of rows as any[]) {
+        if (row.setting_key === 'B2_APPLICATION_KEY_ID' && row.setting_value) b2KeyId = row.setting_value;
+        if (row.setting_key === 'B2_APPLICATION_KEY' && row.setting_value) b2Key = row.setting_value;
+        if (row.setting_key === 'B2_BUCKET_NAME' && row.setting_value) b2Bucket = row.setting_value;
+        if (row.setting_key === 'B2_ENDPOINT' && row.setting_value) b2Endpoint = row.setting_value;
+      }
+    } catch (e) {
+      // Ignore database errors during early startup or if table is not yet created
+    }
+  }
+
+  return {
+    B2_APPLICATION_KEY_ID: b2KeyId,
+    B2_APPLICATION_KEY: b2Key,
+    B2_BUCKET_NAME: b2Bucket,
+    B2_ENDPOINT: b2Endpoint,
+  };
 };
 
-let b2Client: any = null;
+const isB2Configured = async () => {
+  const s = await getB2Settings();
+  return !!(s.B2_APPLICATION_KEY_ID && s.B2_APPLICATION_KEY && s.B2_BUCKET_NAME && s.B2_ENDPOINT);
+};
 
-const getB2Client = () => {
-  if (!b2Client && isB2Configured()) {
-    b2Client = new S3Client({
-      endpoint: process.env.B2_ENDPOINT!.startsWith('http') 
-        ? process.env.B2_ENDPOINT 
-        : `https://${process.env.B2_ENDPOINT}`,
-      credentials: {
-        accessKeyId: process.env.B2_APPLICATION_KEY_ID!,
-        secretAccessKey: process.env.B2_APPLICATION_KEY!,
-      },
-      region: process.env.B2_ENDPOINT!.split('.')[1] || 'us-east-005',
-    });
+const getB2Client = async () => {
+  const s = await getB2Settings();
+  if (!s.B2_APPLICATION_KEY_ID || !s.B2_APPLICATION_KEY || !s.B2_ENDPOINT) {
+    return null;
   }
-  return b2Client;
+  return new S3Client({
+    endpoint: s.B2_ENDPOINT.startsWith('http') 
+      ? s.B2_ENDPOINT 
+      : `https://${s.B2_ENDPOINT}`,
+    credentials: {
+      accessKeyId: s.B2_APPLICATION_KEY_ID,
+      secretAccessKey: s.B2_APPLICATION_KEY,
+    },
+    region: s.B2_ENDPOINT.split('.')[1] || 'us-east-005',
+  });
 };
 
 const uploadFileToB2 = async (key: string, buffer: Buffer, mimeType: string): Promise<string> => {
-  const client = getB2Client();
-  if (!client) {
+  const client = await getB2Client();
+  const s = await getB2Settings();
+  if (!client || !s.B2_BUCKET_NAME) {
     throw new Error('Backblaze B2 is not configured.');
   }
   await client.send(
     new PutObjectCommand({
-      Bucket: process.env.B2_BUCKET_NAME!,
+      Bucket: s.B2_BUCKET_NAME,
       Key: key,
       Body: buffer,
       ContentType: mimeType,
@@ -68,13 +96,14 @@ const uploadFileToB2 = async (key: string, buffer: Buffer, mimeType: string): Pr
 };
 
 const getFileFromB2 = async (key: string): Promise<Buffer> => {
-  const client = getB2Client();
-  if (!client) {
+  const client = await getB2Client();
+  const s = await getB2Settings();
+  if (!client || !s.B2_BUCKET_NAME) {
     throw new Error('Backblaze B2 is not configured.');
   }
   const response = await client.send(
     new GetObjectCommand({
-      Bucket: process.env.B2_BUCKET_NAME!,
+      Bucket: s.B2_BUCKET_NAME,
       Key: key,
     })
   );
@@ -90,7 +119,7 @@ const getFileFromB2 = async (key: string): Promise<Buffer> => {
 
 // Modifies the binary buffer to store a reference pointer if B2 is configured, or leaves it alone
 const handleFileUpload = async (filename: string, mimetype: string, buffer: Buffer, typeSlug: string): Promise<Buffer> => {
-  if (isB2Configured()) {
+  if (await isB2Configured()) {
     try {
       const sanitizeName = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
       const key = `${typeSlug}/${Date.now()}_${sanitizeName}`;
@@ -121,7 +150,7 @@ const handleFileRetrieve = async (dbData: any): Promise<Buffer> => {
   const buf = Buffer.isBuffer(dbData) ? dbData : Buffer.from(dbData);
   if (buf.length > 7 && buf.toString('utf8', 0, 7) === 'B2_KEY:') {
     const b2Key = buf.toString('utf8', 7);
-    if (isB2Configured()) {
+    if (await isB2Configured()) {
       try {
         return await getFileFromB2(b2Key);
       } catch (err: any) {
@@ -199,6 +228,7 @@ async function startServer() {
       connectTimeout: 10000,
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
     });
+    globalPool = pool;
     
     // Test connection and initialize tables
     console.log('Initializing database tables...');
@@ -465,6 +495,12 @@ async function startServer() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
+
+    try {
+      await pool.query('ALTER TABLE settings MODIFY COLUMN setting_value LONGTEXT');
+    } catch (e: any) {
+      console.warn('Could not upgrade settings.setting_value to LONGTEXT:', e.message);
+    }
 
     // Migration for Soft Delete: Add deleted_at column to all relevant tables
     try {
@@ -1212,6 +1248,21 @@ async function startServer() {
     }
   });
 
+  app.get('/api/public-settings', async (req, res) => {
+    if (!pool) return res.json({});
+    try {
+      const [rows] = await pool.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("APP_LOGO")');
+      const settings = (rows as any[]).reduce((acc, row) => {
+        acc[row.setting_key] = row.setting_value;
+        return acc;
+      }, {});
+      res.json(settings);
+    } catch (e: any) {
+      console.error('Failed to fetch public settings:', e);
+      res.json({});
+    }
+  });
+
   // Auth Middleware
   const authenticate = (req: any, res: any, next: any) => {
     const token = req.headers.authorization?.split(' ')[1] || req.query.token;
@@ -1547,6 +1598,49 @@ async function startServer() {
     }
   });
 
+  app.post('/api/admin/test-b2', authenticate, isAdmin, async (req, res) => {
+    const { B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME, B2_ENDPOINT } = req.body;
+    
+    if (!B2_APPLICATION_KEY_ID || !B2_APPLICATION_KEY || !B2_BUCKET_NAME || !B2_ENDPOINT) {
+      return res.status(400).json({ error: 'All B2 fields are required for testing.' });
+    }
+
+    try {
+      const client = new S3Client({
+        endpoint: B2_ENDPOINT.startsWith('http') ? B2_ENDPOINT : `https://${B2_ENDPOINT}`,
+        credentials: {
+          accessKeyId: B2_APPLICATION_KEY_ID,
+          secretAccessKey: B2_APPLICATION_KEY,
+        },
+        region: B2_ENDPOINT.split('.')[1] || 'us-east-005',
+      });
+
+      // We'll test with a simple put & delete of a tiny test file to verify full write/delete permissions
+      const testKey = `test_connection_${Date.now()}.txt`;
+      await client.send(
+        new PutObjectCommand({
+          Bucket: B2_BUCKET_NAME,
+          Key: testKey,
+          Body: Buffer.from('B2 Connection Test'),
+          ContentType: 'text/plain',
+        })
+      );
+
+      // Clean up the test file
+      await client.send(
+        new DeleteObjectCommand({
+          Bucket: B2_BUCKET_NAME,
+          Key: testKey,
+        })
+      );
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error('B2 Connection Test Failed:', err);
+      res.status(500).json({ error: err.message || 'Failed to connect or perform write/delete operations on Backblaze B2.' });
+    }
+  });
+
   // Team Routes
   app.get('/api/teams', authenticate, async (req, res) => {
     const [teams] = await pool.query('SELECT * FROM teams WHERE deleted_at IS NULL');
@@ -1712,9 +1806,10 @@ async function startServer() {
       if (rows.length === 0 || !rows[0].photo_data) {
         return res.status(404).json({ error: 'Photo not found' });
       }
+      const retrievedData = await handleFileRetrieve(rows[0].photo_data);
       res.setHeader('Content-Type', rows[0].photo_mimetype || 'image/jpeg');
       res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
-      res.send(rows[0].photo_data);
+      res.send(retrievedData);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -1728,7 +1823,7 @@ async function startServer() {
         return res.status(403).json({ error: 'You can only add vessels to your assigned teams' });
       }
       
-      const photoData = req.file ? req.file.buffer : null;
+      const photoData = req.file ? await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'vessel_photos') : null;
       const photoMimetype = req.file ? req.file.mimetype : null;
 
       await pool.execute(
@@ -1758,7 +1853,7 @@ async function startServer() {
         if (team_id && !req.user.team_ids.includes(Number(team_id))) return res.status(403).json({ error: 'Forbidden' });
       }
 
-      const photoData = req.file ? req.file.buffer : undefined;
+      const photoData = req.file ? await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'vessel_photos') : undefined;
       const photoMimetype = req.file ? req.file.mimetype : undefined;
 
       if (photoData !== undefined) {

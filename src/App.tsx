@@ -38,6 +38,7 @@ import {
   Activity,
   Anchor,
   Database,
+  Cloud,
   Package,
   Save,
   Monitor,
@@ -543,20 +544,51 @@ interface DBStatus {
   config?: any;
 }
 
-const Logo = ({ className }: { className?: string }) => (
-  <img 
-    src="/logo.png" 
-    alt="COMOS Logo" 
-    className={cn("object-contain", className)}
-    referrerPolicy="no-referrer"
-    onError={(e) => {
-      // Fallback to Ship icon if image fails to load
-      e.currentTarget.style.display = 'none';
-      const fallback = e.currentTarget.parentElement?.querySelector('.logo-fallback');
-      if (fallback) (fallback as HTMLElement).style.display = 'block';
-    }}
-  />
-);
+let customLogoUrlGlobal: string | null = null;
+const logoListeners = new Set<(url: string | null) => void>();
+
+export const getCustomLogoUrl = () => customLogoUrlGlobal;
+export const setCustomLogoUrl = (url: string | null) => {
+  customLogoUrlGlobal = url;
+  logoListeners.forEach(listener => listener(url));
+};
+
+export const useCustomLogo = () => {
+  const [logo, setLogo] = useState<string | null>(customLogoUrlGlobal);
+  useEffect(() => {
+    const listener = (newUrl: string | null) => setLogo(newUrl);
+    logoListeners.add(listener);
+    return () => {
+      logoListeners.delete(listener);
+    };
+  }, []);
+  return logo;
+};
+
+const Logo = ({ className, iconClassName }: { className?: string; iconClassName?: string }) => {
+  const customLogo = useCustomLogo();
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [customLogo]);
+
+  if (hasError) {
+    return (
+      <Ship className={cn(iconClassName || "text-blue-600", className)} />
+    );
+  }
+
+  return (
+    <img 
+      src={customLogo || "/logo.png"} 
+      alt="COMOS Logo" 
+      className={cn("object-contain", className)}
+      referrerPolicy="no-referrer"
+      onError={() => setHasError(true)}
+    />
+  );
+};
 
 const LogoContainer = ({ size = 'md', className, iconClassName }: { size?: 'sm' | 'md' | 'lg' | 'xs', className?: string, iconClassName?: string }) => {
   const sizes = {
@@ -573,13 +605,7 @@ const LogoContainer = ({ size = 'md', className, iconClassName }: { size?: 'sm' 
       size === 'lg' && "rounded-2xl", 
       className
     )}>
-      <Logo className="w-full h-full" />
-      <div className="logo-fallback hidden">
-        <Ship className={cn(
-          iconClassName || "text-blue-600", 
-          size === 'xs' ? "w-4 h-4" : size === 'sm' ? "w-6 h-6" : size === 'md' ? "w-8 h-8" : "w-12 h-12"
-        )} />
-      </div>
+      <Logo className="w-full h-full" iconClassName={iconClassName} />
     </div>
   );
 };
@@ -8601,6 +8627,11 @@ const AdminPanel = ({
       if (res.ok) {
         const data = await res.json();
         setSettings(data);
+        if (data.APP_LOGO) {
+          setCustomLogoUrl(data.APP_LOGO);
+        } else {
+          setCustomLogoUrl(null);
+        }
       }
     } catch (err) {
       console.error('Failed to fetch settings:', err);
@@ -9939,6 +9970,82 @@ const AdminPanel = ({
             </div>
             
             <div className="space-y-8">
+              {/* Application Logo Setting */}
+              <div className="p-6 bg-blue-50/50 rounded-2xl border border-blue-100">
+                <div className="flex flex-col sm:flex-row items-center gap-6">
+                  {/* Current Logo Preview */}
+                  <div className="flex flex-col items-center gap-2">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Current Logo</p>
+                    <div className="w-20 h-20 bg-white rounded-2xl shadow-sm border border-blue-100 flex items-center justify-center overflow-hidden p-2">
+                      <Logo className="w-full h-full" />
+                    </div>
+                  </div>
+
+                  {/* Upload Controls */}
+                  <div className="flex-1 space-y-3 text-center sm:text-left">
+                    <div>
+                      <h3 className="text-sm font-bold text-blue-900 mb-1 flex items-center justify-center sm:justify-start gap-2">
+                        <Image className="w-4 h-4" /> Application Logo
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        Customize the logo displayed in the login screen, sidebar, and dashboard.
+                        Supports PNG, JPG, or SVG format (Max 5MB).
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3">
+                      <label className="px-4 py-2 bg-blue-600 hover:bg-blue-800 text-white text-xs font-bold rounded-xl shadow-md shadow-blue-100 hover:shadow-lg transition-all cursor-pointer flex items-center gap-2 active:scale-95">
+                        <Upload className="w-4 h-4" />
+                        Upload Custom Logo
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          className="hidden" 
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            if (file.size > 5 * 1024 * 1024) {
+                              notify('error', 'Logo image size must be less than 5MB');
+                              return;
+                            }
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              const base64String = reader.result as string;
+                              setSettings(prev => ({
+                                ...prev,
+                                APP_LOGO: base64String
+                              }));
+                              setCustomLogoUrl(base64String);
+                              notify('info', 'New logo chosen. Click "Save Configuration" at the bottom to apply.');
+                            };
+                            reader.readAsDataURL(file);
+                          }}
+                        />
+                      </label>
+
+                      {settings.APP_LOGO && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettings(prev => {
+                              const next = { ...prev };
+                              delete next.APP_LOGO;
+                              return next;
+                            });
+                            setCustomLogoUrl(null);
+                            notify('info', 'Logo reset. Click "Save Configuration" at the bottom to apply.');
+                          }}
+                          className="px-4 py-2 bg-white text-red-600 hover:bg-red-50 border border-red-200 text-xs font-bold rounded-xl transition-colors flex items-center gap-2"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          Reset to Default
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="p-6 bg-blue-50/50 rounded-2xl border border-blue-100">
                 <div className="flex items-center justify-between gap-4">
                   <div>
@@ -9967,6 +10074,99 @@ const AdminPanel = ({
                       </>
                     )}
                   </button>
+                </div>
+              </div>
+
+              {/* Backblaze B2 Storage Settings */}
+              <div className="p-6 bg-blue-50/50 rounded-2xl border border-blue-100">
+                <h3 className="text-sm font-bold text-blue-900 mb-1 flex items-center gap-2">
+                  <Cloud className="w-5 h-5 text-blue-600" /> Backblaze B2 Cloud Storage
+                </h3>
+                <p className="text-xs text-slate-500 mb-4">
+                  Configure Backblaze B2 Cloud Storage to persist all uploaded files, certificates, photos, and service reports securely off-site.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Key ID (B2_APPLICATION_KEY_ID)</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 005..." 
+                      value={settings.B2_APPLICATION_KEY_ID || ''}
+                      onChange={(e) => setSettings({...settings, B2_APPLICATION_KEY_ID: e.target.value})}
+                      className="w-full px-4 py-2 bg-white border border-blue-100 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Application Key (B2_APPLICATION_KEY)</label>
+                    <input 
+                      type="password" 
+                      placeholder="e.g. K005..." 
+                      value={settings.B2_APPLICATION_KEY || ''}
+                      onChange={(e) => setSettings({...settings, B2_APPLICATION_KEY: e.target.value})}
+                      className="w-full px-4 py-2 bg-white border border-blue-100 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Bucket Name (B2_BUCKET_NAME)</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. comos-storage" 
+                      value={settings.B2_BUCKET_NAME || ''}
+                      onChange={(e) => setSettings({...settings, B2_BUCKET_NAME: e.target.value})}
+                      className="w-full px-4 py-2 bg-white border border-blue-100 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">S3-Compatible Endpoint (B2_ENDPOINT)</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. s3.us-east-005.backblazeb2.com" 
+                      value={settings.B2_ENDPOINT || ''}
+                      onChange={(e) => setSettings({...settings, B2_ENDPOINT: e.target.value})}
+                      className="w-full px-4 py-2 bg-white border border-blue-100 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                </div>
+                
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!settings.B2_APPLICATION_KEY_ID || !settings.B2_APPLICATION_KEY || !settings.B2_BUCKET_NAME || !settings.B2_ENDPOINT) {
+                        notify('error', 'Please fill in all Backblaze B2 settings before testing connection.');
+                        return;
+                      }
+                      try {
+                        const res = await fetch('/api/admin/test-b2', {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify({
+                            B2_APPLICATION_KEY_ID: settings.B2_APPLICATION_KEY_ID,
+                            B2_APPLICATION_KEY: settings.B2_APPLICATION_KEY,
+                            B2_BUCKET_NAME: settings.B2_BUCKET_NAME,
+                            B2_ENDPOINT: settings.B2_ENDPOINT,
+                          })
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.success) {
+                          notify('success', 'Successfully connected to Backblaze B2 bucket!');
+                        } else {
+                          notify('error', `Connection failed: ${data.error || 'Check settings'}`);
+                        }
+                      } catch (err: any) {
+                        notify('error', `Network error testing B2: ${err.message}`);
+                      }
+                    }}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-800 text-white text-xs font-bold rounded-xl transition-all shadow-md active:scale-95 flex items-center gap-2"
+                  >
+                    <RefreshCw className="w-4 h-4" /> Test B2 Connection
+                  </button>
+                  <span className="text-[10px] text-slate-400">
+                    Saves automatically when you click the "Save Configuration" button at the bottom.
+                  </span>
                 </div>
               </div>
 
@@ -10651,6 +10851,23 @@ export default function App() {
     checkDB();
     const interval = setInterval(checkDB, 10000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const fetchPublicSettings = async () => {
+      try {
+        const res = await fetch('/api/public-settings');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.APP_LOGO) {
+            setCustomLogoUrl(data.APP_LOGO);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch public logo setting:', err);
+      }
+    };
+    fetchPublicSettings();
   }, []);
 
   useEffect(() => {
