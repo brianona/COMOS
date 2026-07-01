@@ -330,6 +330,21 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
   const [requisitions, setRequisitions] = useState<SparePartsRequisition[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Keep refs for the latest requisitions list and debouncing timers
+  const requisitionsRef = useRef<SparePartsRequisition[]>([]);
+  useEffect(() => {
+    requisitionsRef.current = requisitions;
+  }, [requisitions]);
+
+  const debounceTimers = useRef<{ [id: string]: NodeJS.Timeout }>({});
+
+  useEffect(() => {
+    return () => {
+      // Clean up all active timers on unmount
+      Object.values(debounceTimers.current).forEach(clearTimeout);
+    };
+  }, []);
+
   // Secure file pointer helper URL resolver
   const getFileUrl = (url: string | undefined) => {
     if (!url) return '';
@@ -503,32 +518,55 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     });
   };
 
-  const updateRequisitionField = async (id: string, updates: Partial<SparePartsRequisition>) => {
-    const currentReq = requisitions.find(r => r.id === id);
+  const updateRequisitionField = async (id: string, updates: Partial<SparePartsRequisition>, immediate = false) => {
+    const currentReq = requisitionsRef.current.find(r => r.id === id);
     if (!currentReq) return;
     const updated = { ...currentReq, ...updates };
 
+    // 1. Immediately update local state so that typing/interactions are 100% responsive and real-time
+    setRequisitions(prev => prev.map(r => r.id === id ? updated : r));
+
     if (token) {
-      try {
-        const resp = await fetch(`/api/spare-parts-requisitions/${id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(updated)
-        });
-        if (resp.ok) {
-          fetchRequisitions();
-        } else {
-          const err = await resp.json();
-          alert(`Failed to update requisition: ${err.error || 'Server error'}`);
-        }
-      } catch (err) {
-        console.error('Failed to update requisition:', err);
+      // Automatically detect if the update targets key-by-key typing fields to debounce them
+      const typingKeys = ['subject', 'quotationPoNumber', 'invoicePoNumber', 'deliveryNotePoNumber'];
+      const hasTypingKey = Object.keys(updates).some(k => typingKeys.includes(k));
+      const shouldDebounce = hasTypingKey && !immediate;
+
+      // Clear any pending sync for this specific requisition
+      if (debounceTimers.current[id]) {
+        clearTimeout(debounceTimers.current[id]);
       }
-    } else {
-      setRequisitions(prev => prev.map(r => r.id === id ? updated : r));
+
+      const saveToServer = async (payload: SparePartsRequisition) => {
+        try {
+          const resp = await fetch(`/api/spare-parts-requisitions/${id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(payload)
+          });
+          if (!resp.ok) {
+            const err = await resp.json();
+            console.error('Failed to save requisition update to server:', err);
+          }
+        } catch (err) {
+          console.error('Failed to save requisition update to server:', err);
+        }
+      };
+
+      if (!shouldDebounce) {
+        await saveToServer(updated);
+      } else {
+        debounceTimers.current[id] = setTimeout(async () => {
+          // Send the absolute latest state from our ref
+          const latestReq = requisitionsRef.current.find(r => r.id === id);
+          if (latestReq) {
+            await saveToServer(latestReq);
+          }
+        }, 500); // 500ms typing debounce
+      }
     }
   };
 
@@ -917,7 +955,6 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                             <button
                               key={st}
                               onClick={() => {
-                                updateRequisitionField(req.id, { status: st });
                                 const senderName = currentUser?.role === 'vessel' 
                                   ? (vessels.find(v => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
                                   : (currentUser?.username || 'Superintendent');
@@ -928,7 +965,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                   timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
                                 };
                                 const updatedMessages = [...(req.messages || []), logMsg];
-                                updateRequisitionField(req.id, { messages: updatedMessages });
+                                updateRequisitionField(req.id, { status: st, messages: updatedMessages });
                               }}
                               className={`px-3 py-1.5 rounded-xl border text-[11px] font-black tracking-tight transition-all cursor-pointer flex items-center justify-center gap-1.5 flex-1 shrink-0 ${colorClass} ${
                                 isActive ? 'ring-2 ring-offset-1' : ''
@@ -991,7 +1028,6 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                   value={req.priority} 
                                   onChange={(e) => {
                                     const newPriority = e.target.value as 'Low' | 'Medium' | 'High' | 'Emergency';
-                                    updateRequisitionField(req.id, { priority: newPriority });
                                     const senderName = currentUser?.role === 'vessel' 
                                       ? (vessels.find(v => String(v.id) === String(currentUser.vessel_id))?.name || 'Vessel')
                                       : (currentUser?.username || 'Superintendent');
@@ -1002,7 +1038,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                                       timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16)
                                     };
                                     const updatedMessages = [...(req.messages || []), logMsg];
-                                    updateRequisitionField(req.id, { messages: updatedMessages });
+                                    updateRequisitionField(req.id, { priority: newPriority, messages: updatedMessages });
                                   }}
                                   className={`w-full px-2 py-1.5 border rounded-lg text-xs font-extrabold focus:outline-none focus:ring-2 mt-1 cursor-pointer ${
                                     req.priority === 'Emergency' ? 'bg-red-50 text-red-700 border-red-200 focus:ring-red-500/10' :
