@@ -7537,7 +7537,16 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
     { id: 'departure_reports', label: 'Departure', icon: Navigation },
     { id: 'arrival_reports', label: 'Arrival', icon: MapIcon },
     { id: 'noon_reports', label: 'Noon', icon: Clock },
-    { id: 'other_reports', label: 'Other', icon: File }
+    { id: 'other_reports', label: 'Other', icon: File },
+    { id: 'fuel_analysis_reports', label: 'Fuel Analysis', icon: Fuel },
+    { id: 'lube_oil_ldr_reports', label: 'Lube Oil LDR', icon: FlaskConical },
+    { id: 'lube_oil_analysis_reports', label: 'Lube Oil Analysis', icon: FlaskConical },
+    { id: 'bunker_bdn_reports', label: 'Bunker BDN', icon: Fuel },
+    { id: 'crew_members', label: 'Crew', icon: Users },
+    { id: 'audit_records', label: 'Audits', icon: Shield },
+    { id: 'non_conformities', label: 'Non-Conformities', icon: AlertTriangle },
+    { id: 'trouble_reports', label: 'Trouble Reports', icon: Wrench },
+    { id: 'spare_parts_requisitions', label: 'Requisitions', icon: Package }
   ];
 
   const currentItems = data[activeTab] || [];
@@ -7704,14 +7713,24 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
                             {activeTab === 'users' && item.username}
                             {activeTab === 'certificates' && item.name}
                             {activeTab === 'files' && item.original_name}
-                            {activeTab.includes('report') && `${item.vessel_name} - Voyage ${item.voyage_number || 'N/A'}`}
+                            {activeTab.includes('report') && `${item.vessel_name || 'Generic'} - ${item.voyage_number ? 'Voyage ' + item.voyage_number : 'Report ID ' + item.id}`}
+                            {activeTab === 'crew_members' && `${item.first_name || ''} ${item.last_name || ''}`}
+                            {activeTab === 'audit_records' && `Audit by ${item.lead_auditor || 'Unknown'}`}
+                            {activeTab === 'non_conformities' && `NC - ${item.description ? (item.description.length > 40 ? item.description.substring(0, 40) + '...' : item.description) : 'No Description'}`}
+                            {activeTab === 'trouble_reports' && `Trouble: ${item.subject || 'No Subject'}`}
+                            {activeTab === 'spare_parts_requisitions' && `Requisition: ${item.requisition_no || 'Requisition ID ' + item.id}`}
                           </span>
                           <span className="text-[10px] text-slate-400 font-medium">
                             {activeTab === 'vessels' && `Owner: ${item.owner}`}
                             {activeTab === 'users' && `Role: ${getRoleLabel(item.role)}`}
                             {activeTab === 'certificates' && `Vessel: ${item.vessel_name || 'Generic'}`}
                             {activeTab === 'files' && `Certificate: ${item.certificate_name}`}
-                            {activeTab.includes('report') && `Date: ${format(new Date(item.utc_date_time), 'MMM dd, yyyy')}`}
+                            {activeTab.includes('report') && (item.utc_date_time || item.date) && `Date: ${format(new Date(item.utc_date_time || item.date), 'MMM dd, yyyy')}`}
+                            {activeTab === 'crew_members' && `Rank: ${item.rank || 'N/A'}`}
+                            {activeTab === 'audit_records' && `Auditor: ${item.lead_auditor || 'N/A'}`}
+                            {activeTab === 'non_conformities' && `Vessel: ${item.vessel_name || 'Generic'}`}
+                            {activeTab === 'trouble_reports' && `Category: ${item.category || 'N/A'} | Status: ${item.status || 'N/A'}`}
+                            {activeTab === 'spare_parts_requisitions' && `Status: ${item.status || 'N/A'}`}
                             ID: {item.id}
                           </span>
                         </div>

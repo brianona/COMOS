@@ -674,18 +674,33 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     }
   };
 
-  const removeFileFromSection = (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', fileIndex: number) => {
+  const removeFileFromSection = async (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', fileIndex: number) => {
     const currentReq = requisitions.find(r => r.id === reqId);
     if (!currentReq) return;
 
     const currentList = currentReq[section] || [];
+    const removedFile = currentList[fileIndex];
     const updatedList = currentList.filter((_, idx) => idx !== fileIndex);
     updateRequisitionField(reqId, { [section]: updatedList });
+
+    if (removedFile && removedFile.dataUrl) {
+      const match = removedFile.dataUrl.match(/\/api\/requisition-attachments\/(\d+)/);
+      if (match && match[1] && token) {
+        try {
+          await fetch(`/api/requisition-attachments/${match[1]}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+        } catch (err) {
+          console.error('Failed to soft delete requisition attachment:', err);
+        }
+      }
+    }
   };
 
   const deleteRequisition = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm('Are you sure you want to delete this requisition? This action is irreversible.')) return;
+    if (!window.confirm('Are you sure you want to delete this requisition? It will be moved to the Recycle Bin.')) return;
 
     if (token) {
       try {
