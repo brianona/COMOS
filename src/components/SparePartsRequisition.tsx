@@ -490,32 +490,70 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     e.preventDefault();
   };
 
-  const processCreationFiles = (filesList: FileList | null) => {
+  const processCreationFiles = async (filesList: FileList | null) => {
     if (!filesList) return;
     const filesArray = Array.from(filesList);
     const baseTime = Date.now();
-    filesArray.forEach((file, index) => {
+    for (let index = 0; index < filesArray.length; index++) {
+      const file = filesArray[index];
       const sizeStr = file.size > 1024 * 1024 
         ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
         : `${(file.size / 1024).toFixed(0)} KB`;
 
-      const reader = new FileReader();
-      reader.onload = () => {
-        setUploadedFiles(prev => {
-          const newList = [
-            ...prev,
-            {
-              name: file.name,
-              size: sizeStr,
-              dataUrl: reader.result as string,
-              uploadedAt: baseTime + index
+      if (token) {
+        try {
+          const formData = new FormData();
+          formData.append('file', file);
+          const response = await fetch('/api/requisition-attachments/upload', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            },
+            body: formData
+          });
+          if (response.ok) {
+            const result = await response.json();
+            if (result.success && result.file) {
+              setUploadedFiles(prev => {
+                const newList = [
+                  ...prev,
+                  {
+                    name: result.file.name,
+                    size: result.file.size,
+                    dataUrl: result.file.dataUrl,
+                    uploadedAt: result.file.uploadedAt || (baseTime + index)
+                  }
+                ];
+                return newList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+              });
             }
-          ];
-          return newList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
-        });
-      };
-      reader.readAsDataURL(file);
-    });
+          } else {
+            const err = await response.json();
+            console.error('File upload failed:', err);
+            alert(`File upload failed: ${err.error || 'Server error'}`);
+          }
+        } catch (err) {
+          console.error('Error uploading file:', err);
+        }
+      } else {
+        const reader = new FileReader();
+        reader.onload = () => {
+          setUploadedFiles(prev => {
+            const newList = [
+              ...prev,
+              {
+                name: file.name,
+                size: sizeStr,
+                dataUrl: reader.result as string,
+                uploadedAt: baseTime + index
+              }
+            ];
+            return newList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+          });
+        };
+        reader.readAsDataURL(file);
+      }
+    }
   };
 
   const updateRequisitionField = async (id: string, updates: Partial<SparePartsRequisition>, immediate = false) => {
@@ -570,30 +608,70 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     }
   };
 
-  const addFileToSection = (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', file: File) => {
+  const addFileToSection = async (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', file: File) => {
     const sizeStr = file.size > 1024 * 1024 
       ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
       : `${(file.size / 1024).toFixed(0)} KB`;
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const currentReq = requisitions.find(r => r.id === reqId);
-      if (!currentReq) return;
+    if (token) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        const response = await fetch('/api/requisition-attachments/upload', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          body: formData
+        });
+        if (response.ok) {
+          const result = await response.json();
+          if (result.success && result.file) {
+            const currentReq = requisitionsRef.current.find(r => r.id === reqId);
+            if (!currentReq) return;
 
-      const currentList = currentReq[section] || [];
-      const updatedList = [
-        ...currentList,
-        {
-          name: file.name,
-          size: sizeStr,
-          dataUrl: reader.result as string,
-          uploadedAt: Date.now()
+            const currentList = currentReq[section] || [];
+            const updatedList = [
+              ...currentList,
+              {
+                name: result.file.name,
+                size: result.file.size,
+                dataUrl: result.file.dataUrl,
+                uploadedAt: result.file.uploadedAt || Date.now()
+              }
+            ];
+            updatedList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+            updateRequisitionField(reqId, { [section]: updatedList });
+          }
+        } else {
+          const err = await response.json();
+          console.error('File upload failed:', err);
+          alert(`File upload failed: ${err.error || 'Server error'}`);
         }
-      ];
-      updatedList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
-      updateRequisitionField(reqId, { [section]: updatedList });
-    };
-    reader.readAsDataURL(file);
+      } catch (err) {
+        console.error('Error uploading file:', err);
+      }
+    } else {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const currentReq = requisitionsRef.current.find(r => r.id === reqId);
+        if (!currentReq) return;
+
+        const currentList = currentReq[section] || [];
+        const updatedList = [
+          ...currentList,
+          {
+            name: file.name,
+            size: sizeStr,
+            dataUrl: reader.result as string,
+            uploadedAt: Date.now()
+          }
+        ];
+        updatedList.sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0));
+        updateRequisitionField(reqId, { [section]: updatedList });
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const removeFileFromSection = (reqId: string, section: 'requisitionFiles' | 'quotationFiles' | 'invoiceFiles' | 'deliveryNoteFiles', fileIndex: number) => {
