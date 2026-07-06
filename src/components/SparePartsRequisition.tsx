@@ -1394,7 +1394,12 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
                         <div className="pt-2 border-t border-slate-100 space-y-3">
                           <span className="text-[10px] font-black uppercase text-slate-400 block tracking-wider">Attachments ({(req.invoiceFiles || []).length})</span>
                           
-                          {(req.invoiceFiles && req.invoiceFiles.length > 0) ? (
+                          {isVesselUser ? (
+                            <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 text-[10px] font-black flex items-center gap-2">
+                              <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                              <span>Documents restricted (Office/PIC only)</span>
+                            </div>
+                          ) : (req.invoiceFiles && req.invoiceFiles.length > 0) ? (
                             <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
                               {req.invoiceFiles.map((f, idx) => (
                                 <div key={idx} className="p-2 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200/60 text-xs font-bold text-slate-600 space-y-1.5 shadow-3xs">

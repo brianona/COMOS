@@ -1315,7 +1315,7 @@ async function startServer() {
   };
 
   const canAddCertificate = (req: any, res: any, next: any) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'team_pic' && req.user.role !== 'vessel') {
+    if (req.user.role !== 'admin' && req.user.role !== 'team_pic' && req.user.role !== 'vessel' && req.user.role !== 'user') {
       return res.status(403).json({ error: 'Forbidden' });
     }
     next();
@@ -2159,13 +2159,13 @@ async function startServer() {
         }
       }
 
-      if (req.user.role === 'team_pic') {
+      if (req.user.role === 'team_pic' || req.user.role === 'user') {
         if (team_id && !req.user.team_ids.includes(Number(team_id))) return res.status(403).json({ error: 'Forbidden' });
         if (vessel_id && vessel_id !== 'all') {
           const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
           if (vRows.length > 0 && !req.user.team_ids.includes(vRows[0].team_id)) return res.status(403).json({ error: 'Forbidden' });
         }
-        if (vessel_id === 'all') return res.status(403).json({ error: 'Team PIC cannot add certificates to all vessels' });
+        if (vessel_id === 'all') return res.status(403).json({ error: 'PIC/Management roles cannot add certificates to all vessels' });
       }
       const finalAccessType = access_type || 'office';
       const finalDateIssued = date_issued || null;
