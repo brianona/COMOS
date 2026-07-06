@@ -147,18 +147,18 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ url, title }) => {
         </a>
       </div>
 
-      {/* Viewport */}
+      {/* Viewport with rotateX to put the horizontal scrollbar on top */}
       <div 
         ref={viewportRef}
-        className="flex-1 overflow-auto p-4 bg-slate-900 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent flex justify-center items-start"
+        className="flex-1 overflow-auto p-4 bg-slate-900 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent flex justify-center items-start [transform:rotateX(180deg)]"
       >
         {loading ? (
-          <div className="flex flex-col items-center justify-center gap-3 text-slate-500 m-auto">
+          <div className="flex flex-col items-center justify-center gap-3 text-slate-500 m-auto [transform:rotateX(180deg)]">
             <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
             <p className="text-xs font-medium">Loading Image...</p>
           </div>
         ) : error ? (
-          <div className="flex flex-col items-center justify-center gap-4 text-center p-8 m-auto">
+          <div className="flex flex-col items-center justify-center gap-4 text-center p-8 m-auto [transform:rotateX(180deg)]">
             <div className="p-4 bg-red-500/10 rounded-full">
               <Download className="w-8 h-8 text-red-500" />
             </div>
@@ -179,7 +179,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ url, title }) => {
           <div 
             className="m-auto shadow-2xl shadow-black/50 bg-white rounded-sm overflow-hidden flex-shrink-0 transition-transform duration-250 ease-out origin-center"
             style={{ 
-              transform: `scale(${scale})`,
+              transform: `scale(${scale}) rotateX(180deg)`,
               transformOrigin: 'center center'
             }}
           >

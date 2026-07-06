@@ -4084,7 +4084,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
                       if (isImage) {
                         return (
-                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden h-[600px] relative">
+                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden h-[calc(100vh-200px)] max-h-[85vh] min-h-[500px] relative">
                             <ImageViewer 
                               url={fileUrl} 
                               title={previewFile.original_name} 
@@ -4093,7 +4093,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         );
                       } else if (isPdf) {
                         return (
-                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden h-[600px] relative">
+                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden h-[calc(100vh-200px)] max-h-[85vh] min-h-[500px] relative">
                             <PDFViewer 
                               url={fileUrl} 
                               title={previewFile.original_name} 
@@ -9506,7 +9506,7 @@ const AdminPanel = ({
                 </div>
               </div>
               
-              <div className="flex-1 min-h-[450px] lg:min-h-[550px] overflow-hidden rounded-xl border border-blue-50 bg-slate-50 relative">
+              <div className="h-[calc(100vh-250px)] max-h-[85vh] min-h-[500px] overflow-hidden rounded-xl border border-blue-50 bg-slate-50 relative">
                 {(() => {
                   const ext = newCertFile.name.split('.').pop()?.toLowerCase();
                   const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
