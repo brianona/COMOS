@@ -44,6 +44,7 @@ export interface LubeOilAnalysisLog {
   tbn?: string;
   insolubles?: string;
   status: 'Pass' | 'Fail' | 'Pending';
+  remarks?: string;
   files?: AnalysisFile[];
 }
 
@@ -115,7 +116,8 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
     waterContent: '',
     tbn: '',
     insolubles: '',
-    status: 'Pending' as 'Pass' | 'Fail' | 'Pending'
+    status: 'Pending' as 'Pass' | 'Fail' | 'Pending',
+    remarks: ''
   });
   const [formFiles, setFormFiles] = useState<{ name: string; size: string; dataUrl?: string }[]>([]);
 
@@ -129,7 +131,8 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
     waterContent: '',
     tbn: '',
     insolubles: '',
-    status: 'Pending' as 'Pass' | 'Fail' | 'Pending'
+    status: 'Pending' as 'Pass' | 'Fail' | 'Pending',
+    remarks: ''
   });
   const [editFormFiles, setEditFormFiles] = useState<{ id?: string; name: string; size: string; dataUrl?: string }[]>([]);
 
@@ -169,6 +172,7 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
       tbn: undefined,
       insolubles: undefined,
       status: 'Pending',
+      remarks: formData.remarks.trim() || undefined,
       files: formFiles.length > 0 ? formFiles : []
     };
 
@@ -192,7 +196,8 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
           waterContent: '',
           tbn: '',
           insolubles: '',
-          status: 'Pending'
+          status: 'Pending',
+          remarks: ''
         });
         setFormFiles([]);
         setShowFormModal(false);
@@ -258,7 +263,8 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
       waterContent: '',
       tbn: '',
       insolubles: '',
-      status: 'Pending'
+      status: 'Pending',
+      remarks: log.remarks || ''
     });
     setEditFormFiles(log.files || []);
   };
@@ -281,6 +287,7 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
       tbn: undefined,
       insolubles: undefined,
       status: 'Pending',
+      remarks: editFormData.remarks.trim() || undefined,
       files: editFormFiles
     };
 
@@ -443,10 +450,17 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
 
                     {/* Machinery Sampled */}
                     <td className="px-6 py-4">
-                      <div>
-                        <span className="px-2.5 py-1 bg-slate-100 rounded-md text-[10px] uppercase font-black tracking-normal text-slate-700">
-                          {log.machinerySampled}
-                        </span>
+                      <div className="space-y-1.5">
+                        <div>
+                          <span className="px-2.5 py-1 bg-slate-100 rounded-md text-[10px] uppercase font-black tracking-normal text-slate-700">
+                            {log.machinerySampled}
+                          </span>
+                        </div>
+                        {log.remarks && (
+                          <p className="text-[10px] text-slate-500 font-medium max-w-xs italic bg-slate-50 p-1 px-1.5 rounded border border-slate-100 line-clamp-2" title={log.remarks}>
+                            {log.remarks}
+                          </p>
+                        )}
                       </div>
                     </td>
 
@@ -608,6 +622,20 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
                   </div>
                 </div>
 
+                {/* Remarks Field */}
+                <div>
+                  <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">
+                    Remarks / Comments
+                  </label>
+                  <textarea
+                    placeholder="Enter any notes, laboratory remarks, or comments..."
+                    value={formData.remarks}
+                    onChange={(e) => setFormData({ ...formData, remarks: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2 bg-slate-50 border border-transparent rounded-xl text-xs font-bold text-slate-700 placeholder:text-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
+                  />
+                </div>
+
                 {/* Upload analysis result and files */}
                 <div>
                   <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1.5">
@@ -764,7 +792,19 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
                   </div>
                 </div>
 
-
+                {/* Remarks Field */}
+                <div>
+                  <label className="block text-[10px] font-black uppercase text-slate-400 tracking-wider mb-1">
+                    Remarks / Comments
+                  </label>
+                  <textarea
+                    placeholder="Enter any notes, laboratory remarks, or comments..."
+                    value={editFormData.remarks}
+                    onChange={(e) => setEditFormData({ ...editFormData, remarks: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2 bg-slate-50 border border-transparent rounded-xl text-xs font-bold text-slate-700 placeholder:text-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none transition-all resize-none"
+                  />
+                </div>
 
                 {/* Upload analysis result and files */}
                 <div>

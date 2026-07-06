@@ -66,6 +66,7 @@ import { format, isBefore, addDays, parseISO } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { PDFViewer } from './components/PDFViewer';
+import { ImageViewer } from './components/ImageViewer';
 import { CrewListView, CrewEmploymentStatusView, AuditRegistryView } from './components/CrewAndAudits';
 import { AboutView } from './components/AboutView';
 import { TroubleReportView } from './components/TroubleReport';
@@ -4083,18 +4084,11 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
                       if (isImage) {
                         return (
-                          <div className="relative group overflow-hidden rounded-2xl border border-blue-100 bg-blue-50/30 h-[600px] flex items-center justify-center p-8 bg-grid-slate-100/5 backdrop-blur-sm">
-                            <div className="relative inline-grid place-items-center max-w-full max-h-full shadow-2xl transition-transform duration-500 hover:scale-[1.01]">
-                              <img 
-                                src={fileUrl} 
-                                alt={previewFile.original_name} 
-                                className="max-w-full max-h-full block w-auto h-auto rounded-sm ring-1 ring-black/5"
-                                referrerPolicy="no-referrer"
-                              />
-                            </div>
-                            <div className="absolute inset-0 bg-blue-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                              <span className="text-white font-bold text-xs px-3 py-1.5 bg-blue-600/80 rounded-lg backdrop-blur-sm">Full Size View Available</span>
-                            </div>
+                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden h-[600px] relative">
+                            <ImageViewer 
+                              url={fileUrl} 
+                              title={previewFile.original_name} 
+                            />
                           </div>
                         );
                       } else if (isPdf) {
@@ -9520,12 +9514,10 @@ const AdminPanel = ({
                   
                   if (isImage && tempPreviewUrl) {
                     return (
-                      <div className="w-full h-full flex items-center justify-center p-4 overflow-auto">
-                        <img 
-                          src={tempPreviewUrl} 
-                          alt={newCertFile.name} 
-                          className="max-w-full max-h-[500px] object-contain rounded shadow-md"
-                          referrerPolicy="no-referrer"
+                      <div className="w-full h-full">
+                        <ImageViewer 
+                          url={tempPreviewUrl} 
+                          title={newCertFile.name} 
                         />
                       </div>
                     );

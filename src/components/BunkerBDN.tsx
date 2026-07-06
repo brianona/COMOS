@@ -44,6 +44,7 @@ export interface BDNLog {
   viscosity?: string; // e.g. "380 cSt at 50°C"
   density?: string; // e.g. "985.0 kg/m³"
   sulfurContent?: string; // e.g. "0.48%"
+  remarks?: string;
   files?: BDNFile[];
 }
 
@@ -206,7 +207,8 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
     date: new Date().toISOString().split('T')[0],
     bdnNumber: '',
     fuelType: '',
-    quantity: ''
+    quantity: '',
+    remarks: ''
   });
   const [formFiles, setFormFiles] = useState<{ name: string; size: string; dataUrl?: string }[]>([]);
 
@@ -217,7 +219,8 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
     date: '',
     bdnNumber: '',
     fuelType: '',
-    quantity: ''
+    quantity: '',
+    remarks: ''
   });
   const [editFormFiles, setEditFormFiles] = useState<{ name: string; size: string; dataUrl?: string }[]>([]);
 
@@ -262,6 +265,7 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
       bdnNumber: formData.bdnNumber.trim(),
       fuelType: formData.fuelType.trim(),
       quantity: formData.quantity.trim() ? `${formData.quantity.trim()} MT` : undefined,
+      remarks: formData.remarks.trim() || undefined,
       files: formFiles.length > 0 ? formFiles : undefined
     };
 
@@ -294,7 +298,8 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
       date: new Date().toISOString().split('T')[0],
       bdnNumber: '',
       fuelType: '',
-      quantity: ''
+      quantity: '',
+      remarks: ''
     });
     setFormFiles([]);
     setShowFormModal(false);
@@ -351,7 +356,8 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
       date: log.date,
       bdnNumber: log.bdnNumber,
       fuelType: log.fuelType || '',
-      quantity: cleanQty
+      quantity: cleanQty,
+      remarks: log.remarks || ''
     });
     setEditFormFiles(log.files || []);
   };
@@ -373,6 +379,7 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
       bdnNumber: editFormData.bdnNumber.trim(),
       fuelType: editFormData.fuelType.trim(),
       quantity: editFormData.quantity.trim() ? `${editFormData.quantity.trim()} MT` : undefined,
+      remarks: editFormData.remarks.trim() || undefined,
       files: editFormFiles
     };
 
@@ -635,6 +642,13 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
                     )}
                   </div>
 
+                  {log.remarks && (
+                    <div className="bg-slate-50/80 p-2.5 rounded-xl border border-slate-100 text-[11px] text-slate-650 leading-relaxed">
+                      <span className="text-[9px] text-slate-400 font-extrabold uppercase tracking-wider block mb-0.5">Remarks / Comments</span>
+                      {log.remarks}
+                    </div>
+                  )}
+
                   {/* Chemical & Lab specifications */}
                   {hasExtraSpecs && (
                     <div className="p-3 bg-amber-50/20 border border-amber-100/30 rounded-xl space-y-1.5">
@@ -815,6 +829,18 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
                   </div>
                 </div>
 
+                {/* Remarks Field */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block ml-0.5">Remarks / Comments</label>
+                  <textarea 
+                    placeholder="Enter any relevant remarks or comments regarding the bunker delivery note..."
+                    value={formData.remarks}
+                    onChange={(e) => setFormData({ ...formData, remarks: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 bg-slate-50 resize-none animate-fade-in"
+                  />
+                </div>
+
                 {/* File Attachment Upload */}
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block ml-0.5">Attach Signed BDN PDF / Scan</label>
@@ -974,6 +1000,18 @@ export const BunkerBDNView: React.FC<BunkerBDNProps> = ({
                       className="w-full px-3 py-2.5 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 bg-slate-50"
                     />
                   </div>
+                </div>
+
+                {/* Remarks Field */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block ml-0.5">Remarks / Comments</label>
+                  <textarea 
+                    placeholder="Enter any relevant remarks or comments regarding the bunker delivery note..."
+                    value={editFormData.remarks}
+                    onChange={(e) => setEditFormData({ ...editFormData, remarks: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 bg-slate-50 resize-none"
+                  />
                 </div>
 
                 {/* File Attachment Upload */}
