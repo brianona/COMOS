@@ -532,6 +532,12 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
   const [crewHistory, setCrewHistory] = useState<CrewHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Disembark Dialogue Box States
+  const [showDisembarkDialog, setShowDisembarkDialog] = useState(false);
+  const [disembarkingCrew, setDisembarkingCrew] = useState<CrewMember | null>(null);
+  const [disembarkStep, setDisembarkStep] = useState<'confirm' | 'reason'>('confirm');
+  const [disembarkReason, setDisembarkReason] = useState('');
+
   const fetchCrewHistory = async (crewId: string) => {
     if (!token) {
       const saved = localStorage.getItem('comos_crew_history');
@@ -564,15 +570,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
     }
   }, [viewingProfile, token]);
 
-  const handleDisembark = async (member: CrewMember) => {
-    const finishedContract = window.confirm(`Has ${member.name} finished their contract?`);
-    let disembarkRemarks = 'Finished Contract';
-    if (!finishedContract) {
-      const reason = window.prompt(`Please enter the disembarkation reason for ${member.name}:`);
-      if (reason === null) return; // user cancelled the prompt, abort disembarkation
-      disembarkRemarks = reason || 'Unfinished Contract - Disembarked';
-    }
-
+  const executeDisembark = async (member: CrewMember, finishedContract: boolean, disembarkRemarks: string) => {
     if (token) {
       try {
         const resp = await fetch(`/api/crew-members/${member.id}/disembark`, {
@@ -1762,7 +1760,12 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                   </button>
                   {viewingProfile.vesselId && viewingProfile.vesselId !== 'all' && viewingProfile.vesselId !== 'any' && !isVesselUser && isAdminOrPic && (
                     <button
-                      onClick={() => handleDisembark(viewingProfile)}
+                      onClick={() => {
+                        setDisembarkingCrew(viewingProfile);
+                        setDisembarkStep('confirm');
+                        setDisembarkReason('');
+                        setShowDisembarkDialog(true);
+                      }}
                       className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-rose-100 flex items-center gap-1.5 cursor-pointer"
                     >
                       <Anchor className="w-3.5 h-3.5" /> Disembark Crew
@@ -1803,6 +1806,94 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Yes/No/Cancel Disembark Confirmation Dialog */}
+      {showDisembarkDialog && disembarkingCrew && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[1050]">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-100 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-rose-50 text-rose-900">
+              <h3 className="text-sm font-black tracking-tight flex items-center gap-2">
+                <Anchor className="w-4 h-4 text-rose-600 animate-pulse" /> Confirm Disembarkation
+              </h3>
+              <button 
+                onClick={() => setShowDisembarkDialog(false)}
+                className="p-1 hover:bg-rose-100 rounded-lg text-rose-700 transition-colors cursor-pointer"
+              >
+                <span className="text-sm font-bold">✕</span>
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {disembarkStep === 'confirm' ? (
+                <>
+                  <p className="text-sm text-slate-600 leading-relaxed font-semibold">
+                    Has <span className="text-slate-900 font-black">{disembarkingCrew.name}</span> finished their contract?
+                  </p>
+                  
+                  <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                    <button
+                      onClick={() => {
+                        executeDisembark(disembarkingCrew, true, 'Finished Contract');
+                        setShowDisembarkDialog(false);
+                      }}
+                      className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-emerald-100 flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      Yes, Finished
+                    </button>
+                    <button
+                      onClick={() => {
+                        setDisembarkStep('reason');
+                      }}
+                      className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-amber-100 flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      No, Custom Reason
+                    </button>
+                    <button
+                      onClick={() => setShowDisembarkDialog(false)}
+                      className="py-2.5 px-4 border border-slate-200 text-slate-600 font-bold rounded-xl text-xs hover:bg-slate-50 transition-all cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block">Disembarkation Reason / Contract Remarks</label>
+                    <textarea
+                      value={disembarkReason}
+                      onChange={(e) => setDisembarkReason(e.target.value)}
+                      placeholder="e.g. Compassionate leave, medical sign-off, or other instructions..."
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-semibold"
+                      rows={3}
+                      autoFocus
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      onClick={() => setDisembarkStep('confirm')}
+                      className="px-4 py-2 border border-slate-200 text-slate-600 font-bold rounded-xl text-xs hover:bg-slate-50 transition-all cursor-pointer"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={() => {
+                        const finalReason = disembarkReason.trim() || 'Unfinished Contract - Disembarked';
+                        executeDisembark(disembarkingCrew, false, finalReason);
+                        setShowDisembarkDialog(false);
+                      }}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-blue-100 cursor-pointer"
+                    >
+                      Submit & Disembark
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}
