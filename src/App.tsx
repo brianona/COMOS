@@ -341,6 +341,14 @@ interface Vessel {
   date_built?: string | null;
   min_fuel_consumption?: string | null;
   max_fuel_consumption?: string | null;
+  charterer_min_hsfo?: string | null;
+  charterer_max_hsfo?: string | null;
+  charterer_min_lsfo?: string | null;
+  charterer_max_lsfo?: string | null;
+  charterer_min_mgo?: string | null;
+  charterer_max_mgo?: string | null;
+  charterer_min_mdo?: string | null;
+  charterer_max_mdo?: string | null;
 }
 
 interface Certificate {
@@ -448,6 +456,14 @@ interface NoonReport {
   destination_port?: string | null;
   eta_utc?: string | null;
   agent_details?: string | null;
+  charterer_min_hsfo?: string | null;
+  charterer_max_hsfo?: string | null;
+  charterer_min_lsfo?: string | null;
+  charterer_max_lsfo?: string | null;
+  charterer_min_mgo?: string | null;
+  charterer_max_mgo?: string | null;
+  charterer_min_mdo?: string | null;
+  charterer_max_mdo?: string | null;
 }
 
 interface OtherReport {
@@ -1348,13 +1364,13 @@ const SidebarContent = ({
                   onClick={() => { setView('crew_list'); setIsSidebarOpen(false); }}
                   className={getSubItemClass(view === 'crew_list')}
                 >
-                  <Users className="w-3.5 h-3.5 shrink-0" /> Crew List
+                  <Users className="w-3.5 h-3.5 shrink-0" /> Onboard Crew
                 </button>
                 <button 
                   onClick={() => { setView('crew_compliance'); setIsSidebarOpen(false); }}
                   className={getSubItemClass(view === 'crew_compliance')}
                 >
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Crew Employment Status
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Crew Pool List
                 </button>
               </motion.div>
             )}
@@ -1421,7 +1437,7 @@ const SidebarContent = ({
         </div>
 
         {/* Administration panel */}
-        {(user.role === 'admin' || user.role === 'team_pic') && (
+        {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
           <div className="space-y-1">
             <button 
               onClick={() => setIsAdminTreeOpen(!isAdminTreeOpen)}
@@ -2258,6 +2274,18 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     }
   }, [token]);
 
+  const fetchVessels = useCallback(async () => {
+    const headers = { Authorization: `Bearer ${token}` };
+    try {
+      const res = await fetch('/api/vessels', { headers });
+      if (res.ok) {
+        setVessels(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch vessels:', err);
+    }
+  }, [token]);
+
   const fetchNoonReports = useCallback(async () => {
     setLoadingStates(prev => ({ ...prev, noon: true }));
     const headers = { Authorization: `Bearer ${token}` };
@@ -3037,7 +3065,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           </td>
                           <td className="px-6 py-4 text-right">
                             <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              {(user.role === 'admin' || user.role === 'team_pic') && (
+                              {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                                 <>
                                   <button 
                                     onClick={(e) => {
@@ -3117,7 +3145,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       {vesselSortOrder === 'asc' ? <ArrowUp className="w-4 h-4" /> : <ArrowDown className="w-4 h-4" />}
                     </button>
                   </div>
-                  {(user.role === 'admin' || user.role === 'team_pic') && (
+                  {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                     <button 
                       onClick={() => setView('admin')}
                       className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 whitespace-nowrap"
@@ -3217,7 +3245,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       >
                         Details
                       </button>
-                      {(user.role === 'admin' || user.role === 'team_pic') && (
+                      {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                         <>
                           <button 
                             onClick={(e) => {
@@ -3335,7 +3363,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               token={token}
               vessels={vessels}
               reports={noonReports}
-              onRefresh={fetchNoonReports}
+              onRefresh={async () => {
+                await fetchNoonReports();
+                await fetchVessels();
+              }}
               notify={notify}
               isLoading={loadingStates.noon}
             />
@@ -3966,7 +3997,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
                             <span className="font-bold text-sm text-slate-900">{cert.name}</span>
-                            {(user.role === 'admin' || user.role === 'team_pic') && (
+                            {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                               <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                 <button 
                                   onClick={(e) => {
@@ -4136,7 +4167,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       <input 
                         type="text" 
                         value={selectedCert.certificate_number || ''}
-                        readOnly={!(user.role === 'admin' || user.role === 'team_pic')}
+                        readOnly={!(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user')}
                         onChange={(e) => setSelectedCert({...selectedCert, certificate_number: e.target.value})}
                         className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
                         placeholder="N/A"
@@ -4148,7 +4179,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <input 
                           type="date" 
                           value={selectedCert.date_issued || ''}
-                          readOnly={!(user.role === 'admin' || user.role === 'team_pic')}
+                          readOnly={!(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user')}
                           onChange={(e) => setSelectedCert({...selectedCert, date_issued: e.target.value})}
                           className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
                         />
@@ -4158,13 +4189,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <input 
                           type="date" 
                           value={newExpDate}
-                          readOnly={!(user.role === 'admin' || user.role === 'team_pic')}
+                          readOnly={!(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user')}
                           onChange={(e) => setNewExpDate(e.target.value)}
                           className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
                         />
                       </div>
                     </div>
-                    {(user.role === 'admin' || user.role === 'team_pic') && (
+                    {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                       <button 
                         onClick={handleSidePanelUpdateCert}
                         className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-800 transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2"
@@ -4271,7 +4302,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                   >
                                     <Download className="w-3.5 h-3.5" />
                                   </a>
-                                  {(user?.role === 'admin' || user?.role === 'team_pic') && (
+                                  {(user?.role === 'admin' || user?.role === 'team_pic' || user?.role === 'user') && (
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -4337,7 +4368,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                   >
                                     <Download className="w-3.5 h-3.5" />
                                   </a>
-                                  {(user?.role === 'admin' || user?.role === 'team_pic') && (
+                                  {(user?.role === 'admin' || user?.role === 'team_pic' || user?.role === 'user') && (
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -5492,13 +5523,166 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
     remarks: '',
     destination_port: '',
     eta_utc: '',
-    agent_details: ''
+    agent_details: '',
+    charterer_min_hsfo: '',
+    charterer_max_hsfo: '',
+    charterer_min_lsfo: '',
+    charterer_max_lsfo: '',
+    charterer_min_mgo: '',
+    charterer_max_mgo: '',
+    charterer_min_mdo: '',
+    charterer_max_mdo: ''
   };
   const [form, setForm] = useState(defaultForm);
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
   const [vesselFilter, setVesselFilter] = useState<string>('');
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [isThresholdEditing, setIsThresholdEditing] = useState(false);
+
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [newChatMessage, setNewChatMessage] = useState('');
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [isLoadingChat, setIsLoadingChat] = useState(false);
+
+  const fetchChatMessages = useCallback(async () => {
+    if (!form.vessel_id) return;
+    setIsLoadingChat(true);
+    try {
+      const res = await fetch(`/api/vessels/${form.vessel_id}/threshold-chat`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        setChatMessages(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch threshold chat:', err);
+    } finally {
+      setIsLoadingChat(false);
+    }
+  }, [form.vessel_id, token]);
+
+  useEffect(() => {
+    if (form.vessel_id) {
+      fetchChatMessages();
+    } else {
+      setChatMessages([]);
+    }
+  }, [form.vessel_id, fetchChatMessages]);
+
+  const handleSendChatMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!form.vessel_id) {
+      notify('error', 'Please select a vessel first');
+      return;
+    }
+    if (!newChatMessage.trim()) return;
+
+    setIsSendingMessage(true);
+    try {
+      const res = await fetch(`/api/vessels/${form.vessel_id}/threshold-chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ message_text: newChatMessage })
+      });
+      if (res.ok) {
+        setNewChatMessage('');
+        fetchChatMessages();
+      } else {
+        const errData = await res.json();
+        notify('error', errData.error || 'Failed to send message');
+      }
+    } catch (err) {
+      notify('error', 'Error sending message');
+    } finally {
+      setIsSendingMessage(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (!editingId && form.vessel_id) {
+      const selectedVessel = vessels.find(v => String(v.id) === String(form.vessel_id));
+      if (selectedVessel) {
+        setForm(f => ({
+          ...f,
+          charterer_min_hsfo: selectedVessel.charterer_min_hsfo || '',
+          charterer_max_hsfo: selectedVessel.charterer_max_hsfo || '',
+          charterer_min_lsfo: selectedVessel.charterer_min_lsfo || '',
+          charterer_max_lsfo: selectedVessel.charterer_max_lsfo || '',
+          charterer_min_mgo: selectedVessel.charterer_min_mgo || '',
+          charterer_max_mgo: selectedVessel.charterer_max_mgo || '',
+          charterer_min_mdo: selectedVessel.charterer_min_mdo || '',
+          charterer_max_mdo: selectedVessel.charterer_max_mdo || ''
+        }));
+      }
+    }
+  }, [form.vessel_id, editingId, vessels]);
+
+  const handleSaveThresholds = async () => {
+    if (!form.vessel_id) {
+      notify('error', 'Please select a vessel first');
+      return;
+    }
+
+    try {
+      const resVessel = await fetch(`/api/vessels/${form.vessel_id}/charterer-thresholds`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          charterer_min_hsfo: form.charterer_min_hsfo,
+          charterer_max_hsfo: form.charterer_max_hsfo,
+          charterer_min_lsfo: form.charterer_min_lsfo,
+          charterer_max_lsfo: form.charterer_max_lsfo,
+          charterer_min_mgo: form.charterer_min_mgo,
+          charterer_max_mgo: form.charterer_max_mgo,
+          charterer_min_mdo: form.charterer_min_mdo,
+          charterer_max_mdo: form.charterer_max_mdo
+        })
+      });
+
+      if (!resVessel.ok) {
+        const error = await resVessel.json();
+        throw new Error(error.error || 'Failed to save vessel thresholds');
+      }
+
+      if (editingId) {
+        const resReport = await fetch(`/api/noon-reports/${editingId}/charterer-thresholds`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            charterer_min_hsfo: form.charterer_min_hsfo,
+            charterer_max_hsfo: form.charterer_max_hsfo,
+            charterer_min_lsfo: form.charterer_min_lsfo,
+            charterer_max_lsfo: form.charterer_max_lsfo,
+            charterer_min_mgo: form.charterer_min_mgo,
+            charterer_max_mgo: form.charterer_max_mgo,
+            charterer_min_mdo: form.charterer_min_mdo,
+            charterer_max_mdo: form.charterer_max_mdo
+          })
+        });
+
+        if (!resReport.ok) {
+          const error = await resReport.json();
+          throw new Error(error.error || 'Failed to save report thresholds');
+        }
+      }
+
+      notify('success', 'Charterer thresholds saved successfully');
+      setIsThresholdEditing(false);
+      onRefresh();
+    } catch (err: any) {
+      notify('error', err.message || 'Failed to save thresholds');
+    }
+  };
 
   const filteredReports = React.useMemo(() => {
     return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
@@ -5628,7 +5812,15 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
       remarks: report.remarks || '',
       destination_port: report.destination_port || '',
       eta_utc: report.eta_utc ? report.eta_utc.slice(0, 16) : '',
-      agent_details: report.agent_details || ''
+      agent_details: report.agent_details || '',
+      charterer_min_hsfo: report.charterer_min_hsfo || '',
+      charterer_max_hsfo: report.charterer_max_hsfo || '',
+      charterer_min_lsfo: report.charterer_min_lsfo || '',
+      charterer_max_lsfo: report.charterer_max_lsfo || '',
+      charterer_min_mgo: report.charterer_min_mgo || '',
+      charterer_max_mgo: report.charterer_max_mgo || '',
+      charterer_min_mdo: report.charterer_min_mdo || '',
+      charterer_max_mdo: report.charterer_max_mdo || ''
     });
     setActiveTab('form');
   };
@@ -5664,7 +5856,7 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
         </div>
         <div className="flex bg-slate-100 p-1.5 rounded-xl border border-slate-200">
           <button 
-            onClick={() => { setActiveTab('form'); setEditingId(null); setForm(defaultForm); }}
+            onClick={() => { setActiveTab('form'); setEditingId(null); setForm(defaultForm); setIsThresholdEditing(false); }}
             className={cn(
               "px-5 py-2.5 rounded-lg text-sm font-bold transition-all duration-200",
               activeTab === 'form' && !editingId
@@ -5906,11 +6098,11 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
                           />
                           <div 
                             className={`w-24 px-2 py-1.5 text-xs font-bold rounded-lg flex items-center justify-center whitespace-nowrap ${
-                              isFocOutsideLimits((foc_computation as any)[f.key], currentVessel?.min_fuel_consumption, currentVessel?.max_fuel_consumption)
+                              isFocOutsideLimits((foc_computation as any)[f.key], (form as any)[`charterer_min_${f.key}`], (form as any)[`charterer_max_${f.key}`])
                                 ? 'bg-red-100 text-red-700 border border-red-200'
                                 : 'bg-blue-100 text-blue-700'
                             }`} 
-                            title={`Consumption based on previous report ROB (Vessel Limit: ${currentVessel?.min_fuel_consumption || 'N/A'} - ${currentVessel?.max_fuel_consumption || 'N/A'})`}
+                            title={`Consumption based on previous report ROB (Charterer Threshold: ${(form as any)[`charterer_min_${f.key}`] || 'N/A'} - ${(form as any)[`charterer_max_${f.key}`] || 'N/A'})`}
                           >
                             {(foc_computation as any)[f.key]}
                           </div>
@@ -5919,6 +6111,165 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
                     ))}
                     <div className="text-[10px] text-slate-400 italic px-2">
                       * FOC is auto-computed based on previous report's ROB.
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-blue-50/30 p-6 rounded-2xl border border-blue-100 mt-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h4 className="text-sm font-bold text-blue-900 flex items-center gap-2">
+                      <Fuel className="w-4 h-4 text-blue-600" />
+                      Consumption Threshold as per Charterer
+                    </h4>
+                    {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isThresholdEditing) {
+                            handleSaveThresholds();
+                          } else {
+                            setIsThresholdEditing(true);
+                          }
+                        }}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-sm border ${
+                          isThresholdEditing 
+                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700' 
+                            : 'bg-blue-600 hover:bg-blue-700 text-white border-blue-700'
+                        }`}
+                      >
+                        {isThresholdEditing ? (
+                          <>
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Save
+                          </>
+                        ) : (
+                          <>
+                            <Edit2 className="w-3.5 h-3.5" />
+                            Edit
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
+                      <span>Fuel Type</span>
+                      <span>Min Threshold</span>
+                      <span>Max Threshold</span>
+                    </div>
+                    {[
+                      { key: 'hsfo', label: 'HSFO', minKey: 'charterer_min_hsfo', maxKey: 'charterer_max_hsfo' },
+                      { key: 'lsfo', label: 'LSFO', minKey: 'charterer_min_lsfo', maxKey: 'charterer_max_lsfo' },
+                      { key: 'mgo', label: 'MGO', minKey: 'charterer_min_mgo', maxKey: 'charterer_max_mgo' },
+                      { key: 'mdo', label: 'MDO', minKey: 'charterer_min_mdo', maxKey: 'charterer_max_mdo' },
+                    ].map(f => {
+                      const canEdit = (user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && isThresholdEditing;
+                      return (
+                        <div key={f.key} className="grid grid-cols-3 gap-4 items-center">
+                          <span className="text-sm font-bold text-slate-700">{f.label}</span>
+                          <input 
+                            type="text" 
+                            value={(form as any)[f.minKey] || ''}
+                            disabled={!canEdit}
+                            placeholder={!canEdit ? 'N/A' : 'Min'}
+                            onChange={(e) => setForm({ ...form, [f.minKey]: e.target.value })}
+                            className="w-full px-3 py-1.5 bg-white border border-blue-200 disabled:bg-slate-50 disabled:text-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
+                          />
+                          <input 
+                            type="text" 
+                            value={(form as any)[f.maxKey] || ''}
+                            disabled={!canEdit}
+                            placeholder={!canEdit ? 'N/A' : 'Max'}
+                            onChange={(e) => setForm({ ...form, [f.maxKey]: e.target.value })}
+                            className="w-full px-3 py-1.5 bg-white border border-blue-200 disabled:bg-slate-50 disabled:text-slate-500 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
+                          />
+                        </div>
+                      );
+                    })}
+                    {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && !isThresholdEditing && (
+                      <div className="text-[10px] text-blue-500 font-medium px-2">
+                        * Click the "Edit" button to change threshold values.
+                      </div>
+                    )}
+
+                    {/* Threshold Chat Box */}
+                    <div className="mt-6 pt-6 border-t border-blue-100">
+                      <div className="flex items-center justify-between mb-3">
+                        <h5 className="text-xs font-bold uppercase tracking-wider text-blue-900 flex items-center gap-1.5">
+                          <MessageSquare className="w-3.5 h-3.5 text-blue-600" />
+                          Threshold Discussion Board
+                        </h5>
+                        <button
+                          type="button"
+                          onClick={() => fetchChatMessages()}
+                          className="p-1.5 hover:bg-blue-100/50 rounded-lg text-blue-600 transition-colors cursor-pointer"
+                          title="Refresh chat"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {/* Chat Message List */}
+                      <div className="bg-white/80 rounded-xl p-3 border border-blue-100 max-h-56 overflow-y-auto space-y-2.5 mb-3">
+                        {isLoadingChat ? (
+                          <div className="text-center py-6 text-xs text-slate-400 flex items-center justify-center gap-1.5">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-500" />
+                            Loading discussion...
+                          </div>
+                        ) : chatMessages.length === 0 ? (
+                          <div className="text-center py-6 text-xs text-slate-400 italic">
+                            No messages yet. Send a message to discuss these threshold settings.
+                          </div>
+                        ) : (
+                          chatMessages.map((msg) => {
+                            const isMe = String(msg.author_id) === String(user.id);
+                            return (
+                              <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                                <div className="flex items-center gap-1.5 mb-0.5 text-[10px]">
+                                  <span className="font-extrabold text-slate-700">{msg.author_name}</span>
+                                  <span className="text-slate-400">
+                                    {format(new Date(msg.created_at), 'MMM dd, HH:mm')}
+                                  </span>
+                                </div>
+                                <div className={`px-3 py-1.5 rounded-lg text-xs max-w-[85%] break-words font-medium shadow-sm ${
+                                  isMe 
+                                    ? 'bg-blue-600 text-white rounded-tr-none font-semibold' 
+                                    : 'bg-slate-100 text-slate-800 rounded-tl-none border border-slate-200'
+                                }`}>
+                                  {msg.message_text}
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Chat Message Input */}
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          placeholder={form.vessel_id ? "Type a message regarding thresholds..." : "Select a vessel to chat"}
+                          disabled={!form.vessel_id || isSendingMessage}
+                          value={newChatMessage}
+                          onChange={(e) => setNewChatMessage(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSendChatMessage();
+                          }}
+                          className="flex-1 px-3 py-2 text-xs bg-white border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500/20 outline-none font-bold placeholder:font-normal placeholder:text-slate-400 disabled:bg-slate-50 disabled:cursor-not-allowed"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleSendChatMessage()}
+                          disabled={!form.vessel_id || isSendingMessage || !newChatMessage.trim()}
+                          className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white rounded-lg transition-colors flex items-center justify-center cursor-pointer shadow-sm border border-blue-700"
+                        >
+                          {isSendingMessage ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <MessageSquare className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -6200,7 +6551,13 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
                       {report.remarks || <span className="text-slate-400">-</span>}
                     </td>
                     <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
-                    <td className="px-6 py-4 font-mono text-blue-600">-{report.foc_hsfo}</td>
+                    <td className={`px-6 py-4 font-mono font-bold ${
+                      isFocOutsideLimits(String(report.foc_hsfo), report.charterer_min_hsfo, report.charterer_max_hsfo)
+                        ? 'text-red-600'
+                        : 'text-blue-600'
+                    }`} title={isFocOutsideLimits(String(report.foc_hsfo), report.charterer_min_hsfo, report.charterer_max_hsfo) ? `Outside Charterer Threshold (${report.charterer_min_hsfo || 'N/A'} - ${report.charterer_max_hsfo || 'N/A'})` : `Charterer Threshold: ${report.charterer_min_hsfo || 'N/A'} - ${report.charterer_max_hsfo || 'N/A'}`}>
+                      -{report.foc_hsfo}
+                    </td>
                     <td className="px-6 py-4">
                       {report.attachment_id && (
                         <a 
@@ -6225,7 +6582,7 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
                             <Edit2 className="w-4 h-4" />
                           </button>
                         )}
-                        {(user.role === 'admin' || user.role === 'team_pic') && (
+                        {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                           <button 
                             onClick={() => handleDelete(report.id)}
                             className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -6726,7 +7083,7 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify, isL
                             <Edit2 className="w-4 h-4" />
                           </button>
                         )}
-                        {(user.role === 'admin' || user.role === 'team_pic') && (
+                        {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                           <button 
                             onClick={() => handleDelete(report.id)}
                             className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -7401,7 +7758,7 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                             <Edit2 className="w-4 h-4" />
                           </button>
                         )}
-                        {(user.role === 'admin' || user.role === 'team_pic') && (
+                        {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                           <button 
                             onClick={() => handleDelete(report.id)}
                             className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -8491,7 +8848,7 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify, isLoa
                             <Edit2 className="w-4 h-4" />
                           </button>
                         )}
-                        {(user.role === 'admin' || user.role === 'team_pic') && (
+                        {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                           <button 
                             onClick={() => handleDelete(report.id)}
                             className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
@@ -8610,7 +8967,7 @@ const AdminPanel = ({
   const [systemTime, setSystemTime] = useState<{ time: string, timezone: string } | null>(null);
   const user = JSON.parse(atob(token.split('.')[1]));
   const isAdmin = user.role === 'admin';
-  const isTeamPic = user.role === 'team_pic';
+  const isTeamPic = user.role === 'team_pic' || user.role === 'user';
   const isVessel = user.role === 'vessel';
 
   const fetchSystemTime = useCallback(async () => {

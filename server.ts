@@ -386,6 +386,20 @@ async function startServer() {
         console.log('Adding max_fuel_consumption column to vessels table...');
         await pool.query("ALTER TABLE vessels ADD COLUMN max_fuel_consumption VARCHAR(255)");
       }
+
+      const chartererFields = [
+        'charterer_min_hsfo', 'charterer_max_hsfo',
+        'charterer_min_lsfo', 'charterer_max_lsfo',
+        'charterer_min_mgo', 'charterer_max_mgo',
+        'charterer_min_mdo', 'charterer_max_mdo'
+      ];
+
+      for (const field of chartererFields) {
+        if (!columnNames.includes(field)) {
+          console.log(`Adding ${field} column to vessels table...`);
+          await pool.query(`ALTER TABLE vessels ADD COLUMN ${field} VARCHAR(50) NULL`);
+        }
+      }
     } catch (e: any) {
       console.error('Error during vessels table migration:', e.message);
     }
@@ -687,6 +701,14 @@ async function startServer() {
         destination_port VARCHAR(255) NULL,
         eta_utc DATETIME NULL,
         agent_details TEXT NULL,
+        charterer_min_hsfo VARCHAR(50) NULL,
+        charterer_max_hsfo VARCHAR(50) NULL,
+        charterer_min_lsfo VARCHAR(50) NULL,
+        charterer_max_lsfo VARCHAR(50) NULL,
+        charterer_min_mgo VARCHAR(50) NULL,
+        charterer_max_mgo VARCHAR(50) NULL,
+        charterer_min_mdo VARCHAR(50) NULL,
+        charterer_max_mdo VARCHAR(50) NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (vessel_id) REFERENCES vessels(id),
         FOREIGN KEY (user_id) REFERENCES users(id),
@@ -880,7 +902,24 @@ async function startServer() {
         photo LONGTEXT NULL,
         hiring_status VARCHAR(100) DEFAULT 'for rehire',
         si_comments TEXT NULL,
+        extensions_count INT DEFAULT 0,
+        contract_end_date DATE NULL,
         deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Crew Onboard History
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS crew_history (
+        id VARCHAR(100) PRIMARY KEY,
+        crew_id VARCHAR(100) NOT NULL,
+        vessel_id VARCHAR(50) NULL,
+        vessel_name VARCHAR(255) NULL,
+        rank_name VARCHAR(255) NULL,
+        sign_on_date DATE NULL,
+        disembark_date DATE NULL,
+        remarks TEXT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -900,6 +939,12 @@ async function startServer() {
     } catch (_) {}
     try {
       await pool.query("ALTER TABLE crew_members ADD COLUMN si_comments TEXT NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN extensions_count INT DEFAULT 0");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN contract_end_date DATE NULL");
     } catch (_) {}
     try {
       await pool.query("ALTER TABLE crew_members MODIFY sign_on_date DATE NULL");
@@ -1046,6 +1091,18 @@ async function startServer() {
       )
     `);
 
+    // Create table for Threshold Chat Messages
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS threshold_chat_messages (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id VARCHAR(100) NOT NULL,
+        author_name VARCHAR(255) NOT NULL,
+        author_id VARCHAR(100) NOT NULL,
+        message_text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     try {
       await pool.query('ALTER TABLE departure_reports ADD COLUMN voyage_number VARCHAR(100)');
     } catch (e) {}
@@ -1092,6 +1149,31 @@ async function startServer() {
 
     try {
       await pool.query('ALTER TABLE noon_reports ADD COLUMN agent_details TEXT NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_min_hsfo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_max_hsfo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_min_lsfo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_max_lsfo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_min_mgo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_max_mgo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_min_mdo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_max_mdo VARCHAR(50) NULL');
     } catch (e) {}
 
     // Migration for existing databases: ensure new keys exist
@@ -1308,7 +1390,7 @@ async function startServer() {
   };
 
   const isTeamPicOrAdmin = (req: any, res: any, next: any) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'team_pic') {
+    if (req.user.role !== 'admin' && req.user.role !== 'team_pic' && req.user.role !== 'user') {
       return res.status(403).json({ error: 'Forbidden' });
     }
     next();
@@ -1808,13 +1890,13 @@ async function startServer() {
   app.get('/api/vessels', authenticate, async (req: any, res) => {
     let vessels;
     if (req.user.role === 'admin') {
-      [vessels] = await pool.query('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL');
+      [vessels] = await pool.query('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL');
     } else if (req.user.role === 'vessel') {
       const vesselId = req.user.vessel_id;
       if (!vesselId) {
         return res.json([]);
       }
-      [vessels] = await pool.execute('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL', [vesselId]);
+      [vessels] = await pool.execute('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL', [vesselId]);
     } else {
       const teamIds = req.user.team_ids || [];
       if (teamIds.length === 0) {
@@ -1822,7 +1904,7 @@ async function startServer() {
       }
       const placeholders = teamIds.map(() => '?').join(',');
       const params = [...teamIds];
-      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
+      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
     }
     res.json(vessels);
   });
@@ -1845,8 +1927,8 @@ async function startServer() {
   app.post('/api/vessels', authenticate, isTeamPicOrAdmin, upload.single('photo'), async (req: any, res) => {
     const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption } = req.body;
     try {
-      // If team_pic, they can only add to their own teams
-      if (req.user.role === 'team_pic' && team_id && !req.user.team_ids.includes(Number(team_id))) {
+      // If team_pic or user, they can only add to their own teams
+      if ((req.user.role === 'team_pic' || req.user.role === 'user') && team_id && !req.user.team_ids.includes(Number(team_id))) {
         return res.status(403).json({ error: 'You can only add vessels to your assigned teams' });
       }
       
@@ -1874,7 +1956,7 @@ async function startServer() {
       const [vessels]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [req.params.id]);
       if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
       
-      if (req.user.role === 'team_pic') {
+      if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const oldTeamId = vessels[0].team_id;
         if (!req.user.team_ids.includes(oldTeamId)) return res.status(403).json({ error: 'Forbidden' });
         if (team_id && !req.user.team_ids.includes(Number(team_id))) return res.status(403).json({ error: 'Forbidden' });
@@ -1903,6 +1985,72 @@ async function startServer() {
       } else {
         res.status(400).json({ error: e.message });
       }
+    }
+  });
+
+  app.put('/api/vessels/:id/charterer-thresholds', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    const {
+      charterer_min_hsfo, charterer_max_hsfo,
+      charterer_min_lsfo, charterer_max_lsfo,
+      charterer_min_mgo, charterer_max_mgo,
+      charterer_min_mdo, charterer_max_mdo
+    } = req.body;
+    try {
+      const [vessels]: any = await pool.execute('SELECT id FROM vessels WHERE id = ?', [req.params.id]);
+      if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+
+      await pool.execute(`
+        UPDATE vessels SET
+          charterer_min_hsfo = ?, charterer_max_hsfo = ?,
+          charterer_min_lsfo = ?, charterer_max_lsfo = ?,
+          charterer_min_mgo = ?, charterer_max_mgo = ?,
+          charterer_min_mdo = ?, charterer_max_mdo = ?
+        WHERE id = ?
+      `, [
+        charterer_min_hsfo || null, charterer_max_hsfo || null,
+        charterer_min_lsfo || null, charterer_max_lsfo || null,
+        charterer_min_mgo || null, charterer_max_mgo || null,
+        charterer_min_mdo || null, charterer_max_mdo || null,
+        req.params.id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_VESSEL_THRESHOLDS', `Updated vessel ID ${req.params.id} charterer thresholds`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/vessels/:id/threshold-chat', authenticate, async (req: any, res) => {
+    try {
+      const [messages]: any = await pool.execute(
+        'SELECT id, vessel_id, author_name, author_id, message_text, created_at FROM threshold_chat_messages WHERE vessel_id = ? ORDER BY created_at ASC',
+        [req.params.id]
+      );
+      res.json(messages);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/vessels/:id/threshold-chat', authenticate, async (req: any, res) => {
+    const { message_text } = req.body;
+    if (!message_text || !message_text.trim()) {
+      return res.status(400).json({ error: 'Message cannot be empty' });
+    }
+    try {
+      const [vessels]: any = await pool.execute('SELECT id FROM vessels WHERE id = ?', [req.params.id]);
+      if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+
+      await pool.execute(
+        'INSERT INTO threshold_chat_messages (vessel_id, author_name, author_id, message_text) VALUES (?, ?, ?, ?)',
+        [req.params.id, req.user.username, String(req.user.id), message_text.trim()]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'ADD_THRESHOLD_CHAT_MESSAGE', `Added chat message to vessel ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 
@@ -2218,7 +2366,7 @@ async function startServer() {
       if (certs.length === 0) return res.status(404).json({ error: 'Certificate not found' });
       const cert = certs[0];
 
-      if (req.user.role === 'admin' || req.user.role === 'team_pic') {
+      if (req.user.role === 'admin' || req.user.role === 'team_pic' || req.user.role === 'user') {
         const finalName = name !== undefined ? name : cert.name;
         const finalVesselId = vessel_id !== undefined ? vessel_id : cert.vessel_id;
         const finalExpirationDate = expiration_date !== undefined ? expiration_date : cert.expiration_date;
@@ -2279,7 +2427,7 @@ async function startServer() {
       if (certRows.length === 0) return res.status(404).json({ error: 'Certificate not found' });
       const cert = certRows[0];
 
-      if (req.user.role === 'team_pic') {
+      if (req.user.role === 'team_pic' || req.user.role === 'user') {
         if (!req.user.team_ids.includes(cert.team_id)) return res.status(403).json({ error: 'Forbidden' });
       }
       // Soft delete notes and files
@@ -2525,7 +2673,7 @@ Generated by COMOS System
 
   app.delete('/api/files/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
     try {
-      if (req.user.role === 'team_pic') {
+      if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const [files]: any = await pool.execute('SELECT c.team_id FROM files f JOIN certificates c ON f.certificate_id = c.id WHERE f.id = ?', [req.params.id]);
         if (files.length > 0 && !req.user.team_ids.includes(files[0].team_id)) return res.status(403).json({ error: 'Forbidden' });
       }
@@ -2553,7 +2701,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND dr.vessel_id = ?';
         params.push(req.user.vessel_id);
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -2769,7 +2917,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND ar.vessel_id = ?';
         params.push(req.user.vessel_id);
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -2953,7 +3101,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND nr.vessel_id = ?';
         params.push(req.user.vessel_id);
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -2993,12 +3141,47 @@ Generated by COMOS System
         remarks,
         destination_port,
         eta_utc,
-        agent_details
+        agent_details,
+        charterer_min_hsfo,
+        charterer_max_hsfo,
+        charterer_min_lsfo,
+        charterer_max_lsfo,
+        charterer_min_mgo,
+        charterer_max_mgo,
+        charterer_min_mdo,
+        charterer_max_mdo
       } = req.body;
 
       if (!vessel_id) {
         return res.status(400).json({ error: 'Vessel ID is required' });
       }
+
+      // Fetch vessel's current thresholds as fallback/default
+      const [vesselRows]: any = await pool.execute(
+        'SELECT charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo, charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo FROM vessels WHERE id = ?',
+        [vessel_id]
+      );
+      let vMinHsfo = null, vMaxHsfo = null, vMinLsfo = null, vMaxLsfo = null, vMinMgo = null, vMaxMgo = null, vMinMdo = null, vMaxMdo = null;
+      if (vesselRows.length > 0) {
+        vMinHsfo = vesselRows[0].charterer_min_hsfo;
+        vMaxHsfo = vesselRows[0].charterer_max_hsfo;
+        vMinLsfo = vesselRows[0].charterer_min_lsfo;
+        vMaxLsfo = vesselRows[0].charterer_max_lsfo;
+        vMinMgo = vesselRows[0].charterer_min_mgo;
+        vMaxMgo = vesselRows[0].charterer_max_mgo;
+        vMinMdo = vesselRows[0].charterer_min_mdo;
+        vMaxMdo = vesselRows[0].charterer_max_mdo;
+      }
+
+      const isAuthorized = req.user.role === 'admin' || req.user.role === 'team_pic' || req.user.role === 'user';
+      const cMinHsfo = isAuthorized ? (charterer_min_hsfo || vMinHsfo) : vMinHsfo;
+      const cMaxHsfo = isAuthorized ? (charterer_max_hsfo || vMaxHsfo) : vMaxHsfo;
+      const cMinLsfo = isAuthorized ? (charterer_min_lsfo || vMinLsfo) : vMinLsfo;
+      const cMaxLsfo = isAuthorized ? (charterer_max_lsfo || vMaxLsfo) : vMaxLsfo;
+      const cMinMgo = isAuthorized ? (charterer_min_mgo || vMinMgo) : vMinMgo;
+      const cMaxMgo = isAuthorized ? (charterer_max_mgo || vMaxMgo) : vMaxMgo;
+      const cMinMdo = isAuthorized ? (charterer_min_mdo || vMinMdo) : vMinMdo;
+      const cMaxMdo = isAuthorized ? (charterer_max_mdo || vMaxMdo) : vMaxMdo;
 
       let attachmentId = null;
       if (req.file) {
@@ -3017,8 +3200,10 @@ Generated by COMOS System
           distance_to_go, cargo_status, rob_hsfo, rob_lsfo, rob_mgo, rob_mdo,
           foc_hsfo, foc_lsfo, foc_mgo, foc_mdo, attachment_id,
           weather_notation, swell_scale_21, wind_scale, wave_scale, weather_image, remarks,
-          destination_port, eta_utc, agent_details
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          destination_port, eta_utc, agent_details,
+          charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo,
+          charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         vessel_id, req.user.id, voyage_number, utc_date_time, position_long, position_lat,
         distance_to_go, cargo_status, 
@@ -3027,7 +3212,9 @@ Generated by COMOS System
         attachmentId,
         weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null, weather_image || null,
         remarks || null,
-        destination_port || null, eta_utc && eta_utc.trim() !== '' ? eta_utc : null, agent_details || null
+        destination_port || null, eta_utc && eta_utc.trim() !== '' ? eta_utc : null, agent_details || null,
+        cMinHsfo, cMaxHsfo, cMinLsfo, cMaxLsfo,
+        cMinMgo, cMaxMgo, cMinMdo, cMaxMdo
       ]);
 
       await logAudit(req.user.id, req.user.username, 'CREATE_NOON_REPORT', `Created noon report for vessel ID ${vessel_id}`);
@@ -3084,8 +3271,69 @@ Generated by COMOS System
         remarks,
         destination_port,
         eta_utc,
-        agent_details
+        agent_details,
+        charterer_min_hsfo,
+        charterer_max_hsfo,
+        charterer_min_lsfo,
+        charterer_max_lsfo,
+        charterer_min_mgo,
+        charterer_max_mgo,
+        charterer_min_mdo,
+        charterer_max_mdo
       } = req.body;
+
+      const isAuthorized = req.user.role === 'admin' || req.user.role === 'team_pic' || req.user.role === 'user';
+      let cMinHsfo, cMaxHsfo, cMinLsfo, cMaxLsfo, cMinMgo, cMaxMgo, cMinMdo, cMaxMdo;
+
+      const [oldReport]: any = await pool.execute(
+        'SELECT vessel_id, charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo, charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo FROM noon_reports WHERE id = ?',
+        [id]
+      );
+      const reportVesselId = oldReport.length > 0 ? oldReport[0].vessel_id : null;
+
+      // Fetch vessel's current thresholds as fallback
+      let vMinHsfo = null, vMaxHsfo = null, vMinLsfo = null, vMaxLsfo = null, vMinMgo = null, vMaxMgo = null, vMinMdo = null, vMaxMdo = null;
+      if (reportVesselId) {
+        const [vessels]: any = await pool.execute(
+          'SELECT charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo, charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo FROM vessels WHERE id = ?',
+          [reportVesselId]
+        );
+        if (vessels.length > 0) {
+          vMinHsfo = vessels[0].charterer_min_hsfo;
+          vMaxHsfo = vessels[0].charterer_max_hsfo;
+          vMinLsfo = vessels[0].charterer_min_lsfo;
+          vMaxLsfo = vessels[0].charterer_max_lsfo;
+          vMinMgo = vessels[0].charterer_min_mgo;
+          vMaxMgo = vessels[0].charterer_max_mgo;
+          vMinMdo = vessels[0].charterer_min_mdo;
+          vMaxMdo = vessels[0].charterer_max_mdo;
+        }
+      }
+
+      if (isAuthorized) {
+        cMinHsfo = charterer_min_hsfo || vMinHsfo;
+        cMaxHsfo = charterer_max_hsfo || vMaxHsfo;
+        cMinLsfo = charterer_min_lsfo || vMinLsfo;
+        cMaxLsfo = charterer_max_lsfo || vMaxLsfo;
+        cMinMgo = charterer_min_mgo || vMinMgo;
+        cMaxMgo = charterer_max_mgo || vMaxMgo;
+        cMinMdo = charterer_min_mdo || vMinMdo;
+        cMaxMdo = charterer_max_mdo || vMaxMdo;
+      } else {
+        if (oldReport.length > 0) {
+          cMinHsfo = oldReport[0].charterer_min_hsfo !== null ? oldReport[0].charterer_min_hsfo : vMinHsfo;
+          cMaxHsfo = oldReport[0].charterer_max_hsfo !== null ? oldReport[0].charterer_max_hsfo : vMaxHsfo;
+          cMinLsfo = oldReport[0].charterer_min_lsfo !== null ? oldReport[0].charterer_min_lsfo : vMinLsfo;
+          cMaxLsfo = oldReport[0].charterer_max_lsfo !== null ? oldReport[0].charterer_max_lsfo : vMaxLsfo;
+          cMinMgo = oldReport[0].charterer_min_mgo !== null ? oldReport[0].charterer_min_mgo : vMinMgo;
+          cMaxMgo = oldReport[0].charterer_max_mgo !== null ? oldReport[0].charterer_max_mgo : vMaxMgo;
+          cMinMdo = oldReport[0].charterer_min_mdo !== null ? oldReport[0].charterer_min_mdo : vMinMdo;
+          cMaxMdo = oldReport[0].charterer_max_mdo !== null ? oldReport[0].charterer_max_mdo : vMaxMdo;
+        } else {
+          cMinHsfo = vMinHsfo; cMaxHsfo = vMaxHsfo; cMinLsfo = vMinLsfo; cMaxLsfo = vMaxLsfo;
+          cMinMgo = vMinMgo; cMaxMgo = vMaxMgo; cMinMdo = vMinMdo; cMaxMdo = vMaxMdo;
+        }
+      }
 
       let attachmentId = null;
       if (req.file) {
@@ -3108,7 +3356,9 @@ Generated by COMOS System
           foc_mgo = ?, foc_mdo = ?, attachment_id = ?,
           weather_notation = ?, swell_scale_21 = ?, wind_scale = ?, wave_scale = ?,
           weather_image = ?, remarks = ?,
-          destination_port = ?, eta_utc = ?, agent_details = ?
+          destination_port = ?, eta_utc = ?, agent_details = ?,
+          charterer_min_hsfo = ?, charterer_max_hsfo = ?, charterer_min_lsfo = ?, charterer_max_lsfo = ?,
+          charterer_min_mgo = ?, charterer_max_mgo = ?, charterer_min_mdo = ?, charterer_max_mdo = ?
         WHERE id = ?
       `, [
         voyage_number, utc_date_time, position_long, position_lat,
@@ -3119,6 +3369,8 @@ Generated by COMOS System
         weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null,
         weather_image || null, remarks || null,
         destination_port || null, eta_utc && eta_utc.trim() !== '' ? eta_utc : null, agent_details || null,
+        cMinHsfo, cMaxHsfo, cMinLsfo, cMaxLsfo,
+        cMinMgo, cMaxMgo, cMinMdo, cMaxMdo,
         id
       ]);
 
@@ -3126,6 +3378,36 @@ Generated by COMOS System
       res.json({ success: true });
     } catch (e: any) {
       console.error('Failed to update noon report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/noon-reports/:id/charterer-thresholds', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      charterer_min_hsfo, charterer_max_hsfo,
+      charterer_min_lsfo, charterer_max_lsfo,
+      charterer_min_mgo, charterer_max_mgo,
+      charterer_min_mdo, charterer_max_mdo
+    } = req.body;
+    try {
+      await pool.execute(`
+        UPDATE noon_reports SET
+          charterer_min_hsfo = ?, charterer_max_hsfo = ?,
+          charterer_min_lsfo = ?, charterer_max_lsfo = ?,
+          charterer_min_mgo = ?, charterer_max_mgo = ?,
+          charterer_min_mdo = ?, charterer_max_mdo = ?
+        WHERE id = ?
+      `, [
+        charterer_min_hsfo || null, charterer_max_hsfo || null,
+        charterer_min_lsfo || null, charterer_max_lsfo || null,
+        charterer_min_mgo || null, charterer_max_mgo || null,
+        charterer_min_mdo || null, charterer_max_mdo || null,
+        id
+      ]);
+      await logAudit(req.user.id, req.user.username, 'UPDATE_NOON_REPORT_THRESHOLDS', `Updated thresholds for noon report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
@@ -3144,7 +3426,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND orr.vessel_id = ?';
         params.push(req.user.vessel_id);
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -3837,7 +4119,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND fa.vessel_id = ?';
         params.push(req.user.vessel_id);
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -4061,7 +4343,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND ldr.vessel_id = ?';
         params.push(req.user.vessel_id);
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -4279,7 +4561,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND loa.vessel_id = ?';
         params.push(req.user.vessel_id);
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -4498,7 +4780,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND b.vessel_id = ?';
         params.push(req.user.vessel_id);
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -4729,7 +5011,9 @@ Generated by COMOS System
         contactNumber: m.contact_number || '',
         photo: m.photo || '',
         hiringStatus: m.hiring_status || 'for rehire',
-        siComments: m.si_comments || ''
+        siComments: m.si_comments || '',
+        extensionsCount: m.extensions_count || 0,
+        contractEndDate: m.contract_end_date ? new Date(m.contract_end_date).toISOString().split('T')[0] : ''
       })));
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -4740,19 +5024,20 @@ Generated by COMOS System
     const {
       id, name, rank, nationality, signOnDate, passportNo, seamanBookNo,
       status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId,
-      birthdate, contactNumber, photo, hiringStatus, siComments
+      birthdate, contactNumber, photo, hiringStatus, siComments, extensionsCount, contractEndDate
     } = req.body;
     try {
       await pool.execute(
         `INSERT INTO crew_members (
           id, name, rank_name, nationality, sign_on_date, passport_no, seaman_book_no,
           status, contract_duration, next_medical_exam, next_safety_training, vessel_id,
-          birthdate, contact_number, photo, hiring_status, si_comments
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          birthdate, contact_number, photo, hiring_status, si_comments, extensions_count, contract_end_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id, name, rank, nationality || 'Unknown', signOnDate || null, passportNo || 'N/A', seamanBookNo || 'N/A',
           status || 'Compliant', contractDuration || null, nextMedicalExam || null, nextSafetyTraining || null, vesselId || '',
-          birthdate || null, contactNumber || '', photo || '', hiringStatus || 'for rehire', siComments || ''
+          birthdate || null, contactNumber || '', photo || '', hiringStatus || 'for rehire', siComments || '',
+          extensionsCount || 0, contractEndDate || null
         ]
       );
       await logAudit(req.user.id, req.user.username, 'CREATE_CREW_MEMBER', `Created crew member ID ${id}`);
@@ -4767,19 +5052,21 @@ Generated by COMOS System
     const {
       name, rank, nationality, signOnDate, passportNo, seamanBookNo,
       status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId,
-      birthdate, contactNumber, photo, hiringStatus, siComments
+      birthdate, contactNumber, photo, hiringStatus, siComments, extensionsCount, contractEndDate
     } = req.body;
     try {
       await pool.execute(
         `UPDATE crew_members SET 
           name = ?, rank_name = ?, nationality = ?, sign_on_date = ?, passport_no = ?, seaman_book_no = ?,
           status = ?, contract_duration = ?, next_medical_exam = ?, next_safety_training = ?, vessel_id = ?,
-          birthdate = ?, contact_number = ?, photo = ?, hiring_status = ?, si_comments = ?
+          birthdate = ?, contact_number = ?, photo = ?, hiring_status = ?, si_comments = ?,
+          extensions_count = ?, contract_end_date = ?
          WHERE id = ?`,
         [
           name, rank, nationality || 'Unknown', signOnDate || null, passportNo || 'N/A', seamanBookNo || 'N/A',
           status || 'Compliant', contractDuration || null, nextMedicalExam || null, nextSafetyTraining || null, vesselId || '',
           birthdate || null, contactNumber || '', photo || '', hiringStatus || 'for rehire', siComments || '',
+          extensionsCount || 0, contractEndDate || null,
           id
         ]
       );
@@ -4792,8 +5079,88 @@ Generated by COMOS System
 
   app.delete('/api/crew-members/:id', authenticate, async (req: any, res) => {
     try {
-      await pool.execute('UPDATE crew_members SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
-      await logAudit(req.user.id, req.user.username, 'DELETE_CREW_MEMBER', `Soft deleted crew member ID ${req.params.id}`);
+      await pool.execute(
+        `UPDATE crew_members SET 
+          vessel_id = '', 
+          sign_on_date = NULL, 
+          contract_end_date = NULL, 
+          contract_duration = 0, 
+          extensions_count = 0 
+         WHERE id = ?`, 
+        [req.params.id]
+      );
+      await logAudit(req.user.id, req.user.username, 'REMOVE_CREW_MEMBER_TO_POOL', `Returned crew member ID ${req.params.id} to Global Pool and ended contract`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/crew-members/:id/history', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const [history]: any = await pool.execute(
+        'SELECT * FROM crew_history WHERE crew_id = ? ORDER BY disembark_date DESC, created_at DESC',
+        [id]
+      );
+      res.json(history.map((h: any) => ({
+        id: h.id,
+        crewId: h.crew_id,
+        vesselId: h.vessel_id,
+        vesselName: h.vessel_name || 'Unassigned',
+        rank: h.rank_name || 'N/A',
+        signOnDate: h.sign_on_date ? new Date(h.sign_on_date).toISOString().split('T')[0] : '',
+        disembarkDate: h.disembark_date ? new Date(h.disembark_date).toISOString().split('T')[0] : '',
+        remarks: h.remarks || ''
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/crew-members/:id/disembark', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const { finishedContract, remarks } = req.body;
+    try {
+      const [members]: any = await pool.execute('SELECT * FROM crew_members WHERE id = ?', [id]);
+      if (members.length === 0) {
+        return res.status(404).json({ error: 'Crew member not found' });
+      }
+      const m = members[0];
+
+      const disembarkDate = new Date().toISOString().split('T')[0];
+      const signOnDate = m.sign_on_date ? new Date(m.sign_on_date).toISOString().split('T')[0] : null;
+      const contractRemarks = finishedContract ? 'Finished Contract' : remarks;
+
+      let vesselName = 'Unassigned';
+      if (m.vessel_id) {
+        const [vessels]: any = await pool.execute('SELECT name FROM vessels WHERE id = ?', [m.vessel_id]);
+        if (vessels.length > 0) {
+          vesselName = vessels[0].name;
+        }
+      }
+
+      const historyId = 'ch_' + Math.random().toString(36).substring(2, 11);
+      await pool.execute(
+        `INSERT INTO crew_history (
+          id, crew_id, vessel_id, vessel_name, rank_name, sign_on_date, disembark_date, remarks
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          historyId, id, m.vessel_id || '', vesselName, m.rank_name, signOnDate, disembarkDate, contractRemarks
+        ]
+      );
+
+      await pool.execute(
+        `UPDATE crew_members SET 
+          vessel_id = '', 
+          sign_on_date = NULL, 
+          contract_end_date = NULL, 
+          extensions_count = 0 
+         WHERE id = ?`,
+        [id]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'DISEMBARK_CREW_MEMBER', `Crew member ID ${id} disembarked from vessel ${vesselName}. Remarks: ${contractRemarks}`);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -5083,7 +5450,7 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         query += ' AND tr.vessel_id = ?';
         params.push(String(req.user.vessel_id));
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         query += ' AND v.team_id IN (?)';
         params.push(req.user.team_ids);
       }
@@ -5310,7 +5677,7 @@ Generated by COMOS System
       let filtered = parsedList;
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         filtered = parsedList.filter((x: any) => String(x.vesselId) === String(req.user.vessel_id));
-      } else if (req.user.role === 'team_pic') {
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const [vessels]: any = await pool.execute('SELECT id FROM vessels WHERE team_id IN (?)', [req.user.team_ids]);
         const vesselIds = vessels.map((v: any) => String(v.id));
         filtered = parsedList.filter((x: any) => vesselIds.includes(String(x.vesselId)));

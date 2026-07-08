@@ -72,7 +72,7 @@ export const LubeOilLDRView: React.FC<LubeOilLDRProps> = ({
   storageKey = "comos_lube_oil_ldr_logs"
 }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
-  const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic';
+  const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic' || currentUser?.role === 'user';
   const userVesselId = isVesselUser ? String(currentUser.vessel_id) : null;
   const allowedVessels = isVesselUser 
     ? vessels.filter(v => String(v.id) === String(currentUser.vessel_id))

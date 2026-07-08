@@ -62,7 +62,7 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
   title = "Lube Oil Analysis Registry"
 }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
-  const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic';
+  const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic' || currentUser?.role === 'user';
   const userVesselId = isVesselUser ? String(currentUser.vessel_id) : null;
   const allowedVessels = isVesselUser 
     ? (vessels || []).filter(v => String(v.id) === String(currentUser.vessel_id))
