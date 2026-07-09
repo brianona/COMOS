@@ -71,6 +71,8 @@ export interface CrewHistoryEntry {
   signOnDate: string;
   disembarkDate: string;
   remarks: string;
+  ageAtContract?: number | string;
+  contactAtContract?: string;
 }
 
 export interface AuditRecord {
@@ -106,7 +108,7 @@ const INITIAL_CREW: CrewMember[] = [
     id: 'c1',
     name: 'Alex Thorne',
     rank: 'Master (Captain)',
-    nationality: 'British',
+    nationality: 'Filipino',
     signOnDate: '2026-02-15',
     passportNo: 'UKP992831',
     seamanBookNo: 'SB883712',
@@ -125,7 +127,7 @@ const INITIAL_CREW: CrewMember[] = [
     id: 'c2',
     name: 'Nikolai Volkov',
     rank: 'Chief Engineer',
-    nationality: 'Ukrainian',
+    nationality: 'Filipino',
     signOnDate: '2025-11-20',
     passportNo: 'UAP118274',
     seamanBookNo: 'SB227419',
@@ -144,7 +146,7 @@ const INITIAL_CREW: CrewMember[] = [
     id: 'c3',
     name: 'Sanjay Mehta',
     rank: 'Chief Officer',
-    nationality: 'Indian',
+    nationality: 'Filipino',
     signOnDate: '2026-01-10',
     passportNo: 'INP554627',
     seamanBookNo: 'SB110928',
@@ -163,7 +165,7 @@ const INITIAL_CREW: CrewMember[] = [
     id: 'c4',
     name: 'Carlos Santos',
     rank: 'Second Engineer',
-    nationality: 'Brazilian',
+    nationality: 'Filipino',
     signOnDate: '2026-03-01',
     passportNo: 'BRP448371',
     seamanBookNo: 'SB992831',
@@ -182,7 +184,7 @@ const INITIAL_CREW: CrewMember[] = [
     id: 'c5',
     name: 'Chen Wei',
     rank: 'Second Officer',
-    nationality: 'Chinese',
+    nationality: 'Filipino',
     signOnDate: '2025-08-15',
     passportNo: 'CNP661128',
     seamanBookNo: 'SB442831',
@@ -538,6 +540,13 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
   const [disembarkStep, setDisembarkStep] = useState<'confirm' | 'reason'>('confirm');
   const [disembarkReason, setDisembarkReason] = useState('');
 
+  // Assign Crew Dialogue Box States
+  const [showAssignDialog, setShowAssignDialog] = useState(false);
+  const [assigningCrew, setAssigningCrew] = useState<CrewMember | null>(null);
+  const [assignSignOnDate, setAssignSignOnDate] = useState('');
+  const [assignContractDuration, setAssignContractDuration] = useState('6');
+  const [assignVesselId, setAssignVesselId] = useState('');
+
   const fetchCrewHistory = async (crewId: string) => {
     if (!token) {
       const saved = localStorage.getItem('comos_crew_history');
@@ -598,6 +607,18 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
       const signOnDate = member.signOnDate || '';
       const vName = getVesselName(member.vesselId) || 'Unassigned';
 
+      let ageAtContractVal: number | string = 'N/A';
+      if (member.birthdate && signOnDate) {
+        const bdate = new Date(member.birthdate);
+        const sdate = new Date(signOnDate);
+        let age = sdate.getFullYear() - bdate.getFullYear();
+        const mDiff = sdate.getMonth() - bdate.getMonth();
+        if (mDiff < 0 || (mDiff === 0 && sdate.getDate() < bdate.getDate())) {
+          age--;
+        }
+        ageAtContractVal = age;
+      }
+
       const newHistoryEntry: CrewHistoryEntry = {
         id: historyId,
         crewId: member.id,
@@ -606,7 +627,9 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
         rank: member.rank,
         signOnDate: signOnDate,
         disembarkDate: disembarkDate,
-        remarks: disembarkRemarks
+        remarks: disembarkRemarks,
+        ageAtContract: ageAtContractVal,
+        contactAtContract: member.contactNumber || ''
       };
 
       const savedHistory = localStorage.getItem('comos_crew_history');
@@ -628,6 +651,14 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
     }
   };
 
+  const openAssignPrompt = (member: CrewMember) => {
+    setAssigningCrew(member);
+    setAssignSignOnDate(new Date().toISOString().split('T')[0]); // Default to today
+    setAssignContractDuration('6'); // Default to 6 months
+    setAssignVesselId(isVesselUser ? userVesselId : (formData.vesselId || ''));
+    setShowAssignDialog(true);
+  };
+
   const handlePoolSort = (key: string) => {
     setPoolSortConfig(prev => {
         if (prev?.key === key) {
@@ -638,6 +669,9 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
   }
 
   const filteredSortedCrew = React.useMemo(() => {
+    if (isVesselUser && !poolSearch.trim()) {
+      return [];
+    }
     let filtered = crew.filter(c => 
         (String(c.vesselId) === 'all' || String(c.vesselId) === 'any' || !c.vesselId) &&
         (c.name.toLowerCase().includes(poolSearch.toLowerCase()) || c.rank.toLowerCase().includes(poolSearch.toLowerCase())) &&
@@ -769,7 +803,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
         id: 'c_' + Date.now(),
         name: formData.name,
         rank: formData.rank,
-        nationality: 'Unknown',
+        nationality: 'Filipino',
         signOnDate: formData.signOnDate || '',
         passportNo: 'N/A',
         seamanBookNo: 'N/A',
@@ -870,8 +904,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
     if (!isAssigned || !hasActiveContract) return false;
 
     const matchesSearch = member.name.toLowerCase().includes(search.toLowerCase()) || 
-                          member.rank.toLowerCase().includes(search.toLowerCase()) ||
-                          member.nationality.toLowerCase().includes(search.toLowerCase());
+                          member.rank.toLowerCase().includes(search.toLowerCase());
     const matchesRank = filterRank === 'All' || member.rank === filterRank;
     const matchesStatus = filterStatus === 'All' || member.status === filterStatus;
     
@@ -911,11 +944,11 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
         <button 
           onClick={() => {
             setEditingCrew(null);
-            setSignOnMode('idle');
+            setSignOnMode(isVesselUser ? 'select' : 'idle');
             setFormData({
               name: '',
               rank: '',
-              nationality: '',
+              nationality: 'Filipino',
               passportNo: '',
               seamanBookNo: '',
               status: 'Compliant',
@@ -1188,7 +1221,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
             
 
             {signOnMode === 'idle' && !editingCrew && !viewingProfile && (
-              <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className={`p-6 grid gap-4 ${isVesselUser ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'}`}>
                 <button 
                   onClick={() => setSignOnMode('select')}
                   className="group flex flex-col items-center text-center p-6 bg-slate-50 hover:bg-blue-50/50 border border-slate-200/60 hover:border-blue-200 rounded-2xl transition-all duration-300 shadow-sm hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
@@ -1202,18 +1235,20 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                   </p>
                 </button>
 
-                <button 
-                  onClick={() => setSignOnMode('new')}
-                  className="group flex flex-col items-center text-center p-6 bg-slate-50 hover:bg-indigo-50/50 border border-slate-200/60 hover:border-indigo-200 rounded-2xl transition-all duration-300 shadow-sm hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
-                >
-                  <div className="w-12 h-12 bg-indigo-100 group-hover:bg-indigo-200/80 text-indigo-600 rounded-xl flex items-center justify-center mb-4 transition-colors">
-                    <Plus className="w-6 h-6" />
-                  </div>
-                  <h3 className="font-bold text-slate-800 text-sm mb-1">Register New</h3>
-                  <p className="text-xs text-slate-400 leading-relaxed">
-                    Create a brand new crew profile with certifications and personal details.
-                  </p>
-                </button>
+                {!isVesselUser && (
+                  <button 
+                    onClick={() => setSignOnMode('new')}
+                    className="group flex flex-col items-center text-center p-6 bg-slate-50 hover:bg-indigo-50/50 border border-slate-200/60 hover:border-indigo-200 rounded-2xl transition-all duration-300 shadow-sm hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                  >
+                    <div className="w-12 h-12 bg-indigo-100 group-hover:bg-indigo-200/80 text-indigo-600 rounded-xl flex items-center justify-center mb-4 transition-colors">
+                      <Plus className="w-6 h-6" />
+                    </div>
+                    <h3 className="font-bold text-slate-800 text-sm mb-1">Register New</h3>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      Create a brand new crew profile with certifications and personal details.
+                    </p>
+                  </button>
+                )}
               </div>
             )}
             
@@ -1473,12 +1508,14 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                     <h3 className="text-sm font-black text-slate-800 flex items-center gap-1.5">
                       <Users className="w-4 h-4 text-blue-600" /> Select Crew from Global Pool
                     </h3>
-                    <button 
-                      onClick={() => setSignOnMode('idle')} 
-                      className="text-xs text-blue-600 font-extrabold hover:underline flex items-center gap-0.5 cursor-pointer"
-                    >
-                      ← Back
-                    </button>
+                    {!isVesselUser && (
+                      <button 
+                        onClick={() => setSignOnMode('idle')} 
+                        className="text-xs text-blue-600 font-extrabold hover:underline flex items-center gap-0.5 cursor-pointer"
+                      >
+                        ← Back
+                      </button>
+                    )}
                  </div>
                  
                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -1515,10 +1552,15 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                     <table className="w-full text-left text-xs border-collapse">
                         <thead className="sticky top-0 bg-white border-b border-slate-150 shadow-xs z-10">
                             <tr>
+                                {isVesselUser && (
+                                  <th className="px-3 py-2.5 text-slate-500 font-extrabold uppercase tracking-wider text-[10px]">Picture</th>
+                                )}
                                 <th className="px-3 py-2.5 cursor-pointer hover:bg-slate-50 text-slate-500 font-extrabold uppercase tracking-wider text-[10px]" onClick={() => handlePoolSort('name')}>Name</th>
                                 <th className="px-3 py-2.5 cursor-pointer hover:bg-slate-50 text-slate-500 font-extrabold uppercase tracking-wider text-[10px]" onClick={() => handlePoolSort('birthdate')}>Age</th>
                                 <th className="px-3 py-2.5 cursor-pointer hover:bg-slate-50 text-slate-500 font-extrabold uppercase tracking-wider text-[10px]" onClick={() => handlePoolSort('rank')}>Rank</th>
-                                <th className="px-3 py-2.5 cursor-pointer hover:bg-slate-50 text-slate-500 font-extrabold uppercase tracking-wider text-[10px]" onClick={() => handlePoolSort('hiringStatus')}>Status</th>
+                                {!isVesselUser && (
+                                  <th className="px-3 py-2.5 cursor-pointer hover:bg-slate-50 text-slate-500 font-extrabold uppercase tracking-wider text-[10px]" onClick={() => handlePoolSort('hiringStatus')}>Status</th>
+                                )}
                                 <th className="px-3 py-2.5 text-slate-500 font-extrabold uppercase tracking-wider text-[10px] text-right">Actions</th>
                             </tr>
                         </thead>
@@ -1526,29 +1568,45 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                            {filteredSortedCrew.length === 0 ? (
                              <tr>
                                <td colSpan={5} className="text-center py-8 text-slate-400 font-medium italic">
-                                 No unassigned crew found in pool matching criteria.
+                                 {isVesselUser && !poolSearch.trim() 
+                                   ? 'Start typing in the search field to find crew members to sign on.' 
+                                   : 'No unassigned crew found in pool matching criteria.'}
                                </td>
                              </tr>
                            ) : (
                              filteredSortedCrew.map(c => (
                                <tr key={c.id} className="hover:bg-slate-50/70 transition-colors">
+                                  {isVesselUser && (
+                                    <td className="px-3 py-2.5">
+                                      <img 
+                                        src={c.photo || 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&h=150&fit=crop&q=80'} 
+                                        alt={c.name} 
+                                        className="w-8 h-8 rounded-full object-cover border border-slate-100 flex-shrink-0"
+                                        referrerPolicy="no-referrer"
+                                      />
+                                    </td>
+                                  )}
                                   <td className="px-3 py-2.5 font-bold text-slate-800">{c.name}</td>
                                   <td className="px-3 py-2.5 text-slate-600 font-medium">{calculateAge(c.birthdate)} yrs</td>
                                   <td className="px-3 py-2.5 text-blue-600 font-semibold">{c.rank}</td>
-                                  <td className="px-3 py-2.5">
-                                    <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold">
-                                      {c.hiringStatus || 'Available'}
-                                    </span>
-                                  </td>
+                                  {!isVesselUser && (
+                                    <td className="px-3 py-2.5">
+                                      <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold">
+                                        {c.hiringStatus || 'Available'}
+                                      </span>
+                                    </td>
+                                  )}
                                   <td className="px-3 py-2.5 text-right">
                                       <div className="flex gap-1.5 justify-end">
-                                          <button 
-                                            onClick={() => setViewingProfile(c)} 
-                                            className="p-1.5 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors cursor-pointer"
-                                            title="View Profile"
-                                          >
-                                            <Eye className="w-3.5 h-3.5" />
-                                          </button>
+                                          {!isVesselUser && (
+                                            <button 
+                                              onClick={() => setViewingProfile(c)} 
+                                              className="p-1.5 hover:bg-blue-50 text-blue-600 rounded-lg transition-colors cursor-pointer"
+                                              title="View Profile"
+                                            >
+                                              <Eye className="w-3.5 h-3.5" />
+                                            </button>
+                                          )}
                                           {!isVesselUser && isAdminOrPic && (
                                             <button 
                                               onClick={() => {
@@ -1562,18 +1620,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                                             </button>
                                           )}
                                           <button 
-                                              onClick={async () => {
-                                                  const targetVesselId = isVesselUser ? userVesselId : formData.vesselId;
-                                                  if (!targetVesselId) {
-                                                      alert('Please select a vessel first');
-                                                      return;
-                                                  }
-                                                  const updatedMember = {...c, vesselId: targetVesselId};
-                                                  if (token) {
-                                                      const resp = await fetch(`/api/crew-members/${c.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(updatedMember) });
-                                                      if (resp.ok) { fetchCrew(); handleCloseModal(); }
-                                                  } else { saveCrewFallback(crew.map(member => member.id === c.id ? updatedMember : member)); handleCloseModal(); }
-                                              }}
+                                              onClick={() => openAssignPrompt(c)}
                                               className="p-1.5 hover:bg-emerald-50 text-emerald-600 rounded-lg transition-colors cursor-pointer"
                                               title="Assign Crew"
                                           >
@@ -1664,8 +1711,8 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                   {profileTab === 'info' && (
                     <div className="grid grid-cols-2 gap-4">
                       <div className="bg-slate-50/50 p-3 rounded-xl border border-slate-100">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase block mb-0.5">Nationality</span>
-                        <span className="text-sm font-bold text-slate-700">{viewingProfile.nationality || 'N/A'}</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase block mb-0.5">Contact Number</span>
+                        <span className="text-sm font-bold text-slate-700">{viewingProfile.contactNumber || 'N/A'}</span>
                       </div>
                       <div className="bg-slate-50/50 p-3 rounded-xl border border-slate-100">
                         <span className="text-[10px] font-bold text-slate-400 uppercase block mb-0.5">Passport Number</span>
@@ -1731,6 +1778,14 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                                   <span className="text-slate-400 font-bold block text-[9px] uppercase">Disembark</span>
                                   {h.disembarkDate || 'N/A'}
                                 </div>
+                                <div>
+                                  <span className="text-slate-400 font-bold block text-[9px] uppercase">Age At Contract</span>
+                                  <span className="font-bold text-slate-700">{h.ageAtContract ? `${h.ageAtContract} yrs` : 'N/A'}</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 font-bold block text-[9px] uppercase">Contact At Contract</span>
+                                  <span className="font-bold text-slate-700">{h.contactAtContract || 'N/A'}</span>
+                                </div>
                               </div>
                               <div className="bg-slate-50/50 px-2.5 py-1.5 rounded-lg border border-slate-100/50 text-[11px] text-slate-600">
                                 <span className="font-bold text-slate-400 block text-[9px] uppercase mb-0.5">Remarks / Reason</span>
@@ -1786,18 +1841,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                   )}
                   {signOnMode === 'select' && (
                     <button 
-                      onClick={async () => {
-                        const targetVesselId = isVesselUser ? userVesselId : formData.vesselId;
-                        if (!targetVesselId) {
-                          alert('Please select a vessel first');
-                          return;
-                        }
-                        const updatedMember = {...viewingProfile, vesselId: targetVesselId};
-                        if (token) {
-                          const resp = await fetch(`/api/crew-members/${viewingProfile.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(updatedMember) });
-                          if (resp.ok) { fetchCrew(); handleCloseModal(); }
-                        } else { saveCrewFallback(crew.map(member => member.id === viewingProfile.id ? updatedMember : member)); handleCloseModal(); }
-                      }}
+                      onClick={() => openAssignPrompt(viewingProfile)}
                       className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-blue-100 flex items-center gap-1.5 cursor-pointer"
                     >
                       <UserCheck className="w-3.5 h-3.5" /> Assign Crew
@@ -1897,6 +1941,147 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
           </div>
         </div>
       )}
+
+      {/* Assign Crew Details Confirmation Dialog */}
+      {showAssignDialog && assigningCrew && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[1050]">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-100 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-blue-50 text-blue-900">
+              <h3 className="text-sm font-black tracking-tight flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-blue-600 animate-pulse" /> Sign On Contract Details
+              </h3>
+              <button 
+                onClick={() => setShowAssignDialog(false)}
+                className="p-1 hover:bg-blue-100 rounded-lg text-blue-700 transition-colors cursor-pointer"
+              >
+                <span className="text-sm font-bold">✕</span>
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm">
+                  {assigningCrew.name.split(' ').map(n => n[0]).join('')}
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800 leading-tight">{assigningCrew.name}</h4>
+                  <p className="text-xs font-semibold text-blue-600">{assigningCrew.rank}</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {/* Vessel Assignment */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block">Assigned Vessel</label>
+                  {isVesselUser ? (
+                    <div className="w-full px-3 py-2 text-sm border border-slate-200 bg-slate-50 text-slate-500 rounded-xl font-bold flex items-center gap-1.5">
+                      <Ship className="w-4 h-4 text-slate-400" />
+                      {vessels.find(v => String(v.id) === String(userVesselId))?.name || 'Your Vessel'}
+                    </div>
+                  ) : (
+                    <select
+                      value={assignVesselId}
+                      onChange={(e) => setAssignVesselId(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-semibold"
+                    >
+                      <option value="">Select Target Vessel...</option>
+                      {vessels.map(v => (
+                        <option key={v.id} value={String(v.id)}>{v.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {/* Sign On Date */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block">Sign On Contract Date</label>
+                  <input
+                    type="date"
+                    value={assignSignOnDate}
+                    onChange={(e) => setAssignSignOnDate(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-semibold"
+                    required
+                  />
+                </div>
+
+                {/* Contract Duration */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block">Contract Duration (Months)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="24"
+                    value={assignContractDuration}
+                    onChange={(e) => setAssignContractDuration(e.target.value)}
+                    placeholder="e.g. 6"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-semibold"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  onClick={() => setShowAssignDialog(false)}
+                  className="px-4 py-2 border border-slate-200 text-slate-600 font-bold rounded-xl text-xs hover:bg-slate-50 transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={!assignSignOnDate || !assignContractDuration || (!isVesselUser && !assignVesselId)}
+                  onClick={async () => {
+                    const finalVesselId = isVesselUser ? userVesselId : assignVesselId;
+                    if (!finalVesselId) {
+                      alert('Please select a vessel first');
+                      return;
+                    }
+                    const contractEndDateStr = calculateEndDate(assignSignOnDate, assignContractDuration);
+                    const updatedMember = {
+                      ...assigningCrew,
+                      vesselId: finalVesselId,
+                      signOnDate: assignSignOnDate,
+                      contractDuration: Number(assignContractDuration) || 0,
+                      contractEndDate: contractEndDateStr,
+                      extensionsCount: 0
+                    };
+
+                    if (token) {
+                      try {
+                        const resp = await fetch(`/api/crew-members/${assigningCrew.id}`, {
+                          method: 'PUT',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify(updatedMember)
+                        });
+                        if (resp.ok) {
+                          fetchCrew();
+                          setShowAssignDialog(false);
+                          setViewingProfile(null);
+                          handleCloseModal();
+                        } else {
+                          alert('Failed to assign crew member');
+                        }
+                      } catch (err) {
+                        console.error('Error assigning crew member:', err);
+                      }
+                    } else {
+                      saveCrewFallback(crew.map(member => member.id === assigningCrew.id ? updatedMember : member));
+                      setShowAssignDialog(false);
+                      setViewingProfile(null);
+                      handleCloseModal();
+                    }
+                  }}
+                  className={`px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-blue-100 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  Submit & Sign On
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1907,6 +2092,65 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedCrew, setSelectedCrew] = useState<CrewMember | null>(null);
+
+  // Assign Crew Dialogue Box States
+  const [showAssignDialog, setShowAssignDialog] = useState(false);
+  const [assigningCrew, setAssigningCrew] = useState<CrewMember | null>(null);
+  const [assignSignOnDate, setAssignSignOnDate] = useState('');
+  const [assignContractDuration, setAssignContractDuration] = useState('6');
+  const [assignVesselId, setAssignVesselId] = useState('');
+
+  const calculateEndDate = (startDate: string, durationMonths: string) => {
+    if (!startDate || !durationMonths) return '';
+    const date = new Date(startDate);
+    date.setMonth(date.getMonth() + parseInt(durationMonths));
+    return date.toISOString().split('T')[0];
+  };
+
+  const openAssignPrompt = (member: CrewMember) => {
+    setAssigningCrew(member);
+    setAssignSignOnDate(new Date().toISOString().split('T')[0]); // Default to today
+    setAssignContractDuration('6'); // Default to 6 months
+    setAssignVesselId(isVesselUser ? userVesselId : '');
+    setShowAssignDialog(true);
+  };
+
+  // Crew History States for Pool List view
+  const [profileTab, setProfileTab] = useState<'info' | 'history'>('info');
+  const [crewHistory, setCrewHistory] = useState<CrewHistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const fetchCrewHistory = async (crewId: string) => {
+    if (!token) {
+      const saved = localStorage.getItem('comos_crew_history');
+      const allHistory: CrewHistoryEntry[] = saved ? JSON.parse(saved) : [];
+      setCrewHistory(allHistory.filter(h => h.crewId === crewId).reverse());
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      const resp = await fetch(`/api/crew-members/${crewId}/history`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setCrewHistory(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch crew history:', err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedCrew) {
+      fetchCrewHistory(selectedCrew.id);
+      setProfileTab('info');
+    } else {
+      setCrewHistory([]);
+    }
+  }, [selectedCrew, token]);
 
   // Find activeUser with fallback to localStorage
   const activeUser = (() => {
@@ -1932,7 +2176,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
   const [profileFormData, setProfileFormData] = useState({
     name: '',
     rank: '',
-    nationality: '',
+    nationality: 'Filipino',
     birthdate: '',
     contactNumber: '',
     passportNo: '',
@@ -1952,7 +2196,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
     setProfileFormData({
       name: member.name || '',
       rank: member.rank || '',
-      nationality: member.nationality || '',
+      nationality: member.nationality || 'Filipino',
       birthdate: member.birthdate || '',
       contactNumber: member.contactNumber || '',
       passportNo: member.passportNo || '',
@@ -1966,6 +2210,17 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
       siComments: member.siComments || '',
       extensionsCount: member.extensionsCount || 0
     });
+  };
+
+  const handleProfilePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setProfileFormData(prev => ({ ...prev, photo: reader.result as string }));
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   const handleProfileSubmit = async (e: React.FormEvent) => {
@@ -1983,7 +2238,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
       ...editingProfileCrew,
       name: profileFormData.name,
       rank: profileFormData.rank,
-      nationality: profileFormData.nationality,
+      nationality: profileFormData.nationality || 'Filipino',
       birthdate: profileFormData.birthdate,
       contactNumber: profileFormData.contactNumber,
       passportNo: profileFormData.passportNo,
@@ -2143,11 +2398,10 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
   });
 
   const filteredCrew = crew.filter(member => {
-    // 1. Search matching name, rank or nationality
+    // 1. Search matching name or rank
     const matchesSearch = 
       (member.name || '').toLowerCase().includes(search.toLowerCase()) ||
-      (member.rank || '').toLowerCase().includes(search.toLowerCase()) ||
-      (member.nationality || '').toLowerCase().includes(search.toLowerCase());
+      (member.rank || '').toLowerCase().includes(search.toLowerCase());
     
     // 2. Hiring status filter
     const matchesHiringStatus = 
@@ -2311,8 +2565,6 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                           </p>
                           <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-500 font-semibold">
                             <span>{member.rank}</span>
-                            <span className="text-slate-300">•</span>
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">{member.nationality}</span>
                           </div>
                         </div>
                       </div>
@@ -2420,145 +2672,232 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                 <p className="text-xs text-slate-400 mt-1">ID: {selectedCrew.id}</p>
               </div>
 
-              {/* Record Summary */}
-              <div className="space-y-4">
-                <div className="border-b border-slate-100 pb-2">
-                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Service Alignment</h4>
-                </div>
-                <div className="grid grid-cols-2 gap-4 text-sm font-semibold">
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-400 mb-1">Most Recent Vessel</span>
-                    <span className="text-slate-800">{getVesselName(selectedCrew.vesselId)}</span>
-                  </div>
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-400 mb-1">Age</span>
-                    <span className="text-slate-800">
-                      {selectedCrew.birthdate ? `${calculateAge(selectedCrew.birthdate)} yrs` : 'N/A'}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-400 mb-1">Contact Number</span>
-                    <span className="text-slate-800 font-mono">{selectedCrew.contactNumber || 'N/A'}</span>
-                  </div>
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-400 mb-1">Hiring Status</span>
-                    <div>
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
-                        selectedCrew.hiringStatus === 'for rehire' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
-                        selectedCrew.hiringStatus === 'for debriefing' ? 'bg-amber-50 text-amber-700 border border-amber-100' :
-                        'bg-rose-50 text-rose-700 border border-rose-100'
-                      }`}>
-                        {selectedCrew.hiringStatus || 'for rehire'}
-                      </span>
+              {/* Tab Selector */}
+              <div className="flex border-b border-slate-200">
+                <button
+                  onClick={() => setProfileTab('info')}
+                  className={`flex-1 py-2 text-center text-xs font-bold transition-all border-b-2 cursor-pointer ${
+                    profileTab === 'info'
+                      ? 'border-blue-600 text-blue-600'
+                      : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Crew File Details
+                </button>
+                <button
+                  onClick={() => setProfileTab('history')}
+                  className={`flex-1 py-2 text-center text-xs font-bold transition-all border-b-2 cursor-pointer ${
+                    profileTab === 'history'
+                      ? 'border-blue-600 text-blue-600'
+                      : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Onboard History
+                </button>
+              </div>
+
+              {profileTab === 'info' && (
+                <>
+                  {/* Record Summary */}
+                  <div className="space-y-4">
+                    <div className="border-b border-slate-100 pb-2">
+                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Service Alignment</h4>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 text-sm font-semibold">
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-400 mb-1">Most Recent Vessel</span>
+                        <span className="text-slate-800">{getVesselName(selectedCrew.vesselId)}</span>
+                      </div>
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-400 mb-1">Age</span>
+                        <span className="text-slate-800">
+                          {selectedCrew.birthdate ? `${calculateAge(selectedCrew.birthdate)} yrs` : 'N/A'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-400 mb-1">Contact Number</span>
+                        <span className="text-slate-800 font-mono">{selectedCrew.contactNumber || 'N/A'}</span>
+                      </div>
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-400 mb-1">Hiring Status</span>
+                        <div>
+                          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+                            selectedCrew.hiringStatus === 'for rehire' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' :
+                            selectedCrew.hiringStatus === 'for debriefing' ? 'bg-amber-50 text-amber-700 border border-amber-100' :
+                            'bg-rose-50 text-rose-700 border border-rose-100'
+                          }`}>
+                            {selectedCrew.hiringStatus || 'for rehire'}
+                          </span>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </div>
 
-              {/* Contract Terms & Extensions */}
-              <div className="space-y-4 pt-2">
-                <div className="border-b border-slate-100 pb-2">
-                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Contract & Extensions</h4>
-                </div>
-                <div className="grid grid-cols-2 gap-4 text-sm font-semibold">
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-400 mb-1">Sign On Date</span>
-                    <span className="text-slate-700">{selectedCrew.signOnDate || 'N/A'}</span>
+                  {/* Contract Terms & Extensions */}
+                  <div className="space-y-4 pt-2">
+                    <div className="border-b border-slate-100 pb-2">
+                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Contract & Extensions</h4>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 text-sm font-semibold">
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-400 mb-1">Sign On Date</span>
+                        <span className="text-slate-700">{selectedCrew.signOnDate || 'N/A'}</span>
+                      </div>
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-400 mb-1">Contract End Date</span>
+                        <span className="text-blue-600 font-bold">{selectedCrew.contractEndDate || 'N/A'}</span>
+                      </div>
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-400 mb-1">Contract Duration</span>
+                        <span className="text-slate-700">{selectedCrew.contractDuration ? `${selectedCrew.contractDuration} Months` : 'N/A'}</span>
+                      </div>
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-400 mb-1">Extensions Conducted</span>
+                        <span className="text-slate-700 flex items-center gap-1.5">
+                          <span className="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded text-xs font-black">
+                            {selectedCrew.extensionsCount || 0}
+                          </span>
+                          Extensions Conducted
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-400 mb-1">Contract End Date</span>
-                    <span className="text-blue-600 font-bold">{selectedCrew.contractEndDate || 'N/A'}</span>
-                  </div>
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-400 mb-1">Contract Duration</span>
-                    <span className="text-slate-700">{selectedCrew.contractDuration ? `${selectedCrew.contractDuration} Months` : 'N/A'}</span>
-                  </div>
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-400 mb-1">Extensions Conducted</span>
-                    <span className="text-slate-700 flex items-center gap-1.5">
-                      <span className="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded text-xs font-black">
-                        {selectedCrew.extensionsCount || 0}
-                      </span>
-                      Extensions Conducted
-                    </span>
-                  </div>
-                </div>
-              </div>
 
-              {/* SI Comments */}
-              <div className="space-y-3 pt-2">
-                <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
-                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Superintendent Remarks</h4>
-                  {!isEditing && (
-                    <button 
-                      onClick={() => setIsEditing(true)}
-                      className="text-xs font-bold text-blue-600 hover:underline"
-                    >
-                      Update Remarks
-                    </button>
+                  {/* SI Comments */}
+                  <div className="space-y-3 pt-2">
+                    <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Superintendent Remarks</h4>
+                      {!isEditing && (
+                        <button 
+                          onClick={() => setIsEditing(true)}
+                          className="text-xs font-bold text-blue-600 hover:underline"
+                        >
+                          Update Remarks
+                        </button>
+                      )}
+                    </div>
+
+                    {isEditing ? (
+                      <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-500 mb-1.5">Employment Status</label>
+                          <select 
+                            value={editHiringStatus}
+                            onChange={(e) => setEditHiringStatus(e.target.value as any)}
+                            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs"
+                          >
+                            <option value="for rehire">for rehire</option>
+                            <option value="not for rehire">not for rehire</option>
+                            <option value="for debriefing">for debriefing</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-slate-500 mb-1.5">Comments from SI</label>
+                          <textarea
+                            rows={3}
+                            value={editComments}
+                            onChange={(e) => setEditComments(e.target.value)}
+                            placeholder="Type professional comments..."
+                            className="w-full p-2.5 border border-slate-200 rounded-lg text-xs"
+                          />
+                        </div>
+                        <div className="flex justify-end gap-2 text-xs">
+                          <button 
+                            onClick={() => setIsEditing(false)}
+                            className="px-3 py-1.5 border border-slate-200 rounded-lg text-slate-600 font-semibold"
+                          >
+                            Cancel
+                          </button>
+                          <button 
+                            onClick={() => handleUpdateEmployment(selectedCrew.id)}
+                            className="px-3 py-1.5 bg-blue-600 text-white rounded-lg font-semibold"
+                          >
+                            Save File
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-4 bg-amber-50/40 rounded-xl border border-amber-100 text-xs text-slate-700 leading-relaxed italic">
+                        {selectedCrew.siComments ? `"${selectedCrew.siComments}"` : "No Comments registered from SI. Please update remarks to register appraisal reports."}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {profileTab === 'history' && (
+                <div className="space-y-4">
+                  {historyLoading ? (
+                    <div className="text-center py-8 text-slate-400 text-xs font-bold animate-pulse">
+                      Loading onboard history...
+                    </div>
+                  ) : crewHistory.length === 0 ? (
+                    <div className="text-center py-10 text-slate-400 text-xs italic bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                      No historical disembarkations or previous assignments on record for this crew member.
+                    </div>
+                  ) : (
+                    <div className="space-y-3 max-h-[450px] overflow-y-auto pr-1">
+                      {crewHistory.map((h, idx) => (
+                        <div key={h.id || idx} className="bg-white border border-slate-100 p-3.5 rounded-xl shadow-xs hover:border-slate-200 transition-all flex flex-col gap-2 relative">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-indigo-950 flex items-center gap-1">
+                              <Ship className="w-3.5 h-3.5 text-slate-400" /> {h.vesselName}
+                            </span>
+                            <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] font-bold">
+                              {h.rank}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 font-medium">
+                            <div>
+                              <span className="text-slate-400 font-bold block text-[9px] uppercase">Sign On</span>
+                              {h.signOnDate || 'N/A'}
+                            </div>
+                            <div>
+                              <span className="text-slate-400 font-bold block text-[9px] uppercase">Disembark</span>
+                              {h.disembarkDate || 'N/A'}
+                            </div>
+                            <div>
+                              <span className="text-slate-400 font-bold block text-[9px] uppercase">Age</span>
+                              <span className="font-bold text-slate-700">{h.ageAtContract ? `${h.ageAtContract} yrs` : 'N/A'}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 font-bold block text-[9px] uppercase">Contact</span>
+                              <span className="font-bold text-slate-700">{h.contactAtContract || 'N/A'}</span>
+                            </div>
+                          </div>
+                          <div className="bg-slate-50/50 px-2.5 py-1.5 rounded-lg border border-slate-100/50 text-[11px] text-slate-600">
+                            <span className="font-bold text-slate-400 block text-[9px] uppercase mb-0.5">Disembark Reason</span>
+                            {h.remarks || 'No disembarkation comments registered.'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
-
-                {isEditing ? (
-                  <div className="space-y-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5">Employment Status</label>
-                      <select 
-                        value={editHiringStatus}
-                        onChange={(e) => setEditHiringStatus(e.target.value as any)}
-                        className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs"
-                      >
-                        <option value="for rehire">for rehire</option>
-                        <option value="not for rehire">not for rehire</option>
-                        <option value="for debriefing">for debriefing</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1.5">Comments from SI</label>
-                      <textarea
-                        rows={3}
-                        value={editComments}
-                        onChange={(e) => setEditComments(e.target.value)}
-                        placeholder="Type professional comments..."
-                        className="w-full p-2.5 border border-slate-200 rounded-lg text-xs"
-                      />
-                    </div>
-                    <div className="flex justify-end gap-2 text-xs">
-                      <button 
-                        onClick={() => setIsEditing(false)}
-                        className="px-3 py-1.5 border border-slate-200 rounded-lg text-slate-600 font-semibold"
-                      >
-                        Cancel
-                      </button>
-                      <button 
-                        onClick={() => handleUpdateEmployment(selectedCrew.id)}
-                        className="px-3 py-1.5 bg-blue-600 text-white rounded-lg font-semibold"
-                      >
-                        Save File
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="p-4 bg-amber-50/40 rounded-xl border border-amber-100 text-xs text-slate-700 leading-relaxed italic">
-                    {selectedCrew.siComments ? `"${selectedCrew.siComments}"` : "No Comments registered from SI. Please update remarks to register appraisal reports."}
-                  </div>
-                )}
-              </div>
+              )}
             </div>
 
             {/* Footer buttons */}
             <div className="p-6 border-t border-slate-100 flex justify-end gap-2">
               {!isVesselUser && isAdminOrPic && (
-                <button 
-                  onClick={() => {
-                    const memberToEdit = selectedCrew;
-                    setSelectedCrew(null);
-                    handleEditProfileClick(memberToEdit);
-                  }}
-                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-amber-100 flex items-center gap-1.5 cursor-pointer animate-in fade-in"
-                >
-                  <Edit2 className="w-3.5 h-3.5" /> Edit Profile
-                </button>
+                <>
+                  <button 
+                    onClick={() => openAssignPrompt(selectedCrew)}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-blue-100 flex items-center gap-1.5 cursor-pointer animate-in fade-in"
+                  >
+                    <UserCheck className="w-3.5 h-3.5" /> Sign On Crew
+                  </button>
+                  <button 
+                    onClick={() => {
+                      const memberToEdit = selectedCrew;
+                      setSelectedCrew(null);
+                      handleEditProfileClick(memberToEdit);
+                    }}
+                    className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-amber-100 flex items-center gap-1.5 cursor-pointer animate-in fade-in"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" /> Edit Profile
+                  </button>
+                </>
               )}
               <button 
                 onClick={() => setSelectedCrew(null)}
@@ -2604,15 +2943,46 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                     className="w-28 h-28 rounded-full object-cover border-4 border-white shadow-md mb-3"
                     referrerPolicy="no-referrer"
                   />
-                  <div className="w-full">
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1 text-center">Photo URL</label>
-                    <input 
-                      type="text" 
-                      value={profileFormData.photo}
-                      onChange={(e) => setProfileFormData({...profileFormData, photo: e.target.value})}
-                      placeholder="https://images.unsplash.com/..."
-                      className="w-full px-2 py-1 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-indigo-500 text-slate-700 bg-white"
-                    />
+                  <div className="w-full space-y-2">
+                    <div className="flex flex-col items-center gap-1">
+                      <button 
+                        type="button"
+                        onClick={() => document.getElementById('profilePhotoUploadInput')?.click()}
+                        className="px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                      >
+                        <Upload className="w-3.5 h-3.5" /> Upload Photo
+                      </button>
+                      <input 
+                        type="file" 
+                        id="profilePhotoUploadInput"
+                        accept="image/*"
+                        onChange={handleProfilePhotoChange}
+                        className="hidden" 
+                      />
+                      {profileFormData.photo && (
+                        <button 
+                          type="button"
+                          onClick={() => setProfileFormData({...profileFormData, photo: ''})}
+                          className="text-[10px] font-bold text-rose-500 hover:underline cursor-pointer"
+                        >
+                          Remove Photo
+                        </button>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-0.5 text-center">or paste Photo URL</label>
+                      <input 
+                        type="text" 
+                        value={profileFormData.photo.startsWith('data:') ? 'Uploaded Image (Base64 data)' : profileFormData.photo}
+                        onChange={(e) => {
+                          if (!e.target.value.startsWith('Uploaded Image')) {
+                            setProfileFormData({...profileFormData, photo: e.target.value});
+                          }
+                        }}
+                        placeholder="https://images.unsplash.com/..."
+                        className="w-full px-2 py-1 border border-slate-200 rounded-lg text-[11px] focus:outline-none focus:border-indigo-500 text-slate-700 bg-white"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -2627,7 +2997,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                       className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-indigo-500 bg-white"
                     />
                   </div>
-                  <div>
+                  <div className="col-span-2">
                     <label className="block text-xs font-bold text-slate-500 mb-1">Rank</label>
                     <select
                       required
@@ -2640,15 +3010,6 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                         <option key={r} value={r}>{r}</option>
                       ))}
                     </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 mb-1">Nationality</label>
-                    <input 
-                      type="text" 
-                      value={profileFormData.nationality}
-                      onChange={(e) => setProfileFormData({...profileFormData, nationality: e.target.value})}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-indigo-500 bg-white"
-                    />
                   </div>
                 </div>
               </div>
@@ -2803,6 +3164,149 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Assign Crew Details Confirmation Dialog */}
+      {showAssignDialog && assigningCrew && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[1050]">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-100 flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-blue-50 text-blue-900">
+              <h3 className="text-sm font-black tracking-tight flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-blue-600 animate-pulse" /> Sign On Contract Details
+              </h3>
+              <button 
+                onClick={() => setShowAssignDialog(false)}
+                className="p-1 hover:bg-blue-100 rounded-lg text-blue-700 transition-colors cursor-pointer"
+              >
+                <span className="text-sm font-bold">✕</span>
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm">
+                  {assigningCrew.name ? assigningCrew.name.split(' ').map(n => n[0]).join('') : ''}
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800 leading-tight">{assigningCrew.name}</h4>
+                  <p className="text-xs font-semibold text-blue-600">{assigningCrew.rank}</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {/* Vessel Assignment */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block">Assigned Vessel</label>
+                  {isVesselUser ? (
+                    <div className="w-full px-3 py-2 text-sm border border-slate-200 bg-slate-50 text-slate-500 rounded-xl font-bold flex items-center gap-1.5">
+                      <Ship className="w-4 h-4 text-slate-400" />
+                      {vessels.find(v => String(v.id) === String(userVesselId))?.name || 'Your Vessel'}
+                    </div>
+                  ) : (
+                    <select
+                      value={assignVesselId}
+                      onChange={(e) => setAssignVesselId(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-semibold text-slate-800"
+                    >
+                      <option value="">Select Target Vessel...</option>
+                      {vessels.map(v => (
+                        <option key={v.id} value={String(v.id)}>{v.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+
+                {/* Sign On Date */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block">Sign On Contract Date</label>
+                  <input
+                    type="date"
+                    value={assignSignOnDate}
+                    onChange={(e) => setAssignSignOnDate(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-semibold text-slate-800"
+                    required
+                  />
+                </div>
+
+                {/* Contract Duration */}
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block">Contract Duration (Months)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="24"
+                    value={assignContractDuration}
+                    onChange={(e) => setAssignContractDuration(e.target.value)}
+                    placeholder="e.g. 6"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl bg-white focus:outline-hidden focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-semibold text-slate-800"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAssignDialog(false)}
+                  className="px-4 py-2 border border-slate-200 text-slate-600 font-bold rounded-xl text-xs hover:bg-slate-50 transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!assignSignOnDate || !assignContractDuration || (!isVesselUser && !assignVesselId)}
+                  onClick={async () => {
+                    const finalVesselId = isVesselUser ? userVesselId : assignVesselId;
+                    if (!finalVesselId) {
+                      alert('Please select a vessel first');
+                      return;
+                    }
+                    const contractEndDateStr = calculateEndDate(assignSignOnDate, assignContractDuration);
+                    const updatedMember = {
+                      ...assigningCrew,
+                      vesselId: finalVesselId,
+                      signOnDate: assignSignOnDate,
+                      contractDuration: Number(assignContractDuration) || 0,
+                      contractEndDate: contractEndDateStr,
+                      extensionsCount: 0
+                    };
+
+                    if (token) {
+                      try {
+                        const resp = await fetch(`/api/crew-members/${assigningCrew.id}`, {
+                          method: 'PUT',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify(updatedMember)
+                        });
+                        if (resp.ok) {
+                          fetchCrew();
+                          setShowAssignDialog(false);
+                          setSelectedCrew(null);
+                        } else {
+                          alert('Failed to assign crew member');
+                        }
+                      } catch (err) {
+                        console.error('Error assigning crew member:', err);
+                      }
+                    } else {
+                      const updatedList = crew.map(member => member.id === assigningCrew.id ? updatedMember : member);
+                      setCrew(updatedList);
+                      localStorage.setItem('comos_crew_list', JSON.stringify(updatedList));
+                      setShowAssignDialog(false);
+                      setSelectedCrew(null);
+                    }
+                  }}
+                  className={`px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs transition-all shadow-md shadow-blue-100 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  Submit & Sign On
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -1341,7 +1341,7 @@ const SidebarContent = ({
           <button 
             onClick={() => setIsCrewOpen(!isCrewOpen)}
             className={getCategoryToggleClass(
-              ['crew_list', 'crew_compliance'].includes(view),
+              user.role === 'vessel' ? ['crew_list'].includes(view) : ['crew_list', 'crew_compliance'].includes(view),
               isCrewOpen
             )}
           >
@@ -1366,12 +1366,14 @@ const SidebarContent = ({
                 >
                   <Users className="w-3.5 h-3.5 shrink-0" /> Onboard Crew
                 </button>
-                <button 
-                  onClick={() => { setView('crew_compliance'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'crew_compliance')}
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Crew Pool List
-                </button>
+                {user.role !== 'vessel' && (
+                  <button 
+                    onClick={() => { setView('crew_compliance'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'crew_compliance')}
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Crew Pool List
+                  </button>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -3573,7 +3575,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             </div>
           )}
 
-          {view === 'crew_compliance' && (
+          {view === 'crew_compliance' && user.role !== 'vessel' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
               <CrewEmploymentStatusView vessels={vessels} token={token} currentUser={user} />
             </div>
