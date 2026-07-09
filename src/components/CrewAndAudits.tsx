@@ -918,7 +918,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
     : crew;
 
   const getVesselName = (id: string) => {
-    if (id === 'all' || id === 'any') return 'Global Pool / Unassigned';
+    if (id === 'all' || id === 'any') return 'Unassigned';
     const found = vessels.find(v => String(v.id) === id);
     return found ? found.name : 'Unknown Vessel';
   };
@@ -970,35 +970,49 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-blue-50/50 text-blue-600 rounded-xl flex items-center justify-center border border-blue-100/30">
-            <Users className="w-6 h-6" />
+      {(() => {
+        const redHighlightCount = vesselCrewOnly.filter(c => {
+          const cls = getContractHighlightClass(c.contractEndDate, c.extensionsCount);
+          return cls.includes('bg-red-50');
+        }).length;
+
+        const yellowHighlightCount = vesselCrewOnly.filter(c => {
+          const cls = getContractHighlightClass(c.contractEndDate, c.extensionsCount);
+          return cls.includes('bg-amber-50');
+        }).length;
+
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
+              <div className="w-12 h-12 bg-blue-50/50 text-blue-600 rounded-xl flex items-center justify-center border border-blue-100/30">
+                <Users className="w-6 h-6" />
+              </div>
+              <div>
+                <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Total Crew Onboard</p>
+                <h3 className="text-xl font-bold text-slate-850 mt-0.5">{vesselCrewOnly.length} Crew</h3>
+              </div>
+            </div>
+            <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
+              <div className="w-12 h-12 bg-amber-50/50 text-amber-600 rounded-xl flex items-center justify-center border border-amber-100/30">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="flex-1">
+                <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Contract Expirations & Warnings</p>
+                <div className="flex flex-wrap items-center gap-3 mt-1.5">
+                  <div className="flex items-center gap-1.5 bg-red-50 text-red-700 px-2.5 py-1 rounded-xl font-bold border border-red-100/60 text-xs">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                    <span>Red (Critical &lt;30d): {redHighlightCount}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 bg-amber-50 text-amber-700 px-2.5 py-1 rounded-xl font-bold border border-amber-100/60 text-xs">
+                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                    <span>Yellow (Warning): {yellowHighlightCount}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Total Crew Onboard</p>
-            <h3 className="text-xl font-bold text-slate-850 mt-0.5">{vesselCrewOnly.length} Crew</h3>
-          </div>
-        </div>
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-emerald-50/50 text-emerald-600 rounded-xl flex items-center justify-center border border-emerald-100/30">
-            <UserCheck className="w-6 h-6" />
-          </div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Fully Compliant</p>
-            <h3 className="text-xl font-bold text-emerald-700 mt-0.5">{vesselCrewOnly.filter(c => c.status === 'Compliant').length} Active</h3>
-          </div>
-        </div>
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 bg-amber-50/50 text-amber-600 rounded-xl flex items-center justify-center border border-amber-100/30">
-            <AlertTriangle className="w-6 h-6" />
-          </div>
-          <div>
-            <p className="text-xs text-slate-400 font-medium tracking-wide uppercase font-mono">Expiring & Warning</p>
-            <h3 className="text-xl font-bold text-amber-700 mt-0.5">{vesselCrewOnly.filter(c => c.status !== 'Compliant').length} Alert</h3>
-          </div>
-        </div>
-      </div>
+        );
+      })()}
 
       {/* Filters bar */}
       <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col md:flex-row gap-4 items-center">
@@ -1029,17 +1043,6 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
               <option value="Chief Cook">Chief Cook</option>
             </select>
           </div>
-
-          <select 
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/15 focus:border-blue-500 bg-white"
-          >
-            <option value="All">All Compliance</option>
-            <option value="Compliant">Compliant</option>
-            <option value="Warning">Warning</option>
-            <option value="Expired">Expired</option>
-          </select>
 
           {!isVesselUser && (
             <div className="flex items-center gap-1">
@@ -1114,7 +1117,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                       {member.rank}
                     </td>
                     <td className="px-6 py-4 text-xs font-semibold text-slate-500">
-                      <div>Born: {member.birthdate || 'N/A'}</div>
+                      <div>{member.birthdate || 'N/A'}</div>
                       <div className="text-slate-400">Age: {member.birthdate ? calculateAge(member.birthdate) : 'N/A'} yrs</div>
                     </td>
                     <td className="px-6 py-4 text-xs font-semibold text-slate-500">
@@ -2120,6 +2123,143 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
   const [crewHistory, setCrewHistory] = useState<CrewHistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Register New Crew States for Pool view
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const [registerFormData, setRegisterFormData] = useState({
+    name: '',
+    rank: '',
+    birthdate: '',
+    contactNumber: '',
+    signOnDate: '',
+    contractDuration: '',
+    contractEndDate: '',
+    vesselId: '',
+    photo: '',
+  });
+
+  useEffect(() => {
+    if (registerFormData.signOnDate && registerFormData.contractDuration) {
+      setRegisterFormData(prev => ({
+        ...prev,
+        contractEndDate: calculateEndDate(registerFormData.signOnDate, registerFormData.contractDuration)
+      }));
+    } else {
+      setRegisterFormData(prev => ({
+        ...prev,
+        contractEndDate: ''
+      }));
+    }
+  }, [registerFormData.signOnDate, registerFormData.contractDuration]);
+
+  const handleDrag = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setRegisterFormData(prev => ({ ...prev, photo: reader.result as string }));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setRegisterFormData(prev => ({ ...prev, photo: reader.result as string }));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleOpenRegisterModal = () => {
+    setRegisterFormData({
+      name: '',
+      rank: '',
+      birthdate: '',
+      contactNumber: '',
+      signOnDate: '',
+      contractDuration: '',
+      contractEndDate: '',
+      vesselId: isVesselUser ? userVesselId : '',
+      photo: '',
+    });
+    setShowRegisterModal(true);
+  };
+
+  const handleCloseRegisterModal = () => {
+    setShowRegisterModal(false);
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!registerFormData.name || !registerFormData.rank) return;
+
+    const newCrew: CrewMember = {
+      id: 'c_' + Date.now(),
+      name: registerFormData.name,
+      rank: registerFormData.rank,
+      nationality: 'Filipino',
+      signOnDate: registerFormData.signOnDate || '',
+      passportNo: 'N/A',
+      seamanBookNo: 'N/A',
+      status: 'Compliant',
+      contractDuration: registerFormData.contractDuration ? Number(registerFormData.contractDuration) : 0,
+      contractEndDate: registerFormData.contractEndDate || '',
+      nextMedicalExam: '',
+      nextSafetyTraining: '',
+      vesselId: isVesselUser ? userVesselId : (registerFormData.vesselId || ''),
+      birthdate: registerFormData.birthdate || '',
+      contactNumber: registerFormData.contactNumber || '',
+      photo: registerFormData.photo || 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&h=150&fit=crop&q=80',
+      hiringStatus: 'for rehire',
+      siComments: '',
+      extensionsCount: 0
+    };
+
+    if (token) {
+      try {
+        const resp = await fetch('/api/crew-members', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(newCrew)
+        });
+        if (resp.ok) {
+          fetchCrew();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to save crew: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to post crew:', err);
+      }
+    } else {
+      const updatedList = [newCrew, ...crew];
+      setCrew(updatedList);
+      localStorage.setItem('comos_crew_list', JSON.stringify(updatedList));
+    }
+
+    handleCloseRegisterModal();
+  };
+
   const fetchCrewHistory = async (crewId: string) => {
     if (!token) {
       const saved = localStorage.getItem('comos_crew_history');
@@ -2371,7 +2511,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
   };
 
   const getVesselName = (id?: string) => {
-    if (!id || id === 'all' || id === 'any') return 'Global Pool / Unassigned';
+    if (!id || id === 'all' || id === 'any') return 'Unassigned';
     const v = vessels.find(v => String(v.id) === String(id));
     return v ? v.name : 'Unknown Vessel';
   };
@@ -2438,6 +2578,15 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
           <p className="text-indigo-200/70 text-sm max-w-xl leading-relaxed font-medium">
             Monitor crew background assessments, superintendent evaluations, active contract extensions, and next rehire availability registers.
           </p>
+        </div>
+
+        <div className="relative z-10 shrink-0">
+          <button
+            onClick={handleOpenRegisterModal}
+            className="px-5 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl text-xs font-black tracking-wider uppercase transition-all shadow-lg shadow-indigo-950/30 flex items-center gap-2 border border-indigo-500/30 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" /> Register New Crew
+          </button>
         </div>
       </div>
 
@@ -2508,7 +2657,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                 className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500/15 focus:border-indigo-500 bg-white"
               >
                 <option value="All">All Vessels</option>
-                <option value="all">Global Pool</option>
+                <option value="all">Unassigned Pool</option>
                 {vessels.map(v => (
                   <option key={v.id} value={String(v.id)}>{v.name}</option>
                 ))}
@@ -3086,7 +3235,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                       onChange={(e) => setProfileFormData({...profileFormData, vesselId: e.target.value})}
                       className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-indigo-500 bg-white text-slate-700 font-semibold"
                     >
-                      <option value="">Global Pool / Unassigned</option>
+                      <option value="">Unassigned</option>
                       {vessels.map(v => (
                         <option key={v.id} value={String(v.id)}>{v.name}</option>
                       ))}
@@ -3307,6 +3456,237 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Register New Crew Modal */}
+      {showRegisterModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 transition-all duration-300">
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-lg w-full max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-6 flex justify-between items-center relative overflow-hidden">
+              <div className="absolute right-0 top-0 translate-x-10 -translate-y-10 w-40 h-40 bg-white/5 rounded-full blur-2xl pointer-events-none" />
+              <div className="relative z-10">
+                <h3 className="text-lg font-black tracking-tight flex items-center gap-1.5">
+                  <Users className="w-5 h-5 text-blue-100" /> Register New Crew Member
+                </h3>
+                <p className="text-xs text-blue-100/80 font-medium mt-1">
+                  Create a brand new crew profile with certifications and personal details.
+                </p>
+              </div>
+              <button 
+                onClick={handleCloseRegisterModal}
+                className="p-1.5 bg-white/10 hover:bg-white/20 text-white/80 hover:text-white rounded-xl transition-all duration-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleRegisterSubmit} className="p-6 overflow-y-auto space-y-6">
+              {/* Section 1: Personal Profile */}
+              <div className="bg-slate-50/30 p-4 rounded-2xl border border-slate-100 space-y-4">
+                <div className="border-b border-slate-200/60 pb-1.5 flex items-center gap-2">
+                  <div className="w-1.5 h-3.5 bg-blue-600 rounded-full" />
+                  <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Personal Profile</h4>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Photo Drag & Drop / File Upload */}
+                  <div className="col-span-2">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Crew Profile Photo</label>
+                    {registerFormData.photo ? (
+                      <div className="relative w-28 h-28 mx-auto rounded-full group overflow-hidden border-2 border-blue-500 shadow-md">
+                        <img 
+                          src={registerFormData.photo} 
+                          alt="Preview" 
+                          className="w-full h-full object-cover" 
+                        />
+                        <button 
+                          type="button"
+                          onClick={() => setRegisterFormData({...registerFormData, photo: ''})}
+                          className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[10px] font-bold transition-opacity cursor-pointer"
+                        >
+                          Remove Photo
+                        </button>
+                      </div>
+                    ) : (
+                      <div 
+                        onDragEnter={handleDrag}
+                        onDragOver={handleDrag}
+                        onDragLeave={handleDrag}
+                        onDrop={handleDrop}
+                        className={`h-28 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center p-3 transition-all relative ${
+                          dragActive ? 'border-blue-500 bg-blue-50/50' : 'border-slate-200 hover:border-blue-400 bg-slate-50/60'
+                        }`}
+                      >
+                        <Upload className="w-6 h-6 text-slate-400 mb-1" />
+                        <p className="text-xs font-bold text-slate-600 text-center">
+                          Drag & drop photo here, or <span className="text-blue-600 underline cursor-pointer">browse</span>
+                        </p>
+                        <p className="text-[9px] text-slate-400 mt-0.5">Supports JPEG, PNG format</p>
+                        <input 
+                          type="file" 
+                          accept="image/*"
+                          onChange={handleFileChange}
+                          className="opacity-0 absolute inset-0 w-full h-full cursor-pointer" 
+                          id="poolPhotoUploadInput"
+                        />
+                      </div>
+                    )}
+                  </div>
+  
+                  {/* Full name */}
+                  <div className="col-span-2">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Full Name</label>
+                    <input 
+                      type="text" 
+                      required
+                      value={registerFormData.name}
+                      onChange={(e) => setRegisterFormData({...registerFormData, name: e.target.value})}
+                      placeholder="e.g. Alex Thorne"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15 focus:bg-white bg-white transition-all duration-200"
+                    />
+                  </div>
+  
+                  {/* Duty Rank */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Duty Rank</label>
+                    <select 
+                      value={registerFormData.rank}
+                      onChange={(e) => setRegisterFormData({...registerFormData, rank: e.target.value})}
+                      required
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15 transition-all duration-200"
+                    >
+                      <option value="">Select Rank...</option>
+                      <option value="Master (Captain)">Master (Captain)</option>
+                      <option value="Chief Officer">Chief Officer</option>
+                      <option value="Second Officer">Second Officer</option>
+                      <option value="Third Officer">Third Officer</option>
+                      <option value="Chief Engineer">Chief Engineer</option>
+                      <option value="Second Engineer">Second Engineer</option>
+                      <option value="Third Engineer">Third Engineer</option>
+                      <option value="Chief Cook">Chief Cook</option>
+                      <option value="Able Seaman (AB)">Able Seaman (AB)</option>
+                    </select>
+                  </div>
+  
+                  {/* Contact number */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Contact Number</label>
+                    <input 
+                      type="text" 
+                      value={registerFormData.contactNumber}
+                      onChange={(e) => setRegisterFormData({...registerFormData, contactNumber: e.target.value})}
+                      placeholder="e.g. +1 555-0143"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15 focus:bg-white bg-white transition-all duration-200"
+                    />
+                  </div>
+  
+                  {/* Birthdate */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Birthdate</label>
+                    <input 
+                      type="date" 
+                      value={registerFormData.birthdate}
+                      onChange={(e) => setRegisterFormData({...registerFormData, birthdate: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15 focus:bg-white bg-white transition-all duration-200"
+                    />
+                  </div>
+  
+                  {/* Age (Auto-computed) */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Age (Auto-computed)</label>
+                    <input 
+                      type="text" 
+                      readOnly
+                      disabled
+                      value={registerFormData.birthdate ? `${calculateAge(registerFormData.birthdate)} years old` : 'Enter birthdate...'}
+                      className="w-full px-3 py-2 border border-slate-100 bg-slate-50/50 rounded-lg text-sm text-slate-500 font-bold"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 2: Contract & Assignment */}
+              <div className="bg-slate-50/30 p-4 rounded-2xl border border-slate-100 space-y-4">
+                <div className="border-b border-slate-200/60 pb-1.5 flex items-center gap-2">
+                  <div className="w-1.5 h-3.5 bg-indigo-600 rounded-full" />
+                  <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Contract & Assignment</h4>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Sign on date */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Sign On Date <span className="text-[9px] text-slate-400 normal-case font-normal">(Optional)</span></label>
+                    <input 
+                      type="date" 
+                      value={registerFormData.signOnDate}
+                      onChange={(e) => setRegisterFormData({...registerFormData, signOnDate: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15 focus:bg-white bg-white transition-all duration-200"
+                    />
+                  </div>
+  
+                  {/* Contract duration */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Contract Duration (Months)</label>
+                    <select
+                      value={registerFormData.contractDuration}
+                      onChange={(e) => setRegisterFormData({...registerFormData, contractDuration: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15 transition-all duration-200"
+                    >
+                      <option value="">Select duration...</option>
+                      <option value="6">6 Months</option>
+                      <option value="9">9 Months</option>
+                    </select>
+                  </div>
+                  
+                  {/* Contract end date */}
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Contract End Date</label>
+                    <input 
+                      type="date" 
+                      readOnly
+                      disabled
+                      value={registerFormData.contractEndDate}
+                      className="w-full px-3 py-2 border border-slate-100 bg-slate-50/50 rounded-lg text-sm text-slate-500 font-bold"
+                    />
+                  </div>
+  
+                  {/* Assigned Vessel */}
+                  <div className="col-span-2">
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Target Vessel Assignment <span className="text-[9px] text-slate-400 normal-case font-normal">(Optional)</span></label>
+                    <select
+                      value={registerFormData.vesselId}
+                      onChange={(e) => setRegisterFormData({...registerFormData, vesselId: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/15 transition-all duration-200"
+                      disabled={isVesselUser}
+                    >
+                      <option value="">Select Vessel / Unassigned</option>
+                      {vessels.map(v => (
+                        <option key={v.id} value={String(v.id)}>{v.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="border-t border-slate-100 pt-4 flex gap-2 justify-end">
+                <button 
+                  type="button" 
+                  onClick={handleCloseRegisterModal}
+                  className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl text-sm font-bold hover:bg-slate-50 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button 
+                  type="submit" 
+                  className="px-5 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-colors shadow-md shadow-blue-100 cursor-pointer"
+                >
+                  Register
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
