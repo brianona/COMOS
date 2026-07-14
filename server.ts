@@ -1128,6 +1128,26 @@ async function startServer() {
       )
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS flags (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE
+      )
+    `);
+
+    try {
+      const [flagRows]: any = await pool.query('SELECT COUNT(*) as count FROM flags');
+      if (flagRows[0].count === 0) {
+        console.log('Seeding initial flags...');
+        const initialFlags = ['Panama', 'Marshall Islands', 'Liberia', 'Singapore', 'Bahamas', 'Malta', 'Cyprus'];
+        for (const flag of initialFlags) {
+          await pool.execute('INSERT INTO flags (name) VALUES (?)', [flag]);
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to seed initial flags:', err.message);
+    }
+
     try {
       await pool.query('ALTER TABLE departure_reports ADD COLUMN voyage_number VARCHAR(100)');
     } catch (e) {}
@@ -1779,6 +1799,64 @@ async function startServer() {
   app.get('/api/teams', authenticate, async (req, res) => {
     const [teams] = await pool.query('SELECT * FROM teams WHERE deleted_at IS NULL');
     res.json(teams);
+  });
+
+  // Flag Routes
+  app.get('/api/flags', authenticate, async (req, res) => {
+    try {
+      const [flags] = await pool.query('SELECT * FROM flags ORDER BY name ASC');
+      res.json(flags);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/flags', authenticate, isAdmin, async (req: any, res) => {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Flag name is required' });
+    }
+    try {
+      const [result]: any = await pool.execute('INSERT INTO flags (name) VALUES (?)', [name.trim()]);
+      await logAudit(req.user.id, req.user.username, 'CREATE_FLAG', `Created flag: ${name}`);
+      res.json({ id: result.insertId, name: name.trim() });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A flag with this name already exists' });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.put('/api/flags/:id', authenticate, isAdmin, async (req: any, res) => {
+    const { name } = req.body;
+    const { id } = req.params;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Flag name is required' });
+    }
+    try {
+      await pool.execute('UPDATE flags SET name = ? WHERE id = ?', [name.trim(), id]);
+      await logAudit(req.user.id, req.user.username, 'UPDATE_FLAG', `Updated flag ID ${id} to: ${name}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A flag with this name already exists' });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.delete('/api/flags/:id', authenticate, isAdmin, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      await pool.execute('DELETE FROM flags WHERE id = ?', [id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_FLAG', `Deleted flag ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // User Routes (Admin)

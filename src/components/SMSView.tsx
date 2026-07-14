@@ -199,10 +199,10 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [filteredUploads, setFilteredUploads] = useState<VesselUpload[]>([]);
 
   // Accordion Expand/Collapse States
-  const [isAccordion1Open, setIsAccordion1Open] = useState(true);
-  const [isAccordion2Open, setIsAccordion2Open] = useState(true);
-  const [isAccordion3Open, setIsAccordion3Open] = useState(true);
-  const [isAccordion4Open, setIsAccordion4Open] = useState(true);
+  const [isAccordion1Open, setIsAccordion1Open] = useState(false);
+  const [isAccordion2Open, setIsAccordion2Open] = useState(false);
+  const [isAccordion3Open, setIsAccordion3Open] = useState(false);
+  const [isAccordion4Open, setIsAccordion4Open] = useState(false);
 
   // Form Modals states
   const [showFormModal, setShowFormModal] = useState(false);
