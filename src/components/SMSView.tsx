@@ -64,6 +64,7 @@ export interface SMSForm {
   description: string;
   formDate: string;
   scope: string; // "All Vessels" or specific vessel names
+  type?: 'Form' | 'Checklist';
 }
 
 export interface VesselSubmissionPeriod {
@@ -90,6 +91,7 @@ interface SMSViewProps {
   currentUser: any;
   token?: string;
   mode?: 'management' | 'reporting';
+  flags?: any[];
 }
 
 // Initial seed data for forms under categories
@@ -173,11 +175,11 @@ const INITIAL_UPLOADS: VesselUpload[] = [
   { id: 'up_6', vesselId: 'v13', vesselName: 'LIGNUM NETWORK', month: 'June', year: '2026', fileName: 'LignumNet_June2026_SafetyForms.zip', uploadedAt: 'July 4, 2026 at 10:28 AM', fileSize: '22.0 MB', category: '1. Monthly' },
 ];
 
-export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode = 'management' }) => {
+export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode = 'management', flags = [] }) => {
   // Use either external vessels list or standard seed list
   const vesselsList = externalVessels && externalVessels.length > 0 
-    ? externalVessels.map((v, idx) => ({ id: v.id || `v_${idx}`, name: v.name }))
-    : INITIAL_SUBMISSIONS.map(s => ({ id: s.vesselId, name: s.vesselName }));
+    ? externalVessels.map((v, idx) => ({ id: v.id || `v_${idx}`, name: v.name, flag: v.flag }))
+    : INITIAL_SUBMISSIONS.map(s => ({ id: s.vesselId, name: s.vesselName, flag: null }));
 
   // Main Category/Tab Selection State
   const [selectedCategory, setSelectedCategory] = useState<string>('1. Monthly');
@@ -211,6 +213,8 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [formDescriptionInput, setFormDescriptionInput] = useState('');
   const [formDateInput, setFormDateInput] = useState('');
   const [formScopeInput, setFormScopeInput] = useState('All Vessels');
+  const [formTypeInput, setFormTypeInput] = useState<'Form' | 'Checklist'>('Form');
+  const [selectedFlagScope, setSelectedFlagScope] = useState<string>('All Flags');
 
   // File Upload states
   const [dragActive, setDragActive] = useState(false);
@@ -1600,12 +1604,31 @@ startxref
       setFormDescriptionInput(form.description);
       setFormDateInput(form.formDate);
       setFormScopeInput(form.scope);
+      setFormTypeInput(form.type || 'Form');
+
+      // Determine flag from scope
+      if (form.scope === 'All Vessels' || !form.scope) {
+        setSelectedFlagScope('All Flags');
+      } else if (form.scope.startsWith('All ') && form.scope.endsWith(' Vessels')) {
+        const flagName = form.scope.substring(4, form.scope.length - 8);
+        setSelectedFlagScope(flagName);
+      } else {
+        // Specific vessel scope
+        const matchedVessel = vesselsList.find(v => v.name === form.scope);
+        if (matchedVessel && matchedVessel.flag) {
+          setSelectedFlagScope(matchedVessel.flag);
+        } else {
+          setSelectedFlagScope('All Flags');
+        }
+      }
     } else {
       setEditingForm(null);
       setFormCodeInput('');
       setFormDescriptionInput('');
       setFormDateInput(new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' }));
       setFormScopeInput('All Vessels');
+      setFormTypeInput('Form');
+      setSelectedFlagScope('All Flags');
     }
     setShowFormModal(true);
   };
@@ -1626,14 +1649,15 @@ startxref
             formCode: formCodeInput,
             description: formDescriptionInput,
             formDate: formDateInput,
-            scope: formScopeInput
+            scope: formScopeInput,
+            type: formTypeInput
           };
         }
         return f;
       });
       setForms(updatedForms);
       localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
-      triggerToast(`Form ${formCodeInput} updated successfully.`, 'success');
+      triggerToast(`${formTypeInput === 'Checklist' ? 'Checklist' : 'Form'} ${formCodeInput} updated successfully.`, 'success');
     } else {
       // Create mode
       const newFormItem: SMSForm = {
@@ -1642,12 +1666,13 @@ startxref
         formCode: formCodeInput,
         description: formDescriptionInput,
         formDate: formDateInput || new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' }),
-        scope: formScopeInput
+        scope: formScopeInput,
+        type: formTypeInput
       };
       const updatedForms = [...forms, newFormItem];
       setForms(updatedForms);
       localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
-      triggerToast(`Form ${formCodeInput} added to section ${selectedCategory}.`, 'success');
+      triggerToast(`${formTypeInput === 'Checklist' ? 'Checklist' : 'Form'} ${formCodeInput} added to section ${selectedCategory}.`, 'success');
     }
     setShowFormModal(false);
   };
@@ -2775,7 +2800,7 @@ startxref
                       onClick={() => handleOpenFormModal()}
                       className="px-3.5 py-1.5 bg-[#7cfc00] text-slate-800 hover:bg-[#6edc00] text-[11px] font-extrabold rounded-lg flex items-center gap-1 transition-all cursor-pointer border border-[#6edc00]/40"
                     >
-                      <Plus className="w-3.5 h-3.5 stroke-[2.5]" /> Add Form
+                      <Plus className="w-3.5 h-3.5 stroke-[2.5]" /> Add file
                     </button>
                   </div>
                 </div>
@@ -2890,6 +2915,35 @@ startxref
                 />
               </div>
 
+              {/* Form or Checklist Radio Buttons */}
+              <div className="space-y-1.5">
+                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Type</label>
+                <div className="flex items-center gap-6 py-1">
+                  <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
+                    <input
+                      type="radio"
+                      name="formType"
+                      value="Form"
+                      checked={formTypeInput === 'Form'}
+                      onChange={() => setFormTypeInput('Form')}
+                      className="w-4 h-4 text-blue-600 border-slate-300 focus:ring-blue-500"
+                    />
+                    Form
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
+                    <input
+                      type="radio"
+                      name="formType"
+                      value="Checklist"
+                      checked={formTypeInput === 'Checklist'}
+                      onChange={() => setFormTypeInput('Checklist')}
+                      className="w-4 h-4 text-blue-600 border-slate-300 focus:ring-blue-500"
+                    />
+                    Checklist
+                  </label>
+                </div>
+              </div>
+
               <div className="space-y-1">
                 <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Description</label>
                 <textarea
@@ -2913,17 +2967,48 @@ startxref
                 />
               </div>
 
+              {/* Flag Selection Dropdown */}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Flag</label>
+                <select
+                  value={selectedFlagScope}
+                  onChange={(e) => {
+                    const newFlag = e.target.value;
+                    setSelectedFlagScope(newFlag);
+                    // Automatically update vessel scope option and value to reflect selected flag
+                    if (newFlag === 'All Flags') {
+                      setFormScopeInput('All Vessels');
+                    } else {
+                      setFormScopeInput(`All ${newFlag} Vessels`);
+                    }
+                  }}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
+                >
+                  <option value="All Flags">All Flags</option>
+                  {flags.map((f: any) => (
+                    <option key={f.id} value={f.name}>{f.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Vessel Scope Dropdown */}
               <div className="space-y-1">
                 <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel Scope</label>
                 <select
                   value={formScopeInput}
                   onChange={(e) => setFormScopeInput(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
                 >
-                  <option value="All Vessels">All Vessels</option>
-                  {vesselsList.map(v => (
-                    <option key={v.id} value={v.name}>{v.name}</option>
-                  ))}
+                  {selectedFlagScope === 'All Flags' ? (
+                    <option value="All Vessels">All Vessels</option>
+                  ) : (
+                    <option value={`All ${selectedFlagScope} Vessels`}>All {selectedFlagScope} Vessels</option>
+                  )}
+                  {vesselsList
+                    .filter(v => selectedFlagScope === 'All Flags' || v.flag === selectedFlagScope)
+                    .map(v => (
+                      <option key={v.id} value={v.name}>{v.name}</option>
+                    ))}
                 </select>
               </div>
 

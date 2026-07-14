@@ -339,6 +339,7 @@ interface Vessel {
   operation_type?: string | null;
   remark_from_vessel?: string | null;
   flag?: string | null;
+  type?: 'Bulk Carrier' | 'Container';
   date_built?: string | null;
   min_fuel_consumption?: string | null;
   max_fuel_consumption?: string | null;
@@ -1754,6 +1755,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       formData.append('team_id', editingVessel.team_id ? String(editingVessel.team_id) : '');
       formData.append('owner', editingVessel.owner || 'Nissen');
       formData.append('flag', editingVessel.flag || '');
+      formData.append('type', editingVessel.type || 'Bulk Carrier');
       formData.append('date_built', editingVessel.date_built || '');
       formData.append('min_fuel_consumption', editingVessel.min_fuel_consumption || '');
       formData.append('max_fuel_consumption', editingVessel.max_fuel_consumption || '');
@@ -3305,6 +3307,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <span className="font-bold text-slate-900">{vessel.flag || 'N/A'}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-500">Type</span>
+                        <span className="font-bold text-slate-900">{vessel.type || 'Bulk Carrier'}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Date Built</span>
                         <span className="font-bold text-slate-900">{vessel.date_built || 'N/A'}</span>
                       </div>
@@ -3663,13 +3669,13 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'sms' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <SMSView vessels={vessels} currentUser={user} token={token} mode="management" />
+              <SMSView vessels={vessels} currentUser={user} token={token} mode="management" flags={flags} />
             </div>
           )}
 
           {view === 'sms_reporting' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <SMSView vessels={vessels} currentUser={user} token={token} mode="reporting" />
+              <SMSView vessels={vessels} currentUser={user} token={token} mode="reporting" flags={flags} />
             </div>
           )}
 
@@ -4650,6 +4656,17 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       >
                         <option value="Nissen">Nissen</option>
                         <option value="Goodwill">Goodwill</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Type</label>
+                      <select 
+                        value={editingVessel.type || 'Bulk Carrier'}
+                        onChange={(e) => setEditingVessel({...editingVessel, type: e.target.value as 'Bulk Carrier' | 'Container'})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      >
+                        <option value="Bulk Carrier">Bulk Carrier</option>
+                        <option value="Container">Container</option>
                       </select>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
@@ -9049,6 +9066,7 @@ const AdminPanel = ({
   const [newVesselTeam, setNewVesselTeam] = useState('');
   const [newVesselOwner, setNewVesselOwner] = useState('Nissen');
   const [newVesselFlag, setNewVesselFlag] = useState('');
+  const [newVesselType, setNewVesselType] = useState<'Bulk Carrier' | 'Container'>('Bulk Carrier');
   const [newVesselDateBuilt, setNewVesselDateBuilt] = useState('');
   const [newVesselMinFuel, setNewVesselMinFuel] = useState('');
   const [newVesselMaxFuel, setNewVesselMaxFuel] = useState('');
@@ -9421,6 +9439,7 @@ const AdminPanel = ({
       formData.append('team_id', newVesselTeam ? String(newVesselTeam) : '');
       formData.append('owner', newVesselOwner);
       formData.append('flag', newVesselFlag);
+      formData.append('type', newVesselType);
       formData.append('date_built', newVesselDateBuilt);
       formData.append('min_fuel_consumption', newVesselMinFuel);
       formData.append('max_fuel_consumption', newVesselMaxFuel);
@@ -9439,6 +9458,7 @@ const AdminPanel = ({
         setNewVesselTeam('');
         setNewVesselOwner('Nissen');
         setNewVesselFlag('');
+        setNewVesselType('Bulk Carrier');
         setNewVesselDateBuilt('');
         setNewVesselMinFuel('');
         setNewVesselMaxFuel('');
@@ -9762,6 +9782,14 @@ const AdminPanel = ({
                   >
                     <option value="Nissen">Nissen</option>
                     <option value="Goodwill">Goodwill</option>
+                  </select>
+                  <select 
+                    value={newVesselType}
+                    onChange={(e) => setNewVesselType(e.target.value as 'Bulk Carrier' | 'Container')}
+                    className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                  >
+                    <option value="Bulk Carrier">Bulk Carrier</option>
+                    <option value="Container">Container</option>
                   </select>
                   <div className="grid grid-cols-2 gap-4">
                     <select 
@@ -10243,6 +10271,10 @@ const AdminPanel = ({
                     <div className="flex justify-between">
                       <span>Flag:</span>
                       <span className="font-bold text-slate-700">{v.flag || 'N/A'}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Type:</span>
+                      <span className="font-bold text-slate-700">{v.type || 'Bulk Carrier'}</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Built:</span>
