@@ -1112,6 +1112,22 @@ async function startServer() {
       )
     `);
 
+    // Create table for SMS Uploads
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_uploads (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id VARCHAR(100) NOT NULL,
+        vessel_name VARCHAR(255) NOT NULL,
+        month VARCHAR(50) NOT NULL,
+        year VARCHAR(50) NOT NULL,
+        file_name VARCHAR(255) NOT NULL,
+        file_size VARCHAR(50) NOT NULL,
+        file_data LONGBLOB NOT NULL,
+        file_mimetype VARCHAR(255) NOT NULL,
+        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     try {
       await pool.query('ALTER TABLE departure_reports ADD COLUMN voyage_number VARCHAR(100)');
     } catch (e) {}
@@ -2111,6 +2127,70 @@ async function startServer() {
       res.json({ success: true });
     } catch (e: any) {
       console.error('Soft delete vessel error:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // SMS Routes
+  app.get('/api/sms/uploads', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.query(
+        'SELECT id, vessel_id as vesselId, vessel_name as vesselName, month, year, file_name as fileName, file_size as fileSize, uploaded_at as uploadedAt FROM sms_uploads ORDER BY uploaded_at DESC'
+      );
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/upload', authenticate, upload.single('file'), async (req: any, res) => {
+    const { vessel_id, vessel_name, month, year, file_size } = req.body;
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    try {
+      const uploadedBuffer = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'sms_uploads');
+      const [result]: any = await pool.execute(
+        'INSERT INTO sms_uploads (vessel_id, vessel_name, month, year, file_name, file_size, file_data, file_mimetype) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [vessel_id, vessel_name, month, year, req.file.originalname, file_size, uploadedBuffer, req.file.mimetype]
+      );
+      res.json({
+        success: true,
+        upload: {
+          id: result.insertId,
+          vesselId: vessel_id,
+          vesselName: vessel_name,
+          month,
+          year,
+          fileName: req.file.originalname,
+          uploadedAt: new Date().toISOString(),
+          fileSize: file_size
+        }
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/download/:id', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.execute('SELECT file_name, file_mimetype, file_data FROM sms_uploads WHERE id = ?', [req.params.id]);
+      if (rows.length === 0) return res.status(404).json({ error: 'File not found' });
+      const row = rows[0];
+      const retrievedBuffer = await handleFileRetrieve(row.file_data);
+      res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.file_name)}"`);
+      res.send(retrievedBuffer);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/sms/upload/:id', authenticate, async (req, res) => {
+    try {
+      await pool.execute('DELETE FROM sms_uploads WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });

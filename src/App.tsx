@@ -75,6 +75,7 @@ import { BunkerBDNView } from './components/BunkerBDN';
 import { LubeOilLDRView } from './components/LubeOilLDR';
 import { BunkerFuelAnalysisView } from './components/BunkerFuelAnalysis';
 import { LubeOilAnalysisView } from './components/LubeOilAnalysis';
+import { SMSView } from './components/SMSView';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -1106,6 +1107,7 @@ const SidebarContent = ({
   onLogout: () => void,
   setIsChangePasswordOpen: (v: boolean) => void
 }) => {
+  const [isSmsReportingOpen, setIsSmsReportingOpen] = React.useState(false);
   // Beautiful interactive helper styling functions
   const getTopLevelClass = (active: boolean) => cn(
     "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all duration-200 text-left cursor-pointer",
@@ -1438,6 +1440,51 @@ const SidebarContent = ({
           </AnimatePresence>
         </div>
 
+        {/* SMS Group */}
+        <div className="space-y-1">
+          <button 
+            onClick={() => setIsSmsReportingOpen(!isSmsReportingOpen)}
+            className={getCategoryToggleClass(
+              view === 'sms' || view === 'sms_reporting',
+              isSmsReportingOpen
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <FileText className="w-4 h-4" /> SMS
+            </div>
+            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isSmsReportingOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+          </button>
+          
+          <AnimatePresence>
+            {isSmsReportingOpen && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden pl-1 space-y-1"
+              >
+                {user.role !== 'vessel' && (
+                  <button 
+                    onClick={() => { setView('sms'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'sms')}
+                  >
+                    <FileText className="w-3.5 h-3.5 shrink-0" /> SMS Management
+                  </button>
+                )}
+                {(user.role === 'vessel' || user.role === 'admin' || user.role === 'user' || user.role === 'team_pic') && (
+                  <button 
+                    onClick={() => { setView('sms_reporting'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'sms_reporting')}
+                  >
+                    <FileText className="w-3.5 h-3.5 shrink-0" /> SMS Reporting
+                  </button>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
         {/* Administration panel */}
         {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
           <div className="space-y-1">
@@ -1536,7 +1583,7 @@ const SidebarContent = ({
 };
 
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about' | 'sms' | 'sms_reporting'>('dashboard');
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -3566,6 +3613,18 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           {view === 'about' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
               <AboutView />
+            </div>
+          )}
+
+          {view === 'sms' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <SMSView vessels={vessels} currentUser={user} token={token} mode="management" />
+            </div>
+          )}
+
+          {view === 'sms_reporting' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <SMSView vessels={vessels} currentUser={user} token={token} mode="reporting" />
             </div>
           )}
 

@@ -913,9 +913,15 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
     return matchesSearch && matchesRank && matchesStatus && matchesVessel;
   });
 
-  const vesselCrewOnly = isVesselUser 
-    ? crew.filter(c => String(c.vesselId) === String(userVesselId))
-    : crew;
+  const vesselCrewOnly = crew.filter(c => {
+    const isAssigned = c.vesselId && c.vesselId !== 'any' && c.vesselId !== 'all';
+    const hasActiveContract = c.contractEndDate && c.contractEndDate !== '';
+    if (!isAssigned || !hasActiveContract) return false;
+
+    const effectiveVesselId = isVesselUser ? userVesselId : filterVessel;
+    const matchesVessel = effectiveVesselId === 'All' || String(c.vesselId) === String(effectiveVesselId);
+    return matchesVessel;
+  });
 
   const getVesselName = (id: string) => {
     if (id === 'all' || id === 'any') return 'Unassigned';
