@@ -2280,18 +2280,20 @@ startxref
                 </div>
 
                 {/* Simulation Toggle */}
-                <div className="flex flex-col gap-1 shrink-0 bg-slate-800/60 p-2 rounded-xl border border-slate-700/60">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">B2 Upload Simulator</span>
-                  <label className="flex items-center gap-2 cursor-pointer pt-0.5">
-                    <input
-                      type="checkbox"
-                      checked={simulateB2Failure}
-                      onChange={(e) => setSimulateB2Failure(e.target.checked)}
-                      className="w-4 h-4 text-red-500 rounded focus:ring-red-500/50 focus:ring-2 bg-slate-700 border-slate-600"
-                    />
-                    <span className="text-[11px] font-bold text-red-400">Simulate Upload Failure</span>
-                  </label>
-                </div>
+                {currentUser?.role === 'admin' && (
+                  <div className="flex flex-col gap-1 shrink-0 bg-slate-800/60 p-2 rounded-xl border border-slate-700/60">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">B2 Upload Simulator</span>
+                    <label className="flex items-center gap-2 cursor-pointer pt-0.5">
+                      <input
+                        type="checkbox"
+                        checked={simulateB2Failure}
+                        onChange={(e) => setSimulateB2Failure(e.target.checked)}
+                        className="w-4 h-4 text-red-500 rounded focus:ring-red-500/50 focus:ring-2 bg-slate-700 border-slate-600"
+                      />
+                      <span className="text-[11px] font-bold text-red-400">Simulate Upload Failure</span>
+                    </label>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2379,55 +2381,59 @@ startxref
                                   </div>
 
                                   <div className="flex flex-wrap items-center gap-3 shrink-0">
-                                    <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-2xs overflow-hidden">
-                                      <select
-                                        id={`format-select-${form.id}`}
-                                        className="px-2 py-1 bg-slate-50 text-[10px] font-extrabold text-slate-500 border-r border-slate-200 focus:outline-none cursor-pointer h-full"
-                                        defaultValue="docx"
-                                      >
-                                        <option value="docx">.DOCX</option>
-                                        <option value="doc">.DOC</option>
-                                        <option value="xlsx">.XLSX</option>
-                                        <option value="xls">.XLS</option>
-                                        <option value="pdf">.PDF</option>
-                                      </select>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const sel = document.getElementById(`format-select-${form.id}`) as HTMLSelectElement;
-                                          handleGenerateTestFile(form, (sel?.value || 'docx') as any);
-                                        }}
-                                        className="px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
-                                        title="Download valid template file with matching headers"
-                                      >
-                                        <FileCode className="w-3.5 h-3.5 text-blue-500" />
-                                        Valid Demo
-                                      </button>
-                                    </div>
+                                    {currentUser?.role === 'admin' && (
+                                      <>
+                                        <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-2xs overflow-hidden">
+                                          <select
+                                            id={`format-select-${form.id}`}
+                                            className="px-2 py-1 bg-slate-50 text-[10px] font-extrabold text-slate-500 border-r border-slate-200 focus:outline-none cursor-pointer h-full"
+                                            defaultValue="docx"
+                                          >
+                                            <option value="docx">.DOCX</option>
+                                            <option value="doc">.DOC</option>
+                                            <option value="xlsx">.XLSX</option>
+                                            <option value="xls">.XLS</option>
+                                            <option value="pdf">.PDF</option>
+                                          </select>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const sel = document.getElementById(`format-select-${form.id}`) as HTMLSelectElement;
+                                              handleGenerateTestFile(form, (sel?.value || 'docx') as any);
+                                            }}
+                                            className="px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
+                                            title="Download valid template file with matching headers"
+                                          >
+                                            <FileCode className="w-3.5 h-3.5 text-blue-500" />
+                                            Valid Demo
+                                          </button>
+                                        </div>
 
-                                    <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-2xs overflow-hidden">
-                                      <select
-                                        id={`blank-format-select-${form.id}`}
-                                        className="px-2 py-1 bg-slate-50 text-[10px] font-extrabold text-slate-500 border-r border-slate-200 focus:outline-none cursor-pointer h-full"
-                                        defaultValue="docx"
-                                      >
-                                        <option value="docx">.DOCX</option>
-                                        <option value="xlsx">.XLSX</option>
-                                        <option value="pdf">.PDF</option>
-                                      </select>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const sel = document.getElementById(`blank-format-select-${form.id}`) as HTMLSelectElement;
-                                          handleGenerateAndMatchBlankFile(form, (sel?.value || 'docx') as any);
-                                        }}
-                                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
-                                        title="Submit an authorized blank file to the compliance queue"
-                                      >
-                                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                                        Blank Form
-                                      </button>
-                                    </div>
+                                        <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-2xs overflow-hidden">
+                                          <select
+                                            id={`blank-format-select-${form.id}`}
+                                            className="px-2 py-1 bg-slate-50 text-[10px] font-extrabold text-slate-500 border-r border-slate-200 focus:outline-none cursor-pointer h-full"
+                                            defaultValue="docx"
+                                          >
+                                            <option value="docx">.DOCX</option>
+                                            <option value="xlsx">.XLSX</option>
+                                            <option value="pdf">.PDF</option>
+                                          </select>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const sel = document.getElementById(`blank-format-select-${form.id}`) as HTMLSelectElement;
+                                              handleGenerateAndMatchBlankFile(form, (sel?.value || 'docx') as any);
+                                            }}
+                                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
+                                            title="Submit an authorized blank file to the compliance queue"
+                                          >
+                                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                                            Blank Form
+                                          </button>
+                                        </div>
+                                      </>
+                                    )}
 
                                     <div className="relative shrink-0">
                                       <span className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-blue-100 inline-block cursor-pointer">
@@ -2495,39 +2501,41 @@ startxref
                                   </div>
 
                                   {/* Error Help & Quick Generation Panel */}
-                                  <div className="p-3 bg-red-50/20 rounded-xl border border-red-100/50 flex flex-col md:flex-row justify-between gap-3 items-start md:items-center">
-                                    <p className="text-[11px] text-slate-500 leading-relaxed max-w-lg">
-                                      Your file does not meet compliance checks. To bypass or fix, you can either generate a valid demo file that contains the proper headers, or submit an authorized blank form template.
-                                    </p>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const fileExt = fileState.file.name.split('.').pop()?.toLowerCase();
-                                          const validExts: any[] = ['docx', 'xlsx', 'pdf', 'doc', 'xls'];
-                                          const ext = validExts.includes(fileExt) ? fileExt : 'docx';
-                                          handleGenerateTestFile(form, ext as any);
-                                        }}
-                                        className="px-2.5 py-1.5 border border-red-200 bg-white hover:bg-red-50 text-rose-700 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all flex items-center gap-1 cursor-pointer"
-                                      >
-                                        <RefreshCw className="w-3.5 h-3.5" />
-                                        Generate Fix
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const fileExt = fileState.file.name.split('.').pop()?.toLowerCase();
-                                          const validExts: any[] = ['docx', 'xlsx', 'pdf'];
-                                          const ext = validExts.includes(fileExt) ? fileExt : 'docx';
-                                          handleGenerateAndMatchBlankFile(form, ext as any);
-                                        }}
-                                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black uppercase tracking-wider rounded-lg transition-all flex items-center gap-1 cursor-pointer shadow-xs"
-                                      >
-                                        <ShieldCheck className="w-3.5 h-3.5" />
-                                        Force Match
-                                      </button>
+                                  {currentUser?.role === 'admin' && (
+                                    <div className="p-3 bg-red-50/20 rounded-xl border border-red-100/50 flex flex-col md:flex-row justify-between gap-3 items-start md:items-center">
+                                      <p className="text-[11px] text-slate-500 leading-relaxed max-w-lg">
+                                        Your file does not meet compliance checks. To bypass or fix, you can either generate a valid demo file that contains the proper headers, or submit an authorized blank form template.
+                                      </p>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const fileExt = fileState.file.name.split('.').pop()?.toLowerCase();
+                                            const validExts: any[] = ['docx', 'xlsx', 'pdf', 'doc', 'xls'];
+                                            const ext = validExts.includes(fileExt) ? fileExt : 'docx';
+                                            handleGenerateTestFile(form, ext as any);
+                                          }}
+                                          className="px-2.5 py-1.5 border border-red-200 bg-white hover:bg-red-50 text-rose-700 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all flex items-center gap-1 cursor-pointer"
+                                        >
+                                          <RefreshCw className="w-3.5 h-3.5" />
+                                          Generate Fix
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const fileExt = fileState.file.name.split('.').pop()?.toLowerCase();
+                                            const validExts: any[] = ['docx', 'xlsx', 'pdf'];
+                                            const ext = validExts.includes(fileExt) ? fileExt : 'docx';
+                                            handleGenerateAndMatchBlankFile(form, ext as any);
+                                          }}
+                                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-black uppercase tracking-wider rounded-lg transition-all flex items-center gap-1 cursor-pointer shadow-xs"
+                                        >
+                                          <ShieldCheck className="w-3.5 h-3.5" />
+                                          Force Match
+                                        </button>
+                                      </div>
                                     </div>
-                                  </div>
+                                  )}
                                 </div>
                               )}
                             </div>
