@@ -214,7 +214,49 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [formDateInput, setFormDateInput] = useState('');
   const [formScopeInput, setFormScopeInput] = useState('All Vessels');
   const [formTypeInput, setFormTypeInput] = useState<'Form' | 'Checklist'>('Form');
-  const [selectedFlagScope, setSelectedFlagScope] = useState<string>('All Flags');
+  const [selectedFlags, setSelectedFlags] = useState<string[]>([]);
+
+  const getFlagsFormatted = (arr: string[]) => {
+    if (arr.length === 0) return '';
+    if (arr.length === 1) return arr[0];
+    if (arr.length === 2) return `${arr[0]} and ${arr[1]}`;
+    const initial = arr.slice(0, -1).join(', ');
+    return `${initial}, and ${arr[arr.length - 1]}`;
+  };
+
+  const handleFlagCheckboxChange = (flagName: string, checked: boolean) => {
+    let nextFlags: string[];
+    if (checked) {
+      if (!selectedFlags.includes(flagName)) {
+        nextFlags = [...selectedFlags, flagName];
+      } else {
+        nextFlags = selectedFlags;
+      }
+    } else {
+      nextFlags = selectedFlags.filter(f => f !== flagName);
+    }
+    
+    setSelectedFlags(nextFlags);
+
+    // Calculate default scope option
+    let defaultScope = 'All Vessels';
+    if (nextFlags.length === 1) {
+      defaultScope = `All ${nextFlags[0]} Vessels`;
+    } else if (nextFlags.length > 1) {
+      defaultScope = `All ${getFlagsFormatted(nextFlags)} flags`;
+    }
+
+    // Check if the currently selected vessel name is still in the filtered list
+    const isCurrentVesselStillValid = vesselsList.some(v => 
+      v.name === formScopeInput && 
+      (nextFlags.length === 0 || nextFlags.includes(v.flag || ''))
+    );
+
+    const isGroupOption = formScopeInput.startsWith('All ');
+    if (isGroupOption || !isCurrentVesselStillValid) {
+      setFormScopeInput(defaultScope);
+    }
+  };
 
   // File Upload states
   const [dragActive, setDragActive] = useState(false);
@@ -252,6 +294,143 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const triggerToast = (text: string, type: 'success' | 'error' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  const isVesselInFormScope = (vessel: { id: string; name: string; flag: string | null }, scope: string) => {
+    if (!scope || scope === 'All Vessels') {
+      return true;
+    }
+    
+    // Specific Vessel Name check (exact match)
+    if (vessel.name === scope) {
+      return true;
+    }
+    
+    // If the scope is flags-based
+    if (scope.startsWith('All ')) {
+      if (vessel.flag) {
+        const cleanScope = scope.toLowerCase();
+        const cleanFlag = vessel.flag.toLowerCase();
+        if (cleanScope.includes(cleanFlag)) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  };
+
+  // Helper to filter forms based on active category and selected vessel scope
+  const getVesselActiveCategoryForms = () => {
+    const targetVessel = vesselsList.find(v => String(v.id) === String(reportingVesselId));
+    const catForms = forms.filter(f => f.category === selectedCategory);
+    if (!targetVessel) return catForms;
+    return catForms.filter(f => isVesselInFormScope(targetVessel, f.scope));
+  };
+
+  // Fetch forms from MySQL server or LocalStorage fallback
+  const fetchSMSForms = async () => {
+    if (!token) {
+      const savedForms = localStorage.getItem('comos_sms_manage_forms');
+      if (savedForms) {
+        setForms(JSON.parse(savedForms));
+      } else {
+        setForms(INITIAL_FORMS);
+        localStorage.setItem('comos_sms_manage_forms', JSON.stringify(INITIAL_FORMS));
+      }
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/sms/forms', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.length > 0) {
+          setForms(data);
+        } else {
+          setForms(INITIAL_FORMS);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch SMS forms:', e);
+    }
+  };
+
+  // Fetch submission periods from MySQL server or LocalStorage fallback
+  const fetchSubmissionPeriods = async () => {
+    if (!token) {
+      const savedPeriods = localStorage.getItem('comos_sms_submission_periods');
+      if (savedPeriods) {
+        setSubmissionPeriods(JSON.parse(savedPeriods));
+      } else {
+        const initialPeriods = vesselsList.map(v => {
+          const foundSeed = INITIAL_SUBMISSIONS.find(s => s.vesselName.toUpperCase() === v.name.toUpperCase());
+          return {
+            vesselId: String(v.id),
+            vesselName: v.name,
+            month: foundSeed ? foundSeed.month : 'June',
+            year: foundSeed ? foundSeed.year : '2026'
+          };
+        });
+        setSubmissionPeriods(initialPeriods);
+        localStorage.setItem('comos_sms_submission_periods', JSON.stringify(initialPeriods));
+      }
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/sms/submission-periods', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.length > 0) {
+          setSubmissionPeriods(data);
+        } else {
+          const initialPeriods = vesselsList.map(v => {
+            const foundSeed = INITIAL_SUBMISSIONS.find(s => s.vesselName.toUpperCase() === v.name.toUpperCase());
+            return {
+              vesselId: String(v.id),
+              vesselName: v.name,
+              month: foundSeed ? foundSeed.month : 'June',
+              year: foundSeed ? foundSeed.year : '2026'
+            };
+          });
+          setSubmissionPeriods(initialPeriods);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch SMS submission periods:', e);
+    }
+  };
+
+  // Centralized submission period updater that saves to MySQL or LocalStorage fallback
+  const handleUpdateSubmissionPeriod = async (vId: string, vName: string, month: string, year: string) => {
+    const updatedPeriods = submissionPeriods.map(p => {
+      if (String(p.vesselId) === String(vId)) {
+        return { ...p, month, year };
+      }
+      return p;
+    });
+    setSubmissionPeriods(updatedPeriods);
+    localStorage.setItem('comos_sms_submission_periods', JSON.stringify(updatedPeriods));
+
+    if (token) {
+      try {
+        await fetch('/api/sms/submission-periods', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ vesselId: vId, vesselName: vName, month, year })
+        });
+      } catch (err) {
+        console.error('Failed to save submission period to MySQL:', err);
+      }
+    }
   };
 
   // Fetch uploads list from server
@@ -490,34 +669,10 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     }
   };
 
-  // On mount, load data from localStorage or seed
+  // On mount, load data from MySQL server or fall back to LocalStorage
   useEffect(() => {
-    const savedForms = localStorage.getItem('comos_sms_manage_forms');
-    if (savedForms) {
-      setForms(JSON.parse(savedForms));
-    } else {
-      setForms(INITIAL_FORMS);
-      localStorage.setItem('comos_sms_manage_forms', JSON.stringify(INITIAL_FORMS));
-    }
-
-    const savedPeriods = localStorage.getItem('comos_sms_submission_periods');
-    if (savedPeriods) {
-      setSubmissionPeriods(JSON.parse(savedPeriods));
-    } else {
-      // Create initial periods dynamically
-      const initialPeriods = vesselsList.map(v => {
-        const foundSeed = INITIAL_SUBMISSIONS.find(s => s.vesselName.toUpperCase() === v.name.toUpperCase());
-        return {
-          vesselId: String(v.id),
-          vesselName: v.name,
-          month: foundSeed ? foundSeed.month : 'June',
-          year: foundSeed ? foundSeed.year : '2026'
-        };
-      });
-      setSubmissionPeriods(initialPeriods);
-      localStorage.setItem('comos_sms_submission_periods', JSON.stringify(initialPeriods));
-    }
-
+    fetchSMSForms();
+    fetchSubmissionPeriods();
     fetchUploadsList();
   }, [token]);
 
@@ -531,7 +686,12 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     // If the file starts with any form code in this category, it's a match!
     const hasMatchingCode = categoryForms.some(f => {
       const cleanCode = f.formCode.trim().toUpperCase();
-      return cleanFileName.startsWith(cleanCode);
+      if (!cleanFileName.startsWith(cleanCode)) return false;
+      if (cleanFileName.length > cleanCode.length) {
+        const nextChar = cleanFileName[cleanCode.length];
+        if (/^[A-Z0-9]$/.test(nextChar)) return false;
+      }
+      return true;
     });
     
     if (hasMatchingCode) return true;
@@ -567,12 +727,15 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   // Update default states once vessels are loaded
   useEffect(() => {
     if (vesselsList.length > 0) {
-      setSelectedPeriodVesselId(String(vesselsList[0].id));
-      setUploadingVesselId(String(vesselsList[0].id));
-      setSelectedFilterVesselId('');
-      setReportingVesselId(String(vesselsList[0].id));
+      const isVessel = currentUser?.role === 'vessel' && currentUser?.vessel_id;
+      const defaultVesselId = isVessel ? String(currentUser.vessel_id) : String(vesselsList[0].id);
+
+      setSelectedPeriodVesselId(defaultVesselId);
+      setUploadingVesselId(defaultVesselId);
+      setSelectedFilterVesselId(isVessel ? defaultVesselId : '');
+      setReportingVesselId(defaultVesselId);
     }
-  }, [externalVessels]);
+  }, [externalVessels, currentUser]);
 
   // Load and Filter submitted files manually
   const handleLoadFiles = () => {
@@ -657,15 +820,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     const targetVessel = vesselsList.find(v => String(v.id) === String(selectedPeriodVesselId));
     if (!targetVessel) return;
 
-    const updatedPeriods = submissionPeriods.map(p => {
-      if (String(p.vesselId) === String(selectedPeriodVesselId)) {
-        return { ...p, month: selectedPeriodMonth, year: selectedPeriodYear };
-      }
-      return p;
-    });
-
-    setSubmissionPeriods(updatedPeriods);
-    localStorage.setItem('comos_sms_submission_periods', JSON.stringify(updatedPeriods));
+    handleUpdateSubmissionPeriod(String(selectedPeriodVesselId), targetVessel.name, selectedPeriodMonth, selectedPeriodYear);
     triggerToast(`Successfully set submission period for ${targetVessel.name} to ${selectedPeriodMonth} ${selectedPeriodYear}.`, 'success');
   };
 
@@ -1036,8 +1191,16 @@ startxref
     const cleanFileName = file.name.trim().toUpperCase();
     const cleanFormCode = form.formCode.trim().toUpperCase();
     
-    // Filename must start with the form code
-    if (!cleanFileName.startsWith(cleanFormCode)) {
+    // Filename must start with the form code and have a non-alphanumeric boundary character
+    let startsWithCode = cleanFileName.startsWith(cleanFormCode);
+    if (startsWithCode && cleanFileName.length > cleanFormCode.length) {
+      const nextChar = cleanFileName[cleanFormCode.length];
+      if (/^[A-Z0-9]$/.test(nextChar)) {
+        startsWithCode = false;
+      }
+    }
+
+    if (!startsWithCode) {
       return {
         matched: false,
         reason: `Filename Mismatch: File name does not start with '${form.formCode}'`
@@ -1048,13 +1211,26 @@ startxref
       const text = await extractTextFromFile(file);
       const textUpper = text.toUpperCase();
       
-      const hasCode = textUpper.includes(cleanFormCode);
+      let hasCode = textUpper.includes(cleanFormCode) || 
+        textUpper.replace(/[^A-Z0-9]/g, '').includes(cleanFormCode.replace(/[^A-Z0-9]/g, ''));
+      if (!hasCode) {
+        // Fallback: If the filename starts with or contains the form code, consider it matched
+        if (cleanFileName.startsWith(cleanFormCode) || cleanFileName.includes(cleanFormCode)) {
+          hasCode = true;
+        }
+      }
+
       let hasDescription = isDescriptionMatched(text, form.description);
       if (!hasDescription) {
         // Fallback: try to match with the filename instead
         hasDescription = isDescriptionMatched(file.name, form.description);
       }
-      const hasDate = isDateMatched(text, form.formDate);
+      
+      let hasDate = isDateMatched(text, form.formDate);
+      if (!hasDate) {
+        // Fallback: try to match with the filename instead
+        hasDate = isDateMatched(file.name, form.formDate);
+      }
 
       if (!hasCode) {
         return {
@@ -1152,7 +1328,7 @@ startxref
   };
 
   const handleProcessMultipleFiles = async (files: FileList | File[]) => {
-    const activeCategoryForms = forms.filter(f => f.category === selectedCategory);
+    const activeCategoryForms = getVesselActiveCategoryForms();
     // Sort descending by formCode length so longer patterns like COMI-SM-1-3A match before COMI-SM-1-3
     const sortedActiveForms = [...activeCategoryForms].sort((a, b) => b.formCode.length - a.formCode.length);
     let matchedCount = 0;
@@ -1177,7 +1353,12 @@ startxref
       // Find if this matches any form code in the current category (longest first)
       const formMatch = sortedActiveForms.find(f => {
         const cleanCode = f.formCode.trim().toUpperCase();
-        return cleanFileName.startsWith(cleanCode);
+        if (!cleanFileName.startsWith(cleanCode)) return false;
+        if (cleanFileName.length > cleanCode.length) {
+          const nextChar = cleanFileName[cleanCode.length];
+          if (/^[A-Z0-9]$/.test(nextChar)) return false;
+        }
+        return true;
       });
 
       if (formMatch) {
@@ -1196,7 +1377,15 @@ startxref
       } else {
         // If it starts with another form code from ANOTHER category, indicate mismatch
         const sortedAllForms = [...forms].sort((a, b) => b.formCode.length - a.formCode.length);
-        const generalFormMatch = sortedAllForms.find(f => cleanFileName.startsWith(f.formCode.trim().toUpperCase()));
+        const generalFormMatch = sortedAllForms.find(f => {
+          const cleanCode = f.formCode.trim().toUpperCase();
+          if (!cleanFileName.startsWith(cleanCode)) return false;
+          if (cleanFileName.length > cleanCode.length) {
+            const nextChar = cleanFileName[cleanCode.length];
+            if (/^[A-Z0-9]$/.test(nextChar)) return false;
+          }
+          return true;
+        });
         if (generalFormMatch) {
           mismatchCount++;
           triggerToast(`File ${file.name} belongs to category "${generalFormMatch.category}" instead of "${selectedCategory}"!`, 'error');
@@ -1216,7 +1405,7 @@ startxref
   const handleZipUploadInternal = async (zipFile: File) => {
     try {
       const zip = await JSZip.loadAsync(zipFile);
-      const activeCategoryForms = forms.filter(f => f.category === selectedCategory);
+      const activeCategoryForms = getVesselActiveCategoryForms();
       const sortedActiveForms = [...activeCategoryForms].sort((a, b) => b.formCode.length - a.formCode.length);
       const extractedList: { file: File; form: SMSForm }[] = [];
       const promises: Promise<void>[] = [];
@@ -1231,7 +1420,12 @@ startxref
 
           const formMatch = sortedActiveForms.find(f => {
             const cleanCode = f.formCode.trim().toUpperCase();
-            return cleanFileName.startsWith(cleanCode);
+            if (!cleanFileName.startsWith(cleanCode)) return false;
+            if (cleanFileName.length > cleanCode.length) {
+              const nextChar = cleanFileName[cleanCode.length];
+              if (/^[A-Z0-9]$/.test(nextChar)) return false;
+            }
+            return true;
           });
 
           if (formMatch) {
@@ -1272,7 +1466,7 @@ startxref
   };
 
   const handleDownloadPartialZip = async () => {
-    const activeCategoryForms = forms.filter(f => f.category === selectedCategory);
+    const activeCategoryForms = getVesselActiveCategoryForms();
     const matchedItems = activeCategoryForms
       .map(form => uploadedFilesMap[form.id])
       .filter(item => item && item.matched);
@@ -1314,7 +1508,7 @@ startxref
       return;
     }
 
-    const activeCategoryForms = forms.filter(f => f.category === selectedCategory);
+    const activeCategoryForms = getVesselActiveCategoryForms();
     const matchedItems = activeCategoryForms
       .map(form => uploadedFilesMap[form.id])
       .filter(item => item && item.matched);
@@ -1419,14 +1613,7 @@ startxref
       }
 
       // Set submission period to match
-      const updatedPeriods = submissionPeriods.map(p => {
-        if (String(p.vesselId) === String(reportingVesselId)) {
-          return { ...p, month: reportingMonth, year: reportingYear };
-        }
-        return p;
-      });
-      setSubmissionPeriods(updatedPeriods);
-      localStorage.setItem('comos_sms_submission_periods', JSON.stringify(updatedPeriods));
+      handleUpdateSubmissionPeriod(reportingVesselId, targetVessel.name, reportingMonth, reportingYear);
 
       setB2UploadProgress(100);
       setB2UploadStatus('success');
@@ -1525,14 +1712,7 @@ startxref
           localStorage.setItem('comos_sms_uploads_list', JSON.stringify(updatedUploads));
 
           // Update the period to match the uploaded month/year to simulate real workflow
-          const updatedPeriods = submissionPeriods.map(p => {
-            if (String(p.vesselId) === String(uploadingVesselId)) {
-              return { ...p, month: uploadingMonth, year: uploadingYear };
-            }
-            return p;
-          });
-          setSubmissionPeriods(updatedPeriods);
-          localStorage.setItem('comos_sms_submission_periods', JSON.stringify(updatedPeriods));
+          handleUpdateSubmissionPeriod(uploadingVesselId, targetVessel.name, uploadingMonth, uploadingYear);
 
           setSelectedUploadFile(null);
           setUploadProgress(0);
@@ -1576,14 +1756,7 @@ startxref
         }
         
         // Update the period locally to match the uploaded month/year
-        const updatedPeriods = submissionPeriods.map(p => {
-          if (String(p.vesselId) === String(uploadingVesselId)) {
-            return { ...p, month: uploadingMonth, year: uploadingYear };
-          }
-          return p;
-        });
-        setSubmissionPeriods(updatedPeriods);
-        localStorage.setItem('comos_sms_submission_periods', JSON.stringify(updatedPeriods));
+        handleUpdateSubmissionPeriod(uploadingVesselId, targetVessel.name, uploadingMonth, uploadingYear);
 
         setSelectedUploadFile(null);
         setUploadProgress(0);
@@ -1606,21 +1779,24 @@ startxref
       setFormScopeInput(form.scope);
       setFormTypeInput(form.type || 'Form');
 
-      // Determine flag from scope
-      if (form.scope === 'All Vessels' || !form.scope) {
-        setSelectedFlagScope('All Flags');
-      } else if (form.scope.startsWith('All ') && form.scope.endsWith(' Vessels')) {
-        const flagName = form.scope.substring(4, form.scope.length - 8);
-        setSelectedFlagScope(flagName);
-      } else {
-        // Specific vessel scope
-        const matchedVessel = vesselsList.find(v => v.name === form.scope);
-        if (matchedVessel && matchedVessel.flag) {
-          setSelectedFlagScope(matchedVessel.flag);
+      // Determine flags from scope
+      let initialSelectedFlags: string[] = [];
+      if (form.scope && form.scope !== 'All Vessels') {
+        const matchedFlags = flags
+          .map((f: any) => f.name)
+          .filter((flagName: string) => form.scope.includes(flagName));
+        
+        if (matchedFlags.length > 0) {
+          initialSelectedFlags = matchedFlags;
         } else {
-          setSelectedFlagScope('All Flags');
+          // Specific vessel scope
+          const matchedVessel = vesselsList.find(v => v.name === form.scope);
+          if (matchedVessel && matchedVessel.flag) {
+            initialSelectedFlags = [matchedVessel.flag];
+          }
         }
       }
+      setSelectedFlags(initialSelectedFlags);
     } else {
       setEditingForm(null);
       setFormCodeInput('');
@@ -1628,39 +1804,37 @@ startxref
       setFormDateInput(new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' }));
       setFormScopeInput('All Vessels');
       setFormTypeInput('Form');
-      setSelectedFlagScope('All Flags');
+      setSelectedFlags([]);
     }
     setShowFormModal(true);
   };
 
-  const handleSaveFormSubmit = (e: React.FormEvent) => {
+  const handleSaveFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formCodeInput || !formDescriptionInput) {
       triggerToast('Form Code and Description are required.', 'error');
       return;
     }
 
+    let updatedForms: SMSForm[] = [];
+    let savedForm: SMSForm | null = null;
+
     if (editingForm) {
       // Edit mode
-      const updatedForms = forms.map(f => {
-        if (f.id === editingForm.id) {
-          return {
-            ...f,
-            formCode: formCodeInput,
-            description: formDescriptionInput,
-            formDate: formDateInput,
-            scope: formScopeInput,
-            type: formTypeInput
-          };
-        }
-        return f;
-      });
+      savedForm = {
+        ...editingForm,
+        formCode: formCodeInput,
+        description: formDescriptionInput,
+        formDate: formDateInput,
+        scope: formScopeInput,
+        type: formTypeInput
+      };
+      updatedForms = forms.map(f => f.id === editingForm.id ? savedForm! : f);
       setForms(updatedForms);
       localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
-      triggerToast(`${formTypeInput === 'Checklist' ? 'Checklist' : 'Form'} ${formCodeInput} updated successfully.`, 'success');
     } else {
       // Create mode
-      const newFormItem: SMSForm = {
+      savedForm = {
         id: 'f_' + Date.now(),
         category: selectedCategory,
         formCode: formCodeInput,
@@ -1669,19 +1843,54 @@ startxref
         scope: formScopeInput,
         type: formTypeInput
       };
-      const updatedForms = [...forms, newFormItem];
+      updatedForms = [...forms, savedForm];
       setForms(updatedForms);
       localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
-      triggerToast(`${formTypeInput === 'Checklist' ? 'Checklist' : 'Form'} ${formCodeInput} added to section ${selectedCategory}.`, 'success');
     }
+
+    if (token && savedForm) {
+      try {
+        await fetch('/api/sms/forms', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(savedForm)
+        });
+      } catch (err) {
+        console.error('Failed to save SMS form to MySQL:', err);
+      }
+    }
+
+    triggerToast(
+      editingForm
+        ? `${formTypeInput === 'Checklist' ? 'Checklist' : 'Form'} ${formCodeInput} updated successfully.`
+        : `${formTypeInput === 'Checklist' ? 'Checklist' : 'Form'} ${formCodeInput} added to section ${selectedCategory}.`,
+      'success'
+    );
     setShowFormModal(false);
   };
 
-  const handleDeleteForm = (id: string, code: string) => {
+  const handleDeleteForm = async (id: string, code: string) => {
     if (window.confirm(`Are you sure you want to delete form ${code}?`)) {
       const updatedForms = forms.filter(f => f.id !== id);
       setForms(updatedForms);
       localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
+
+      if (token) {
+        try {
+          await fetch(`/api/sms/forms/${id}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+        } catch (err) {
+          console.error('Failed to delete SMS form from MySQL:', err);
+        }
+      }
+
       triggerToast(`Form ${code} deleted successfully.`, 'success');
     }
   };
@@ -2243,9 +2452,12 @@ startxref
                     }}
                     className="bg-slate-800 text-xs font-bold text-white border border-slate-700 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   >
-                    {vesselsList.map(v => (
-                      <option key={v.id} value={String(v.id)}>{v.name}</option>
-                    ))}
+                    {vesselsList
+                      .filter(v => currentUser?.role !== 'vessel' || String(v.id) === String(currentUser?.vessel_id))
+                      .map(v => (
+                        <option key={v.id} value={String(v.id)}>{v.name}</option>
+                      ))
+                    }
                   </select>
                 </div>
 
@@ -2313,24 +2525,24 @@ startxref
                       </p>
                     </div>
 
-                    <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-extrabold uppercase tracking-widest rounded-full">
-                      {forms.filter(f => f.category === selectedCategory).length} Forms Required
+                     <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-extrabold uppercase tracking-widest rounded-full">
+                      {getVesselActiveCategoryForms().length} Forms Required
                     </span>
                   </div>
 
                   {/* Form Rows */}
                   <div className="divide-y divide-slate-100 space-y-4 pt-1">
-                    {forms.filter(f => f.category === selectedCategory).length === 0 ? (
+                    {getVesselActiveCategoryForms().length === 0 ? (
                       <div className="text-center py-12 space-y-3">
                         <div className="w-12 h-12 rounded-full bg-slate-50 flex items-center justify-center mx-auto text-slate-400">
                           <FileText className="w-6 h-6" />
                         </div>
                         <p className="text-xs text-slate-400 font-semibold italic">
-                          No forms defined in SMS Management for "{selectedCategory}". Please define them in Management mode first.
+                          No forms defined in SMS Management for "{selectedCategory}" that match this vessel's scope.
                         </p>
                       </div>
                     ) : (
-                      forms.filter(f => f.category === selectedCategory).map((form) => {
+                      getVesselActiveCategoryForms().map((form) => {
                         const fileState = uploadedFilesMap[form.id];
                         
                         return (
@@ -2616,7 +2828,7 @@ startxref
                       <span className="font-bold text-slate-500">Category Progress:</span>
                       <span className="font-extrabold text-slate-800">
                         {(() => {
-                          const catForms = forms.filter(f => f.category === selectedCategory);
+                          const catForms = getVesselActiveCategoryForms();
                           const matchedCount = catForms.filter(f => uploadedFilesMap[f.id]?.matched).length;
                           return `${matchedCount} / ${catForms.length} Matched`;
                         })()}
@@ -2625,7 +2837,7 @@ startxref
 
                     {/* Progress Bar */}
                     {(() => {
-                      const catForms = forms.filter(f => f.category === selectedCategory);
+                      const catForms = getVesselActiveCategoryForms();
                       const matchedCount = catForms.filter(f => uploadedFilesMap[f.id]?.matched).length;
                       const percentage = catForms.length > 0 ? (matchedCount / catForms.length) * 100 : 0;
                       return (
@@ -2647,7 +2859,7 @@ startxref
 
                   {/* Dynamic Alert depending on completeness */}
                   {(() => {
-                    const catForms = forms.filter(f => f.category === selectedCategory);
+                    const catForms = getVesselActiveCategoryForms();
                     const matchedCount = catForms.filter(f => uploadedFilesMap[f.id]?.matched).length;
                     const isIncomplete = matchedCount < catForms.length;
 
@@ -2690,7 +2902,7 @@ startxref
                       <button
                         type="button"
                         onClick={handleUploadToBackblazeCloud}
-                        disabled={forms.filter(f => f.category === selectedCategory).filter(f => uploadedFilesMap[f.id]?.matched).length === 0}
+                        disabled={getVesselActiveCategoryForms().filter(f => uploadedFilesMap[f.id]?.matched).length === 0}
                         className="w-full py-3 bg-blue-600 disabled:opacity-50 hover:bg-blue-700 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-md shadow-blue-100 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
                       >
                         <Upload className="w-4 h-4" /> Upload to server
@@ -2975,28 +3187,25 @@ startxref
                 />
               </div>
 
-              {/* Flag Selection Dropdown */}
-              <div className="space-y-1">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Flag</label>
-                <select
-                  value={selectedFlagScope}
-                  onChange={(e) => {
-                    const newFlag = e.target.value;
-                    setSelectedFlagScope(newFlag);
-                    // Automatically update vessel scope option and value to reflect selected flag
-                    if (newFlag === 'All Flags') {
-                      setFormScopeInput('All Vessels');
-                    } else {
-                      setFormScopeInput(`All ${newFlag} Vessels`);
-                    }
-                  }}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
-                >
-                  <option value="All Flags">All Flags</option>
-                  {flags.map((f: any) => (
-                    <option key={f.id} value={f.name}>{f.name}</option>
-                  ))}
-                </select>
+              {/* Flag Selection Checkboxes */}
+              <div className="space-y-1.5 bg-slate-50/50 p-3 rounded-xl border border-slate-100">
+                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Flags Scope</label>
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  {flags.map((f: any) => {
+                    const isChecked = selectedFlags.includes(f.name);
+                    return (
+                      <label key={f.id} className="flex items-center gap-2 cursor-pointer py-1 px-2.5 rounded-lg hover:bg-slate-100/80 transition-colors text-slate-700 font-bold text-[11px]">
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => handleFlagCheckboxChange(f.name, e.target.checked)}
+                          className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-blue-500/50 cursor-pointer"
+                        />
+                        {f.name}
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Vessel Scope Dropdown */}
@@ -3007,13 +3216,20 @@ startxref
                   onChange={(e) => setFormScopeInput(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
                 >
-                  {selectedFlagScope === 'All Flags' ? (
+                  {/* First Option (Group Option) */}
+                  {selectedFlags.length === 0 || selectedFlags.length === flags.length ? (
                     <option value="All Vessels">All Vessels</option>
+                  ) : selectedFlags.length === 1 ? (
+                    <option value={`All ${selectedFlags[0]} Vessels`}>All {selectedFlags[0]} Vessels</option>
                   ) : (
-                    <option value={`All ${selectedFlagScope} Vessels`}>All {selectedFlagScope} Vessels</option>
+                    <option value={`All ${getFlagsFormatted(selectedFlags)} flags`}>
+                      All {getFlagsFormatted(selectedFlags)} flags
+                    </option>
                   )}
+
+                  {/* Individual Vessels based on filtered flags */}
                   {vesselsList
-                    .filter(v => selectedFlagScope === 'All Flags' || v.flag === selectedFlagScope)
+                    .filter(v => selectedFlags.length === 0 || selectedFlags.includes(v.flag || ''))
                     .map(v => (
                       <option key={v.id} value={v.name}>{v.name}</option>
                     ))}

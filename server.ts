@@ -1134,6 +1134,106 @@ async function startServer() {
       )
     `);
 
+    // Create table for SMS Forms (MySQL replacement for LocalStorage/Firebase)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_forms (
+        id VARCHAR(100) PRIMARY KEY,
+        category VARCHAR(255) NOT NULL,
+        formCode VARCHAR(255) NOT NULL,
+        description TEXT NOT NULL,
+        formDate VARCHAR(255) NOT NULL,
+        scope VARCHAR(255) NOT NULL,
+        type VARCHAR(255) NOT NULL DEFAULT 'Form'
+      )
+    `);
+
+    // Create table for SMS Submission Periods (MySQL replacement for LocalStorage/Firebase)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_submission_periods (
+        vessel_id VARCHAR(100) NOT NULL,
+        vessel_name VARCHAR(255) NOT NULL,
+        month VARCHAR(50) NOT NULL,
+        year VARCHAR(50) NOT NULL,
+        PRIMARY KEY (vessel_id)
+      )
+    `);
+
+    // Seed default SMS forms if missing
+    try {
+      const [formRows]: any = await pool.query('SELECT COUNT(*) as count FROM sms_forms');
+      if (formRows[0].count === 0) {
+        console.log('Seeding initial SMS forms...');
+        const initialForms = [
+          { id: 'f_1', category: '1. Monthly', formCode: 'COMI-SM-1-1', description: 'ME & DG Jacket Cooling Fresh Water & BOILER Water condition Report', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_2', category: '1. Monthly', formCode: 'COMI-SM-1-2', description: 'Check List For Certificates & Documents', formDate: '22 May 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_3', category: '1. Monthly', formCode: 'COMI-SM-1-3', description: 'Deck Part Monthly Maintenance Report', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_4', category: '1. Monthly', formCode: 'COMI-SM-1-3A', description: 'Deck Part Monthly Maintenance Report for Container (for 1952 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_5', category: '1. Monthly', formCode: 'COMI-SM-1-3B', description: 'Deck Part Monthly Maintenance Report for Container (for 2822 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_6', category: '1. Monthly', formCode: 'COMI-SM-1-4', description: 'Engine Part Monthly Maintenance Report', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_7', category: '1. Monthly', formCode: 'COMI-SM-1-5', description: 'Lube Oil Consumption Report', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_8', category: '2. Voyage', formCode: 'COMI-SM-2-1', description: 'Voyage Pre-Departure & Voyage Plan Checklist', formDate: '12 January 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_9', category: '2. Voyage', formCode: 'COMI-SM-2-2', description: 'Pre-Arrival & Port Operations Checklist', formDate: '20 February 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_10', category: '2. Voyage', formCode: 'COMI-SM-2-3', description: 'Pilot Boarding & Watch handover Guidelines', formDate: '15 March 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_11', category: '3. Quarterly', formCode: 'COMI-SM-3-1', description: 'Enclosed Space Entry & Rescue Drill Report', formDate: '10 January 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_12', category: '3. Quarterly', formCode: 'COMI-SM-3-2', description: 'Lifeboat Launching & Emergency Steering Gear Review', formDate: '28 February 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_13', category: '4. Semi Annual', formCode: 'COMI-SM-4-1', description: 'Safety Committee Meeting & Officer Review Minutes', formDate: '05 March 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_14', category: '4. Semi Annual', formCode: 'COMI-SM-4-2', description: 'Onboard Safety Training & Drills Assessment Log', formDate: '18 April 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_15', category: '4A. Annually', formCode: 'COMI-SM-4A-1', description: "Master's Review and Evaluation of Safety Management System (SMS)", formDate: '14 May 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_16', category: '4A. Annually', formCode: 'COMI-SM-4A-2', description: 'Annual Fire-Fighting & Safety Appliance Certificate Verification', formDate: '10 June 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_17', category: '5. Occasional', formCode: 'COMI-SM-5-1', description: 'Hot Work Authorization Permit', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_18', category: '5. Occasional', formCode: 'COMI-SM-5-2', description: 'Enclosed Space Entry Permit', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_19', category: '5. Occasional', formCode: 'COMI-SM-5-3', description: 'Working At Height / Overboard Permit', formDate: '12 January 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_20', category: '6. Letter Form', formCode: 'COMI-SM-6-1', description: 'Safety Equipment Requisition Letter', formDate: '11 February 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_21', category: '6. Letter Form', formCode: 'COMI-SM-6-2', description: 'Non-Conformity Formal Letter of Protest', formDate: '05 April 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_22', category: '7. Company Records (Office)', formCode: 'COMI-SM-7-1', description: 'Internal Fleet Audit Inspection Findings & Actions', formDate: '22 March 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_23', category: '7. Company Records (Office)', formCode: 'COMI-SM-7-2', description: 'Management Review Committee Records', formDate: '10 May 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_24', category: '8. Safety and Security Forms', formCode: 'COMI-SM-8-1', description: 'ISPS Code Onboard Security Assessment Worksheet', formDate: '18 June 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_25', category: '8. Safety and Security Forms', formCode: 'COMI-SM-8-2', description: 'Continuous Synopsis Record (CSR) Tracking Log', formDate: '01 July 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_26', category: '9. Free Form', formCode: 'COMI-SM-9-1', description: 'Safety Suggestion Card / Hazard Identification Form', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_27', category: '9. Free Form', formCode: 'COMI-SM-9-2', description: 'Near-Miss Incident Narrative Report', formDate: '12 January 2026', scope: 'All Vessels', type: 'Form' }
+        ];
+        for (const form of initialForms) {
+          await pool.execute(
+            'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [form.id, form.category, form.formCode, form.description, form.formDate, form.scope, form.type]
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to seed initial SMS forms:', err.message);
+    }
+
+    // Seed default SMS submission periods if missing
+    try {
+      const [periodRows]: any = await pool.query('SELECT COUNT(*) as count FROM sms_submission_periods');
+      if (periodRows[0].count === 0) {
+        console.log('Seeding initial SMS submission periods...');
+        const initialSubmissions = [
+          { vesselId: 'v1', vesselName: 'AQUAGRACE', month: 'June', year: '2026' },
+          { vesselId: 'v2', vesselName: 'BELFORTE', month: 'June', year: '2026' },
+          { vesselId: 'v3', vesselName: 'CD HUELVA', month: 'June', year: '2026' },
+          { vesselId: 'v4', vesselName: 'CD MANZANILLO', month: 'June', year: '2026' },
+          { vesselId: 'v5', vesselName: 'CL KIWAMI', month: 'June', year: '2026' },
+          { vesselId: 'v6', vesselName: 'CNC CHEETAH', month: 'June', year: '2026' },
+          { vesselId: 'v7', vesselName: 'CNC MARS', month: 'June', year: '2026' },
+          { vesselId: 'v8', vesselName: 'CNC NEPTUNE', month: 'June', year: '2026' },
+          { vesselId: 'v9', vesselName: 'CNC PUMA', month: 'May', year: '2026' },
+          { vesselId: 'v10', vesselName: 'COPENHAGEN COMMERCE', month: 'June', year: '2026' },
+          { vesselId: 'v11', vesselName: 'EASTERN HAWK', month: 'June', year: '2026' },
+          { vesselId: 'v12', vesselName: 'HANDY MERCHANT', month: 'June', year: '2026' },
+          { vesselId: 'v13', vesselName: 'LIGNUM NETWORK', month: 'June', year: '2026' }
+        ];
+        for (const sub of initialSubmissions) {
+          await pool.execute(
+            'INSERT INTO sms_submission_periods (vessel_id, vessel_name, month, year) VALUES (?, ?, ?, ?)',
+            [sub.vesselId, sub.vesselName, sub.month, sub.year]
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to seed initial SMS submission periods:', err.message);
+    }
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS flags (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -2273,6 +2373,83 @@ async function startServer() {
   app.delete('/api/sms/upload/:id', authenticate, async (req, res) => {
     try {
       await pool.execute('DELETE FROM sms_uploads WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // SMS Forms Routes
+  app.get('/api/sms/forms', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.query('SELECT * FROM sms_forms');
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/forms', authenticate, async (req, res) => {
+    const { id, category, formCode, description, formDate, scope, type } = req.body;
+    try {
+      const [exists]: any = await pool.execute('SELECT id FROM sms_forms WHERE id = ?', [id]);
+      if (exists.length > 0) {
+        await pool.execute(
+          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ? WHERE id = ?',
+          [category, formCode, description, formDate, scope, type || 'Form', id]
+        );
+      } else {
+        await pool.execute(
+          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [id, category, formCode, description, formDate, scope, type || 'Form']
+        );
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/sms/forms/:id', authenticate, async (req, res) => {
+    try {
+      await pool.execute('DELETE FROM sms_forms WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // SMS Submission Periods Routes
+  app.get('/api/sms/submission-periods', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.query('SELECT * FROM sms_submission_periods');
+      const mapped = rows.map((r: any) => ({
+        vesselId: String(r.vessel_id),
+        vesselName: r.vessel_name,
+        month: r.month,
+        year: r.year
+      }));
+      res.json(mapped);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/submission-periods', authenticate, async (req, res) => {
+    const { vesselId, vesselName, month, year } = req.body;
+    try {
+      const [exists]: any = await pool.execute('SELECT vessel_id FROM sms_submission_periods WHERE vessel_id = ?', [vesselId]);
+      if (exists.length > 0) {
+        await pool.execute(
+          'UPDATE sms_submission_periods SET vessel_name = ?, month = ?, year = ? WHERE vessel_id = ?',
+          [vesselName, month, year, vesselId]
+        );
+      } else {
+        await pool.execute(
+          'INSERT INTO sms_submission_periods (vessel_id, vessel_name, month, year) VALUES (?, ?, ?, ?)',
+          [vesselId, vesselName, month, year]
+        );
+      }
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
