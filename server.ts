@@ -1,0 +1,6342 @@
+import 'dotenv/config';
+process.env.TZ = 'Asia/Manila';
+import express from 'express';
+import cors from 'cors';
+import { createServer as createViteServer } from 'vite';
+import path from 'path';
+import fs from 'fs';
+import mysql from 'mysql2/promise';
+import multer from 'multer';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { Resend } from 'resend';
+import { addDays, isBefore, format } from 'date-fns';
+import net from 'net';
+import dns from 'dns';
+import { google } from 'googleapis';
+import { GoogleGenAI, Type } from "@google/genai";
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const __dirname = path.resolve();
+const PORT = Number(process.env.PORT) || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'vessel-cert-secret-key';
+
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+
+let globalPool: mysql.Pool | null = null;
+
+const getB2Settings = async () => {
+  let b2KeyId = process.env.B2_APPLICATION_KEY_ID || '';
+  let b2Key = process.env.B2_APPLICATION_KEY || '';
+  let b2Bucket = process.env.B2_BUCKET_NAME || '';
+  let b2Endpoint = process.env.B2_ENDPOINT || '';
+
+  if (globalPool) {
+    try {
+      const [rows] = await globalPool.query(
+        'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("B2_APPLICATION_KEY_ID", "B2_APPLICATION_KEY", "B2_BUCKET_NAME", "B2_ENDPOINT")'
+      );
+      for (const row of rows as any[]) {
+        if (row.setting_key === 'B2_APPLICATION_KEY_ID' && row.setting_value) b2KeyId = row.setting_value;
+        if (row.setting_key === 'B2_APPLICATION_KEY' && row.setting_value) b2Key = row.setting_value;
+        if (row.setting_key === 'B2_BUCKET_NAME' && row.setting_value) b2Bucket = row.setting_value;
+        if (row.setting_key === 'B2_ENDPOINT' && row.setting_value) b2Endpoint = row.setting_value;
+      }
+    } catch (e) {
+      // Ignore database errors during early startup or if table is not yet created
+    }
+  }
+
+  return {
+    B2_APPLICATION_KEY_ID: b2KeyId,
+    B2_APPLICATION_KEY: b2Key,
+    B2_BUCKET_NAME: b2Bucket,
+    B2_ENDPOINT: b2Endpoint,
+  };
+};
+
+const isB2Configured = async () => {
+  const s = await getB2Settings();
+  return !!(s.B2_APPLICATION_KEY_ID && s.B2_APPLICATION_KEY && s.B2_BUCKET_NAME && s.B2_ENDPOINT);
+};
+
+const getB2Client = async () => {
+  const s = await getB2Settings();
+  if (!s.B2_APPLICATION_KEY_ID || !s.B2_APPLICATION_KEY || !s.B2_ENDPOINT) {
+    return null;
+  }
+  return new S3Client({
+    endpoint: s.B2_ENDPOINT.startsWith('http') 
+      ? s.B2_ENDPOINT 
+      : `https://${s.B2_ENDPOINT}`,
+    credentials: {
+      accessKeyId: s.B2_APPLICATION_KEY_ID,
+      secretAccessKey: s.B2_APPLICATION_KEY,
+    },
+    region: s.B2_ENDPOINT.split('.')[1] || 'us-east-005',
+  });
+};
+
+const uploadFileToB2 = async (key: string, buffer: Buffer, mimeType: string): Promise<string> => {
+  const client = await getB2Client();
+  const s = await getB2Settings();
+  if (!client || !s.B2_BUCKET_NAME) {
+    throw new Error('Backblaze B2 is not configured.');
+  }
+  await client.send(
+    new PutObjectCommand({
+      Bucket: s.B2_BUCKET_NAME,
+      Key: key,
+      Body: buffer,
+      ContentType: mimeType,
+    })
+  );
+  return key;
+};
+
+const getFileFromB2 = async (key: string): Promise<Buffer> => {
+  const client = await getB2Client();
+  const s = await getB2Settings();
+  if (!client || !s.B2_BUCKET_NAME) {
+    throw new Error('Backblaze B2 is not configured.');
+  }
+  const response = await client.send(
+    new GetObjectCommand({
+      Bucket: s.B2_BUCKET_NAME,
+      Key: key,
+    })
+  );
+  if (!response.Body) {
+    throw new Error('Empty response body from B2');
+  }
+  const chunks = [];
+  for await (const chunk of response.Body as any) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+};
+
+// Modifies the binary buffer to store a reference pointer if B2 is configured, or leaves it alone
+const handleFileUpload = async (filename: string, mimetype: string, buffer: Buffer, typeSlug: string): Promise<Buffer> => {
+  if (await isB2Configured()) {
+    try {
+      const sanitizeName = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const key = `${typeSlug}/${Date.now()}_${sanitizeName}`;
+      await uploadFileToB2(key, buffer, mimetype);
+      return Buffer.from(`B2_KEY:${key}`);
+    } catch (err: any) {
+      console.error(`Failed to upload file to Backblaze B2, falling back to database:`, err.message || err);
+    }
+  }
+  return buffer;
+};
+
+// Parses base64 data URL into binary buffer and mimetype
+const parseBase64DataUrl = (dataUrl: string) => {
+  const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (matches) {
+    return {
+      mimetype: matches[1],
+      buffer: Buffer.from(matches[2], 'base64')
+    };
+  }
+  return null;
+};
+
+// Checks if the retrieved DB data is a reference pointer to B2 and resolves it, or returns raw DB buffer
+const handleFileRetrieve = async (dbData: any): Promise<Buffer> => {
+  if (!dbData) return dbData;
+  const buf = Buffer.isBuffer(dbData) ? dbData : Buffer.from(dbData);
+  if (buf.length > 7 && buf.toString('utf8', 0, 7) === 'B2_KEY:') {
+    const b2Key = buf.toString('utf8', 7);
+    if (await isB2Configured()) {
+      try {
+        return await getFileFromB2(b2Key);
+      } catch (err: any) {
+        console.error(`Failed to fetch file from B2 (key: ${b2Key}):`, err.message || err);
+        throw new Error(`Failed to retrieve file from remote storage: ${err.message}`);
+      }
+    } else {
+      throw new Error(`File is stored on Backblaze B2, but B2 configuration is missing/invalid on this server.`);
+    }
+  }
+  return buf;
+};
+
+async function startServer() {
+  console.log('Starting server initialization...');
+  const app = express();
+  
+  let pool: mysql.Pool | null = null;
+  let dbError: string | null = null;
+  let resolvedDbHost: string = 'localhost';
+  let dbUserUsed: string = 'root';
+  let dbNameUsed: string = 'vessel_cert';
+  let dbPassSource: string = 'fallback';
+  let dbPassLength: number = 0;
+
+  try {
+    let dbHost = process.env.DB_HOST || 'localhost';
+    resolvedDbHost = dbHost;
+    if (dbHost !== 'localhost' && !net.isIP(dbHost)) {
+      try {
+        console.log(`Resolving DNS for DB_HOST '${dbHost}' to IPv4...`);
+        const addresses = await dns.promises.resolve4(dbHost);
+        if (addresses && addresses.length > 0) {
+          console.log(`Successfully resolved database host ${dbHost} to IPv4: ${addresses[0]}`);
+          dbHost = addresses[0];
+          resolvedDbHost = dbHost;
+        } else {
+          console.log(`No IPv4 addresses found for ${dbHost}.`);
+        }
+      } catch (dnsErr: any) {
+        console.error(`DNS lookup failed list for ${dbHost}:`, dnsErr.message);
+      }
+    }
+
+    const dbUser = process.env.DB_USER || 'u525815427_comi_admin';
+    const dbName = process.env.DB_NAME || 'u525815427_COMOS';
+    
+    let dbPass = '';
+    if (process.env.CUSTOM_DB_PASSWORD !== undefined) {
+      dbPass = process.env.CUSTOM_DB_PASSWORD;
+      dbPassSource = 'process.env.CUSTOM_DB_PASSWORD';
+    } else {
+      dbPass = process.env.DB_PASSWORD || '';
+      dbPassSource = process.env.DB_PASSWORD ? 'process.env.DB_PASSWORD' : 'not_configured_in_env';
+    }
+    
+    const dbPort = Number(process.env.DB_PORT) || 3306;
+
+    dbUserUsed = dbUser;
+    dbNameUsed = dbName;
+    dbPassLength = dbPass.length;
+
+    console.log(`Connecting to MySQL with Host: ${dbHost}, Port: ${dbPort}, User: ${dbUser}, Database: ${dbName}, Password Length: ${dbPass ? dbPass.length : 0}`);
+
+    console.log('Initializing MySQL connection pool...');
+    pool = mysql.createPool({
+      host: dbHost,
+      user: dbUser,
+      password: dbPass,
+      database: dbName,
+      port: dbPort,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      connectTimeout: 10000,
+      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
+    });
+    globalPool = pool;
+    
+    // Test connection and initialize tables
+    console.log('Initializing database tables...');
+    await pool.query('SELECT 1'); // Simple connection test
+    
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS teams (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(255) NOT NULL UNIQUE,
+        password VARCHAR(255) NOT NULL,
+        role VARCHAR(50) NOT NULL DEFAULT 'user',
+        team_id INT,
+        FOREIGN KEY (team_id) REFERENCES teams(id)
+      )
+    `);
+
+    // Migration: Add vessel_id and email to users and update role to include 'vessel'
+    try {
+      const [columns]: any = await pool.query('SHOW COLUMNS FROM users');
+      const columnNames = columns.map((c: any) => c.Field);
+      
+      if (!columnNames.includes('vessel_id')) {
+        console.log('Migrating users table: Adding vessel_id...');
+        await pool.query('ALTER TABLE users ADD COLUMN vessel_id INT');
+        await pool.query('ALTER TABLE users ADD FOREIGN KEY (vessel_id) REFERENCES vessels(id)');
+      }
+      
+      if (!columnNames.includes('email')) {
+        console.log('Migrating users table: Adding email...');
+        await pool.query('ALTER TABLE users ADD COLUMN email VARCHAR(255)');
+      }
+      
+      if (!columnNames.includes('device_id')) {
+        console.log('Migrating users table: Adding device_id...');
+        await pool.query('ALTER TABLE users ADD COLUMN device_id VARCHAR(255)');
+      }
+
+      if (!columnNames.includes('is_verified')) {
+        console.log('Migrating users table: Adding is_verified...');
+        await pool.query('ALTER TABLE users ADD COLUMN is_verified BOOLEAN NOT NULL DEFAULT FALSE');
+      }
+    } catch (e: any) {
+      console.error('Error during users table migration:', e.message);
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS device_registration_requests (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        device_code VARCHAR(255) NOT NULL,
+        device_id VARCHAR(255) NOT NULL,
+        status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_teams (
+        user_id INT NOT NULL,
+        team_id INT NOT NULL,
+        PRIMARY KEY (user_id, team_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Migration: Move existing team_id from users to user_teams
+    try {
+      const [usersWithTeams]: any = await pool.query('SELECT id, team_id FROM users WHERE team_id IS NOT NULL');
+      for (const u of usersWithTeams) {
+        await pool.execute('INSERT IGNORE INTO user_teams (user_id, team_id) VALUES (?, ?)', [u.id, u.team_id]);
+      }
+      // Optional: We could drop users.team_id here, but let's keep it for safety for now
+    } catch (e: any) {
+      console.error('Migration to user_teams failed:', e.message);
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS vessels (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        team_id INT,
+        owner ENUM('Nissen', 'Goodwill') NOT NULL DEFAULT 'Nissen',
+        photo_data LONGBLOB,
+        photo_mimetype VARCHAR(255),
+        flag VARCHAR(255),
+        date_built VARCHAR(255),
+        min_fuel_consumption VARCHAR(255),
+        max_fuel_consumption VARCHAR(255),
+        type VARCHAR(255) DEFAULT 'Bulk Carrier',
+        FOREIGN KEY (team_id) REFERENCES teams(id)
+      )
+    `);
+
+    // Migration: Ensure owner and photo columns exist (Run after table creation)
+    try {
+      const [columns]: any = await pool.query('SHOW COLUMNS FROM vessels');
+      const columnNames = columns.map((c: any) => c.Field);
+      
+      const hasOwner = columnNames.includes('owner');
+      if (!hasOwner) {
+        console.log('Adding "owner" column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN owner ENUM('Nissen', 'Goodwill') NOT NULL DEFAULT 'Nissen'");
+        console.log('"owner" column added successfully.');
+      }
+
+      if (!columnNames.includes('photo_data')) {
+        console.log('Adding photo columns to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN photo_data LONGBLOB");
+        await pool.query("ALTER TABLE vessels ADD COLUMN photo_mimetype VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('next_port')) {
+        console.log('Adding route columns to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN next_port VARCHAR(255)");
+        await pool.query("ALTER TABLE vessels ADD COLUMN route_status VARCHAR(255)");
+        await pool.query("ALTER TABLE vessels ADD COLUMN eta_atb VARCHAR(255)");
+        await pool.query("ALTER TABLE vessels ADD COLUMN etd_atd VARCHAR(255)");
+        await pool.query("ALTER TABLE vessels ADD COLUMN cargo VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('operation_type')) {
+        console.log('Adding operation_type column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN operation_type VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('remark_from_vessel')) {
+        console.log('Adding remark_from_vessel column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN remark_from_vessel TEXT");
+      }
+
+      if (!columnNames.includes('flag')) {
+        console.log('Adding flag column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN flag VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('date_built')) {
+        console.log('Adding date_built column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN date_built VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('min_fuel_consumption')) {
+        console.log('Adding min_fuel_consumption column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN min_fuel_consumption VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('max_fuel_consumption')) {
+        console.log('Adding max_fuel_consumption column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN max_fuel_consumption VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('type')) {
+        console.log('Adding type column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN type VARCHAR(255) DEFAULT 'Bulk Carrier'");
+      }
+
+      const chartererFields = [
+        'charterer_min_hsfo', 'charterer_max_hsfo',
+        'charterer_min_lsfo', 'charterer_max_lsfo',
+        'charterer_min_mgo', 'charterer_max_mgo',
+        'charterer_min_mdo', 'charterer_max_mdo'
+      ];
+
+      for (const field of chartererFields) {
+        if (!columnNames.includes(field)) {
+          console.log(`Adding ${field} column to vessels table...`);
+          await pool.query(`ALTER TABLE vessels ADD COLUMN ${field} VARCHAR(50) NULL`);
+        }
+      }
+    } catch (e: any) {
+      console.error('Error during vessels table migration:', e.message);
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS certificates (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT,
+        team_id INT NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        expiration_date DATE NOT NULL,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id),
+        FOREIGN KEY (team_id) REFERENCES teams(id)
+      )
+    `);
+
+    // Migration: Add team_id to certificates and make vessel_id nullable
+    try {
+      const [columns]: any = await pool.query('SHOW COLUMNS FROM certificates');
+      const columnNames = columns.map((c: any) => c.Field);
+      
+      if (!columnNames.includes('team_id')) {
+        console.log('Migrating certificates table: Adding team_id...');
+        await pool.query('ALTER TABLE certificates ADD COLUMN team_id INT');
+        await pool.query('UPDATE certificates c JOIN vessels v ON c.vessel_id = v.id SET c.team_id = v.team_id');
+        await pool.query('ALTER TABLE certificates MODIFY COLUMN team_id INT NOT NULL');
+        await pool.query('ALTER TABLE certificates ADD FOREIGN KEY (team_id) REFERENCES teams(id)');
+      }
+      
+      const vesselIdCol = columns.find((c: any) => c.Field === 'vessel_id');
+      if (vesselIdCol && vesselIdCol.Null === 'NO') {
+        console.log('Migrating certificates table: Making vessel_id nullable...');
+        await pool.query('ALTER TABLE certificates MODIFY COLUMN vessel_id INT NULL');
+      }
+
+      // Drop unique key if it exists as it might conflict with null vessel_id
+      try {
+        await pool.query('ALTER TABLE certificates DROP INDEX idx_cert_vessel_name');
+      } catch (e) {}
+
+      // Migration: Add access_type to certificates
+      if (!columnNames.includes('access_type')) {
+        console.log('Migrating certificates table: Adding access_type...');
+        await pool.query("ALTER TABLE certificates ADD COLUMN access_type ENUM('office', 'vessel', 'any') NOT NULL DEFAULT 'office'");
+        // Explicitly update existing ones to 'office'
+        await pool.query("UPDATE certificates SET access_type = 'office'");
+        console.log('Existing certificates tagged as office only.');
+      }
+
+      if (!columnNames.includes('certificate_number')) {
+        console.log('Migrating certificates table: Adding certificate_number and date_issued...');
+        await pool.query("ALTER TABLE certificates ADD COLUMN certificate_number VARCHAR(255)");
+        await pool.query("ALTER TABLE certificates ADD COLUMN date_issued DATE");
+      }
+    } catch (e: any) {
+      console.error('Error during certificates table migration:', e.message);
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        certificate_id INT NOT NULL,
+        user_id INT NOT NULL,
+        content TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (certificate_id) REFERENCES certificates(id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS files (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        certificate_id INT NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        mimetype VARCHAR(255),
+        data LONGBLOB,
+        file_type ENUM('certificate', 'supporting') NOT NULL DEFAULT 'certificate',
+        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (certificate_id) REFERENCES certificates(id)
+      )
+    `);
+
+    // Migration for existing files table
+    try {
+      const [columns]: any = await pool.query('SHOW COLUMNS FROM files');
+      const columnNames = columns.map((c: any) => c.Field);
+      if (!columnNames.includes('data')) {
+        console.log('Migrating files table: Adding data and mimetype columns...');
+        await pool.query('ALTER TABLE files ADD COLUMN data LONGBLOB');
+        await pool.query('ALTER TABLE files ADD COLUMN mimetype VARCHAR(255)');
+      }
+      if (!columnNames.includes('file_type')) {
+        console.log('Migrating files table: Adding file_type column...');
+        await pool.query("ALTER TABLE files ADD COLUMN file_type ENUM('certificate', 'supporting') NOT NULL DEFAULT 'certificate'");
+      }
+    } catch (e: any) {
+      console.error('Error during files table migration:', e.message);
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS settings (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        setting_key VARCHAR(255) NOT NULL UNIQUE,
+        setting_value TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+
+    try {
+      await pool.query('ALTER TABLE settings MODIFY COLUMN setting_value LONGTEXT');
+    } catch (e: any) {
+      console.warn('Could not upgrade settings.setting_value to LONGTEXT:', e.message);
+    }
+
+    // Migration for Soft Delete: Add deleted_at column to all relevant tables
+    try {
+      const tables = [
+        'teams', 'users', 'vessels', 'certificates', 'notes', 'files',
+        'departure_attachments', 'departure_reports', 'arrival_attachments',
+        'noon_attachments', 'arrival_reports', 'noon_reports', 'other_reports',
+        'fuel_analysis_reports', 'fuel_analysis_files',
+        'lube_oil_ldr_reports', 'lube_oil_ldr_files',
+        'lube_oil_analysis_reports', 'lube_oil_analysis_files',
+        'bunker_bdn_reports', 'bunker_bdn_files',
+        'crew_members', 'audit_records', 'audit_comments', 'non_conformities', 'trouble_reports',
+        'spare_parts_requisitions', 'requisition_attachments'
+      ];
+      
+      for (const table of tables) {
+        const [columns]: any = await pool.query(`SHOW COLUMNS FROM ${table}`);
+        const columnNames = columns.map((c: any) => c.Field);
+        if (!columnNames.includes('deleted_at')) {
+          console.log(`Migrating ${table} table: Adding deleted_at...`);
+          await pool.query(`ALTER TABLE ${table} ADD COLUMN deleted_at DATETIME NULL`);
+        }
+      }
+    } catch (e: any) {
+      console.error('Error during soft delete migration:', e.message);
+    }
+
+    // Seed default settings if missing
+    const [settingRows]: any = await pool.query('SELECT COUNT(*) as count FROM settings');
+    if (settingRows[0].count === 0) {
+      const defaultSettings = [
+        ['RESEND_API_KEY', process.env.RESEND_API_KEY || ''],
+        ['SMTP_FROM', process.env.SMTP_FROM || ''],
+        ['DESTINATION_EMAIL', process.env.DESTINATION_EMAIL || 'IT@cleanocean.com.ph'],
+        ['ENABLE_EMAIL_ALERTS', process.env.ENABLE_EMAIL_ALERTS || 'true'],
+        ['ALERT_SCHEDULE_TYPE', 'interval'],
+        ['ALERT_INTERVAL_HOURS', '24'],
+        ['ALERT_TIME', '08:00'],
+        ['VESSEL_ALERT_SCHEDULE_TYPE', 'interval'],
+        ['VESSEL_ALERT_INTERVAL_HOURS', '24'],
+        ['VESSEL_ALERT_TIME', '08:00'],
+        ['LAST_ALERT_LOG', 'No alerts sent yet.']
+      ];
+      for (const [key, val] of defaultSettings) {
+        await pool.execute('INSERT INTO settings (setting_key, setting_value) VALUES (?, ?)', [key, val]);
+      }
+    } else {
+      await pool.query(`
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT,
+        username VARCHAR(255),
+        action VARCHAR(255) NOT NULL,
+        details TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS departure_attachments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        mimetype VARCHAR(255),
+        data LONGBLOB,
+        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS departure_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        user_id INT NOT NULL,
+        voyage_number VARCHAR(100),
+        utc_date_time DATETIME NOT NULL,
+        departure_port VARCHAR(255) NOT NULL,
+        eu_uk_status VARCHAR(50),
+        position_long VARCHAR(50),
+        position_lat VARCHAR(50),
+        operation_type VARCHAR(100),
+        cargo_status VARCHAR(50),
+        rob_type VARCHAR(50),
+        rob_hsfo DECIMAL(10, 2),
+        rob_lsfo DECIMAL(10, 2),
+        rob_mgo DECIMAL(10, 2),
+        rob_mdo DECIMAL(10, 2),
+        rob_fw DECIMAL(10, 2),
+        foc_port_hsfo DECIMAL(10, 2),
+        foc_port_lsfo DECIMAL(10, 2),
+        foc_port_mgo DECIMAL(10, 2),
+        foc_port_mdo DECIMAL(10, 2),
+        attachment_id INT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (attachment_id) REFERENCES departure_attachments(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS arrival_attachments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        mimetype VARCHAR(255),
+        data LONGBLOB,
+        upload_date DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS noon_attachments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        mimetype VARCHAR(100) NOT NULL,
+        data LONGBLOB NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS arrival_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        user_id INT NOT NULL,
+        voyage_number VARCHAR(100),
+        utc_date_time DATETIME NOT NULL,
+        arrival_port VARCHAR(255) NOT NULL,
+        eu_uk_status VARCHAR(50),
+        position_long VARCHAR(50),
+        position_lat VARCHAR(50),
+        operation_type VARCHAR(100),
+        cargo_status VARCHAR(50),
+        total_time_at_sea VARCHAR(50),
+        total_distance VARCHAR(50),
+        rob_type VARCHAR(50),
+        rob_hsfo DECIMAL(10, 2),
+        rob_lsfo DECIMAL(10, 2),
+        rob_mgo DECIMAL(10, 2),
+        rob_mdo DECIMAL(10, 2),
+        rob_fw DECIMAL(10, 2),
+        foc_sea_hsfo DECIMAL(10, 2),
+        foc_sea_lsfo DECIMAL(10, 2),
+        foc_sea_mgo DECIMAL(10, 2),
+        foc_sea_mdo DECIMAL(10, 2),
+        agent_detail TEXT,
+        attachment_id INT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (attachment_id) REFERENCES arrival_attachments(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS noon_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        user_id INT NOT NULL,
+        voyage_number VARCHAR(100),
+        utc_date_time DATETIME NOT NULL,
+        position_long VARCHAR(50),
+        position_lat VARCHAR(50),
+        distance_to_go VARCHAR(50),
+        cargo_status VARCHAR(50),
+        rob_hsfo DECIMAL(10, 2),
+        rob_lsfo DECIMAL(10, 2),
+        rob_mgo DECIMAL(10, 2),
+        rob_mdo DECIMAL(10, 2),
+        foc_hsfo DECIMAL(10, 2),
+        foc_lsfo DECIMAL(10, 2),
+        foc_mgo DECIMAL(10, 2),
+        foc_mdo DECIMAL(10, 2),
+        attachment_id INT,
+        weather_notation VARCHAR(255) NULL,
+        swell_scale_21 VARCHAR(255) NULL,
+        wind_scale VARCHAR(255) NULL,
+        wave_scale VARCHAR(255) NULL,
+        weather_image LONGTEXT NULL,
+        remarks TEXT NULL,
+        destination_port VARCHAR(255) NULL,
+        eta_utc DATETIME NULL,
+        agent_details TEXT NULL,
+        charterer_min_hsfo VARCHAR(50) NULL,
+        charterer_max_hsfo VARCHAR(50) NULL,
+        charterer_min_lsfo VARCHAR(50) NULL,
+        charterer_max_lsfo VARCHAR(50) NULL,
+        charterer_min_mgo VARCHAR(50) NULL,
+        charterer_max_mgo VARCHAR(50) NULL,
+        charterer_min_mdo VARCHAR(50) NULL,
+        charterer_max_mdo VARCHAR(50) NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id),
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        FOREIGN KEY (attachment_id) REFERENCES noon_attachments(id) ON DELETE SET NULL
+      )
+    `);
+
+    try {
+      await pool.query(`ALTER TABLE noon_reports ADD COLUMN remarks TEXT NULL`);
+      console.log('Added remarks column to noon_reports table');
+    } catch (e) {
+      // Column might already exist, ignore error
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS other_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        user_id INT NOT NULL,
+        voyage_number VARCHAR(100),
+        utc_date_time DATETIME NOT NULL,
+        port VARCHAR(255),
+        eu_uk_status VARCHAR(50),
+        position_long VARCHAR(50),
+        position_lat VARCHAR(50),
+        operation_type VARCHAR(100),
+        cargo_status VARCHAR(50),
+        rob_type VARCHAR(50),
+        rob_hsfo DECIMAL(10, 2),
+        rob_lsfo DECIMAL(10, 2),
+        rob_mgo DECIMAL(10, 2),
+        rob_mdo DECIMAL(10, 2),
+        rob_fw DECIMAL(10, 2),
+        foc_port_hsfo DECIMAL(10, 2),
+        foc_port_lsfo DECIMAL(10, 2),
+        foc_port_mgo DECIMAL(10, 2),
+        foc_port_mdo DECIMAL(10, 2),
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      )
+    `);
+
+    // Create tables for Fuel Analysis reports
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fuel_analysis_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        date DATE NOT NULL,
+        bdn_number VARCHAR(255) NOT NULL,
+        analysis_ref_number VARCHAR(255) NOT NULL,
+        product_name VARCHAR(255) NOT NULL,
+        viscosity VARCHAR(255) NULL,
+        density VARCHAR(255) NULL,
+        water_content VARCHAR(255) NULL,
+        sulfur_content VARCHAR(255) NULL,
+        status VARCHAR(50) NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fuel_analysis_files (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        report_id INT NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        size VARCHAR(50) NOT NULL,
+        mimetype VARCHAR(255) NULL,
+        data LONGBLOB NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (report_id) REFERENCES fuel_analysis_reports(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create tables for Lube Oil LDR reports
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS lube_oil_ldr_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        date DATE NOT NULL,
+        ldr_number VARCHAR(255) NOT NULL,
+        product_type VARCHAR(255) NOT NULL,
+        quantity VARCHAR(255) NULL,
+        supplier VARCHAR(255) NULL,
+        viscosity VARCHAR(255) NULL,
+        density VARCHAR(255) NULL,
+        sulfur_content VARCHAR(255) NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS lube_oil_ldr_files (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        report_id INT NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        size VARCHAR(50) NOT NULL,
+        mimetype VARCHAR(255) NULL,
+        data LONGBLOB NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (report_id) REFERENCES lube_oil_ldr_reports(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create tables for Lube Oil Analysis reports
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS lube_oil_analysis_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        date DATE NOT NULL,
+        machinery_sampled VARCHAR(255) NOT NULL,
+        viscosity VARCHAR(255) NULL,
+        water_content VARCHAR(255) NULL,
+        tbn VARCHAR(255) NULL,
+        insolubles VARCHAR(255) NULL,
+        status VARCHAR(50) NOT NULL,
+        remarks TEXT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS lube_oil_analysis_files (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        report_id INT NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        size VARCHAR(50) NOT NULL,
+        mimetype VARCHAR(255) NULL,
+        data LONGBLOB NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (report_id) REFERENCES lube_oil_analysis_reports(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create tables for Bunker BDN
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bunker_bdn_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id INT NOT NULL,
+        date DATE NOT NULL,
+        bdn_number VARCHAR(255) NOT NULL,
+        fuel_type VARCHAR(255) NOT NULL,
+        quantity VARCHAR(255) NULL,
+        supplier VARCHAR(255) NULL,
+        viscosity VARCHAR(255) NULL,
+        density VARCHAR(255) NULL,
+        sulfur_content VARCHAR(255) NULL,
+        remarks TEXT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (vessel_id) REFERENCES vessels(id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bunker_bdn_files (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        report_id INT NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        size VARCHAR(50) NOT NULL,
+        mimetype VARCHAR(255) NULL,
+        data LONGBLOB NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (report_id) REFERENCES bunker_bdn_reports(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create table for Crew Members
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS crew_members (
+        id VARCHAR(100) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        rank_name VARCHAR(255) NOT NULL,
+        nationality VARCHAR(255) NULL,
+        sign_on_date DATE NULL,
+        passport_no VARCHAR(100) NULL,
+        seaman_book_no VARCHAR(100) NULL,
+        status VARCHAR(50) NULL,
+        contract_duration INT NULL,
+        next_medical_exam DATE NULL,
+        next_safety_training DATE NULL,
+        vessel_id VARCHAR(50) NULL,
+        birthdate DATE NULL,
+        contact_number VARCHAR(100) NULL,
+        photo LONGTEXT NULL,
+        hiring_status VARCHAR(100) DEFAULT 'for rehire',
+        si_comments TEXT NULL,
+        extensions_count INT DEFAULT 0,
+        contract_end_date DATE NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Crew Onboard History
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS crew_history (
+        id VARCHAR(100) PRIMARY KEY,
+        crew_id VARCHAR(100) NOT NULL,
+        vessel_id VARCHAR(50) NULL,
+        vessel_name VARCHAR(255) NULL,
+        rank_name VARCHAR(255) NULL,
+        sign_on_date DATE NULL,
+        disembark_date DATE NULL,
+        remarks TEXT NULL,
+        age_at_contract INT NULL,
+        contact_at_contract VARCHAR(255) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    try {
+      await pool.query("ALTER TABLE crew_history ADD COLUMN age_at_contract INT NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_history ADD COLUMN contact_at_contract VARCHAR(255) NULL");
+    } catch (_) {}
+
+    // Dynamic schema updates for existing database environments
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN birthdate DATE NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN contact_number VARCHAR(100) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN photo LONGTEXT NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN hiring_status VARCHAR(100) DEFAULT 'for rehire'");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN si_comments TEXT NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN extensions_count INT DEFAULT 0");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN contract_end_date DATE NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY sign_on_date DATE NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY passport_no VARCHAR(100) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY seaman_book_no VARCHAR(100) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY next_medical_exam DATE NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY next_safety_training DATE NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY nationality VARCHAR(255) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY status VARCHAR(50) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY contract_duration INT NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members MODIFY vessel_id VARCHAR(50) NULL");
+    } catch (_) {}
+
+    // Migration: Add remarks to Lube Oil Analysis and Bunker BDN reports
+    try {
+      await pool.query("ALTER TABLE lube_oil_analysis_reports ADD COLUMN remarks TEXT NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE bunker_bdn_reports ADD COLUMN remarks TEXT NULL");
+    } catch (_) {}
+
+    // Create table for Audit Records
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS audit_records (
+        id VARCHAR(100) PRIMARY KEY,
+        type VARCHAR(255) NOT NULL,
+        vessel_id VARCHAR(100) NOT NULL,
+        date DATE NOT NULL,
+        inspector_name VARCHAR(255) NOT NULL,
+        inspector_organization VARCHAR(255) NOT NULL,
+        status VARCHAR(50) NOT NULL,
+        findings_count INT NOT NULL,
+        scope TEXT NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    try {
+      await pool.query("ALTER TABLE audit_records ADD COLUMN report_file_name VARCHAR(255) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE audit_records ADD COLUMN report_file_mimetype VARCHAR(255) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE audit_records ADD COLUMN report_file_data LONGBLOB NULL");
+    } catch (_) {}
+
+    // Create table for Audit Comments
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS audit_comments (
+        id VARCHAR(100) PRIMARY KEY,
+        audit_id VARCHAR(100) NOT NULL,
+        author VARCHAR(255) NOT NULL,
+        author_email VARCHAR(255) NOT NULL,
+        comment_text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Non Conformities (Audits settings)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS non_conformities (
+        id VARCHAR(100) PRIMARY KEY,
+        audit_id VARCHAR(100) NOT NULL,
+        vessel_id VARCHAR(100) NOT NULL,
+        source_type VARCHAR(50) NOT NULL,
+        category VARCHAR(100) NOT NULL,
+        description TEXT NOT NULL,
+        raised_date DATE NOT NULL,
+        due_date DATE NOT NULL,
+        closeout_date DATE NULL,
+        status VARCHAR(50) NOT NULL,
+        action_plan TEXT NOT NULL,
+        inspector_name VARCHAR(255) NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Trouble Reports (Defects)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS trouble_reports (
+        id VARCHAR(100) PRIMARY KEY,
+        vessel_id VARCHAR(100) NOT NULL,
+        deficiency_number VARCHAR(255) NOT NULL,
+        date_found DATE NOT NULL,
+        deficiency TEXT NOT NULL,
+        classification VARCHAR(255) NOT NULL,
+        sub_classification VARCHAR(255) NULL,
+        others_detail VARCHAR(255) NULL,
+        status VARCHAR(50) NOT NULL,
+        action_taken TEXT NULL,
+        date_resolved DATE NULL,
+        reporter_name VARCHAR(255) NOT NULL,
+        pms_code VARCHAR(100) NULL,
+        rectification_file_name VARCHAR(255) NULL,
+        rectification_file_size VARCHAR(50) NULL,
+        rectification_file_data LONGBLOB NULL,
+        comi_file_name VARCHAR(255) NULL,
+        comi_file_size VARCHAR(50) NULL,
+        comi_file_data LONGBLOB NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Spare Parts Requisitions
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS spare_parts_requisitions (
+        id VARCHAR(100) PRIMARY KEY,
+        storage_key VARCHAR(255) NOT NULL,
+        data_json LONGTEXT NOT NULL,
+        deleted_at DATETIME NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Requisition Attachments
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS requisition_attachments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        filename VARCHAR(255) NOT NULL,
+        size VARCHAR(50) NOT NULL,
+        mimetype VARCHAR(255) NULL,
+        data LONGBLOB NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for Threshold Chat Messages
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS threshold_chat_messages (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id VARCHAR(100) NOT NULL,
+        author_name VARCHAR(255) NOT NULL,
+        author_id VARCHAR(100) NOT NULL,
+        message_text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for SMS Uploads
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_uploads (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        vessel_id VARCHAR(100) NOT NULL,
+        vessel_name VARCHAR(255) NOT NULL,
+        month VARCHAR(50) NOT NULL,
+        year VARCHAR(50) NOT NULL,
+        file_name VARCHAR(255) NOT NULL,
+        file_size VARCHAR(50) NOT NULL,
+        file_data LONGBLOB NOT NULL,
+        file_mimetype VARCHAR(255) NOT NULL,
+        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create table for SMS Forms (MySQL replacement for LocalStorage/Firebase)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_forms (
+        id VARCHAR(100) PRIMARY KEY,
+        category VARCHAR(255) NOT NULL,
+        formCode VARCHAR(255) NOT NULL,
+        description TEXT NOT NULL,
+        formDate VARCHAR(255) NOT NULL,
+        scope VARCHAR(255) NOT NULL,
+        type VARCHAR(255) NOT NULL DEFAULT 'Form'
+      )
+    `);
+
+    // Create table for SMS Submission Periods (MySQL replacement for LocalStorage/Firebase)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_submission_periods (
+        vessel_id VARCHAR(100) NOT NULL,
+        vessel_name VARCHAR(255) NOT NULL,
+        month VARCHAR(50) NOT NULL,
+        year VARCHAR(50) NOT NULL,
+        PRIMARY KEY (vessel_id)
+      )
+    `);
+
+    // Seed default SMS forms if missing
+    try {
+      const [formRows]: any = await pool.query('SELECT COUNT(*) as count FROM sms_forms');
+      if (formRows[0].count === 0) {
+        console.log('Seeding initial SMS forms...');
+        const initialForms = [
+          { id: 'f_1', category: '1. Monthly', formCode: 'COMI-SM-1-1', description: 'ME & DG Jacket Cooling Fresh Water & BOILER Water condition Report', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_2', category: '1. Monthly', formCode: 'COMI-SM-1-2', description: 'Check List For Certificates & Documents', formDate: '22 May 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_3', category: '1. Monthly', formCode: 'COMI-SM-1-3', description: 'Deck Part Monthly Maintenance Report', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_4', category: '1. Monthly', formCode: 'COMI-SM-1-3A', description: 'Deck Part Monthly Maintenance Report for Container (for 1952 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_5', category: '1. Monthly', formCode: 'COMI-SM-1-3B', description: 'Deck Part Monthly Maintenance Report for Container (for 2822 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_6', category: '1. Monthly', formCode: 'COMI-SM-1-4', description: 'Engine Part Monthly Maintenance Report', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_7', category: '1. Monthly', formCode: 'COMI-SM-1-5', description: 'Lube Oil Consumption Report', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_8', category: '2. Voyage', formCode: 'COMI-SM-2-1', description: 'Voyage Pre-Departure & Voyage Plan Checklist', formDate: '12 January 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_9', category: '2. Voyage', formCode: 'COMI-SM-2-2', description: 'Pre-Arrival & Port Operations Checklist', formDate: '20 February 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_10', category: '2. Voyage', formCode: 'COMI-SM-2-3', description: 'Pilot Boarding & Watch handover Guidelines', formDate: '15 March 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_11', category: '3. Quarterly', formCode: 'COMI-SM-3-1', description: 'Enclosed Space Entry & Rescue Drill Report', formDate: '10 January 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_12', category: '3. Quarterly', formCode: 'COMI-SM-3-2', description: 'Lifeboat Launching & Emergency Steering Gear Review', formDate: '28 February 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_13', category: '4. Semi Annual', formCode: 'COMI-SM-4-1', description: 'Safety Committee Meeting & Officer Review Minutes', formDate: '05 March 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_14', category: '4. Semi Annual', formCode: 'COMI-SM-4-2', description: 'Onboard Safety Training & Drills Assessment Log', formDate: '18 April 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_15', category: '4A. Annually', formCode: 'COMI-SM-4A-1', description: "Master's Review and Evaluation of Safety Management System (SMS)", formDate: '14 May 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_16', category: '4A. Annually', formCode: 'COMI-SM-4A-2', description: 'Annual Fire-Fighting & Safety Appliance Certificate Verification', formDate: '10 June 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_17', category: '5. Occasional', formCode: 'COMI-SM-5-1', description: 'Hot Work Authorization Permit', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_18', category: '5. Occasional', formCode: 'COMI-SM-5-2', description: 'Enclosed Space Entry Permit', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_19', category: '5. Occasional', formCode: 'COMI-SM-5-3', description: 'Working At Height / Overboard Permit', formDate: '12 January 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_20', category: '6. Letter Form', formCode: 'COMI-SM-6-1', description: 'Safety Equipment Requisition Letter', formDate: '11 February 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_21', category: '6. Letter Form', formCode: 'COMI-SM-6-2', description: 'Non-Conformity Formal Letter of Protest', formDate: '05 April 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_22', category: '7. Company Records (Office)', formCode: 'COMI-SM-7-1', description: 'Internal Fleet Audit Inspection Findings & Actions', formDate: '22 March 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_23', category: '7. Company Records (Office)', formCode: 'COMI-SM-7-2', description: 'Management Review Committee Records', formDate: '10 May 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_24', category: '8. Safety and Security Forms', formCode: 'COMI-SM-8-1', description: 'ISPS Code Onboard Security Assessment Worksheet', formDate: '18 June 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_25', category: '8. Safety and Security Forms', formCode: 'COMI-SM-8-2', description: 'Continuous Synopsis Record (CSR) Tracking Log', formDate: '01 July 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_26', category: '9. Free Form', formCode: 'COMI-SM-9-1', description: 'Safety Suggestion Card / Hazard Identification Form', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_27', category: '9. Free Form', formCode: 'COMI-SM-9-2', description: 'Near-Miss Incident Narrative Report', formDate: '12 January 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_malta_deck', category: '1. Monthly', formCode: 'COMI-SM-1-8-DECK-MALTA', description: 'Malta Flag State Deck Log & Safety Maintenance Checklist', formDate: '28 November 2025', scope: 'All Malta Vessels', type: 'Form' },
+          { id: 'f_malta_engine', category: '1. Monthly', formCode: 'COMI-SM-1-8-ENGINE-MALTA', description: 'Malta Flag State Engine Log & Auxiliary Equipment Checklist', formDate: '28 November 2025', scope: 'All Malta Vessels', type: 'Form' }
+        ];
+        for (const form of initialForms) {
+          await pool.execute(
+            'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [form.id, form.category, form.formCode, form.description, form.formDate, form.scope, form.type]
+          );
+        }
+      } else {
+        // Ensure Malta forms exist for existing databases as well
+        await pool.execute(
+          'INSERT IGNORE INTO sms_forms (id, category, formCode, description, formDate, scope, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          ['f_malta_deck', '1. Monthly', 'COMI-SM-1-8-DECK-MALTA', 'Malta Flag State Deck Log & Safety Maintenance Checklist', '28 November 2025', 'All Malta Vessels', 'Form']
+        );
+        await pool.execute(
+          'INSERT IGNORE INTO sms_forms (id, category, formCode, description, formDate, scope, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          ['f_malta_engine', '1. Monthly', 'COMI-SM-1-8-ENGINE-MALTA', 'Malta Flag State Engine Log & Auxiliary Equipment Checklist', '28 November 2025', 'All Malta Vessels', 'Form']
+        );
+      }
+    } catch (err: any) {
+      console.error('Failed to seed initial SMS forms:', err.message);
+    }
+
+    // Seed default SMS submission periods if missing
+    try {
+      const [periodRows]: any = await pool.query('SELECT COUNT(*) as count FROM sms_submission_periods');
+      if (periodRows[0].count === 0) {
+        console.log('Seeding initial SMS submission periods...');
+        const initialSubmissions = [
+          { vesselId: 'v1', vesselName: 'AQUAGRACE', month: 'June', year: '2026' },
+          { vesselId: 'v2', vesselName: 'BELFORTE', month: 'June', year: '2026' },
+          { vesselId: 'v3', vesselName: 'CD HUELVA', month: 'June', year: '2026' },
+          { vesselId: 'v4', vesselName: 'CD MANZANILLO', month: 'June', year: '2026' },
+          { vesselId: 'v5', vesselName: 'CL KIWAMI', month: 'June', year: '2026' },
+          { vesselId: 'v6', vesselName: 'CNC CHEETAH', month: 'June', year: '2026' },
+          { vesselId: 'v7', vesselName: 'CNC MARS', month: 'June', year: '2026' },
+          { vesselId: 'v8', vesselName: 'CNC NEPTUNE', month: 'June', year: '2026' },
+          { vesselId: 'v9', vesselName: 'CNC PUMA', month: 'May', year: '2026' },
+          { vesselId: 'v10', vesselName: 'COPENHAGEN COMMERCE', month: 'June', year: '2026' },
+          { vesselId: 'v11', vesselName: 'EASTERN HAWK', month: 'June', year: '2026' },
+          { vesselId: 'v12', vesselName: 'HANDY MERCHANT', month: 'June', year: '2026' },
+          { vesselId: 'v13', vesselName: 'LIGNUM NETWORK', month: 'June', year: '2026' }
+        ];
+        for (const sub of initialSubmissions) {
+          await pool.execute(
+            'INSERT INTO sms_submission_periods (vessel_id, vessel_name, month, year) VALUES (?, ?, ?, ?)',
+            [sub.vesselId, sub.vesselName, sub.month, sub.year]
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to seed initial SMS submission periods:', err.message);
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS flags (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE
+      )
+    `);
+
+    try {
+      const [flagRows]: any = await pool.query('SELECT COUNT(*) as count FROM flags');
+      if (flagRows[0].count === 0) {
+        console.log('Seeding initial flags...');
+        const initialFlags = ['Panama', 'Marshall Islands', 'Liberia', 'Singapore', 'Bahamas', 'Malta', 'Cyprus'];
+        for (const flag of initialFlags) {
+          await pool.execute('INSERT INTO flags (name) VALUES (?)', [flag]);
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to seed initial flags:', err.message);
+    }
+
+    try {
+      await pool.query('ALTER TABLE departure_reports ADD COLUMN voyage_number VARCHAR(100)');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE arrival_reports ADD COLUMN voyage_number VARCHAR(100)');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN voyage_number VARCHAR(100)');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN attachment_id INT, ADD FOREIGN KEY (attachment_id) REFERENCES noon_attachments(id) ON DELETE SET NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN weather_notation VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN swell_scale_21 VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN wind_scale VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN wave_scale VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN weather_image LONGTEXT NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN destination_port VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN eta_utc DATETIME NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN agent_details TEXT NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_min_hsfo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_max_hsfo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_min_lsfo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_max_lsfo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_min_mgo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_max_mgo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_min_mdo VARCHAR(50) NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN charterer_max_mdo VARCHAR(50) NULL');
+    } catch (e) {}
+
+    // Migration for existing databases: ensure new keys exist
+      const newKeys = [
+        ['RESEND_API_KEY', process.env.RESEND_API_KEY || ''],
+        ['ALERT_SCHEDULE_TYPE', 'interval'],
+        ['ALERT_INTERVAL_HOURS', '24'],
+        ['ALERT_TIME', '08:00'],
+        ['VESSEL_ALERT_SCHEDULE_TYPE', 'interval'],
+        ['VESSEL_ALERT_INTERVAL_HOURS', '24'],
+        ['VESSEL_ALERT_TIME', '08:00']
+      ];
+      for (const [key, val] of newKeys) {
+        await pool.execute('INSERT IGNORE INTO settings (setting_key, setting_value) VALUES (?, ?)', [key, val]);
+      }
+
+      // Sync vessel's next_port with latest arrival report
+      try {
+        console.log('Syncing vessels next_port with latest arrival reports...');
+        await pool.query(`
+          UPDATE vessels v
+          JOIN (
+              SELECT ar1.vessel_id, ar1.arrival_port
+              FROM arrival_reports ar1
+              JOIN (
+                  SELECT vessel_id, MAX(utc_date_time) as max_utc
+                  FROM arrival_reports
+                  WHERE deleted_at IS NULL
+                  GROUP BY vessel_id
+              ) ar2 ON ar1.vessel_id = ar2.vessel_id AND ar1.utc_date_time = ar2.max_utc
+              WHERE ar1.deleted_at IS NULL
+          ) latest_arrival ON v.id = latest_arrival.vessel_id
+          SET v.next_port = latest_arrival.arrival_port
+        `);
+        console.log('Sync completed.');
+      } catch (e: any) {
+        console.error('Error syncing next_port:', e.message);
+      }
+    }
+
+    // Seed initial data if empty
+    const [teamRows]: any = await pool.query('SELECT COUNT(*) as count FROM teams');
+    if (teamRows[0].count === 0) {
+      console.log('Seeding initial data...');
+      const teams = ['Team A', 'Team B', 'Team D', 'Team C'];
+      for (const name of teams) {
+        await pool.execute('INSERT INTO teams (name) VALUES (?)', [name]);
+      }
+      
+      const hashedPassword = bcrypt.hashSync('admin123', 10);
+      await pool.execute('INSERT INTO users (username, password, role) VALUES (?, ?, ?)', ['admin', hashedPassword, 'admin']);
+    } else {
+      // Migration: Rename existing teams
+      console.log('Running team name migration...');
+      await pool.execute("UPDATE teams SET name = 'Team A' WHERE name = 'Team Alpha'");
+      await pool.execute("UPDATE teams SET name = 'Team B' WHERE name = 'Team Beta'");
+      await pool.execute("UPDATE teams SET name = 'Team C' WHERE name = 'Team Delta'");
+      await pool.execute("UPDATE teams SET name = 'Team D' WHERE name = 'Team Gamma'");
+    }
+    console.log('Database initialized successfully.');
+  } catch (err: any) {
+    console.error('DATABASE INITIALIZATION FAILED:', err);
+    dbError = err.message;
+    if (pool) (pool as any)._dbErrorCode = err.code;
+    // We don't exit anymore, allowing the server to start and show errors
+  }
+
+  // File Upload Setup (Database-backed)
+  const storage = multer.memoryStorage();
+  const upload = multer({ 
+    storage
+  });
+  
+  // Request logging
+  app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+  });
+
+  // Content Security Policy (CSP) & Security Headers Middleware
+  app.use((req, res, next) => {
+    res.setHeader(
+      'Content-Security-Policy',
+      "default-src 'self'; " +
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; " +
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; " +
+      "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://unpkg.com; " +
+      "font-src 'self' https://fonts.gstatic.com; " +
+      "connect-src 'self' ws: wss: https:; " +
+      "worker-src 'self' blob: https://unpkg.com; " +
+      "frame-src 'self'; " +
+      "object-src 'none'; " +
+      "base-uri 'self'; " +
+      "form-action 'self';"
+    );
+    // Other helpful security headers
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+    next();
+  });
+
+  app.use(cors());
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+  // Database availability middleware
+  app.use('/api', (req, res, next) => {
+    if (req.path === '/health' || req.path === '/db-status') return next();
+    if (!pool || dbError) {
+      return res.status(503).json({ 
+        error: 'Database not available', 
+        details: dbError || 'Connection pool not initialized',
+        setup_instructions: 'Please configure DB_HOST, DB_USER, DB_PASSWORD, and DB_NAME in the Secrets panel.'
+      });
+    }
+    next();
+  });
+
+  // Health check
+  app.get('/api/health', (req, res) => {
+    res.json({ 
+      status: pool && !dbError ? 'ok' : 'degraded', 
+      database: pool && !dbError ? 'connected' : 'disconnected',
+      error: dbError,
+      timestamp: new Date().toISOString() 
+    });
+  });
+
+  app.get('/api/db-status', async (req, res) => {
+    try {
+      const host = process.env.DB_HOST || 'localhost';
+      const port = Number(process.env.DB_PORT) || 3306;
+      
+      // Quick TCP check for port 3306
+      let tcpCheck = 'PENDING';
+      try {
+        tcpCheck = await new Promise((resolve) => {
+          const socket = new net.Socket();
+          socket.setTimeout(2000);
+          socket.on('connect', () => { socket.destroy(); resolve('OPEN'); });
+          socket.on('timeout', () => { socket.destroy(); resolve('TIMEOUT'); });
+          socket.on('error', (err) => { socket.destroy(); resolve(`ERROR: ${err.message}`); });
+          socket.connect(port, host);
+        }) as string;
+      } catch (e: any) {
+        tcpCheck = `EXCEPTION: ${e.message}`;
+      }
+
+      res.json({ 
+        connected: !!pool && !dbError,
+        error: dbError,
+        errorCode: (pool as any)?._dbErrorCode || null,
+        tcpStatus: tcpCheck,
+        webStatus: 'SKIPPED',
+        outboundIp: 'DISABLED',
+        diagnostics: {
+          resolvedDbHost,
+          dbUserUsed,
+          dbNameUsed,
+          dbPassSource,
+          dbPassLength,
+          dbPortUsed: port
+        },
+        config: {
+          host,
+          user: process.env.DB_USER || 'root',
+          database: process.env.DB_NAME || 'vessel_cert',
+          port
+        }
+      });
+    } catch (err: any) {
+      console.error('CRITICAL ERROR in /api/db-status:', err);
+      res.status(500).json({ 
+        error: 'Internal Server Error in status check', 
+        details: err.message
+      });
+    }
+  });
+
+  app.get('/api/public-settings', async (req, res) => {
+    if (!pool) return res.json({});
+    try {
+      const [rows] = await pool.query('SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("APP_LOGO")');
+      const settings = (rows as any[]).reduce((acc, row) => {
+        acc[row.setting_key] = row.setting_value;
+        return acc;
+      }, {});
+      res.json(settings);
+    } catch (e: any) {
+      console.error('Failed to fetch public settings:', e);
+      res.json({});
+    }
+  });
+
+  // Auth Middleware
+  const authenticate = (req: any, res: any, next: any) => {
+    const token = req.headers.authorization?.split(' ')[1] || req.query.token;
+    if (!token) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+      req.user = jwt.verify(token, JWT_SECRET);
+      next();
+    } catch (e) {
+      res.status(401).json({ error: 'Invalid token' });
+    }
+  };
+
+  const isAdmin = (req: any, res: any, next: any) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+    next();
+  };
+
+  const isTeamPicOrAdmin = (req: any, res: any, next: any) => {
+    if (req.user.role !== 'admin' && req.user.role !== 'team_pic' && req.user.role !== 'user') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    next();
+  };
+
+  const canAddCertificate = (req: any, res: any, next: any) => {
+    if (req.user.role !== 'admin' && req.user.role !== 'team_pic' && req.user.role !== 'vessel' && req.user.role !== 'user') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    next();
+  };
+
+  const logAudit = async (userId: number | null, username: string | null, action: string, details: string) => {
+    try {
+      await pool.execute('INSERT INTO audit_logs (user_id, username, action, details) VALUES (?, ?, ?, ?)', [userId, username, action, details]);
+    } catch (err) {
+      console.error('Failed to log audit:', err);
+    }
+  };
+
+  const syncVesselNextPort = async (vesselId: number) => {
+    try {
+      const [latest]: any = await pool.execute(
+        'SELECT arrival_port FROM arrival_reports WHERE vessel_id = ? AND deleted_at IS NULL ORDER BY utc_date_time DESC LIMIT 1',
+        [vesselId]
+      );
+      if (latest.length > 0) {
+        await pool.execute('UPDATE vessels SET next_port = ? WHERE id = ?', [latest[0].arrival_port, vesselId]);
+      } else {
+        await pool.execute('UPDATE vessels SET next_port = NULL WHERE id = ?', [vesselId]);
+      }
+    } catch (err) {
+      console.error(`Failed to sync next_port for vessel ${vesselId}:`, err);
+    }
+  };
+
+  // Auth Routes
+  app.post('/api/login', async (req, res) => {
+    const { username, password } = req.body;
+    const [rows]: any = await pool.execute('SELECT * FROM users WHERE username = ?', [username]);
+    const user = rows[0];
+    if (!user || !bcrypt.compareSync(password, user.password)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const [userTeams]: any = await pool.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [user.id]);
+    const teamIds = userTeams.map((ut: any) => ut.team_id);
+    
+    const token = jwt.sign({ 
+      id: user.id, 
+      username: user.username, 
+      role: user.role, 
+      team_ids: teamIds, 
+      vessel_id: user.vessel_id,
+      device_id: user.device_id,
+      is_verified: !!user.is_verified
+    }, JWT_SECRET);
+    res.json({ 
+      token, 
+      user: { 
+        id: user.id, 
+        username: user.username, 
+        role: user.role, 
+        team_ids: teamIds, 
+        vessel_id: user.vessel_id,
+        device_id: user.device_id,
+        is_verified: !!user.is_verified
+      } 
+    });
+  });
+
+  // Device Registration Routes
+  app.post('/api/device/register', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { device_id, device_code } = req.body;
+    const user_id = req.user.id;
+    try {
+      // For vessel users, check if they already have 2 verified devices
+      const [userRows]: any = await pool.execute(
+        'SELECT device_id, is_verified, role FROM users WHERE id = ?',
+        [user_id]
+      );
+      if (userRows.length > 0) {
+        const user = userRows[0];
+        if (user.role === 'vessel') {
+          let registeredDevices: string[] = [];
+          if (user.is_verified && user.device_id) {
+            if (user.device_id.startsWith('[') && user.device_id.endsWith(']')) {
+              try {
+                registeredDevices = JSON.parse(user.device_id);
+              } catch (e) {}
+            } else {
+              registeredDevices = user.device_id.split(',').map((s: string) => s.trim()).filter(Boolean);
+            }
+          }
+
+          // If the device being registered is already verified, no need to register it again
+          if (registeredDevices.includes(device_id)) {
+            return res.json({ success: true, already_registered: true });
+          }
+
+          if (registeredDevices.length >= 2) {
+            return res.status(400).json({ error: 'You have reached the maximum limit of 2 registered devices for this vessel account. Please contact an Administrator to remove an existing device.' });
+          }
+        }
+      }
+
+      // Clear any pending requests for this user first
+      await pool.execute("DELETE FROM device_registration_requests WHERE user_id = ? AND status = 'pending'", [user_id]);
+      
+      await pool.execute(
+        'INSERT INTO device_registration_requests (user_id, device_id, device_code) VALUES (?, ?, ?)',
+        [user_id, device_id, device_code]
+      );
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/device/status', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const user_id = req.user.id;
+    try {
+      const [rows]: any = await pool.execute(
+        'SELECT is_verified, device_id FROM users WHERE id = ?',
+        [user_id]
+      );
+      if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
+      
+      const [pending]: any = await pool.execute(
+        "SELECT * FROM device_registration_requests WHERE user_id = ? AND status = 'pending'",
+        [user_id]
+      );
+
+      res.json({ 
+        is_verified: !!rows[0].is_verified, 
+        device_id: rows[0].device_id,
+        has_pending_request: pending.length > 0
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/admin/device-requests', authenticate, isTeamPicOrAdmin, async (req, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const [rows]: any = await pool.query(`
+        SELECT dr.*, u.username, v.name as vessel_name 
+        FROM device_registration_requests dr
+        JOIN users u ON dr.user_id = u.id
+        LEFT JOIN vessels v ON u.vessel_id = v.id
+        WHERE dr.status = 'pending'
+      `);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/admin/registered-devices', authenticate, isTeamPicOrAdmin, async (req, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const [rows]: any = await pool.query(`
+        SELECT u.id, u.username, u.device_id, u.is_verified, v.name as vessel_name 
+        FROM users u
+        LEFT JOIN vessels v ON u.vessel_id = v.id
+        WHERE u.role = 'vessel' AND u.device_id IS NOT NULL AND u.is_verified = TRUE
+      `);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/remove-device', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { user_id } = req.body;
+    try {
+      await pool.execute('UPDATE users SET device_id = NULL, is_verified = FALSE WHERE id = ?', [user_id]);
+      res.json({ message: 'Device registration removed' });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/verify-device', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { request_id, status } = req.body; // status: 'approved' | 'rejected'
+    try {
+      if (status === 'approved') {
+        const [requests]: any = await pool.execute(
+          'SELECT * FROM device_registration_requests WHERE id = ?',
+          [request_id]
+        );
+        const request = requests[0];
+        if (request) {
+          const [userRows]: any = await pool.execute(
+            'SELECT device_id, is_verified, role FROM users WHERE id = ?',
+            [request.user_id]
+          );
+          if (userRows.length > 0) {
+            const user = userRows[0];
+            let registeredDevices: string[] = [];
+            if (user.is_verified && user.device_id) {
+              if (user.device_id.startsWith('[') && user.device_id.endsWith(']')) {
+                try {
+                  registeredDevices = JSON.parse(user.device_id);
+                } catch (e) {}
+              } else {
+                registeredDevices = user.device_id.split(',').map((s: string) => s.trim()).filter(Boolean);
+              }
+            }
+
+            if (!registeredDevices.includes(request.device_id)) {
+              if (user.role === 'vessel' && registeredDevices.length >= 2) {
+                return res.status(400).json({ error: 'Maximum registered devices (2) limit reached for this vessel account. Please remove an existing device first.' });
+              }
+              registeredDevices.push(request.device_id);
+            }
+
+            const newDeviceIdStr = JSON.stringify(registeredDevices);
+            await pool.execute(
+              'UPDATE users SET device_id = ?, is_verified = TRUE WHERE id = ?',
+              [newDeviceIdStr, request.user_id]
+            );
+          }
+        }
+      }
+      await pool.execute(
+        'UPDATE device_registration_requests SET status = ? WHERE id = ?',
+        [status, request_id]
+      );
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Settings Routes (Admin)
+  app.get('/api/admin/settings', authenticate, isAdmin, async (req, res) => {
+    try {
+      const [rows] = await pool.query('SELECT setting_key, setting_value FROM settings');
+      const settings = (rows as any[]).reduce((acc, row) => {
+        acc[row.setting_key] = row.setting_value;
+        return acc;
+      }, {});
+      res.json(settings);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/settings', authenticate, isAdmin, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const settings = req.body;
+    try {
+      for (const [key, value] of Object.entries(settings)) {
+        await (pool as any).query(
+          'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+          [key, value, value]
+        );
+      }
+      await startAlertScheduler();
+      await logAudit((req as any).user.id, (req as any).user.username, 'UPDATE_SETTINGS', `Updated system settings`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/test-smtp', authenticate, isAdmin, async (req, res) => {
+    let { resend_api_key, from } = req.body;
+    console.log(`Testing Resend API Key...`);
+    
+    // Fallback to process.env if not provided in request body
+    if (!resend_api_key) {
+      resend_api_key = process.env.RESEND_API_KEY;
+    }
+
+    if (!resend_api_key || resend_api_key.trim() === '') {
+      return res.status(400).json({ error: 'Resend API Key is required. Please enter it in Settings or set RESEND_API_KEY in the Secrets menu.' });
+    }
+
+    try {
+      const resend = new Resend(resend_api_key);
+      const currentUser = (req as any).user;
+      const fromEmail = from || 'onboarding@resend.dev';
+      const toEmail = currentUser.email || (currentUser.username.includes('@') ? currentUser.username : 'IT@cleanocean.com.ph');
+      
+      if (!toEmail || !toEmail.includes('@')) {
+        throw new Error(`Invalid recipient email address: "${toEmail}". Please ensure your user profile has a valid email address.`);
+      }
+
+      const { data, error } = await resend.emails.send({
+        from: fromEmail,
+        to: toEmail,
+        subject: 'Resend API Connection Test',
+        html: '<strong>If you are reading this, your Resend API settings are working correctly!</strong>'
+      });
+
+      if (error) {
+        throw error;
+      }
+      
+      console.log('Test email sent successfully via Resend to:', toEmail);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Resend Test Failed Detailed Error:', e);
+      res.status(500).json({ 
+        error: e.message || 'Unknown Resend error'
+      });
+    }
+  });
+
+  app.post('/api/admin/test-b2', authenticate, isAdmin, async (req, res) => {
+    const { B2_APPLICATION_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET_NAME, B2_ENDPOINT } = req.body;
+    
+    if (!B2_APPLICATION_KEY_ID || !B2_APPLICATION_KEY || !B2_BUCKET_NAME || !B2_ENDPOINT) {
+      return res.status(400).json({ error: 'All B2 fields are required for testing.' });
+    }
+
+    try {
+      const client = new S3Client({
+        endpoint: B2_ENDPOINT.startsWith('http') ? B2_ENDPOINT : `https://${B2_ENDPOINT}`,
+        credentials: {
+          accessKeyId: B2_APPLICATION_KEY_ID,
+          secretAccessKey: B2_APPLICATION_KEY,
+        },
+        region: B2_ENDPOINT.split('.')[1] || 'us-east-005',
+      });
+
+      // We'll test with a simple put & delete of a tiny test file to verify full write/delete permissions
+      const testKey = `test_connection_${Date.now()}.txt`;
+      await client.send(
+        new PutObjectCommand({
+          Bucket: B2_BUCKET_NAME,
+          Key: testKey,
+          Body: Buffer.from('B2 Connection Test'),
+          ContentType: 'text/plain',
+        })
+      );
+
+      // Clean up the test file
+      await client.send(
+        new DeleteObjectCommand({
+          Bucket: B2_BUCKET_NAME,
+          Key: testKey,
+        })
+      );
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error('B2 Connection Test Failed:', err);
+      res.status(500).json({ error: err.message || 'Failed to connect or perform write/delete operations on Backblaze B2.' });
+    }
+  });
+
+  // Team Routes
+  app.get('/api/teams', authenticate, async (req, res) => {
+    const [teams] = await pool.query('SELECT * FROM teams WHERE deleted_at IS NULL');
+    res.json(teams);
+  });
+
+  // Flag Routes
+  app.get('/api/flags', authenticate, async (req, res) => {
+    try {
+      const [flags] = await pool.query('SELECT * FROM flags ORDER BY name ASC');
+      res.json(flags);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/flags', authenticate, isAdmin, async (req: any, res) => {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Flag name is required' });
+    }
+    try {
+      const [result]: any = await pool.execute('INSERT INTO flags (name) VALUES (?)', [name.trim()]);
+      await logAudit(req.user.id, req.user.username, 'CREATE_FLAG', `Created flag: ${name}`);
+      res.json({ id: result.insertId, name: name.trim() });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A flag with this name already exists' });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.put('/api/flags/:id', authenticate, isAdmin, async (req: any, res) => {
+    const { name } = req.body;
+    const { id } = req.params;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Flag name is required' });
+    }
+    try {
+      await pool.execute('UPDATE flags SET name = ? WHERE id = ?', [name.trim(), id]);
+      await logAudit(req.user.id, req.user.username, 'UPDATE_FLAG', `Updated flag ID ${id} to: ${name}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A flag with this name already exists' });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.delete('/api/flags/:id', authenticate, isAdmin, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      await pool.execute('DELETE FROM flags WHERE id = ?', [id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_FLAG', `Deleted flag ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // User Routes (Admin)
+  app.get('/api/users', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const [users]: any = await pool.query('SELECT id, username, role, vessel_id, email, device_id, is_verified FROM users WHERE deleted_at IS NULL');
+      const usersWithTeams = await Promise.all(users.map(async (u: any) => {
+        const [teams]: any = await pool.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [u.id]);
+        return { ...u, team_ids: teams.map((t: any) => t.team_id) };
+      }));
+      
+      // If team_pic, filter users? Actually, let's allow them to see all for now as the prompt says "admin and TEAM PIC", 
+      // but if we want to be strict, we'd filter by team.
+      // For now, satisfy the requirement of "remote registered devices".
+      res.json(usersWithTeams);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/users/change-password', authenticate, async (req: any, res) => {
+    const { currentPassword, newPassword } = req.body;
+    try {
+      const [rows]: any = await pool.execute('SELECT password FROM users WHERE id = ?', [req.user.id]);
+      if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+      const isMatch = await bcrypt.compare(currentPassword, rows[0].password);
+      if (!isMatch) return res.status(400).json({ error: 'Incorrect current password' });
+
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      await pool.execute('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, req.user.id]);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/users', authenticate, isTeamPicOrAdmin, async (req, res) => {
+    const { username, password, role, team_ids, vessel_id, email, notify } = req.body;
+    const hashedPassword = bcrypt.hashSync(password, 10);
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      const [result]: any = await conn.execute('INSERT INTO users (username, password, role, vessel_id, email) VALUES (?, ?, ?, ?, ?)', [username, hashedPassword, role || 'user', vessel_id || null, email || null]);
+      const userId = result.insertId;
+      
+      if (team_ids && Array.isArray(team_ids)) {
+        for (const teamId of team_ids) {
+          await conn.execute('INSERT INTO user_teams (user_id, team_id) VALUES (?, ?)', [userId, teamId]);
+        }
+      }
+      
+      await conn.commit();
+      await logAudit((req as any).user.id, (req as any).user.username, 'CREATE_USER', `Created user: ${username} with role ${role}`);
+      
+      console.log(`Debug: Creating user. Notify: ${notify}, Email: ${email}`);
+      if (notify && email) {
+        try {
+          console.log(`Debug: Attempting to send email to ${email}`);
+          await sendEmail({
+            to: email,
+            subject: 'Welcome to COMOS - Account Credentials',
+            html: `
+              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;">
+                <h2 style="color: #2563eb;">Welcome to COMOS</h2>
+                <p>Hello,</p>
+                <p>An account has been created for you on the COMOS platform.</p>
+                <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+                  <p style="margin: 0 0 8px 0;"><strong>Username:</strong> ${username}</p>
+                  <p style="margin: 0;"><strong>Initial Password:</strong> ${password}</p>
+                </div>
+                <p>You can access COMOS via <a href="https://comos.cc" style="color: #2563eb; text-decoration: none; font-weight: bold;">https://comos.cc</a></p>
+                <p>Please log in and change your password if needed.</p>
+                <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+                <p style="font-size: 12px; color: #64748b;">Automated notification from COMOS System.</p>
+              </div>
+            `
+          });
+          console.log(`Debug: Email sent successfully to ${email}`);
+        } catch (err: any) {
+          console.error('Failed to send welcome email notification:', err);
+        }
+      }
+
+      res.json({ success: true });
+    } catch (e: any) {
+      await conn.rollback();
+      res.status(400).json({ error: e.message });
+    } finally {
+      conn.release();
+    }
+  });
+
+  app.put('/api/users/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    const { username, team_ids, role, password, vessel_id, email, device_id, is_verified } = req.body;
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      
+      if (password) {
+        const hashedPassword = bcrypt.hashSync(password, 10);
+        await conn.execute(
+          'UPDATE users SET username = ?, role = ?, password = ?, vessel_id = ?, email = ?, device_id = ?, is_verified = ? WHERE id = ?', 
+          [username, role, hashedPassword, vessel_id || null, email || null, device_id || null, is_verified ? 1 : 0, req.params.id]
+        );
+      } else {
+        await conn.execute(
+          'UPDATE users SET username = ?, role = ?, vessel_id = ?, email = ?, device_id = ?, is_verified = ? WHERE id = ?', 
+          [username, role, vessel_id || null, email || null, device_id || null, is_verified ? 1 : 0, req.params.id]
+        );
+      }
+      
+      // Update teams
+      await conn.execute('DELETE FROM user_teams WHERE user_id = ?', [req.params.id]);
+      if (team_ids && Array.isArray(team_ids)) {
+        for (const teamId of team_ids) {
+          await conn.execute('INSERT INTO user_teams (user_id, team_id) VALUES (?, ?)', [req.params.id, teamId]);
+        }
+      }
+      
+      await conn.commit();
+      await logAudit((req as any).user.id, (req as any).user.username, 'UPDATE_USER', `Updated user ID ${req.params.id}: ${username}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      await conn.rollback();
+      res.status(400).json({ error: e.message });
+    } finally {
+      conn.release();
+    }
+  });
+
+  // Vessel Routes
+  app.get('/api/vessels', authenticate, async (req: any, res) => {
+    let vessels;
+    if (req.user.role === 'admin') {
+      [vessels] = await pool.query('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL');
+    } else if (req.user.role === 'vessel') {
+      const vesselId = req.user.vessel_id;
+      if (!vesselId) {
+        return res.json([]);
+      }
+      [vessels] = await pool.execute('SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL', [vesselId]);
+    } else {
+      const teamIds = req.user.team_ids || [];
+      if (teamIds.length === 0) {
+        return res.json([]);
+      }
+      const placeholders = teamIds.map(() => '?').join(',');
+      const params = [...teamIds];
+      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, v.next_port, v.route_status, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
+    }
+    res.json(vessels);
+  });
+
+  app.get('/api/vessels/:id/photo', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.execute('SELECT photo_data, photo_mimetype FROM vessels WHERE id = ?', [req.params.id]);
+      if (rows.length === 0 || !rows[0].photo_data) {
+        return res.status(404).json({ error: 'Photo not found' });
+      }
+      const retrievedData = await handleFileRetrieve(rows[0].photo_data);
+      res.setHeader('Content-Type', rows[0].photo_mimetype || 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+      res.send(retrievedData);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/vessels', authenticate, isTeamPicOrAdmin, upload.single('photo'), async (req: any, res) => {
+    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, type } = req.body;
+    try {
+      // If team_pic or user, they can only add to their own teams
+      if ((req.user.role === 'team_pic' || req.user.role === 'user') && team_id && !req.user.team_ids.includes(Number(team_id))) {
+        return res.status(403).json({ error: 'You can only add vessels to your assigned teams' });
+      }
+      
+      const photoData = req.file ? await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'vessel_photos') : null;
+      const photoMimetype = req.file ? req.file.mimetype : null;
+
+      await pool.execute(
+        'INSERT INTO vessels (name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, type, photo_data, photo_mimetype) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
+        [name, team_id || null, owner || 'Nissen', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', photoData, photoMimetype]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_VESSEL', `Created vessel: ${name}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A vessel with this name already exists' });
+      } else {
+        res.status(400).json({ error: e.message });
+      }
+    }
+  });
+
+  app.put('/api/vessels/:id', authenticate, isTeamPicOrAdmin, upload.single('photo'), async (req: any, res) => {
+    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, type } = req.body;
+    try {
+      const [vessels]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [req.params.id]);
+      if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+      
+      if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        const oldTeamId = vessels[0].team_id;
+        if (!req.user.team_ids.includes(oldTeamId)) return res.status(403).json({ error: 'Forbidden' });
+        if (team_id && !req.user.team_ids.includes(Number(team_id))) return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const photoData = req.file ? await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'vessel_photos') : undefined;
+      const photoMimetype = req.file ? req.file.mimetype : undefined;
+
+      if (photoData !== undefined) {
+        await pool.execute(
+          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, type = ?, photo_data = ?, photo_mimetype = ? WHERE id = ?', 
+          [name, team_id || null, owner, flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', photoData, photoMimetype, req.params.id]
+        );
+      } else {
+        await pool.execute(
+          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, type = ? WHERE id = ?', 
+          [name, team_id || null, owner, flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', req.params.id]
+        );
+      }
+      
+      await logAudit(req.user.id, req.user.username, 'UPDATE_VESSEL', `Updated vessel ID ${req.params.id}: ${name}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A vessel with this name already exists' });
+      } else {
+        res.status(400).json({ error: e.message });
+      }
+    }
+  });
+
+  app.put('/api/vessels/:id/charterer-thresholds', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    const {
+      charterer_min_hsfo, charterer_max_hsfo,
+      charterer_min_lsfo, charterer_max_lsfo,
+      charterer_min_mgo, charterer_max_mgo,
+      charterer_min_mdo, charterer_max_mdo
+    } = req.body;
+    try {
+      const [vessels]: any = await pool.execute('SELECT id FROM vessels WHERE id = ?', [req.params.id]);
+      if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+
+      await pool.execute(`
+        UPDATE vessels SET
+          charterer_min_hsfo = ?, charterer_max_hsfo = ?,
+          charterer_min_lsfo = ?, charterer_max_lsfo = ?,
+          charterer_min_mgo = ?, charterer_max_mgo = ?,
+          charterer_min_mdo = ?, charterer_max_mdo = ?
+        WHERE id = ?
+      `, [
+        charterer_min_hsfo || null, charterer_max_hsfo || null,
+        charterer_min_lsfo || null, charterer_max_lsfo || null,
+        charterer_min_mgo || null, charterer_max_mgo || null,
+        charterer_min_mdo || null, charterer_max_mdo || null,
+        req.params.id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_VESSEL_THRESHOLDS', `Updated vessel ID ${req.params.id} charterer thresholds`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/vessels/:id/threshold-chat', authenticate, async (req: any, res) => {
+    try {
+      const [messages]: any = await pool.execute(
+        'SELECT id, vessel_id, author_name, author_id, message_text, created_at FROM threshold_chat_messages WHERE vessel_id = ? ORDER BY created_at ASC',
+        [req.params.id]
+      );
+      res.json(messages);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/vessels/:id/threshold-chat', authenticate, async (req: any, res) => {
+    const { message_text } = req.body;
+    if (!message_text || !message_text.trim()) {
+      return res.status(400).json({ error: 'Message cannot be empty' });
+    }
+    try {
+      const [vessels]: any = await pool.execute('SELECT id FROM vessels WHERE id = ?', [req.params.id]);
+      if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+
+      await pool.execute(
+        'INSERT INTO threshold_chat_messages (vessel_id, author_name, author_id, message_text) VALUES (?, ?, ?, ?)',
+        [req.params.id, req.user.username, String(req.user.id), message_text.trim()]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'ADD_THRESHOLD_CHAT_MESSAGE', `Added chat message to vessel ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/vessels/:id/route', authenticate, async (req: any, res) => {
+    const { next_port, route_status, eta_atb, etd_atd, cargo, operation_type, remark_from_vessel } = req.body;
+    try {
+      const [vessels]: any = await pool.execute('SELECT id, team_id FROM vessels WHERE id = ?', [req.params.id]);
+      if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+      const vessel = vessels[0];
+
+      // Authorization check
+      let hasAccess = false;
+      if (req.user.role === 'admin') {
+        hasAccess = true;
+      } else if (req.user.role === 'vessel') {
+        hasAccess = req.user.vessel_id === vessel.id;
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        hasAccess = req.user.team_ids.includes(vessel.team_id);
+      }
+
+      if (!hasAccess) return res.status(403).json({ error: 'Forbidden' });
+
+      await pool.execute(
+        'UPDATE vessels SET next_port = ?, route_status = ?, eta_atb = ?, etd_atd = ?, cargo = ?, operation_type = ?, remark_from_vessel = ? WHERE id = ?',
+        [next_port || null, route_status || null, eta_atb || null, etd_atd || null, cargo || null, operation_type || null, remark_from_vessel || null, req.params.id]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_VESSEL_ROUTE', `Updated route for vessel ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/vessels/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      const [vesselRows]: any = await pool.execute('SELECT name FROM vessels WHERE id = ?', [req.params.id]);
+      const vesselName = vesselRows.length > 0 ? vesselRows[0].name : 'Unknown';
+
+      // Soft delete cascade for certificates, notes, and files
+      const [certs]: any = await pool.execute('SELECT id FROM certificates WHERE vessel_id = ? AND deleted_at IS NULL', [req.params.id]);
+      for (const cert of certs) {
+        await pool.execute('UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [cert.id]);
+        await pool.execute('UPDATE files SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [cert.id]);
+      }
+      await pool.execute('UPDATE certificates SET deleted_at = CURRENT_TIMESTAMP WHERE vessel_id = ? AND deleted_at IS NULL', [req.params.id]);
+      await pool.execute('UPDATE vessels SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_VESSEL', `Soft deleted vessel: ${vesselName} (ID: ${req.params.id})`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Soft delete vessel error:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // SMS Routes
+  app.get('/api/sms/uploads', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.query(
+        'SELECT id, vessel_id as vesselId, vessel_name as vesselName, month, year, file_name as fileName, file_size as fileSize, uploaded_at as uploadedAt FROM sms_uploads ORDER BY uploaded_at DESC'
+      );
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/upload', authenticate, upload.single('file'), async (req: any, res) => {
+    const { vessel_id, vessel_name, month, year, file_size } = req.body;
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    try {
+      const uploadedBuffer = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'sms_uploads');
+      const [result]: any = await pool.execute(
+        'INSERT INTO sms_uploads (vessel_id, vessel_name, month, year, file_name, file_size, file_data, file_mimetype) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [vessel_id, vessel_name, month, year, req.file.originalname, file_size, uploadedBuffer, req.file.mimetype]
+      );
+      res.json({
+        success: true,
+        upload: {
+          id: result.insertId,
+          vesselId: vessel_id,
+          vesselName: vessel_name,
+          month,
+          year,
+          fileName: req.file.originalname,
+          uploadedAt: new Date().toISOString(),
+          fileSize: file_size
+        }
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/download/:id', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.execute('SELECT file_name, file_mimetype, file_data FROM sms_uploads WHERE id = ?', [req.params.id]);
+      if (rows.length === 0) return res.status(404).json({ error: 'File not found' });
+      const row = rows[0];
+      const retrievedBuffer = await handleFileRetrieve(row.file_data);
+      res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.file_name)}"`);
+      res.send(retrievedBuffer);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/sms/upload/:id', authenticate, async (req, res) => {
+    try {
+      await pool.execute('DELETE FROM sms_uploads WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // SMS Forms Routes
+  app.get('/api/sms/forms', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.query('SELECT * FROM sms_forms');
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/forms', authenticate, async (req, res) => {
+    const { id, category, formCode, description, formDate, scope, type } = req.body;
+    try {
+      const [exists]: any = await pool.execute('SELECT id FROM sms_forms WHERE id = ?', [id]);
+      if (exists.length > 0) {
+        await pool.execute(
+          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ? WHERE id = ?',
+          [category, formCode, description, formDate, scope, type || 'Form', id]
+        );
+      } else {
+        await pool.execute(
+          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [id, category, formCode, description, formDate, scope, type || 'Form']
+        );
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/sms/forms/:id', authenticate, async (req, res) => {
+    try {
+      await pool.execute('DELETE FROM sms_forms WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // SMS Submission Periods Routes
+  app.get('/api/sms/submission-periods', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.query('SELECT * FROM sms_submission_periods');
+      const mapped = rows.map((r: any) => ({
+        vesselId: String(r.vessel_id),
+        vesselName: r.vessel_name,
+        month: r.month,
+        year: r.year
+      }));
+      res.json(mapped);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/submission-periods', authenticate, async (req, res) => {
+    const { vesselId, vesselName, month, year } = req.body;
+    try {
+      const [exists]: any = await pool.execute('SELECT vessel_id FROM sms_submission_periods WHERE vessel_id = ?', [vesselId]);
+      if (exists.length > 0) {
+        await pool.execute(
+          'UPDATE sms_submission_periods SET vessel_name = ?, month = ?, year = ? WHERE vessel_id = ?',
+          [vesselName, month, year, vesselId]
+        );
+      } else {
+        await pool.execute(
+          'INSERT INTO sms_submission_periods (vessel_id, vessel_name, month, year) VALUES (?, ?, ?, ?)',
+          [vesselId, vesselName, month, year]
+        );
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Certificate Routes
+  app.get('/api/certificates', authenticate, async (req: any, res) => {
+    let query = `
+      SELECT c.*, 
+      DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as expiration_date, 
+      DATE_FORMAT(c.date_issued, '%Y-%m-%d') as date_issued,
+      v.name as vessel_name, v.owner, t.name as team_name,
+      (SELECT COUNT(*) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) > 0 as has_file
+      FROM certificates c 
+      LEFT JOIN vessels v ON c.vessel_id = v.id
+      JOIN teams t ON c.team_id = t.id
+      WHERE c.deleted_at IS NULL
+    `;
+    let params: any[] = [];
+    if (req.user.role === 'vessel') {
+      query += ` AND c.vessel_id = ? AND c.access_type IN ('vessel', 'any')`;
+      params = [req.user.vessel_id];
+    } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
+      const teamIds = req.user.team_ids || [];
+      if (teamIds.length === 0) {
+        return res.json([]);
+      }
+      const placeholders = teamIds.map(() => '?').join(',');
+      query += ` AND c.team_id IN (${placeholders}) AND c.access_type IN ('office', 'vessel', 'any')`;
+      params = teamIds;
+    }
+    const [certs] = await pool.execute(query, params);
+    res.json(certs);
+  });
+
+  app.post('/api/ocr', authenticate, upload.single('file'), async (req: any, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        console.error('OCR error: GEMINI_API_KEY environment variable is not set');
+        return res.status(500).json({ error: 'GEMINI_API_KEY secret is not configured. Please add it via Settings > Secrets.' });
+      }
+
+      const ai = new GoogleGenAI({ 
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
+      const base64Data = req.file.buffer.toString('base64');
+      const dataPart = {
+        inlineData: {
+          data: base64Data,
+          mimeType: req.file.mimetype,
+        }
+      };
+
+      let response = null;
+      let retries = 3;
+      let delayMs = 1500;
+      let lastError: any = null;
+
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          response = await ai.models.generateContent({
+            model: "gemini-3.0-flash",
+            contents: {
+              parts: [
+                dataPart,
+                { text: `You are a high-precision OCR engine. Your task is to extract core certificate metadata and their exact spatial locations.
+              
+              COORDINATE SYSTEM:
+              - Use a 0-1000 normalized coordinate system for "rect".
+              - Format: {"ymin": int, "xmin": int, "ymax": int, "xmax": int}
+              - 0,0 is TOP-LEFT. 1000,1000 is BOTTOM-RIGHT.
+              
+              RULES:
+              1. The "rect" MUST be a TIGHT bounding box around the SPECIFIC text value extracted.
+              2. EXCLUDE labels from the rect (e.g., if the document says "Vessel: MARITIME GOVERNOR", your vessel_name is "MARITIME GOVERNOR" and the rect should ONLY cover "MARITIME GOVERNOR").
+              3. For dates, if they are spread across the page, provide the rect that covers the full date string.
+              4. If the certificate title (cert_type) is multi-line, the rect should encompass all lines of the title.
+              5. Accuracy is paramount. If you are unsure of the exact location, provide your best estimate based on the visual flow.
+
+              FIELDS TO EXTRACT:
+              - vessel_name: Name of the ship/vessel.
+              - cert_type: Full title of the certificate.
+              - certificate_number: The unique ID/No of the document.
+              - date_issued: When it was issued (YYYY-MM-DD).
+              - expiration_date: When it expires (YYYY-MM-DD).
+
+              Return JSON only.` }
+              ]
+            },
+            config: {
+              responseMimeType: "application/json",
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  vessel_name: { type: Type.STRING, nullable: true },
+                  vessel_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the vessel name value", 
+                    nullable: true 
+                  },
+                  cert_type: { type: Type.STRING, nullable: true },
+                  cert_type_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the certificate title", 
+                    nullable: true 
+                  },
+                  certificate_number: { type: Type.STRING, nullable: true },
+                  number_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the certificate number value", 
+                    nullable: true 
+                  },
+                  date_issued: { type: Type.STRING, description: "YYYY-MM-DD", nullable: true },
+                  issued_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the issue date value", 
+                    nullable: true 
+                  },
+                  expiration_date: { type: Type.STRING, description: "YYYY-MM-DD", nullable: true },
+                  expiration_rect: { 
+                    type: Type.OBJECT, 
+                    properties: {
+                      ymin: { type: Type.NUMBER },
+                      xmin: { type: Type.NUMBER },
+                      ymax: { type: Type.NUMBER },
+                      xmax: { type: Type.NUMBER }
+                    },
+                    description: "Bounding box of the expiration date value", 
+                    nullable: true 
+                  }
+                }
+              }
+            }
+          });
+          break; // Suceeded!
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`Server-side OCR attempt ${attempt} of ${retries} failed:`, err.message || err);
+          if (attempt < retries) {
+            await sleep(delayMs);
+            delayMs *= 1.5; // Exponential scale
+          }
+        }
+      }
+
+      if (!response) {
+        throw lastError || new Error("Failed to contact generative AI model after retries.");
+      }
+
+      const text = response.text || '';
+      const jsonStr = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      const data = JSON.parse(jsonStr);
+      res.json(data);
+    } catch (e: any) {
+      console.error("Server-side OCR processing failed:", e);
+      res.status(500).json({ error: e.message || "Failed to process OCR" });
+    }
+  });
+
+  app.post('/api/certificates', authenticate, canAddCertificate, upload.single('file'), async (req: any, res) => {
+    const { vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type } = req.body;
+    try {
+      if (req.user.role === 'vessel') {
+        if (Number(vessel_id) !== req.user.vessel_id) {
+          return res.status(403).json({ error: 'Vessel users can only add certificates to their own vessel' });
+        }
+        if (access_type !== 'vessel') {
+          return res.status(403).json({ error: 'Vessel users can only add ship certificates' });
+        }
+      }
+
+      if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        if (team_id && !req.user.team_ids.includes(Number(team_id))) return res.status(403).json({ error: 'Forbidden' });
+        if (vessel_id && vessel_id !== 'all') {
+          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
+          if (vRows.length > 0 && !req.user.team_ids.includes(vRows[0].team_id)) return res.status(403).json({ error: 'Forbidden' });
+        }
+        if (vessel_id === 'all') return res.status(403).json({ error: 'PIC/Management roles cannot add certificates to all vessels' });
+      }
+      const finalAccessType = access_type || 'office';
+      const finalDateIssued = date_issued || null;
+      const finalCertNumber = certificate_number || null;
+      
+      const saveFile = async (certId: number) => {
+        if (req.file) {
+          const { file_type } = req.body;
+          const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'certificates');
+          await pool.execute(
+            'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
+            [certId, req.file.originalname, req.file.originalname, req.file.mimetype, file_type || 'certificate', uploadData]
+          );
+        }
+      };
+
+      if (vessel_id === 'all') {
+        const [vessels]: any = await pool.query('SELECT id, team_id FROM vessels');
+        for (const v of vessels) {
+          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
+          await saveFile(result.insertId);
+        }
+        await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for ALL vessels`);
+      } else if (vessel_id) {
+        // Get team_id from vessel if not provided
+        let finalTeamId = team_id;
+        if (!finalTeamId) {
+          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
+          if (vRows.length > 0) finalTeamId = vRows[0].team_id;
+        }
+        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
+        await saveFile(result.insertId);
+        await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for vessel ID ${vessel_id}`);
+      } else {
+        // Non-vessel related
+        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
+        await saveFile(result.insertId);
+        await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for team ID ${team_id}`);
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/certificates/:id', authenticate, async (req: any, res) => {
+    const { name, vessel_id, team_id, expiration_date, date_issued, certificate_number, access_type } = req.body;
+    try {
+      const [certs]: any = await pool.execute('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
+      if (certs.length === 0) return res.status(404).json({ error: 'Certificate not found' });
+      const cert = certs[0];
+
+      if (req.user.role === 'admin' || req.user.role === 'team_pic' || req.user.role === 'user') {
+        const finalName = name !== undefined ? name : cert.name;
+        const finalVesselId = vessel_id !== undefined ? vessel_id : cert.vessel_id;
+        const finalExpirationDate = expiration_date !== undefined ? expiration_date : cert.expiration_date;
+        const finalDateIssued = date_issued !== undefined ? date_issued : cert.date_issued;
+        const finalCertNumber = certificate_number !== undefined ? certificate_number : cert.certificate_number;
+        const finalAccessType = access_type !== undefined ? access_type : cert.access_type;
+        
+        let finalTeamId = team_id !== undefined ? team_id : cert.team_id;
+        if (vessel_id && team_id === undefined) {
+          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
+          if (vRows.length > 0) finalTeamId = vRows[0].team_id;
+        }
+
+        await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, date_issued = ?, certificate_number = ?, access_type = ? WHERE id = ?', 
+          [finalName, finalVesselId || null, finalTeamId, finalExpirationDate, finalDateIssued, finalCertNumber, finalAccessType, req.params.id]);
+        await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE', `Updated certificate ID ${req.params.id}: ${finalName}`);
+      } else {
+        // Non-admins can update expiration date, date issued, and certificate number
+        const finalExpirationDate = expiration_date !== undefined ? expiration_date : cert.expiration_date;
+        const finalDateIssued = date_issued !== undefined ? date_issued : cert.date_issued;
+        const finalCertNumber = certificate_number !== undefined ? certificate_number : cert.certificate_number;
+
+        if (req.user.role === 'vessel') {
+          if (cert.vessel_id !== req.user.vessel_id || !['vessel', 'any'].includes(cert.access_type)) {
+            return res.status(403).json({ error: 'Forbidden' });
+          }
+        } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
+          if (!req.user.team_ids.includes(cert.team_id) || !['office', 'vessel', 'any'].includes(cert.access_type)) {
+            return res.status(403).json({ error: 'Forbidden' });
+          }
+        }
+
+        await pool.execute('UPDATE certificates SET expiration_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', [finalExpirationDate, finalDateIssued, finalCertNumber, req.params.id]);
+        await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_FIELDS', `Updated fields for certificate: ${cert.name} (ID: ${req.params.id})`);
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/users/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      // Soft delete notes
+      await pool.execute('UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE user_id = ? AND deleted_at IS NULL', [req.params.id]);
+      await pool.execute('UPDATE users SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit((req as any).user.id, (req as any).user.username, 'SOFT_DELETE_USER', `Soft deleted user ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Soft delete user error:', e);
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/certificates/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      const [certRows]: any = await pool.execute('SELECT name, team_id FROM certificates WHERE id = ?', [req.params.id]);
+      if (certRows.length === 0) return res.status(404).json({ error: 'Certificate not found' });
+      const cert = certRows[0];
+
+      if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        if (!req.user.team_ids.includes(cert.team_id)) return res.status(403).json({ error: 'Forbidden' });
+      }
+      // Soft delete notes and files
+      await pool.execute('UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
+      await pool.execute('UPDATE files SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
+      await pool.execute('UPDATE certificates SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_CERTIFICATE', `Soft deleted certificate: ${cert.name} (ID: ${req.params.id})`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Soft delete certificate error:', e);
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/admin/audit-logs', authenticate, isAdmin, async (req, res) => {
+    try {
+      const [logs] = await pool.query('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 1000');
+      res.json(logs);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Google Docs User Guide Integration
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+  const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+
+  app.get('/api/auth/google/url', authenticate, (req, res) => {
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+      return res.status(500).json({ error: 'Google OAuth not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in settings.' });
+    }
+
+    // Automatically construct redirect URI if not provided
+    const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+
+    const auth = new google.auth.OAuth2(
+      GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET,
+      redirectUri
+    );
+
+    const url = auth.generateAuthUrl({
+      access_type: 'offline',
+      scope: ['https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/drive.file'],
+      prompt: 'consent'
+    });
+    res.json({ url });
+  });
+
+  app.get('/api/auth/google/callback', async (req, res) => {
+    const { code } = req.query;
+    try {
+      const redirectUri = process.env.GOOGLE_REDIRECT_URI || `${req.protocol}://${req.get('host')}/api/auth/google/callback`;
+      const auth = new google.auth.OAuth2(
+        GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET,
+        redirectUri
+      );
+
+      const { tokens } = await auth.getToken(code as string);
+      res.send(`
+        <html>
+          <body style="font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f8fafc;">
+            <div style="text-align: center; padding: 2rem; background: white; border-radius: 1rem; shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+              <h2 style="color: #1e3a8a; margin-bottom: 0.5rem;">Authentication Successful</h2>
+              <p style="color: #64748b;">You can close this window now.</p>
+              <script>
+                if (window.opener) {
+                  window.opener.postMessage({ 
+                    type: 'GOOGLE_AUTH_SUCCESS', 
+                    tokens: ${JSON.stringify(tokens)} 
+                  }, '*');
+                  setTimeout(() => window.close(), 1000);
+                }
+              </script>
+            </div>
+          </body>
+        </html>
+      `);
+    } catch (e: any) {
+      res.status(500).send(`Authentication failed: ${e.message}`);
+    }
+  });
+
+  app.post('/api/google/generate-guide', authenticate, async (req: any, res) => {
+    const { tokens } = req.body;
+    if (!tokens) return res.status(400).json({ error: 'Tokens required' });
+
+    try {
+      const auth = new google.auth.OAuth2();
+      auth.setCredentials(tokens);
+      const docs = google.docs({ version: 'v1', auth });
+
+      const title = `COMOS Vessel Manager - User Guide (${format(new Date(), 'MMM dd, yyyy')})`;
+      const doc = await docs.documents.create({
+        requestBody: { title }
+      });
+
+      const documentId = doc.data.documentId;
+      const content = `COMOS Vessel Manager
+USER GUIDE
+
+1. OVERVIEW
+COMOS (Cleanocean Monitoring System) is a professional vessel certificate management application. It helps ensure compliance by tracking expirations, managing documents, and facilitating communication between the office and the vessel.
+
+2. DASHBOARD
+The Dashboard provides a high-level overview of your fleet's compliance status. 
+- Analytics: View total vessels, active certificates, and critical alerts.
+- Compliance Gauges: Visual indicators of "Safe," "Expiring Soon," and "Critical/Expired" documents.
+
+3. VESSEL LIST
+- Filter & Search: Quickly find vessels by name or assigned Team.
+- Vessel Health: Color-coded icons show the status of the most critical certificate for each vessel.
+- Port Tracking: Real-time tracking of Next Port and ETA for all vessels.
+
+4. CERTIFICATE TRACKING
+- Detail View: Click any vessel to see its full list of certificates.
+- Statuses: 
+  * Blue: Active (valid)
+  * Orange: Expiring Soon (30-90 days)
+  * Red: Expired or Critical (<30 days)
+- Pinned Notes: Use the chat interface within each certificate to log correspondence or specific instructions.
+
+5. COMMUNICATION (CHAT)
+- Each certificate features a "Messaging" area. 
+- This replaces fragmented email threads, keeping all certificate-related discussion in one auditable place.
+- Notes are auto-scrolled to the latest entry to feel like a modern chat app.
+
+6. SLIDESHOW (KIOSK MODE)
+- Designed for office displays or bridge monitors.
+- Automatically cycles through vessels, highlighting their most critical expiring certificates.
+- Images are preloaded for smooth transitions.
+
+7. AUTOMATED EMAIL ALERTS
+- The system automatically scans for expiring certificates daily.
+- It sends consolidated reports to IT and Team PICs based on the schedule configured in Admin Settings.
+
+8. ADMINISTRATION
+- User Roles: 
+  * Admin: Full system control.
+  * Team PIC: Manages vessels assigned to their team(s).
+  * User: Read-only access to office documents.
+  * Vessel: Access to certificates for their specific ship only.
+- Audit Logs: Track every change made in the system for accountability.
+
+--------------------------------------------------
+Generated by COMOS System
+`;
+
+      await docs.documents.batchUpdate({
+        documentId: documentId!,
+        requestBody: {
+          requests: [
+            {
+              insertText: {
+                location: { index: 1 },
+                text: content
+              }
+            }
+          ]
+        }
+      });
+
+      await logAudit(req.user.id, req.user.username, 'GENERATE_GUIDE', `Generated Google Doc User Guide: ${documentId}`);
+      res.json({ success: true, documentId, url: `https://docs.google.com/document/d/${documentId}/edit` });
+    } catch (e: any) {
+      console.error('Failed to generate guide:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Notes Routes
+  app.get('/api/certificates/:id/notes', authenticate, async (req, res) => {
+    const [notes] = await pool.execute(`
+      SELECT n.*, u.username 
+      FROM notes n 
+      JOIN users u ON n.user_id = u.id 
+      WHERE n.certificate_id = ? AND n.deleted_at IS NULL
+      ORDER BY n.created_at DESC
+    `, [req.params.id]);
+    res.json(notes);
+  });
+
+  app.post('/api/certificates/:id/notes', authenticate, async (req: any, res) => {
+    const { content } = req.body;
+    await pool.execute('INSERT INTO notes (certificate_id, user_id, content) VALUES (?, ?, ?)', [req.params.id, req.user.id, content]);
+    res.json({ success: true });
+  });
+
+  // File Routes
+  app.get('/api/certificates/:id/files', authenticate, async (req, res) => {
+    const [files] = await pool.execute('SELECT id, certificate_id, filename, original_name, mimetype, file_type, upload_date FROM files WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
+    res.json(files);
+  });
+
+  app.post('/api/certificates/:id/files', authenticate, upload.single('file'), async (req: any, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const { file_type } = req.body;
+    try {
+      const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'certificates');
+      const [insertResult]: any = await pool.execute(
+        'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
+        [req.params.id, req.file.originalname, req.file.originalname, req.file.mimetype, file_type || 'certificate', uploadData]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPLOAD_FILE', `Uploaded ${file_type || 'certificate'} file: ${req.file.originalname} to certificate ID ${req.params.id}`);
+      res.json({ 
+        id: insertResult.insertId,
+        certificate_id: Number(req.params.id),
+        filename: req.file.originalname,
+        original_name: req.file.originalname,
+        mimetype: req.file.mimetype,
+        file_type: file_type || 'certificate',
+        upload_date: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.error('File upload failed:', err);
+      res.status(500).json({ error: 'Failed to save file to database' });
+    }
+  });
+
+  app.get('/api/files/:filename', authenticate, async (req, res) => {
+    try {
+      // Note: In this new version, we might want to fetch by ID or filename. 
+      // Since the old code used filename, we'll try to find by filename first.
+      const [files]: any = await pool.execute('SELECT * FROM files WHERE filename = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1', [req.params.filename]);
+      
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.original_name}"`);
+        // Add headers to help with PDF preview issues
+        res.setHeader('Content-Security-Policy', "frame-ancestors 'self' *");
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found in database' });
+      }
+    } catch (err: any) {
+      console.error('File retrieval failed:', err);
+      res.status(500).json({ error: 'Error retrieving file' });
+    }
+  });
+
+  app.delete('/api/files/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        const [files]: any = await pool.execute('SELECT c.team_id FROM files f JOIN certificates c ON f.certificate_id = c.id WHERE f.id = ?', [req.params.id]);
+        if (files.length > 0 && !req.user.team_ids.includes(files[0].team_id)) return res.status(403).json({ error: 'Forbidden' });
+      }
+      // Soft delete from database
+      await pool.execute('UPDATE files SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_FILE', `Soft deleted file ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Departure Reports Routes
+  app.get('/api/departure-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT dr.*, v.name as vessel_name, da.original_name as attachment_name
+        FROM departure_reports dr
+        JOIN vessels v ON dr.vessel_id = v.id
+        LEFT JOIN departure_attachments da ON dr.attachment_id = da.id
+        WHERE dr.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND dr.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+
+      query += ' ORDER BY dr.utc_date_time DESC';
+      const [reports] = await pool.execute(query, params);
+      res.json(reports);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/departure-reports', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      let attachmentId = null;
+      if (req.file) {
+        const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'departure');
+        const [result]: any = await pool.execute(
+          'INSERT INTO departure_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, uploadData]
+        );
+        attachmentId = result.insertId;
+      }
+
+      const {
+        vessel_id,
+        voyage_number,
+        utc_date_time,
+        departure_port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_port_hsfo,
+        foc_port_lsfo,
+        foc_port_mgo,
+        foc_port_mdo
+      } = req.body;
+
+      await pool.execute(`
+        INSERT INTO departure_reports (
+          vessel_id, user_id, voyage_number, utc_date_time, departure_port, eu_uk_status,
+          position_long, position_lat, operation_type, cargo_status, rob_type,
+          rob_hsfo, rob_lsfo, rob_mgo, rob_mdo, rob_fw,
+          foc_port_hsfo, foc_port_lsfo, foc_port_mgo, foc_port_mdo,
+          attachment_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        vessel_id, req.user.id, voyage_number, utc_date_time, departure_port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_port_hsfo || 0, foc_port_lsfo || 0, foc_port_mgo || 0, foc_port_mdo || 0,
+        attachmentId
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_DEPARTURE_REPORT', `Created departure report for vessel ID ${vessel_id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to create departure report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/departure-reports/:id', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+
+      if (req.user.role === 'vessel') {
+        const [latest]: any = await pool.execute(`
+          SELECT id FROM departure_reports 
+          WHERE vessel_id = ? AND deleted_at IS NULL 
+          ORDER BY utc_date_time DESC, id DESC LIMIT 1
+        `, [req.user.vessel_id]);
+        if (latest.length > 0 && latest[0].id !== Number(id)) {
+          return res.status(403).json({ error: 'Vessel users can only edit the latest departure report' });
+        }
+
+        const [expired]: any = await pool.execute(`
+          SELECT id FROM departure_reports 
+          WHERE id = ? AND created_at < NOW() - INTERVAL 24 HOUR
+        `, [id]);
+        if (expired.length > 0) {
+          return res.status(403).json({ error: 'Vessel users can only edit or update voyage reports within 24 hours after posting' });
+        }
+      }
+
+      let attachmentId = req.body.attachment_id || null;
+
+      if (req.file) {
+        const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'departure');
+        const [result]: any = await pool.execute(
+          'INSERT INTO departure_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, uploadData]
+        );
+        attachmentId = result.insertId;
+      }
+
+      const {
+        voyage_number,
+        utc_date_time,
+        departure_port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_port_hsfo,
+        foc_port_lsfo,
+        foc_port_mgo,
+        foc_port_mdo
+      } = req.body;
+
+      await pool.execute(`
+        UPDATE departure_reports SET
+          voyage_number = ?, utc_date_time = ?, departure_port = ?, eu_uk_status = ?,
+          position_long = ?, position_lat = ?, operation_type = ?, cargo_status = ?, rob_type = ?,
+          rob_hsfo = ?, rob_lsfo = ?, rob_mgo = ?, rob_mdo = ?, rob_fw = ?,
+          foc_port_hsfo = ?, foc_port_lsfo = ?, foc_port_mgo = ?, foc_port_mdo = ?,
+          attachment_id = ?
+        WHERE id = ?
+      `, [
+        voyage_number, utc_date_time, departure_port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_port_hsfo || 0, foc_port_lsfo || 0, foc_port_mgo || 0, foc_port_mdo || 0,
+        attachmentId, id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_DEPARTURE_REPORT', `Updated departure report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to update departure report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/departure-attachments/:id', authenticate, async (req, res) => {
+    try {
+      const [attachments]: any = await pool.execute('SELECT * FROM departure_attachments WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
+      if (attachments.length > 0 && attachments[0].data) {
+        const file = attachments[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.original_name}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'Attachment not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/arrival-attachments/:id', authenticate, async (req, res) => {
+    try {
+      const [attachments]: any = await pool.execute('SELECT * FROM arrival_attachments WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
+      if (attachments.length > 0 && attachments[0].data) {
+        const file = attachments[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.original_name}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'Attachment not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/noon-attachments/:id', authenticate, async (req, res) => {
+    try {
+      const [attachments]: any = await pool.execute('SELECT * FROM noon_attachments WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
+      if (attachments.length > 0 && attachments[0].data) {
+        const file = attachments[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.original_name}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'Attachment not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Arrival Reports Routes
+  app.get('/api/arrival-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT ar.*, v.name as vessel_name, aa.original_name as attachment_name
+        FROM arrival_reports ar
+        JOIN vessels v ON ar.vessel_id = v.id
+        LEFT JOIN arrival_attachments aa ON ar.attachment_id = aa.id
+        WHERE ar.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND ar.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+
+      query += ' ORDER BY ar.utc_date_time DESC';
+      const [reports] = await pool.execute(query, params);
+      res.json(reports);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/arrival-reports', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      let attachmentId = null;
+      if (req.file) {
+        const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'arrival');
+        const [result]: any = await pool.execute(
+          'INSERT INTO arrival_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, uploadData]
+        );
+        attachmentId = result.insertId;
+      }
+
+      const {
+        vessel_id,
+        voyage_number,
+        utc_date_time,
+        arrival_port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        total_time_at_sea,
+        total_distance,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_sea_hsfo,
+        foc_sea_lsfo,
+        foc_sea_mgo,
+        foc_sea_mdo,
+        agent_detail
+      } = req.body;
+
+      await pool.execute(`
+        INSERT INTO arrival_reports (
+          vessel_id, user_id, voyage_number, utc_date_time, arrival_port, eu_uk_status,
+          position_long, position_lat, operation_type, cargo_status,
+          total_time_at_sea, total_distance, rob_type,
+          rob_hsfo, rob_lsfo, rob_mgo, rob_mdo, rob_fw,
+          foc_sea_hsfo, foc_sea_lsfo, foc_sea_mgo, foc_sea_mdo,
+          agent_detail, attachment_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        vessel_id, req.user.id, voyage_number, utc_date_time, arrival_port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status,
+        total_time_at_sea, total_distance, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_sea_hsfo || 0, foc_sea_lsfo || 0, foc_sea_mgo || 0, foc_sea_mdo || 0,
+        agent_detail, attachmentId
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_ARRIVAL_REPORT', `Created arrival report for vessel ID ${vessel_id}`);
+      
+      await syncVesselNextPort(vessel_id);
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to create arrival report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/arrival-reports/:id', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+
+      if (req.user.role === 'vessel') {
+        const [latest]: any = await pool.execute(`
+          SELECT id FROM arrival_reports 
+          WHERE vessel_id = ? AND deleted_at IS NULL 
+          ORDER BY utc_date_time DESC, id DESC LIMIT 1
+        `, [req.user.vessel_id]);
+        if (latest.length > 0 && latest[0].id !== Number(id)) {
+          return res.status(403).json({ error: 'Vessel users can only edit the latest arrival report' });
+        }
+
+        const [expired]: any = await pool.execute(`
+          SELECT id FROM arrival_reports 
+          WHERE id = ? AND created_at < NOW() - INTERVAL 24 HOUR
+        `, [id]);
+        if (expired.length > 0) {
+          return res.status(403).json({ error: 'Vessel users can only edit or update voyage reports within 24 hours after posting' });
+        }
+      }
+
+      let attachmentId = req.body.attachment_id || null;
+
+      if (req.file) {
+        const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'arrival');
+        const [result]: any = await pool.execute(
+          'INSERT INTO arrival_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, uploadData]
+        );
+        attachmentId = result.insertId;
+      }
+
+      const {
+        voyage_number,
+        utc_date_time,
+        arrival_port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        total_time_at_sea,
+        total_distance,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_sea_hsfo,
+        foc_sea_lsfo,
+        foc_sea_mgo,
+        foc_sea_mdo,
+        agent_detail
+      } = req.body;
+
+      await pool.execute(`
+        UPDATE arrival_reports SET
+          voyage_number = ?, utc_date_time = ?, arrival_port = ?, eu_uk_status = ?,
+          position_long = ?, position_lat = ?, operation_type = ?, cargo_status = ?,
+          total_time_at_sea = ?, total_distance = ?, rob_type = ?,
+          rob_hsfo = ?, rob_lsfo = ?, rob_mgo = ?, rob_mdo = ?, rob_fw = ?,
+          foc_sea_hsfo = ?, foc_sea_lsfo = ?, foc_sea_mgo = ?, foc_sea_mdo = ?,
+          agent_detail = ?, attachment_id = ?
+        WHERE id = ?
+      `, [
+        voyage_number, utc_date_time, arrival_port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status,
+        total_time_at_sea, total_distance, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_sea_hsfo || 0, foc_sea_lsfo || 0, foc_sea_mgo || 0, foc_sea_mdo || 0,
+        agent_detail, attachmentId, id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_ARRIVAL_REPORT', `Updated arrival report ID ${id}`);
+      
+      const [reportRows]: any = await pool.execute('SELECT vessel_id FROM arrival_reports WHERE id = ?', [id]);
+      if (reportRows.length > 0) {
+        await syncVesselNextPort(reportRows[0].vessel_id);
+      }
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to update arrival report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Noon Reports Routes
+  app.get('/api/noon-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT nr.*, v.name as vessel_name, na.original_name as attachment_name
+        FROM noon_reports nr
+        JOIN vessels v ON nr.vessel_id = v.id
+        LEFT JOIN noon_attachments na ON nr.attachment_id = na.id
+        WHERE nr.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND nr.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+
+      query += ' ORDER BY nr.utc_date_time DESC';
+      const [reports] = await pool.execute(query, params);
+      res.json(reports);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/noon-reports', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      console.log('Received noon report submission:', req.body);
+      const {
+        vessel_id,
+        voyage_number,
+        utc_date_time,
+        position_long,
+        position_lat,
+        distance_to_go,
+        cargo_status,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        foc_hsfo,
+        foc_lsfo,
+        foc_mgo,
+        foc_mdo,
+        weather_notation,
+        swell_scale_21,
+        wind_scale,
+        wave_scale,
+        weather_image,
+        remarks,
+        destination_port,
+        eta_utc,
+        agent_details,
+        charterer_min_hsfo,
+        charterer_max_hsfo,
+        charterer_min_lsfo,
+        charterer_max_lsfo,
+        charterer_min_mgo,
+        charterer_max_mgo,
+        charterer_min_mdo,
+        charterer_max_mdo
+      } = req.body;
+
+      if (!vessel_id) {
+        return res.status(400).json({ error: 'Vessel ID is required' });
+      }
+
+      // Fetch vessel's current thresholds as fallback/default
+      const [vesselRows]: any = await pool.execute(
+        'SELECT charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo, charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo FROM vessels WHERE id = ?',
+        [vessel_id]
+      );
+      let vMinHsfo = null, vMaxHsfo = null, vMinLsfo = null, vMaxLsfo = null, vMinMgo = null, vMaxMgo = null, vMinMdo = null, vMaxMdo = null;
+      if (vesselRows.length > 0) {
+        vMinHsfo = vesselRows[0].charterer_min_hsfo;
+        vMaxHsfo = vesselRows[0].charterer_max_hsfo;
+        vMinLsfo = vesselRows[0].charterer_min_lsfo;
+        vMaxLsfo = vesselRows[0].charterer_max_lsfo;
+        vMinMgo = vesselRows[0].charterer_min_mgo;
+        vMaxMgo = vesselRows[0].charterer_max_mgo;
+        vMinMdo = vesselRows[0].charterer_min_mdo;
+        vMaxMdo = vesselRows[0].charterer_max_mdo;
+      }
+
+      const isAuthorized = req.user.role === 'admin' || req.user.role === 'team_pic' || req.user.role === 'user';
+      const cMinHsfo = isAuthorized ? (charterer_min_hsfo || vMinHsfo) : vMinHsfo;
+      const cMaxHsfo = isAuthorized ? (charterer_max_hsfo || vMaxHsfo) : vMaxHsfo;
+      const cMinLsfo = isAuthorized ? (charterer_min_lsfo || vMinLsfo) : vMinLsfo;
+      const cMaxLsfo = isAuthorized ? (charterer_max_lsfo || vMaxLsfo) : vMaxLsfo;
+      const cMinMgo = isAuthorized ? (charterer_min_mgo || vMinMgo) : vMinMgo;
+      const cMaxMgo = isAuthorized ? (charterer_max_mgo || vMaxMgo) : vMaxMgo;
+      const cMinMdo = isAuthorized ? (charterer_min_mdo || vMinMdo) : vMinMdo;
+      const cMaxMdo = isAuthorized ? (charterer_max_mdo || vMaxMdo) : vMaxMdo;
+
+      let attachmentId = null;
+      if (req.file) {
+        console.log('Processing attachment for noon report:', req.file.originalname);
+        const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'noon');
+        const [result]: any = await pool.execute(
+          'INSERT INTO noon_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, uploadData]
+        );
+        attachmentId = result.insertId;
+      }
+
+      await pool.execute(`
+        INSERT INTO noon_reports (
+          vessel_id, user_id, voyage_number, utc_date_time, position_long, position_lat,
+          distance_to_go, cargo_status, rob_hsfo, rob_lsfo, rob_mgo, rob_mdo,
+          foc_hsfo, foc_lsfo, foc_mgo, foc_mdo, attachment_id,
+          weather_notation, swell_scale_21, wind_scale, wave_scale, weather_image, remarks,
+          destination_port, eta_utc, agent_details,
+          charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo,
+          charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        vessel_id, req.user.id, voyage_number, utc_date_time, position_long, position_lat,
+        distance_to_go, cargo_status, 
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0,
+        foc_hsfo || 0, foc_lsfo || 0, foc_mgo || 0, foc_mdo || 0,
+        attachmentId,
+        weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null, weather_image || null,
+        remarks || null,
+        destination_port || null, eta_utc && eta_utc.trim() !== '' ? eta_utc : null, agent_details || null,
+        cMinHsfo, cMaxHsfo, cMinLsfo, cMaxLsfo,
+        cMinMgo, cMaxMgo, cMinMdo, cMaxMdo
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_NOON_REPORT', `Created noon report for vessel ID ${vessel_id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to create noon report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/noon-reports/:id', authenticate, upload.single('report_file'), async (req: any, res) => {
+    try {
+      const { id } = req.params;
+
+      if (req.user.role === 'vessel') {
+        const [latest]: any = await pool.execute(`
+          SELECT id FROM noon_reports 
+          WHERE vessel_id = ? AND deleted_at IS NULL 
+          ORDER BY utc_date_time DESC, id DESC LIMIT 1
+        `, [req.user.vessel_id]);
+        if (latest.length > 0 && latest[0].id !== Number(id)) {
+          return res.status(403).json({ error: 'Vessel users can only edit the latest noon report' });
+        }
+
+        const [expired]: any = await pool.execute(`
+          SELECT id FROM noon_reports 
+          WHERE id = ? AND created_at < NOW() - INTERVAL 24 HOUR
+        `, [id]);
+        if (expired.length > 0) {
+          return res.status(403).json({ error: 'Vessel users can only edit or update voyage reports within 24 hours after posting' });
+        }
+      }
+
+      const {
+        voyage_number,
+        utc_date_time,
+        position_long,
+        position_lat,
+        distance_to_go,
+        cargo_status,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        foc_hsfo,
+        foc_lsfo,
+        foc_mgo,
+        foc_mdo,
+        weather_notation,
+        swell_scale_21,
+        wind_scale,
+        wave_scale,
+        weather_image,
+        remarks,
+        destination_port,
+        eta_utc,
+        agent_details,
+        charterer_min_hsfo,
+        charterer_max_hsfo,
+        charterer_min_lsfo,
+        charterer_max_lsfo,
+        charterer_min_mgo,
+        charterer_max_mgo,
+        charterer_min_mdo,
+        charterer_max_mdo
+      } = req.body;
+
+      const isAuthorized = req.user.role === 'admin' || req.user.role === 'team_pic' || req.user.role === 'user';
+      let cMinHsfo, cMaxHsfo, cMinLsfo, cMaxLsfo, cMinMgo, cMaxMgo, cMinMdo, cMaxMdo;
+
+      const [oldReport]: any = await pool.execute(
+        'SELECT vessel_id, charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo, charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo FROM noon_reports WHERE id = ?',
+        [id]
+      );
+      const reportVesselId = oldReport.length > 0 ? oldReport[0].vessel_id : null;
+
+      // Fetch vessel's current thresholds as fallback
+      let vMinHsfo = null, vMaxHsfo = null, vMinLsfo = null, vMaxLsfo = null, vMinMgo = null, vMaxMgo = null, vMinMdo = null, vMaxMdo = null;
+      if (reportVesselId) {
+        const [vessels]: any = await pool.execute(
+          'SELECT charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo, charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo FROM vessels WHERE id = ?',
+          [reportVesselId]
+        );
+        if (vessels.length > 0) {
+          vMinHsfo = vessels[0].charterer_min_hsfo;
+          vMaxHsfo = vessels[0].charterer_max_hsfo;
+          vMinLsfo = vessels[0].charterer_min_lsfo;
+          vMaxLsfo = vessels[0].charterer_max_lsfo;
+          vMinMgo = vessels[0].charterer_min_mgo;
+          vMaxMgo = vessels[0].charterer_max_mgo;
+          vMinMdo = vessels[0].charterer_min_mdo;
+          vMaxMdo = vessels[0].charterer_max_mdo;
+        }
+      }
+
+      if (isAuthorized) {
+        cMinHsfo = charterer_min_hsfo || vMinHsfo;
+        cMaxHsfo = charterer_max_hsfo || vMaxHsfo;
+        cMinLsfo = charterer_min_lsfo || vMinLsfo;
+        cMaxLsfo = charterer_max_lsfo || vMaxLsfo;
+        cMinMgo = charterer_min_mgo || vMinMgo;
+        cMaxMgo = charterer_max_mgo || vMaxMgo;
+        cMinMdo = charterer_min_mdo || vMinMdo;
+        cMaxMdo = charterer_max_mdo || vMaxMdo;
+      } else {
+        if (oldReport.length > 0) {
+          cMinHsfo = oldReport[0].charterer_min_hsfo !== null ? oldReport[0].charterer_min_hsfo : vMinHsfo;
+          cMaxHsfo = oldReport[0].charterer_max_hsfo !== null ? oldReport[0].charterer_max_hsfo : vMaxHsfo;
+          cMinLsfo = oldReport[0].charterer_min_lsfo !== null ? oldReport[0].charterer_min_lsfo : vMinLsfo;
+          cMaxLsfo = oldReport[0].charterer_max_lsfo !== null ? oldReport[0].charterer_max_lsfo : vMaxLsfo;
+          cMinMgo = oldReport[0].charterer_min_mgo !== null ? oldReport[0].charterer_min_mgo : vMinMgo;
+          cMaxMgo = oldReport[0].charterer_max_mgo !== null ? oldReport[0].charterer_max_mgo : vMaxMgo;
+          cMinMdo = oldReport[0].charterer_min_mdo !== null ? oldReport[0].charterer_min_mdo : vMinMdo;
+          cMaxMdo = oldReport[0].charterer_max_mdo !== null ? oldReport[0].charterer_max_mdo : vMaxMdo;
+        } else {
+          cMinHsfo = vMinHsfo; cMaxHsfo = vMaxHsfo; cMinLsfo = vMinLsfo; cMaxLsfo = vMaxLsfo;
+          cMinMgo = vMinMgo; cMaxMgo = vMaxMgo; cMinMdo = vMinMdo; cMaxMdo = vMaxMdo;
+        }
+      }
+
+      let attachmentId = null;
+      if (req.file) {
+        const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'noon');
+        const [result]: any = await pool.execute(
+          'INSERT INTO noon_attachments (filename, original_name, mimetype, data) VALUES (?, ?, ?, ?)',
+          [req.file.originalname, req.file.originalname, req.file.mimetype, uploadData]
+        );
+        attachmentId = result.insertId;
+      } else {
+        const [old]: any = await pool.execute('SELECT attachment_id FROM noon_reports WHERE id = ?', [id]);
+        if (old.length > 0) attachmentId = old[0].attachment_id;
+      }
+
+      await pool.execute(`
+        UPDATE noon_reports SET
+          voyage_number = ?, utc_date_time = ?, position_long = ?, position_lat = ?,
+          distance_to_go = ?, cargo_status = ?, rob_hsfo = ?, rob_lsfo = ?,
+          rob_mgo = ?, rob_mdo = ?, foc_hsfo = ?, foc_lsfo = ?,
+          foc_mgo = ?, foc_mdo = ?, attachment_id = ?,
+          weather_notation = ?, swell_scale_21 = ?, wind_scale = ?, wave_scale = ?,
+          weather_image = ?, remarks = ?,
+          destination_port = ?, eta_utc = ?, agent_details = ?,
+          charterer_min_hsfo = ?, charterer_max_hsfo = ?, charterer_min_lsfo = ?, charterer_max_lsfo = ?,
+          charterer_min_mgo = ?, charterer_max_mgo = ?, charterer_min_mdo = ?, charterer_max_mdo = ?
+        WHERE id = ?
+      `, [
+        voyage_number, utc_date_time, position_long, position_lat,
+        distance_to_go, cargo_status, 
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0,
+        foc_hsfo || 0, foc_lsfo || 0, foc_mgo || 0, foc_mdo || 0,
+        attachmentId,
+        weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null,
+        weather_image || null, remarks || null,
+        destination_port || null, eta_utc && eta_utc.trim() !== '' ? eta_utc : null, agent_details || null,
+        cMinHsfo, cMaxHsfo, cMinLsfo, cMaxLsfo,
+        cMinMgo, cMaxMgo, cMinMdo, cMaxMdo,
+        id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_NOON_REPORT', `Updated noon report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to update noon report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/noon-reports/:id/charterer-thresholds', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      charterer_min_hsfo, charterer_max_hsfo,
+      charterer_min_lsfo, charterer_max_lsfo,
+      charterer_min_mgo, charterer_max_mgo,
+      charterer_min_mdo, charterer_max_mdo
+    } = req.body;
+    try {
+      await pool.execute(`
+        UPDATE noon_reports SET
+          charterer_min_hsfo = ?, charterer_max_hsfo = ?,
+          charterer_min_lsfo = ?, charterer_max_lsfo = ?,
+          charterer_min_mgo = ?, charterer_max_mgo = ?,
+          charterer_min_mdo = ?, charterer_max_mdo = ?
+        WHERE id = ?
+      `, [
+        charterer_min_hsfo || null, charterer_max_hsfo || null,
+        charterer_min_lsfo || null, charterer_max_lsfo || null,
+        charterer_min_mgo || null, charterer_max_mgo || null,
+        charterer_min_mdo || null, charterer_max_mdo || null,
+        id
+      ]);
+      await logAudit(req.user.id, req.user.username, 'UPDATE_NOON_REPORT_THRESHOLDS', `Updated thresholds for noon report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Other Reports Routes
+  app.get('/api/other-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT orr.*, v.name as vessel_name
+        FROM other_reports orr
+        JOIN vessels v ON orr.vessel_id = v.id
+        WHERE orr.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND orr.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+
+      query += ' ORDER BY orr.utc_date_time DESC';
+      const [reports] = await pool.execute(query, params);
+      res.json(reports);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/other-reports', authenticate, async (req: any, res) => {
+    try {
+      const {
+        vessel_id,
+        voyage_number,
+        utc_date_time,
+        port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_port_hsfo,
+        foc_port_lsfo,
+        foc_port_mgo,
+        foc_port_mdo
+      } = req.body;
+
+      await pool.execute(`
+        INSERT INTO other_reports (
+          vessel_id, user_id, voyage_number, utc_date_time, port, eu_uk_status,
+          position_long, position_lat, operation_type, cargo_status, rob_type,
+          rob_hsfo, rob_lsfo, rob_mgo, rob_mdo, rob_fw,
+          foc_port_hsfo, foc_port_lsfo, foc_port_mgo, foc_port_mdo
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        vessel_id, req.user.id, voyage_number, utc_date_time, port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_port_hsfo || 0, foc_port_lsfo || 0, foc_port_mgo || 0, foc_port_mdo || 0
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_OTHER_REPORT', `Created other report for vessel ID ${vessel_id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to create other report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/other-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+
+      if (req.user.role === 'vessel') {
+        const [latest]: any = await pool.execute(`
+          SELECT id FROM other_reports 
+          WHERE vessel_id = ? AND deleted_at IS NULL 
+          ORDER BY utc_date_time DESC, id DESC LIMIT 1
+        `, [req.user.vessel_id]);
+        if (latest.length > 0 && latest[0].id !== Number(id)) {
+          return res.status(403).json({ error: 'Vessel users can only edit the latest other report' });
+        }
+
+        const [expired]: any = await pool.execute(`
+          SELECT id FROM other_reports 
+          WHERE id = ? AND created_at < NOW() - INTERVAL 24 HOUR
+        `, [id]);
+        if (expired.length > 0) {
+          return res.status(403).json({ error: 'Vessel users can only edit or update voyage reports within 24 hours after posting' });
+        }
+      }
+
+      const {
+        voyage_number,
+        utc_date_time,
+        port,
+        eu_uk_status,
+        position_long,
+        position_lat,
+        operation_type,
+        cargo_status,
+        rob_type,
+        rob_hsfo,
+        rob_lsfo,
+        rob_mgo,
+        rob_mdo,
+        rob_fw,
+        foc_port_hsfo,
+        foc_port_lsfo,
+        foc_port_mgo,
+        foc_port_mdo
+      } = req.body;
+
+      await pool.execute(`
+        UPDATE other_reports SET
+          voyage_number = ?, utc_date_time = ?, port = ?, eu_uk_status = ?,
+          position_long = ?, position_lat = ?, operation_type = ?, cargo_status = ?, rob_type = ?,
+          rob_hsfo = ?, rob_lsfo = ?, rob_mgo = ?, rob_mdo = ?, rob_fw = ?,
+          foc_port_hsfo = ?, foc_port_lsfo = ?, foc_port_mgo = ?, foc_port_mdo = ?
+        WHERE id = ?
+      `, [
+        voyage_number, utc_date_time, port, eu_uk_status,
+        position_long, position_lat, operation_type, cargo_status, rob_type,
+        rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0, rob_fw || 0,
+        foc_port_hsfo || 0, foc_port_lsfo || 0, foc_port_mgo || 0, foc_port_mdo || 0,
+        id
+      ]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_OTHER_REPORT', `Updated other report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to update other report:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Email Alert Logic
+  let lastEmailSentAt = 0;
+  const EMAIL_RATE_LIMIT_MS = 1100; // Resend limit is 2/sec, so 1.1s is safe
+
+  async function getSmtpSettings() {
+    if (!pool) return null;
+    try {
+      const [rows] = await pool.query('SELECT setting_key, setting_value FROM settings');
+      return (rows as any[]).reduce((acc, row) => {
+        acc[row.setting_key] = row.setting_value;
+        return acc;
+      }, {});
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function sendEmail({ to, subject, html, from }: { to: string | string[], subject: string, html: string, from?: string }) {
+    const settings = await getSmtpSettings();
+    const apiKey = settings?.RESEND_API_KEY || process.env.RESEND_API_KEY;
+    
+    if (!apiKey) {
+      console.warn('RESEND_API_KEY is missing in both settings and environment. Email will not be sent.');
+      return null;
+    }
+
+    // Rate limiting logic
+    const now = Date.now();
+    const timeSinceLast = now - lastEmailSentAt;
+    if (timeSinceLast < EMAIL_RATE_LIMIT_MS) {
+      const waitTime = EMAIL_RATE_LIMIT_MS - timeSinceLast;
+      await sleep(waitTime);
+    }
+    lastEmailSentAt = Date.now();
+    
+    const resend = new Resend(apiKey);
+    const fromEmail = from || settings?.SMTP_FROM || process.env.SMTP_FROM || 'onboarding@resend.dev';
+    console.log(`Debug: Sending email from ${fromEmail} to ${to}`);
+    
+    try {
+      console.log(`Debug: Payload: from=${fromEmail}, to=${to}, subject=${subject}`);
+      const { data, error } = await resend.emails.send({
+        from: fromEmail,
+        to,
+        subject,
+        html,
+      });
+      
+      if (error) {
+        throw error;
+      }
+      return data;
+    } catch (error) {
+      console.error('Resend email error:', error);
+      throw error;
+    }
+  }
+
+  // Certificate Expiration Check Logic
+  let officeAlertTimeout: NodeJS.Timeout | null = null;
+  let vesselAlertTimeout: NodeJS.Timeout | null = null;
+
+  async function startAlertScheduler() {
+    await startOfficeAlertScheduler();
+    await startVesselAlertScheduler();
+  }
+
+  async function startOfficeAlertScheduler() {
+    if (officeAlertTimeout) clearTimeout(officeAlertTimeout);
+    
+    try {
+      const settings = await getSmtpSettings();
+      if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
+        console.log('Office Alert scheduler: Alerts are disabled.');
+        return;
+      }
+
+      const type = settings?.ALERT_SCHEDULE_TYPE || 'interval';
+      let ms = 24 * 60 * 60 * 1000; // Default 24h
+
+      if (type === 'interval') {
+        const hours = parseInt(settings?.ALERT_INTERVAL_HOURS || '24');
+        ms = hours * 60 * 60 * 1000;
+        console.log(`Office Alert scheduler: Next check in ${hours} hours.`);
+      } else {
+        const times = (settings?.ALERT_TIME || '08:00').split(',');
+        const now = new Date();
+        let nextCheck: Date | null = null;
+
+        for (const time of times) {
+          const [h, m] = time.split(':').map(Number);
+          const candidate = new Date();
+          candidate.setHours(h, m, 0, 0);
+          if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
+          
+          if (!nextCheck || candidate < nextCheck) {
+            nextCheck = candidate;
+          }
+        }
+
+        if (nextCheck) {
+          ms = nextCheck.getTime() - now.getTime();
+          console.log(`Office Alert scheduler: Next check at ${nextCheck.toLocaleString()}.`);
+        } else {
+          ms = 24 * 60 * 60 * 1000; // Fallback
+        }
+      }
+
+      officeAlertTimeout = setTimeout(async () => {
+        await checkExpirations('office');
+        startOfficeAlertScheduler();
+      }, ms);
+    } catch (err) {
+      console.error('Failed to start office alert scheduler:', err);
+      officeAlertTimeout = setTimeout(startOfficeAlertScheduler, 60 * 60 * 1000);
+    }
+  }
+
+  async function startVesselAlertScheduler() {
+    if (vesselAlertTimeout) clearTimeout(vesselAlertTimeout);
+    
+    try {
+      const settings = await getSmtpSettings();
+      if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
+        console.log('Vessel Alert scheduler: Alerts are disabled.');
+        return;
+      }
+
+      const type = settings?.VESSEL_ALERT_SCHEDULE_TYPE || 'interval';
+      let ms = 24 * 60 * 60 * 1000; // Default 24h
+
+      if (type === 'interval') {
+        const hours = parseInt(settings?.VESSEL_ALERT_INTERVAL_HOURS || '24');
+        ms = hours * 60 * 60 * 1000;
+        console.log(`Vessel Alert scheduler: Next check in ${hours} hours.`);
+      } else {
+        const times = (settings?.VESSEL_ALERT_TIME || '08:00').split(',');
+        const now = new Date();
+        let nextCheck: Date | null = null;
+
+        for (const time of times) {
+          const [h, m] = time.split(':').map(Number);
+          const candidate = new Date();
+          candidate.setHours(h, m, 0, 0);
+          if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
+          
+          if (!nextCheck || candidate < nextCheck) {
+            nextCheck = candidate;
+          }
+        }
+
+        if (nextCheck) {
+          ms = nextCheck.getTime() - now.getTime();
+          console.log(`Vessel Alert scheduler: Next check at ${nextCheck.toLocaleString()}.`);
+        } else {
+          ms = 24 * 60 * 60 * 1000; // Fallback
+        }
+      }
+
+      vesselAlertTimeout = setTimeout(async () => {
+        await checkExpirations('vessel');
+        startVesselAlertScheduler();
+      }, ms);
+    } catch (err) {
+      console.error('Failed to start vessel alert scheduler:', err);
+      vesselAlertTimeout = setTimeout(startVesselAlertScheduler, 60 * 60 * 1000);
+    }
+  }
+
+  async function checkExpirations(targetType?: 'office' | 'vessel') {
+    console.log(`Checking certificate expirations${targetType ? ` for ${targetType}` : ''}...`);
+    try {
+      let query = `
+        SELECT c.*, COALESCE(v.name, 'General') as vessel_name, t.name as team_name
+        FROM certificates c
+        LEFT JOIN vessels v ON c.vessel_id = v.id
+        JOIN teams t ON c.team_id = t.id
+        WHERE c.deleted_at IS NULL
+      `;
+      
+      let params: any[] = [];
+      if (targetType === 'office') {
+        query += " AND c.access_type IN (?, ?, ?)";
+        params = ['office', 'any', 'vessel'];
+      } else if (targetType === 'vessel') {
+        query += " AND c.access_type IN (?, ?)";
+        params = ['vessel', 'any'];
+      }
+
+      const [certs]: any = await pool.query(query, params);
+
+      const today = new Date();
+      const sixtyDaysFromNow = addDays(today, 60);
+      const thirtyDaysFromNow = addDays(today, 30);
+
+      // Group alerts by team and by vessel (for Ship certificates)
+      const teamAlerts: Record<string, { teamName: string, alerts: any[] }> = {};
+      const vesselAlerts: Record<number, { vesselName: string, alerts: any[], email: string | null }> = {};
+
+      for (const cert of certs) {
+        const expDate = new Date(cert.expiration_date);
+        if (isBefore(expDate, sixtyDaysFromNow)) {
+          let status = 'EXPIRING';
+          if (isBefore(expDate, today)) status = 'EXPIRED';
+          else if (isBefore(expDate, thirtyDaysFromNow)) status = 'EXPIRING SOON';
+          
+          const alertData = { ...cert, status };
+          
+          // Office/Any/Vessel certs go to team alerts for office check
+          if (!targetType || targetType === 'office') {
+            if (!teamAlerts[cert.team_id]) {
+              teamAlerts[cert.team_id] = { teamName: cert.team_name, alerts: [] };
+            }
+            teamAlerts[cert.team_id].alerts.push(alertData);
+          }
+
+          // Vessel/Any certs go to vessel alerts if it's a vessel cert
+          if ((!targetType || targetType === 'vessel') && (cert.access_type === 'vessel' || cert.access_type === 'any')) {
+            if (cert.vessel_id) {
+              if (!vesselAlerts[cert.vessel_id]) {
+                // Find the email of the user assigned to this vessel
+                const [vesselUsers]: any = await pool.execute("SELECT email FROM users WHERE role = 'vessel' AND vessel_id = ? AND email IS NOT NULL", [cert.vessel_id]);
+                const email = vesselUsers.length > 0 ? vesselUsers[0].email : null;
+                vesselAlerts[cert.vessel_id] = { vesselName: cert.vessel_name, alerts: [], email };
+              }
+              vesselAlerts[cert.vessel_id].alerts.push(alertData);
+            }
+          }
+        }
+      }
+
+      const teamAlertCount = Object.values(teamAlerts).reduce((acc, team) => acc + team.alerts.length, 0);
+      const vesselAlertCount = Object.values(vesselAlerts).reduce((acc, v) => acc + v.alerts.length, 0);
+      console.log(`Found ${certs.length} total certificates. Team alerts: ${teamAlertCount}, Vessel alerts: ${vesselAlertCount}.`);
+
+      if (teamAlertCount === 0 && vesselAlertCount === 0) {
+        console.log('No certificates require alerts at this time.');
+        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. No alerts found.`, 'LAST_ALERT_LOG']);
+      }
+
+      const settings = await getSmtpSettings();
+      if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
+        console.log('Email alerts are disabled in settings.');
+        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alerts are disabled.`, 'LAST_ALERT_LOG']);
+        return;
+      }
+      const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
+      const senderEmail = settings?.SMTP_FROM || process.env.SMTP_FROM || 'onboarding@resend.dev';
+
+      if (settings?.RESEND_API_KEY || process.env.RESEND_API_KEY) {
+        // Send Team Alerts
+        for (const teamId in teamAlerts) {
+          const { teamName, alerts } = teamAlerts[teamId];
+          if (alerts.length === 0) continue;
+          await sendConsolidatedEmail(teamName, alerts, alertRecipient, senderEmail);
+        }
+
+        // Send Vessel Alerts
+        for (const vesselId in vesselAlerts) {
+          const { vesselName, alerts, email } = vesselAlerts[vesselId];
+          if (alerts.length === 0 || !email) continue;
+          await sendConsolidatedEmail(`Vessel: ${vesselName}`, alerts, email, senderEmail);
+        }
+      } else {
+        console.warn('RESEND_API_KEY incomplete in both settings and environment. Skipping email alerts.');
+        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Resend API settings incomplete (Missing API Key).`, 'LAST_ALERT_LOG']);
+      }
+      console.log('Certificate expiration check completed.');
+    } catch (err) {
+      console.error('Error during certificate expiration check:', err);
+    }
+  }
+
+  async function sendConsolidatedEmail(name: string, alerts: any[], recipient: string, senderEmail: string) {
+    console.log(`Sending consolidated alert for ${name} (${alerts.length} certificates) to ${recipient}`);
+
+    try {
+      const tableRows = alerts.map(alert => `
+        <tr>
+          <td style="border: 1px solid #ddd; padding: 8px;">${alert.vessel_name}</td>
+          <td style="border: 1px solid #ddd; padding: 8px;">${alert.name}</td>
+          <td style="border: 1px solid #ddd; padding: 8px;">${alert.expiration_date}</td>
+          <td style="border: 1px solid #ddd; padding: 8px; color: ${alert.status === 'EXPIRED' ? '#d9534f' : '#f0ad4e'}; font-weight: bold;">${alert.status}</td>
+        </tr>
+      `).join('');
+
+      const htmlContent = `
+        <div style="font-family: Arial, sans-serif; color: #333; max-width: 800px;">
+          <div style="background-color: #fff3cd; color: #856404; padding: 10px; border: 1px solid #ffeeba; border-radius: 5px; margin-bottom: 20px; text-align: center; font-weight: bold;">
+            NOTICE: This system is currently in its TESTING PERIOD. Table data in this email are dummy data and doesn't reflect the actual data from our operations.
+          </div>
+          <h2 style="color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;">Certificate/Service Report Expiration Alerts: ${name}</h2>
+          <p>The following certificates/service reports for <b>${name}</b> require attention:</p>
+          <table style="border-collapse: collapse; width: 100%; margin-top: 20px;">
+            <thead>
+              <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Vessel</th>
+                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Certificate/Service Report Name</th>
+                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Expiration Date</th>
+                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+          <p style="margin-top: 30px; font-size: 0.85em; color: #7f8c8d; border-top: 1px solid #eee; padding-top: 15px;">
+            This is an automated notification from the <b>COMOS Vessel Certificate/Service Report System</b>.
+          </p>
+        </div>
+      `;
+
+      await sendEmail({
+        from: `"COMOS" <${senderEmail}>`,
+        to: recipient,
+        subject: `[COMOS] Certificate/Service Report Alerts: ${name}`,
+        html: htmlContent
+      });
+      console.log(`Consolidated email alert sent to ${recipient} for ${name}`);
+      await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alert sent to ${recipient} for ${name} (${alerts.length} certs).`, 'LAST_ALERT_LOG']);
+    } catch (e: any) {
+      console.error(`Failed to send consolidated email to ${recipient} for ${name}:`, e);
+      await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. FAILED to send to ${recipient}: ${e.message}`, 'LAST_ALERT_LOG']);
+    }
+  }
+
+  // Start alert scheduler
+  await startAlertScheduler();
+
+  app.post('/api/admin/test-email', authenticate, isAdmin, async (req, res) => {
+    try {
+      console.log('[Manual Trigger] Testing email alerts...');
+      const settings = await getSmtpSettings();
+      const apiKey = settings?.RESEND_API_KEY || process.env.RESEND_API_KEY;
+      
+      if (!apiKey) {
+        return res.status(400).json({ 
+          error: 'Resend API Key is missing. Please configure it in settings or the Secrets menu.' 
+        });
+      }
+
+      const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
+      const senderEmail = settings?.SMTP_FROM || 'onboarding@resend.dev';
+
+      // Send a simple test email first to verify connectivity
+      await sendEmail({
+        from: `"COMOS System Test" <${senderEmail}>`,
+        to: alertRecipient,
+        subject: '[COMOS] Resend Configuration Test',
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+            <div style="background-color: #fff3cd; color: #856404; padding: 10px; border: 1px solid #ffeeba; border-radius: 5px; margin-bottom: 20px; text-align: center; font-weight: bold;">
+              NOTICE: This system is currently in its TESTING PERIOD.
+            </div>
+            <h2 style="color: #2c3e50;">Resend Configuration Test</h2>
+            <p>This is a test email from the <b>COMOS Vessel Certificate/Service Report System</b> using Resend.</p>
+            <p>If you are reading this, your Resend API settings for <b>${alertRecipient}</b> are working correctly.</p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
+            <p style="font-size: 0.8em; color: #7f8c8d;">Timestamp: ${new Date().toLocaleString()}</p>
+          </div>
+        `
+      });
+      
+      await sleep(1000); // Wait 1s before starting the bulk scan to avoid Resend rate limit
+
+      // Also trigger the actual expiration check logic
+      await checkExpirations();
+
+      await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Manual Test: ${new Date().toLocaleString()}. Success.`, 'LAST_ALERT_LOG']);
+
+      res.json({ message: `Test email sent successfully to ${alertRecipient}. Expiration check also triggered.` });
+    } catch (error: any) {
+      console.error('Manual email test failed:', error);
+      await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Manual Test: ${new Date().toLocaleString()}. FAILED: ${error.message}`, 'LAST_ALERT_LOG']);
+      res.status(500).json({ 
+        error: 'Failed to send test email.', 
+        details: error.message 
+      });
+    }
+  });
+
+  // Report Delete Routes (Soft Delete)
+  app.delete('/api/departure-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE departure_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_DEPARTURE_REPORT', `Soft deleted departure report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/arrival-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      const [reportRows]: any = await pool.execute('SELECT vessel_id FROM arrival_reports WHERE id = ?', [req.params.id]);
+      await pool.execute('UPDATE arrival_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_ARRIVAL_REPORT', `Soft deleted arrival report ID ${req.params.id}`);
+      
+      if (reportRows.length > 0) {
+        await syncVesselNextPort(reportRows[0].vessel_id);
+      }
+
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/noon-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE noon_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_NOON_REPORT', `Soft deleted noon report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/other-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE other_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_OTHER_REPORT', `Soft deleted other report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Recycle Bin Routes (Admin only)
+  app.get('/api/admin/recycle-bin', authenticate, isTeamPicOrAdmin, async (req, res) => {
+    try {
+      const types = [
+        'vessels', 'users', 'certificates', 'files', 
+        'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports',
+        'fuel_analysis_reports', 'lube_oil_ldr_reports', 'lube_oil_analysis_reports', 'bunker_bdn_reports',
+        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports', 'spare_parts_requisitions'
+      ];
+      const results: any = {};
+      
+      for (const type of types) {
+        let query = `SELECT * FROM ${type} WHERE deleted_at IS NOT NULL`;
+        if (type === 'certificates') {
+          query = `SELECT c.*, v.name as vessel_name FROM certificates c LEFT JOIN vessels v ON c.vessel_id = v.id WHERE c.deleted_at IS NOT NULL`;
+        } else if (type === 'files') {
+          query = `SELECT f.*, c.name as certificate_name FROM files f JOIN certificates c ON f.certificate_id = c.id WHERE f.deleted_at IS NOT NULL`;
+        } else if (type.includes('report') && !type.includes('attachment') && !type.includes('file')) {
+          query = `SELECT r.*, v.name as vessel_name FROM ${type} r JOIN vessels v ON r.vessel_id = v.id WHERE r.deleted_at IS NOT NULL`;
+        } else if (type === 'non_conformities') {
+          query = `SELECT nc.*, v.name as vessel_name FROM non_conformities nc JOIN vessels v ON nc.vessel_id = v.id WHERE nc.deleted_at IS NOT NULL`;
+        } else if (type === 'audit_records') {
+          query = `SELECT ar.*, v.name as vessel_name FROM audit_records ar JOIN vessels v ON ar.vessel_id = v.id WHERE ar.deleted_at IS NOT NULL`;
+        } else if (type === 'trouble_reports') {
+          query = `SELECT tr.*, v.name as vessel_name FROM trouble_reports tr JOIN vessels v ON tr.vessel_id = v.id WHERE tr.deleted_at IS NOT NULL`;
+        }
+        
+        const [rows] = await pool.query(query);
+        results[type] = rows;
+      }
+      
+      res.json(results);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/recycle-bin/restore', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    const { type, id, ids } = req.body;
+    try {
+      const validTypes = [
+        'vessels', 'users', 'certificates', 'files', 
+        'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports',
+        'fuel_analysis_reports', 'lube_oil_ldr_reports', 'lube_oil_analysis_reports', 'bunker_bdn_reports',
+        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports', 'spare_parts_requisitions'
+      ];
+      if (!validTypes.includes(type)) return res.status(400).json({ error: 'Invalid type' });
+      
+      const targetIds = Array.isArray(ids) ? ids : (id ? [id] : []);
+      if (targetIds.length === 0) return res.status(400).json({ error: 'No IDs provided' });
+
+      for (const targetId of targetIds) {
+        await pool.execute(`UPDATE ${type} SET deleted_at = NULL WHERE id = ?`, [targetId]);
+        
+        // Cascading restore for child files/attachments
+        if (type === 'fuel_analysis_reports') {
+          await pool.execute('UPDATE fuel_analysis_files SET deleted_at = NULL WHERE report_id = ?', [targetId]);
+        } else if (type === 'lube_oil_ldr_reports') {
+          await pool.execute('UPDATE lube_oil_ldr_files SET deleted_at = NULL WHERE report_id = ?', [targetId]);
+        } else if (type === 'lube_oil_analysis_reports') {
+          await pool.execute('UPDATE lube_oil_analysis_files SET deleted_at = NULL WHERE report_id = ?', [targetId]);
+        } else if (type === 'bunker_bdn_reports') {
+          await pool.execute('UPDATE bunker_bdn_files SET deleted_at = NULL WHERE report_id = ?', [targetId]);
+        }
+        
+        await logAudit(req.user.id, req.user.username, 'RESTORE_ITEM', `Restored ${type} ID ${targetId}`);
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/admin/recycle-bin/permanent-delete', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    const { type, id, ids } = req.body;
+    try {
+      const validTypes = [
+        'vessels', 'users', 'certificates', 'files', 
+        'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports',
+        'fuel_analysis_reports', 'lube_oil_ldr_reports', 'lube_oil_analysis_reports', 'bunker_bdn_reports',
+        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports', 'spare_parts_requisitions'
+      ];
+      if (!validTypes.includes(type)) return res.status(400).json({ error: 'Invalid type' });
+      
+      const targetIds = Array.isArray(ids) ? ids : (id ? [id] : []);
+      if (targetIds.length === 0) return res.status(400).json({ error: 'No IDs provided' });
+
+      for (const targetId of targetIds) {
+        // Special handling for attachments
+        if (type === 'departure_reports') {
+          const [rows]: any = await pool.execute('SELECT attachment_id FROM departure_reports WHERE id = ?', [targetId]);
+          if (rows[0]?.attachment_id) await pool.execute('DELETE FROM departure_attachments WHERE id = ?', [rows[0].attachment_id]);
+        } else if (type === 'arrival_reports') {
+          const [rows]: any = await pool.execute('SELECT attachment_id FROM arrival_reports WHERE id = ?', [targetId]);
+          if (rows[0]?.attachment_id) await pool.execute('DELETE FROM arrival_attachments WHERE id = ?', [rows[0].attachment_id]);
+        } else if (type === 'noon_reports') {
+          const [rows]: any = await pool.execute('SELECT attachment_id FROM noon_reports WHERE id = ?', [targetId]);
+          if (rows[0]?.attachment_id) await pool.execute('DELETE FROM noon_attachments WHERE id = ?', [rows[0].attachment_id]);
+        } else if (type === 'certificates') {
+          // When permanently deleting a certificate, we must also clean up its notes and files even if they were already soft-deleted
+          await pool.execute('DELETE FROM notes WHERE certificate_id = ?', [targetId]);
+          await pool.execute('DELETE FROM files WHERE certificate_id = ?', [targetId]);
+        } else if (type === 'fuel_analysis_reports') {
+          await pool.execute('DELETE FROM fuel_analysis_files WHERE report_id = ?', [targetId]);
+        } else if (type === 'lube_oil_ldr_reports') {
+          await pool.execute('DELETE FROM lube_oil_ldr_files WHERE report_id = ?', [targetId]);
+        } else if (type === 'lube_oil_analysis_reports') {
+          await pool.execute('DELETE FROM lube_oil_analysis_files WHERE report_id = ?', [targetId]);
+        } else if (type === 'bunker_bdn_reports') {
+          await pool.execute('DELETE FROM bunker_bdn_files WHERE report_id = ?', [targetId]);
+        } else if (type === 'audit_records') {
+          await pool.execute('DELETE FROM audit_comments WHERE audit_id = ?', [targetId]);
+          await pool.execute('DELETE FROM non_conformities WHERE audit_id = ?', [targetId]);
+        }
+
+        await pool.execute(`DELETE FROM ${type} WHERE id = ?`, [targetId]);
+        await logAudit(req.user.id, req.user.username, 'PERMANENT_DELETE', `Permanently deleted ${type} ID ${targetId}`);
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // FUEL ANALYSIS REPORTS ROUTES
+  // ==========================================
+  app.get('/api/fuel-analysis-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT fa.*, v.name as vessel_name
+        FROM fuel_analysis_reports fa
+        JOIN vessels v ON fa.vessel_id = v.id
+        WHERE fa.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND fa.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY fa.date DESC, fa.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      const reportsWithFiles = [];
+      for (const report of reports) {
+        const [files]: any = await pool.execute(
+          'SELECT id, filename, size FROM fuel_analysis_files WHERE report_id = ? AND deleted_at IS NULL',
+          [report.id]
+        );
+        reportsWithFiles.push({
+          id: String(report.id),
+          vesselId: String(report.vessel_id),
+          vesselName: report.vessel_name,
+          date: report.date ? new Date(report.date).toISOString().split('T')[0] : '',
+          bdnNumber: report.bdn_number,
+          analysisRefNumber: report.analysis_ref_number,
+          productName: report.product_name,
+          viscosity: report.viscosity,
+          density: report.density,
+          waterContent: report.water_content,
+          sulfurContent: report.sulfur_content,
+          status: report.status,
+          files: files.map((f: any) => ({
+            id: String(f.id),
+            name: f.filename,
+            size: f.size,
+            dataUrl: `/api/fuel-analysis-files/${f.id}`
+          }))
+        });
+      }
+      res.json(reportsWithFiles);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/fuel-analysis-files/:id', authenticate, async (req, res) => {
+    try {
+      const [files]: any = await pool.execute(
+        'SELECT * FROM fuel_analysis_files WHERE id = ? AND deleted_at IS NULL',
+        [req.params.id]
+      );
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/fuel-analysis-reports', authenticate, async (req: any, res) => {
+    const {
+      vesselId,
+      date,
+      bdnNumber,
+      analysisRefNumber,
+      productName,
+      viscosity,
+      density,
+      waterContent,
+      sulfurContent,
+      status,
+      files
+    } = req.body;
+
+    try {
+      const [result]: any = await pool.execute(
+        `INSERT INTO fuel_analysis_reports (
+          vessel_id, date, bdn_number, analysis_ref_number, product_name,
+          viscosity, density, water_content, sulfur_content, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          bdnNumber ?? null,
+          analysisRefNumber ?? null,
+          productName ?? null,
+          viscosity ?? null,
+          density ?? null,
+          waterContent ?? null,
+          sulfurContent ?? null,
+          status ?? null
+        ]
+      );
+      const reportId = result.insertId;
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(file.dataUrl);
+            if (parsed) {
+              const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'fuel-analysis');
+              await pool.execute(
+                'INSERT INTO fuel_analysis_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+                [reportId, file.name, file.size, parsed.mimetype, finalBuffer]
+              );
+            }
+          }
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_FUEL_ANALYSIS_REPORT', `Created fuel analysis report ID ${reportId}`);
+      res.status(201).json({ success: true, id: reportId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/fuel-analysis-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId,
+      date,
+      bdnNumber,
+      analysisRefNumber,
+      productName,
+      viscosity,
+      density,
+      waterContent,
+      sulfurContent,
+      status,
+      files
+    } = req.body;
+
+    try {
+      await pool.execute(
+        `UPDATE fuel_analysis_reports SET 
+          vessel_id = ?, date = ?, bdn_number = ?, analysis_ref_number = ?, product_name = ?, 
+          viscosity = ?, density = ?, water_content = ?, sulfur_content = ?, status = ?
+         WHERE id = ?`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          bdnNumber ?? null,
+          analysisRefNumber ?? null,
+          productName ?? null,
+          viscosity ?? null,
+          density ?? null,
+          waterContent ?? null,
+          sulfurContent ?? null,
+          status ?? null,
+          id
+        ]
+      );
+
+      const keptFileIds: string[] = [];
+      const newFilesToUpload = [];
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.id) {
+            keptFileIds.push(file.id);
+          } else if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            newFilesToUpload.push(file);
+          }
+        }
+      }
+
+      if (keptFileIds.length > 0) {
+        const placeholders = keptFileIds.map(() => '?').join(',');
+        await pool.execute(
+          `UPDATE fuel_analysis_files SET deleted_at = CURRENT_TIMESTAMP WHERE report_id = ? AND id NOT IN (${placeholders}) AND deleted_at IS NULL`,
+          [id, ...keptFileIds]
+        );
+      } else {
+        await pool.execute(
+          'UPDATE fuel_analysis_files SET deleted_at = CURRENT_TIMESTAMP WHERE report_id = ? AND deleted_at IS NULL',
+          [id]
+        );
+      }
+
+      for (const file of newFilesToUpload) {
+        const parsed = parseBase64DataUrl(file.dataUrl);
+        if (parsed) {
+          const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'fuel-analysis');
+          await pool.execute(
+            'INSERT INTO fuel_analysis_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+            [id, file.name, file.size, parsed.mimetype, finalBuffer]
+          );
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_FUEL_ANALYSIS_REPORT', `Updated fuel analysis report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/fuel-analysis-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE fuel_analysis_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_FUEL_ANALYSIS_REPORT', `Soft deleted fuel analysis report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // LUBE OIL LDR REPORTS ROUTES
+  // ==========================================
+  app.get('/api/lube-oil-ldr-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT ldr.*, v.name as vessel_name
+        FROM lube_oil_ldr_reports ldr
+        JOIN vessels v ON ldr.vessel_id = v.id
+        WHERE ldr.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND ldr.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY ldr.date DESC, ldr.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      const reportsWithFiles = [];
+      for (const report of reports) {
+        const [files]: any = await pool.execute(
+          'SELECT id, filename, size FROM lube_oil_ldr_files WHERE report_id = ? AND deleted_at IS NULL',
+          [report.id]
+        );
+        reportsWithFiles.push({
+          id: String(report.id),
+          vesselId: String(report.vessel_id),
+          vesselName: report.vessel_name,
+          date: report.date ? new Date(report.date).toISOString().split('T')[0] : '',
+          ldrNumber: report.ldr_number,
+          productType: report.product_type,
+          quantity: report.quantity,
+          supplier: report.supplier,
+          viscosity: report.viscosity,
+          density: report.density,
+          sulfurContent: report.sulfur_content,
+          files: files.map((f: any) => ({
+            id: String(f.id),
+            name: f.filename,
+            size: f.size,
+            dataUrl: `/api/lube-oil-ldr-files/${f.id}`
+          }))
+        });
+      }
+      res.json(reportsWithFiles);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/lube-oil-ldr-files/:id', authenticate, async (req, res) => {
+    try {
+      const [files]: any = await pool.execute(
+        'SELECT * FROM lube_oil_ldr_files WHERE id = ? AND deleted_at IS NULL',
+        [req.params.id]
+      );
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/lube-oil-ldr-reports', authenticate, async (req: any, res) => {
+    const {
+      vesselId,
+      date,
+      ldrNumber,
+      productType,
+      quantity,
+      supplier,
+      viscosity,
+      density,
+      sulfurContent,
+      files
+    } = req.body;
+
+    try {
+      const [result]: any = await pool.execute(
+        `INSERT INTO lube_oil_ldr_reports (
+          vessel_id, date, ldr_number, product_type, quantity, supplier, viscosity, density, sulfur_content
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          ldrNumber ?? null,
+          productType ?? null,
+          quantity ?? null,
+          supplier ?? null,
+          viscosity ?? null,
+          density ?? null,
+          sulfurContent ?? null
+        ]
+      );
+      const reportId = result.insertId;
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(file.dataUrl);
+            if (parsed) {
+              const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'lube-oil-ldr');
+              await pool.execute(
+                'INSERT INTO lube_oil_ldr_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+                [reportId, file.name, file.size, parsed.mimetype, finalBuffer]
+              );
+            }
+          }
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_LUBE_OIL_LDR_REPORT', `Created lube oil LDR report ID ${reportId}`);
+      res.status(201).json({ success: true, id: reportId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/lube-oil-ldr-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId,
+      date,
+      ldrNumber,
+      productType,
+      quantity,
+      supplier,
+      viscosity,
+      density,
+      sulfurContent,
+      files
+    } = req.body;
+
+    try {
+      await pool.execute(
+        `UPDATE lube_oil_ldr_reports SET 
+          vessel_id = ?, date = ?, ldr_number = ?, product_type = ?, quantity = ?, 
+          supplier = ?, viscosity = ?, density = ?, sulfur_content = ?
+         WHERE id = ?`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          ldrNumber ?? null,
+          productType ?? null,
+          quantity ?? null,
+          supplier ?? null,
+          viscosity ?? null,
+          density ?? null,
+          sulfurContent ?? null,
+          id
+        ]
+      );
+
+      const keptFileIds: string[] = [];
+      const newFilesToUpload = [];
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.id) {
+            keptFileIds.push(file.id);
+          } else if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            newFilesToUpload.push(file);
+          }
+        }
+      }
+
+      if (keptFileIds.length > 0) {
+        const placeholders = keptFileIds.map(() => '?').join(',');
+        await pool.execute(
+          `UPDATE lube_oil_ldr_files SET deleted_at = CURRENT_TIMESTAMP WHERE report_id = ? AND id NOT IN (${placeholders}) AND deleted_at IS NULL`,
+          [id, ...keptFileIds]
+        );
+      } else {
+        await pool.execute(
+          'UPDATE lube_oil_ldr_files SET deleted_at = CURRENT_TIMESTAMP WHERE report_id = ? AND deleted_at IS NULL',
+          [id]
+        );
+      }
+
+      for (const file of newFilesToUpload) {
+        const parsed = parseBase64DataUrl(file.dataUrl);
+        if (parsed) {
+          const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'lube-oil-ldr');
+          await pool.execute(
+            'INSERT INTO lube_oil_ldr_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+            [id, file.name, file.size, parsed.mimetype, finalBuffer]
+          );
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_LUBE_OIL_LDR_REPORT', `Updated lube oil LDR report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/lube-oil-ldr-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE lube_oil_ldr_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_LUBE_OIL_LDR_REPORT', `Soft deleted lube oil LDR report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // LUBE OIL ANALYSIS REPORTS ROUTES
+  // ==========================================
+  app.get('/api/lube-oil-analysis-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT loa.*, v.name as vessel_name
+        FROM lube_oil_analysis_reports loa
+        JOIN vessels v ON loa.vessel_id = v.id
+        WHERE loa.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND loa.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY loa.date DESC, loa.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      const reportsWithFiles = [];
+      for (const report of reports) {
+        const [files]: any = await pool.execute(
+          'SELECT id, filename, size FROM lube_oil_analysis_files WHERE report_id = ? AND deleted_at IS NULL',
+          [report.id]
+        );
+        reportsWithFiles.push({
+          id: String(report.id),
+          vesselId: String(report.vessel_id),
+          vesselName: report.vessel_name,
+          date: report.date ? new Date(report.date).toISOString().split('T')[0] : '',
+          machinerySampled: report.machinery_sampled,
+          viscosity: report.viscosity,
+          waterContent: report.water_content,
+          tbn: report.tbn,
+          insolubles: report.insolubles,
+          status: report.status,
+          remarks: report.remarks,
+          files: files.map((f: any) => ({
+            id: String(f.id),
+            name: f.filename,
+            size: f.size,
+            dataUrl: `/api/lube-oil-analysis-files/${f.id}`
+          }))
+        });
+      }
+      res.json(reportsWithFiles);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/lube-oil-analysis-files/:id', authenticate, async (req, res) => {
+    try {
+      const [files]: any = await pool.execute(
+        'SELECT * FROM lube_oil_analysis_files WHERE id = ? AND deleted_at IS NULL',
+        [req.params.id]
+      );
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/lube-oil-analysis-reports', authenticate, async (req: any, res) => {
+    const {
+      vesselId,
+      date,
+      machinerySampled,
+      viscosity,
+      waterContent,
+      tbn,
+      insolubles,
+      status,
+      remarks,
+      files
+    } = req.body;
+
+    try {
+      const [result]: any = await pool.execute(
+        `INSERT INTO lube_oil_analysis_reports (
+          vessel_id, date, machinery_sampled,
+          viscosity, water_content, tbn, insolubles, status, remarks
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          machinerySampled ?? null,
+          viscosity ?? null,
+          waterContent ?? null,
+          tbn ?? null,
+          insolubles ?? null,
+          status ?? null,
+          remarks ?? null
+        ]
+      );
+      const reportId = result.insertId;
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(file.dataUrl);
+            if (parsed) {
+              const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'lube-oil-analysis');
+              await pool.execute(
+                'INSERT INTO lube_oil_analysis_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+                [reportId, file.name, file.size, parsed.mimetype, finalBuffer]
+              );
+            }
+          }
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_LUBE_OIL_ANALYSIS_REPORT', `Created lube oil analysis report ID ${reportId}`);
+      res.status(201).json({ success: true, id: reportId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/lube-oil-analysis-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId,
+      date,
+      machinerySampled,
+      viscosity,
+      waterContent,
+      tbn,
+      insolubles,
+      status,
+      remarks,
+      files
+    } = req.body;
+
+    try {
+      await pool.execute(
+        `UPDATE lube_oil_analysis_reports SET 
+          vessel_id = ?, date = ?, machinery_sampled = ?, 
+          viscosity = ?, water_content = ?, tbn = ?, insolubles = ?, status = ?, remarks = ?
+         WHERE id = ?`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          machinerySampled ?? null,
+          viscosity ?? null,
+          waterContent ?? null,
+          tbn ?? null,
+          insolubles ?? null,
+          status ?? null,
+          remarks ?? null,
+          id
+        ]
+      );
+
+      const keptFileIds: string[] = [];
+      const newFilesToUpload = [];
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.id) {
+            keptFileIds.push(file.id);
+          } else if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            newFilesToUpload.push(file);
+          }
+        }
+      }
+
+      if (keptFileIds.length > 0) {
+        const placeholders = keptFileIds.map(() => '?').join(',');
+        await pool.execute(
+          `UPDATE lube_oil_analysis_files SET deleted_at = CURRENT_TIMESTAMP WHERE report_id = ? AND id NOT IN (${placeholders}) AND deleted_at IS NULL`,
+          [id, ...keptFileIds]
+        );
+      } else {
+        await pool.execute(
+          'UPDATE lube_oil_analysis_files SET deleted_at = CURRENT_TIMESTAMP WHERE report_id = ? AND deleted_at IS NULL',
+          [id]
+        );
+      }
+
+      for (const file of newFilesToUpload) {
+        const parsed = parseBase64DataUrl(file.dataUrl);
+        if (parsed) {
+          const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'lube-oil-analysis');
+          await pool.execute(
+            'INSERT INTO lube_oil_analysis_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+            [id, file.name, file.size, parsed.mimetype, finalBuffer]
+          );
+        }
+      }
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_LUBE_OIL_ANALYSIS_REPORT', `Updated lube oil analysis report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/lube-oil-analysis-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE lube_oil_analysis_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_LUBE_OIL_ANALYSIS_REPORT', `Soft deleted lube oil analysis report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // BUNKER BDN REPORTS ROUTES
+  // ==========================================
+  app.get('/api/bunker-bdn-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT b.*, v.name as vessel_name
+        FROM bunker_bdn_reports b
+        JOIN vessels v ON b.vessel_id = v.id
+        WHERE b.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND b.vessel_id = ?';
+        params.push(req.user.vessel_id);
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY b.date DESC, b.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      const reportsWithFiles = [];
+      for (const report of reports) {
+        const [files]: any = await pool.execute(
+          'SELECT id, filename, size FROM bunker_bdn_files WHERE report_id = ? AND deleted_at IS NULL',
+          [report.id]
+        );
+        reportsWithFiles.push({
+          id: String(report.id),
+          vesselId: String(report.vessel_id),
+          vesselName: report.vessel_name,
+          date: report.date ? new Date(report.date).toISOString().split('T')[0] : '',
+          bdnNumber: report.bdn_number,
+          fuelType: report.fuel_type,
+          quantity: report.quantity,
+          supplier: report.supplier,
+          viscosity: report.viscosity,
+          density: report.density,
+          sulfurContent: report.sulfur_content,
+          remarks: report.remarks,
+          files: files.map((f: any) => ({
+            id: String(f.id),
+            name: f.filename,
+            size: f.size,
+            dataUrl: `/api/bunker-bdn-files/${f.id}`
+          }))
+        });
+      }
+      res.json(reportsWithFiles);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/bunker-bdn-files/:id', authenticate, async (req, res) => {
+    try {
+      const [files]: any = await pool.execute(
+        'SELECT * FROM bunker_bdn_files WHERE id = ? AND deleted_at IS NULL',
+        [req.params.id]
+      );
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/bunker-bdn-reports', authenticate, async (req: any, res) => {
+    const {
+      vesselId,
+      date,
+      bdnNumber,
+      fuelType,
+      quantity,
+      supplier,
+      viscosity,
+      density,
+      sulfurContent,
+      remarks,
+      files
+    } = req.body;
+    try {
+      const [result]: any = await pool.execute(
+        `INSERT INTO bunker_bdn_reports (
+          vessel_id, date, bdn_number, fuel_type, quantity,
+          supplier, viscosity, density, sulfur_content, remarks
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          bdnNumber ?? null,
+          fuelType ?? null,
+          quantity ?? null,
+          supplier ?? null,
+          viscosity ?? null,
+          density ?? null,
+          sulfurContent ?? null,
+          remarks ?? null
+        ]
+      );
+      const reportId = result.insertId;
+
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(file.dataUrl);
+            if (parsed) {
+              const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'bunker-bdn');
+              await pool.execute(
+                'INSERT INTO bunker_bdn_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+                [reportId, file.name, file.size, parsed.mimetype, finalBuffer]
+              );
+            }
+          }
+        }
+      }
+      await logAudit(req.user.id, req.user.username, 'CREATE_BUNKER_BDN_REPORT', `Created Bunker BDN report ID ${reportId}`);
+      res.status(201).json({ success: true, id: reportId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/bunker-bdn-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId,
+      date,
+      bdnNumber,
+      fuelType,
+      quantity,
+      supplier,
+      viscosity,
+      density,
+      sulfurContent,
+      remarks,
+      files
+    } = req.body;
+    try {
+      await pool.execute(
+        `UPDATE bunker_bdn_reports SET 
+          vessel_id = ?, date = ?, bdn_number = ?, fuel_type = ?, quantity = ?, 
+          supplier = ?, viscosity = ?, density = ?, sulfur_content = ?, remarks = ?
+         WHERE id = ?`,
+        [
+          vesselId ?? null,
+          date ?? null,
+          bdnNumber ?? null,
+          fuelType ?? null,
+          quantity ?? null,
+          supplier ?? null,
+          viscosity ?? null,
+          density ?? null,
+          sulfurContent ?? null,
+          remarks ?? null,
+          id
+        ]
+      );
+
+      const keptFileIds: string[] = [];
+      const newFilesToUpload = [];
+      if (Array.isArray(files)) {
+        for (const file of files) {
+          if (file.id) {
+            keptFileIds.push(file.id);
+          } else if (file.dataUrl && file.dataUrl.startsWith('data:')) {
+            newFilesToUpload.push(file);
+          }
+        }
+      }
+
+      if (keptFileIds.length > 0) {
+        const placeholders = keptFileIds.map(() => '?').join(',');
+        await pool.execute(
+          `UPDATE bunker_bdn_files SET deleted_at = CURRENT_TIMESTAMP WHERE report_id = ? AND id NOT IN (${placeholders}) AND deleted_at IS NULL`,
+          [id, ...keptFileIds]
+        );
+      } else {
+        await pool.execute('UPDATE bunker_bdn_files SET deleted_at = CURRENT_TIMESTAMP WHERE report_id = ? AND deleted_at IS NULL', [id]);
+      }
+
+      for (const file of newFilesToUpload) {
+        const parsed = parseBase64DataUrl(file.dataUrl);
+        if (parsed) {
+          const finalBuffer = await handleFileUpload(file.name, parsed.mimetype, parsed.buffer, 'bunker-bdn');
+          await pool.execute(
+            'INSERT INTO bunker_bdn_files (report_id, filename, size, mimetype, data) VALUES (?, ?, ?, ?, ?)',
+            [id, file.name, file.size, parsed.mimetype, finalBuffer]
+          );
+        }
+      }
+      await logAudit(req.user.id, req.user.username, 'UPDATE_BUNKER_BDN_REPORT', `Updated Bunker BDN report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/bunker-bdn-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE bunker_bdn_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_BUNKER_BDN_REPORT', `Soft deleted Bunker BDN report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // CREW MEMBERS ROUTES
+  // ==========================================
+  app.get('/api/crew-members', authenticate, async (req: any, res) => {
+    try {
+      let query = 'SELECT * FROM crew_members WHERE deleted_at IS NULL';
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND (vessel_id = ? OR vessel_id IS NULL OR vessel_id = "" OR vessel_id = "all" OR vessel_id = "any")';
+        params.push(String(req.user.vessel_id));
+      }
+      query += ' ORDER BY created_at DESC';
+      const [members]: any = await pool.execute(query, params);
+      res.json(members.map((m: any) => {
+        let photoUrl = m.photo || '';
+        if (photoUrl && !photoUrl.startsWith('http://') && !photoUrl.startsWith('https://')) {
+          const tokenStr = req.query.token || req.headers.authorization?.split(' ')[1] || '';
+          photoUrl = `/api/crew-members/${m.id}/photo?token=${tokenStr}`;
+        }
+        return {
+          id: m.id,
+          name: m.name,
+          rank: m.rank_name,
+          nationality: m.nationality || 'Unknown',
+          signOnDate: m.sign_on_date ? new Date(m.sign_on_date).toISOString().split('T')[0] : '',
+          passportNo: m.passport_no || 'N/A',
+          seamanBookNo: m.seaman_book_no || 'N/A',
+          status: m.status || 'Compliant',
+          contractDuration: m.contract_duration,
+          nextMedicalExam: m.next_medical_exam ? new Date(m.next_medical_exam).toISOString().split('T')[0] : '',
+          nextSafetyTraining: m.next_safety_training ? new Date(m.next_safety_training).toISOString().split('T')[0] : '',
+          vesselId: m.vessel_id || '',
+          birthdate: m.birthdate ? new Date(m.birthdate).toISOString().split('T')[0] : '',
+          contactNumber: m.contact_number || '',
+          photo: photoUrl,
+          hiringStatus: m.hiring_status || 'for rehire',
+          siComments: m.si_comments || '',
+          extensionsCount: m.extensions_count || 0,
+          contractEndDate: m.contract_end_date ? new Date(m.contract_end_date).toISOString().split('T')[0] : ''
+        };
+      }));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/crew-members/:id/photo', authenticate, async (req: any, res) => {
+    try {
+      const [rows]: any = await pool.execute('SELECT photo FROM crew_members WHERE id = ?', [req.params.id]);
+      if (rows.length === 0 || !rows[0].photo) {
+        return res.status(404).json({ error: 'Photo not found' });
+      }
+      
+      const photoStr = rows[0].photo;
+      if (photoStr.startsWith('B2_KEY:')) {
+        const retrievedData = await handleFileRetrieve(Buffer.from(photoStr));
+        const b2Key = photoStr.slice(7);
+        const ext = b2Key.split('.').pop() || 'jpeg';
+        res.setHeader('Content-Type', `image/${ext === 'jpg' ? 'jpeg' : ext}`);
+        res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+        return res.send(retrievedData);
+      } else if (photoStr.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(photoStr);
+        if (parsed) {
+          res.setHeader('Content-Type', parsed.mimetype);
+          return res.send(parsed.buffer);
+        }
+      }
+      
+      if (photoStr.startsWith('http://') || photoStr.startsWith('https://')) {
+        return res.redirect(photoStr);
+      }
+      
+      return res.status(404).json({ error: 'Photo not found' });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/crew-members', authenticate, async (req: any, res) => {
+    const {
+      id, name, rank, nationality, signOnDate, passportNo, seamanBookNo,
+      status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId,
+      birthdate, contactNumber, photo, hiringStatus, siComments, extensionsCount, contractEndDate
+    } = req.body;
+    try {
+      let finalPhoto = photo || '';
+      if (photo && photo.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(photo);
+        if (parsed) {
+          try {
+            const extension = parsed.mimetype.split('/')[1] || 'png';
+            const filename = `${id || 'crew'}_photo.${extension}`;
+            const uploadResult = await handleFileUpload(filename, parsed.mimetype, parsed.buffer, 'crew_photos');
+            if (uploadResult.toString().startsWith('B2_KEY:')) {
+              finalPhoto = uploadResult.toString();
+            }
+          } catch (err) {
+            console.error('Failed to upload crew photo to B2 during create:', err);
+          }
+        }
+      }
+
+      await pool.execute(
+        `INSERT INTO crew_members (
+          id, name, rank_name, nationality, sign_on_date, passport_no, seaman_book_no,
+          status, contract_duration, next_medical_exam, next_safety_training, vessel_id,
+          birthdate, contact_number, photo, hiring_status, si_comments, extensions_count, contract_end_date
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, name, rank, nationality || 'Filipino', signOnDate || null, passportNo || 'N/A', seamanBookNo || 'N/A',
+          status || 'Compliant', contractDuration || null, nextMedicalExam || null, nextSafetyTraining || null, vesselId || '',
+          birthdate || null, contactNumber || '', finalPhoto, hiringStatus || 'for rehire', siComments || '',
+          extensionsCount || 0, contractEndDate || null
+        ]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_CREW_MEMBER', `Created crew member ID ${id}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/crew-members/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      name, rank, nationality, signOnDate, passportNo, seamanBookNo,
+      status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId,
+      birthdate, contactNumber, photo, hiringStatus, siComments, extensionsCount, contractEndDate
+    } = req.body;
+    try {
+      let finalPhoto = photo || '';
+      if (photo && (photo.startsWith('/api/crew-members/') || photo.includes('/photo?token='))) {
+        // Keep existing photo from database
+        const [existing]: any = await pool.execute('SELECT photo FROM crew_members WHERE id = ?', [id]);
+        if (existing.length > 0) {
+          finalPhoto = existing[0].photo || '';
+        }
+      } else if (photo && photo.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(photo);
+        if (parsed) {
+          try {
+            const extension = parsed.mimetype.split('/')[1] || 'png';
+            const filename = `${id}_photo.${extension}`;
+            const uploadResult = await handleFileUpload(filename, parsed.mimetype, parsed.buffer, 'crew_photos');
+            if (uploadResult.toString().startsWith('B2_KEY:')) {
+              finalPhoto = uploadResult.toString();
+            }
+          } catch (err) {
+            console.error('Failed to upload crew photo to B2 during update:', err);
+          }
+        }
+      }
+
+      await pool.execute(
+        `UPDATE crew_members SET 
+          name = ?, rank_name = ?, nationality = ?, sign_on_date = ?, passport_no = ?, seaman_book_no = ?,
+          status = ?, contract_duration = ?, next_medical_exam = ?, next_safety_training = ?, vessel_id = ?,
+          birthdate = ?, contact_number = ?, photo = ?, hiring_status = ?, si_comments = ?,
+          extensions_count = ?, contract_end_date = ?
+         WHERE id = ?`,
+        [
+          name, rank, nationality || 'Filipino', signOnDate || null, passportNo || 'N/A', seamanBookNo || 'N/A',
+          status || 'Compliant', contractDuration || null, nextMedicalExam || null, nextSafetyTraining || null, vesselId || '',
+          birthdate || null, contactNumber || '', finalPhoto, hiringStatus || 'for rehire', siComments || '',
+          extensionsCount || 0, contractEndDate || null,
+          id
+        ]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_CREW_MEMBER', `Updated crew member ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/crew-members/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute(
+        `UPDATE crew_members SET 
+          vessel_id = '', 
+          sign_on_date = NULL, 
+          contract_end_date = NULL, 
+          contract_duration = 0, 
+          extensions_count = 0 
+         WHERE id = ?`, 
+        [req.params.id]
+      );
+      await logAudit(req.user.id, req.user.username, 'REMOVE_CREW_MEMBER_TO_POOL', `Returned crew member ID ${req.params.id} to Global Pool and ended contract`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/crew-members/:id/history', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const [history]: any = await pool.execute(
+        'SELECT * FROM crew_history WHERE crew_id = ? ORDER BY disembark_date DESC, created_at DESC',
+        [id]
+      );
+      res.json(history.map((h: any) => ({
+        id: h.id,
+        crewId: h.crew_id,
+        vesselId: h.vessel_id,
+        vesselName: h.vessel_name || 'Unassigned',
+        rank: h.rank_name || 'N/A',
+        signOnDate: h.sign_on_date ? new Date(h.sign_on_date).toISOString().split('T')[0] : '',
+        disembarkDate: h.disembark_date ? new Date(h.disembark_date).toISOString().split('T')[0] : '',
+        remarks: h.remarks || '',
+        ageAtContract: h.age_at_contract,
+        contactAtContract: h.contact_at_contract || ''
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/crew-members/:id/disembark', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const { finishedContract, remarks } = req.body;
+    try {
+      const [members]: any = await pool.execute('SELECT * FROM crew_members WHERE id = ?', [id]);
+      if (members.length === 0) {
+        return res.status(404).json({ error: 'Crew member not found' });
+      }
+      const m = members[0];
+
+      const disembarkDate = new Date().toISOString().split('T')[0];
+      const signOnDate = m.sign_on_date ? new Date(m.sign_on_date).toISOString().split('T')[0] : null;
+      const contractRemarks = finishedContract ? 'Finished Contract' : remarks;
+
+      let vesselName = 'Unassigned';
+      if (m.vessel_id) {
+        const [vessels]: any = await pool.execute('SELECT name FROM vessels WHERE id = ?', [m.vessel_id]);
+        if (vessels.length > 0) {
+          vesselName = vessels[0].name;
+        }
+      }
+
+      let ageAtContract: number | null = null;
+      if (m.birthdate && signOnDate) {
+        const bdate = new Date(m.birthdate);
+        const sdate = new Date(signOnDate);
+        let age = sdate.getFullYear() - bdate.getFullYear();
+        const monthDiff = sdate.getMonth() - bdate.getMonth();
+        if (monthDiff < 0 || (monthDiff === 0 && sdate.getDate() < bdate.getDate())) {
+          age--;
+        }
+        ageAtContract = age;
+      }
+      const contactAtContract = m.contact_number || '';
+
+      const historyId = 'ch_' + Math.random().toString(36).substring(2, 11);
+      await pool.execute(
+        `INSERT INTO crew_history (
+          id, crew_id, vessel_id, vessel_name, rank_name, sign_on_date, disembark_date, remarks, age_at_contract, contact_at_contract
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          historyId, id, m.vessel_id || '', vesselName, m.rank_name, signOnDate, disembarkDate, contractRemarks, ageAtContract, contactAtContract
+        ]
+      );
+
+      await pool.execute(
+        `UPDATE crew_members SET 
+          vessel_id = '', 
+          sign_on_date = NULL, 
+          contract_end_date = NULL, 
+          extensions_count = 0 
+         WHERE id = ?`,
+        [id]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'DISEMBARK_CREW_MEMBER', `Crew member ID ${id} disembarked from vessel ${vesselName}. Remarks: ${contractRemarks}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // AUDIT RECORDS ROUTES
+  // ==========================================
+  app.get('/api/audit-records', authenticate, async (req: any, res) => {
+    try {
+      let query = 'SELECT * FROM audit_records WHERE deleted_at IS NULL';
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND vessel_id = ?';
+        params.push(String(req.user.vessel_id));
+      }
+      query += ' ORDER BY date DESC';
+      const [records]: any = await pool.execute(query, params);
+      res.json(records.map((r: any) => ({
+        id: r.id,
+        type: r.type,
+        vesselId: r.vessel_id,
+        date: r.date ? new Date(r.date).toISOString().split('T')[0] : '',
+        inspectorName: r.inspector_name,
+        inspectorOrganization: r.inspector_organization,
+        status: r.status,
+        findingsCount: r.findings_count,
+        scope: r.scope,
+        reportFileName: r.report_file_name
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Upload report file for an audit record
+  app.post('/api/audit-records/:id/report', authenticate, upload.single('file'), async (req: any, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    const { id } = req.params;
+    try {
+      const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'audits');
+      await pool.execute(
+        `UPDATE audit_records SET report_file_name = ?, report_file_mimetype = ?, report_file_data = ? WHERE id = ?`,
+        [req.file.originalname, req.file.mimetype, uploadData, id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPLOAD_AUDIT_REPORT', `Uploaded audit report file: ${req.file.originalname} for audit record ID ${id}`);
+      res.json({
+        success: true,
+        reportFileName: req.file.originalname
+      });
+    } catch (err: any) {
+      console.error('Audit report file upload failed:', err);
+      res.status(500).json({ error: 'Failed to save audit report file to database' });
+    }
+  });
+
+  // Download/View report file for an audit record
+  app.get('/api/audit-records/:id/report', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const [rows]: any = await pool.execute(
+        'SELECT report_file_name, report_file_mimetype, report_file_data FROM audit_records WHERE id = ? AND deleted_at IS NULL',
+        [id]
+      );
+      if (rows.length === 0 || !rows[0].report_file_data) {
+        return res.status(404).json({ error: 'Report file not found or not uploaded' });
+      }
+      const record = rows[0];
+      const retrievedData = await handleFileRetrieve(record.report_file_data);
+      res.setHeader('Content-Type', record.report_file_mimetype || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(record.report_file_name)}"`);
+      res.send(retrievedData);
+    } catch (err: any) {
+      console.error('Audit file retrieval failed:', err);
+      res.status(500).json({ error: 'Failed to retrieve audit report' });
+    }
+  });
+
+  // Remove report file from an audit record
+  app.delete('/api/audit-records/:id/report', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      await pool.execute(
+        `UPDATE audit_records SET report_file_name = NULL, report_file_mimetype = NULL, report_file_data = NULL WHERE id = ?`,
+        [id]
+      );
+      await logAudit(req.user.id, req.user.username, 'DELETE_AUDIT_REPORT', `Deleted audit report for audit record ID ${id}`);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error('Delete audit report failed:', err);
+      res.status(500).json({ error: 'Failed to delete audit report' });
+    }
+  });
+
+  app.post('/api/audit-records', authenticate, async (req: any, res) => {
+    const {
+      id, type, vesselId, date, inspectorName, inspectorOrganization, status, findingsCount, scope
+    } = req.body;
+    try {
+      await pool.execute(
+        `INSERT INTO audit_records (
+          id, type, vessel_id, date, inspector_name, inspector_organization, status, findings_count, scope
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, type, vesselId, date, inspectorName, inspectorOrganization, status, findingsCount, scope]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_AUDIT_RECORD', `Created Audit Record ID ${id}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/audit-records/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      type, vesselId, date, inspectorName, inspectorOrganization, status, findingsCount, scope
+    } = req.body;
+    try {
+      await pool.execute(
+        `UPDATE audit_records SET 
+          type = ?, vessel_id = ?, date = ?, inspector_name = ?, inspector_organization = ?, 
+          status = ?, findings_count = ?, scope = ?
+         WHERE id = ?`,
+        [type, vesselId, date, inspectorName, inspectorOrganization, status, findingsCount, scope, id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_AUDIT_RECORD', `Updated Audit Record ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/audit-records/:id/comments', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const [rows]: any = await pool.execute(
+        'SELECT * FROM audit_comments WHERE audit_id = ? ORDER BY created_at ASC',
+        [id]
+      );
+      res.json(rows.map((r: any) => ({
+        id: r.id,
+        auditId: r.audit_id,
+        author: r.author,
+        authorEmail: r.author_email,
+        commentText: r.comment_text,
+        createdAt: r.created_at
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/audit-records/:id/comments', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const { commentText } = req.body;
+    if (!commentText || commentText.trim() === '') {
+      return res.status(400).json({ error: 'Comment text is required' });
+    }
+    const commentId = 'c_' + Date.now();
+    const author = req.user.name || req.user.username || 'System User';
+    const authorEmail = req.user.email || 'user@example.com';
+    try {
+      await pool.execute(
+        `INSERT INTO audit_comments (id, audit_id, author, author_email, comment_text)
+         VALUES (?, ?, ?, ?, ?)`,
+        [commentId, id, author, authorEmail, commentText]
+      );
+      await logAudit(req.user.id, req.user.username, 'ADD_AUDIT_COMMENT', `Added comment to Audit Record ID ${id}`);
+      res.status(201).json({
+        id: commentId,
+        auditId: id,
+        author,
+        authorEmail,
+        commentText,
+        createdAt: new Date().toISOString()
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/audit-records/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE audit_records SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_AUDIT_RECORD', `Soft deleted Audit Record ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // NON-CONFORMITIES ROUTES
+  // ==========================================
+  app.get('/api/non-conformities', authenticate, async (req: any, res) => {
+    try {
+      let query = 'SELECT * FROM non_conformities WHERE deleted_at IS NULL';
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND vessel_id = ?';
+        params.push(String(req.user.vessel_id));
+      }
+      query += ' ORDER BY raised_date DESC';
+      const [records]: any = await pool.execute(query, params);
+      res.json(records.map((nc: any) => ({
+        id: nc.id,
+        auditId: nc.audit_id,
+        vesselId: nc.vessel_id,
+        sourceType: nc.source_type,
+        category: nc.category,
+        description: nc.description,
+        raisedDate: nc.raised_date ? new Date(nc.raised_date).toISOString().split('T')[0] : '',
+        dueDate: nc.due_date ? new Date(nc.due_date).toISOString().split('T')[0] : '',
+        closeoutDate: nc.closeout_date ? new Date(nc.closeout_date).toISOString().split('T')[0] : undefined,
+        status: nc.status,
+        actionPlan: nc.action_plan,
+        inspectorName: nc.inspector_name
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/non-conformities', authenticate, async (req: any, res) => {
+    const {
+      id, auditId, vesselId, sourceType, category, description, raisedDate, dueDate, closeoutDate, status, actionPlan, inspectorName
+    } = req.body;
+    try {
+      await pool.execute(
+        `INSERT INTO non_conformities (
+          id, audit_id, vessel_id, source_type, category, description, raised_date, due_date, closeout_date, status, action_plan, inspector_name
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, auditId, vesselId, sourceType, category, description, raisedDate, dueDate, closeoutDate || null, status, actionPlan, inspectorName]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_NC', `Created Non-Conformity ID ${id}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/non-conformities/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      auditId, vesselId, sourceType, category, description, raisedDate, dueDate, closeoutDate, status, actionPlan, inspectorName
+    } = req.body;
+    try {
+      await pool.execute(
+        `UPDATE non_conformities SET 
+          audit_id = ?, vessel_id = ?, source_type = ?, category = ?, description = ?, 
+          raised_date = ?, due_date = ?, closeout_date = ?, status = ?, action_plan = ?, inspector_name = ?
+         WHERE id = ?`,
+        [auditId, vesselId, sourceType, category, description, raisedDate, dueDate, closeoutDate || null, status, actionPlan, inspectorName, id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_NC', `Updated Non-Conformity ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/non-conformities/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE non_conformities SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_NC', `Soft deleted Non-Conformity ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // TROUBLE REPORTS (DEFECTS) ROUTES
+  // ==========================================
+  app.get('/api/trouble-reports', authenticate, async (req: any, res) => {
+    try {
+      let query = `
+        SELECT tr.*, v.name as vessel_name
+        FROM trouble_reports tr
+        JOIN vessels v ON tr.vessel_id = v.id
+        WHERE tr.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        query += ' AND tr.vessel_id = ?';
+        params.push(String(req.user.vessel_id));
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        query += ' AND v.team_id IN (?)';
+        params.push(req.user.team_ids);
+      }
+      query += ' ORDER BY tr.date_found DESC, tr.id DESC';
+      const [reports]: any = await pool.execute(query, params);
+
+      res.json(reports.map((r: any) => ({
+        id: r.id,
+        vesselId: String(r.vessel_id),
+        vesselName: r.vessel_name,
+        deficiencyNumber: r.deficiency_number,
+        dateFound: r.date_found ? new Date(r.date_found).toISOString().split('T')[0] : '',
+        deficiency: r.deficiency,
+        classification: r.classification,
+        subClassification: r.sub_classification || undefined,
+        othersDetail: r.others_detail || undefined,
+        status: r.status,
+        actionTaken: r.action_taken || undefined,
+        dateResolved: r.date_resolved ? new Date(r.date_resolved).toISOString().split('T')[0] : undefined,
+        reporterName: r.reporter_name,
+        pmsCode: r.pms_code || undefined,
+        rectificationFile: r.rectification_file_name ? {
+          name: r.rectification_file_name,
+          size: r.rectification_file_size || '0 KB',
+          dataUrl: `/api/trouble-reports-files/${r.id}/rectification`
+        } : undefined,
+        comiFile: r.comi_file_name ? {
+          name: r.comi_file_name,
+          size: r.comi_file_size || '0 KB',
+          dataUrl: `/api/trouble-reports-files/${r.id}/comi`
+        } : undefined
+      })));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/trouble-reports-files/:id/:fileType', authenticate, async (req, res) => {
+    const { id, fileType } = req.params;
+    try {
+      const fieldData = fileType === 'comi' ? 'comi_file_data' : 'rectification_file_data';
+      const fieldName = fileType === 'comi' ? 'comi_file_name' : 'rectification_file_name';
+
+      const [rows]: any = await pool.execute(
+        `SELECT ${fieldName} as filename, ${fieldData} as val FROM trouble_reports WHERE id = ?`,
+        [id]
+      );
+      if (rows.length > 0 && rows[0].val) {
+        const file = rows[0];
+        const retrievedData = await handleFileRetrieve(file.val);
+        const mimetype = file.filename.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg';
+        res.setHeader('Content-Type', mimetype);
+        res.setHeader('Content-Disposition', `inline; filename="${file.filename}"`);
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/trouble-reports', authenticate, async (req: any, res) => {
+    const {
+      id, vesselId, deficiencyNumber, dateFound, deficiency, classification,
+      subClassification, othersDetail, status, actionTaken, dateResolved, reporterName, pmsCode,
+      rectificationFile, comiFile
+    } = req.body;
+
+    try {
+      let rectDataBuffer: any = null;
+      let comiDataBuffer: any = null;
+
+      if (rectificationFile && rectificationFile.dataUrl && rectificationFile.dataUrl.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(rectificationFile.dataUrl);
+        if (parsed) {
+          rectDataBuffer = await handleFileUpload(rectificationFile.name, parsed.mimetype, parsed.buffer, 'defects');
+        }
+      }
+      if (comiFile && comiFile.dataUrl && comiFile.dataUrl.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(comiFile.dataUrl);
+        if (parsed) {
+          comiDataBuffer = await handleFileUpload(comiFile.name, parsed.mimetype, parsed.buffer, 'defects');
+        }
+      }
+
+      await pool.execute(
+        `INSERT INTO trouble_reports (
+          id, vessel_id, deficiency_number, date_found, deficiency, classification,
+          sub_classification, others_detail, status, action_taken, date_resolved, reporter_name, pms_code,
+          rectification_file_name, rectification_file_size, rectification_file_data,
+          comi_file_name, comi_file_size, comi_file_data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, vesselId, deficiencyNumber, dateFound, deficiency, classification,
+          subClassification || null, othersDetail || null, status, actionTaken || null, dateResolved || null, reporterName, pmsCode || null,
+          rectificationFile ? rectificationFile.name : null, rectificationFile ? rectificationFile.size : null, rectDataBuffer,
+          comiFile ? comiFile.name : null, comiFile ? comiFile.size : null, comiDataBuffer
+        ]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_TROUBLE_REPORT', `Created Trouble Report ID ${id}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/trouble-reports/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const {
+      vesselId, deficiencyNumber, dateFound, deficiency, classification,
+      subClassification, othersDetail, status, actionTaken, dateResolved, reporterName, pmsCode,
+      rectificationFile, comiFile
+    } = req.body;
+
+    try {
+      const [existing]: any = await pool.execute(
+        'SELECT rectification_file_name, rectification_file_size, rectification_file_data, comi_file_name, comi_file_size, comi_file_data FROM trouble_reports WHERE id = ?',
+        [id]
+      );
+
+      let rectName = existing[0]?.rectification_file_name || null;
+      let rectSize = existing[0]?.rectification_file_size || null;
+      let rectData = existing[0]?.rectification_file_data || null;
+
+      let comiName = existing[0]?.comi_file_name || null;
+      let comiSize = existing[0]?.comi_file_size || null;
+      let comiData = existing[0]?.comi_file_data || null;
+
+      if (rectificationFile) {
+        if (rectificationFile.dataUrl) {
+          if (rectificationFile.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(rectificationFile.dataUrl);
+            if (parsed) {
+              rectName = rectificationFile.name;
+              rectSize = rectificationFile.size;
+              rectData = await handleFileUpload(rectificationFile.name, parsed.mimetype, parsed.buffer, 'defects');
+            }
+          }
+        } else {
+          rectName = rectificationFile.name;
+          rectSize = rectificationFile.size;
+        }
+      } else {
+        rectName = null; rectSize = null; rectData = null;
+      }
+
+      if (comiFile) {
+        if (comiFile.dataUrl) {
+          if (comiFile.dataUrl.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(comiFile.dataUrl);
+            if (parsed) {
+              comiName = comiFile.name;
+              comiSize = comiFile.size;
+              comiData = await handleFileUpload(comiFile.name, parsed.mimetype, parsed.buffer, 'defects');
+            }
+          }
+        } else {
+          comiName = comiFile.name;
+          comiSize = comiFile.size;
+        }
+      } else {
+        comiName = null; comiSize = null; comiData = null;
+      }
+
+      await pool.execute(
+        `UPDATE trouble_reports SET 
+          vessel_id = ?, deficiency_number = ?, date_found = ?, deficiency = ?, classification = ?,
+          sub_classification = ?, others_detail = ?, status = ?, action_taken = ?, date_resolved = ?, reporter_name = ?, pms_code = ?,
+          rectification_file_name = ?, rectification_file_size = ?, rectification_file_data = ?,
+          comi_file_name = ?, comi_file_size = ?, comi_file_data = ?
+         WHERE id = ?`,
+        [
+          vesselId, deficiencyNumber, dateFound, deficiency, classification,
+          subClassification || null, othersDetail || null, status, actionTaken || null, dateResolved || null, reporterName, pmsCode || null,
+          rectName, rectSize, rectData,
+          comiName, comiSize, comiData,
+          id
+        ]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_TROUBLE_REPORT', `Updated trouble report ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/trouble-reports/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE trouble_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_TROUBLE_REPORT', `Soft deleted trouble report ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // SPARE PARTS REQUISITIONS ROUTES
+  // ==========================================
+  app.get('/api/spare-parts-requisitions', authenticate, async (req: any, res) => {
+    const { storageKey } = req.query;
+    try {
+      let query = 'SELECT * FROM spare_parts_requisitions WHERE deleted_at IS NULL';
+      let params: any[] = [];
+      if (storageKey) {
+        query += ' AND storage_key = ?';
+        params.push(storageKey);
+      }
+      const [rows]: any = await pool.execute(query, params);
+      
+      const parsedList = rows.map((r: any) => {
+        try {
+          const parsed = JSON.parse(r.data_json);
+          parsed.id = r.id; 
+          return parsed;
+        } catch (err) {
+          return null;
+        }
+      }).filter(Boolean);
+
+      let filtered = parsedList;
+      if (req.user.role === 'vessel' && req.user.vessel_id) {
+        filtered = parsedList.filter((x: any) => String(x.vesselId) === String(req.user.vessel_id));
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        const [vessels]: any = await pool.execute('SELECT id FROM vessels WHERE team_id IN (?)', [req.user.team_ids]);
+        const vesselIds = vessels.map((v: any) => String(v.id));
+        filtered = parsedList.filter((x: any) => vesselIds.includes(String(x.vesselId)));
+      }
+
+      res.json(filtered);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/spare-parts-requisitions', authenticate, async (req: any, res) => {
+    try {
+      // Direct body is data, query storageKey contains target sheet
+      const payload = req.body;
+      const id = payload.id;
+      const storageKey = req.query.storageKey || payload.storageKey || 'comos_spare_requisitions';
+      const dataStr = JSON.stringify(payload);
+      
+      await pool.execute(
+        'INSERT INTO spare_parts_requisitions (id, storage_key, data_json) VALUES (?, ?, ?)',
+        [id, storageKey, dataStr]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_REQUISITION', `Created Requisition ID ${id} under ${storageKey}`);
+      res.status(201).json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/spare-parts-requisitions/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const payload = req.body;
+      const storageKey = req.query.storageKey || payload.storageKey || 'comos_spare_requisitions';
+      const dataStr = JSON.stringify(payload);
+
+      await pool.execute(
+        'UPDATE spare_parts_requisitions SET storage_key = ?, data_json = ? WHERE id = ?',
+        [storageKey, dataStr, id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_REQUISITION', `Updated Requisition ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/spare-parts-requisitions/:id', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute('UPDATE spare_parts_requisitions SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_REQUISITION', `Deleted Requisition ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/requisition-attachments/upload', authenticate, upload.single('file'), async (req: any, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    try {
+      const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'requisition_attachments');
+      const sizeStr = req.file.size > 1024 * 1024 
+        ? `${(req.file.size / (1024 * 1024)).toFixed(1)} MB` 
+        : `${(req.file.size / 1024).toFixed(0)} KB`;
+
+      const [result]: any = await pool.execute(
+        'INSERT INTO requisition_attachments (filename, size, mimetype, data) VALUES (?, ?, ?, ?)',
+        [req.file.originalname, sizeStr, req.file.mimetype, uploadData]
+      );
+      
+      const insertId = result.insertId;
+      const dataUrl = `/api/requisition-attachments/${insertId}`;
+
+      res.status(201).json({
+        success: true,
+        file: {
+          name: req.file.originalname,
+          size: sizeStr,
+          dataUrl: dataUrl,
+          uploadedAt: Date.now()
+        }
+      });
+    } catch (e: any) {
+      console.error('Requisition attachment upload failed:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/requisition-attachments/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      const [rows]: any = await pool.execute(
+        'SELECT filename, mimetype, data FROM requisition_attachments WHERE id = ? AND deleted_at IS NULL',
+        [id]
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({ error: 'Attachment not found' });
+      }
+      const file = rows[0];
+      const retrievedData = await handleFileRetrieve(file.data);
+      res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.filename)}"`);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.send(retrievedData);
+    } catch (e: any) {
+      console.error('Failed to download requisition attachment:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/requisition-attachments/:id', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    try {
+      await pool.execute(
+        'UPDATE requisition_attachments SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [id]
+      );
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Failed to soft delete requisition attachment:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Global Error Handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File too large (max 20MB)' });
+      }
+      return res.status(400).json({ error: `Upload error: ${err.message}` });
+    }
+
+    console.error('Unhandled Error:', err);
+    if (req.path.startsWith('/api')) {
+      return res.status(500).json({ 
+        error: 'Internal Server Error', 
+        message: err.message,
+        stack: process.env.NODE_ENV === 'production' ? undefined : err.stack 
+      });
+    }
+    next(err);
+  });
+
+  app.get('/api/admin/system-time', authenticate, (req, res) => {
+    res.json({ 
+      time: new Date().toLocaleString(),
+      timezone: process.env.TZ || 'Not set (Defaulting to UTC)'
+    });
+  });
+
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    
+    // Catch-all for /api routes that weren't handled - MUST be before vite.middlewares
+    app.all('/api/*', (req, res) => {
+      res.status(404).json({ error: 'API route not found' });
+    });
+
+    app.use(vite.middlewares);
+  } else {
+    app.use(express.static('dist', {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
+          res.setHeader('Content-Type', 'application/javascript; charset=UTF-8');
+        } else if (filePath.endsWith('.css')) {
+          res.setHeader('Content-Type', 'text/css; charset=UTF-8');
+        } else if (filePath.endsWith('.html')) {
+          res.setHeader('Content-Type', 'text/html; charset=UTF-8');
+        } else if (filePath.endsWith('.svg')) {
+          res.setHeader('Content-Type', 'image/svg+xml; charset=UTF-8');
+        } else if (filePath.endsWith('.png')) {
+          res.setHeader('Content-Type', 'image/png');
+        } else if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
+          res.setHeader('Content-Type', 'image/jpeg');
+        } else if (filePath.endsWith('.ico')) {
+          res.setHeader('Content-Type', 'image/x-icon');
+        } else if (filePath.endsWith('.json')) {
+          res.setHeader('Content-Type', 'application/json; charset=UTF-8');
+        }
+      }
+    }));
+    // Catch-all for /api routes in production
+    app.all('/api/*', (req, res) => {
+      res.status(404).json({ error: 'API route not found' });
+    });
+    app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist/index.html')));
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server successfully started on http://0.0.0.0:${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+}
+
+startServer().catch(err => {
+  console.error('FAILED TO START SERVER:', err);
+  process.exit(1);
+});
