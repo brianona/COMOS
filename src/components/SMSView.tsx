@@ -65,6 +65,9 @@ export interface SMSForm {
   formDate: string;
   scope: string; // "All Vessels" or specific vessel names
   type?: 'Form' | 'Checklist';
+  vesselType?: string;
+  removeFilenameRestriction?: boolean;
+  allowedFileTypes?: string[];
 }
 
 export interface VesselSubmissionPeriod {
@@ -215,6 +218,9 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [formDescriptionInput, setFormDescriptionInput] = useState('');
   const [formDateInput, setFormDateInput] = useState('');
   const [formScopeInput, setFormScopeInput] = useState('All Vessels');
+  const [formVesselTypeInput, setFormVesselTypeInput] = useState('All Vessels');
+  const [formRemoveFilenameRestrictionInput, setFormRemoveFilenameRestrictionInput] = useState(false);
+  const [formAllowedFileTypesInput, setFormAllowedFileTypesInput] = useState<string[]>([]);
   const [formTypeInput, setFormTypeInput] = useState<'Form' | 'Checklist'>('Form');
   const [selectedFlags, setSelectedFlags] = useState<string[]>([]);
 
@@ -330,12 +336,30 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     return catForms.filter(f => isVesselInFormScope(targetVessel, f.scope));
   };
 
+  const parseAllowedFileTypes = (val: any): string[] => {
+    if (!val) return [];
+    if (Array.isArray(val)) return val;
+    if (typeof val === 'string') {
+      try {
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {}
+      return val.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    return [];
+  };
+
   // Fetch forms from MySQL server or LocalStorage fallback
   const fetchSMSForms = async () => {
     if (!token) {
       const savedForms = localStorage.getItem('comos_sms_manage_forms');
       if (savedForms) {
-        setForms(JSON.parse(savedForms));
+        const parsed = JSON.parse(savedForms);
+        setForms(parsed.map((f: any) => ({
+          ...f,
+          removeFilenameRestriction: Boolean(f.removeFilenameRestriction),
+          allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes)
+        })));
       } else {
         setForms(INITIAL_FORMS);
         localStorage.setItem('comos_sms_manage_forms', JSON.stringify(INITIAL_FORMS));
@@ -350,7 +374,11 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
       if (response.ok) {
         const data = await response.json();
         if (data && data.length > 0) {
-          setForms(data);
+          setForms(data.map((f: any) => ({
+            ...f,
+            removeFilenameRestriction: Boolean(f.removeFilenameRestriction),
+            allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes)
+          })));
         } else {
           setForms(INITIAL_FORMS);
         }
@@ -636,7 +664,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
       return;
     }
     
-    if (!token || String(uploadId).startsWith('up_')) {
+    if (!token) {
       const updatedUploads = uploads.filter(up => String(up.id) !== String(uploadId));
       setUploads(updatedUploads);
       localStorage.setItem('comos_sms_uploads_list', JSON.stringify(updatedUploads));
@@ -645,15 +673,19 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     }
 
     try {
-      const response = await fetch(`/api/sms/upload/${uploadId}`, {
+      const response = await fetch(`/api/sms/upload/${encodeURIComponent(uploadId)}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (response.ok) {
         setUploads(prev => prev.filter(up => String(up.id) !== String(uploadId)));
-        triggerToast(`File deleted successfully.`, 'success');
+        triggerToast(`File soft-deleted and moved to Recycle Bin.`, 'success');
       } else {
-        throw new Error('Failed to delete file');
+        // Fallback for unpersisted items
+        const updatedUploads = uploads.filter(up => String(up.id) !== String(uploadId));
+        setUploads(updatedUploads);
+        localStorage.setItem('comos_sms_uploads_list', JSON.stringify(updatedUploads));
+        triggerToast(`File deleted locally.`, 'success');
       }
     } catch (err: any) {
       triggerToast(`Deletion failed: ${err.message}`, 'error');
@@ -685,8 +717,9 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     const cleanFileName = fileName.trim().toUpperCase();
     const categoryForms = allForms.filter(f => f.category === category);
     
-    // If the file starts with any form code in this category, it's a match!
+    // If the file starts with any form code in this category, or if a form in this category removes filename restriction, it's a match!
     const hasMatchingCode = categoryForms.some(f => {
+      if (f.removeFilenameRestriction) return true;
       const cleanCode = f.formCode.trim().toUpperCase();
       if (!cleanFileName.startsWith(cleanCode)) return false;
       if (cleanFileName.length > cleanCode.length) {
@@ -1077,28 +1110,86 @@ startxref
   };
 
   const isDescriptionMatched = (fileText: string, formDescription: string): boolean => {
-    const cleanText = fileText.toUpperCase().replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
-    const cleanDesc = formDescription.toUpperCase().replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
+    const upperText = fileText.toUpperCase();
+    const upperDesc = formDescription.toUpperCase();
+    
+    // 1. Direct clean substring match
+    const cleanText = upperText.replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
+    const cleanDesc = upperDesc.replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
     
     if (cleanText.includes(cleanDesc)) {
       return true;
     }
-    
-    // Fallback: word-by-word match. If at least 70% of the significant words (length >= 2)
-    // in formDescription are present in the file text, we consider it a match.
-    const descWords = formDescription.toUpperCase()
+
+    const stopWords = new Set(['AND', 'THE', 'FOR', 'WITH', 'FROM', 'AND/OR', 'OF', 'IN', 'ON', 'AT', 'TO', 'BY', 'OR']);
+    const descWords = upperDesc
       .replace(/[^A-Z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length >= 2 && w !== 'AND');
+      .filter(w => w.length >= 2 && !stopWords.has(w));
       
     if (descWords.length === 0) return true;
     
     const fileWords = new Set(
-      fileText.toUpperCase()
+      upperText
         .replace(/[^A-Z0-9\s]/g, ' ')
         .split(/\s+/)
     );
-    
+
+    // 2. Department conflicts (e.g., DECK vs ENGINE vs GALLEY vs CATERING)
+    const deptKeywords = ['DECK', 'ENGINE', 'GALLEY', 'CATERING', 'RADIO'];
+    const descDepts = deptKeywords.filter(k => descWords.includes(k));
+    if (descDepts.length > 0) {
+      const conflictingDept = deptKeywords.find(k => fileWords.has(k) && !descDepts.includes(k));
+      if (conflictingDept) {
+        return false;
+      }
+      const hasReqDept = descDepts.some(k => fileWords.has(k));
+      if (!hasReqDept) {
+        return false;
+      }
+    }
+
+    // 3. Flag / Country conflicts (e.g., MALTA, SINGAPORE vs PANAMA vs LIBERIA etc.)
+    const flagKeywords = ['MALTA', 'SINGAPORE', 'PANAMA', 'LIBERIA', 'MARSHALL', 'BAHAMAS', 'CYPRUS', 'TUVALU', 'VANUATU', 'ANTIGUA', 'BARBUDA'];
+    const descFlags = flagKeywords.filter(k => descWords.includes(k));
+    if (descFlags.length > 0) {
+      const conflictingFlag = flagKeywords.find(k => fileWords.has(k) && !descFlags.includes(k));
+      if (conflictingFlag) {
+        return false;
+      }
+      const hasReqFlag = descFlags.some(k => fileWords.has(k));
+      if (!hasReqFlag) {
+        return false;
+      }
+    }
+
+    // 4. Number/Specification conflicts (e.g. 1952 TEU vs 2822 TEU)
+    const descNumbers = descWords.filter(w => /^\d{3,}$/.test(w));
+    if (descNumbers.length > 0) {
+      const missingNum = descNumbers.find(num => !fileWords.has(num));
+      if (missingNum) {
+        return false;
+      }
+    }
+
+    // 5. Parenthetical / Qualifier word check
+    const parenMatches = upperDesc.match(/\(([^)]+)\)/g);
+    if (parenMatches) {
+      for (const paren of parenMatches) {
+        const qualifierWords = paren
+          .replace(/[^A-Z0-9\s]/g, ' ')
+          .split(/\s+/)
+          .filter(w => w.length >= 2 && !stopWords.has(w));
+        
+        for (const qWord of qualifierWords) {
+          if (!fileWords.has(qWord)) {
+            return false;
+          }
+        }
+      }
+    }
+
+    // 6. Overall word match ratio
     let matchedCount = 0;
     for (const word of descWords) {
       if (fileWords.has(word)) {
@@ -1107,7 +1198,78 @@ startxref
     }
     
     const matchPercentage = (matchedCount / descWords.length) * 100;
-    return matchPercentage >= 70;
+    return matchPercentage >= 80;
+  };
+
+  const isTargetDateInText = (textUpper: string, year: number, monthNum: number, day: number, fullMonth: string, shortMonth: string): boolean => {
+    const dayStr = day.toString();
+    const dayPad = day < 10 ? '0' + day : dayStr;
+    const monthStr = monthNum.toString();
+    const monthPad = monthNum < 10 ? '0' + monthNum : monthStr;
+    
+    // 1. "28 November 2025" or "28 Nov 2025"
+    const r1 = new RegExp(`\\b${day}(?:th|st|nd|rd)?\\s+(?:${fullMonth}|${shortMonth})\\s+${year}\\b`, 'i');
+    const r1Pad = new RegExp(`\\b${dayPad}\\s+(?:${fullMonth}|${shortMonth})\\s+${year}\\b`, 'i');
+    
+    // 2. "November 28, 2025" or "Nov 28, 2025"
+    const r2 = new RegExp(`\\b(?:${fullMonth}|${shortMonth})\\s+${day}(?:th|st|nd|rd)?,?\\s+${year}\\b`, 'i');
+    const r2Pad = new RegExp(`\\b(?:${fullMonth}|${shortMonth})\\s+${dayPad},?\\s+${year}\\b`, 'i');
+    
+    // 3. "28-Nov-2025" or "28/Nov/2025" or "28.Nov.2025"
+    const r3 = new RegExp(`\\b${day}[-/.]${shortMonth}[-/.]${year}\\b`, 'i');
+    const r3Pad = new RegExp(`\\b${dayPad}[-/.]${shortMonth}[-/.]${year}\\b`, 'i');
+    
+    // 4. "2025-11-28" or "2025/11/28"
+    const r4 = new RegExp(`\\b${year}[-/.]${monthPad}[-/.]${dayPad}\\b`);
+    const r4Lenient = new RegExp(`\\b${year}[-/.]${monthStr}[-/.]${dayStr}\\b`);
+    
+    // 5. "11/28/2025" or "11-28-2025"
+    const r5 = new RegExp(`\\b${monthPad}[-/.]${dayPad}[-/.]${year}\\b`);
+    const r5Lenient = new RegExp(`\\b${monthStr}[-/.]${dayStr}[-/.]${year}\\b`);
+    
+    // 6. "28/11/2025" or "28-11-2025"
+    const r6 = new RegExp(`\\b${dayPad}[-/.]${monthPad}[-/.]${year}\\b`);
+    const r6Lenient = new RegExp(`\\b${dayStr}[-/.]${monthStr}[-/.]${year}\\b`);
+
+    return (
+      r1.test(textUpper) ||
+      r1Pad.test(textUpper) ||
+      r2.test(textUpper) ||
+      r2Pad.test(textUpper) ||
+      r3.test(textUpper) ||
+      r3Pad.test(textUpper) ||
+      r4.test(textUpper) ||
+      r4Lenient.test(textUpper) ||
+      r5.test(textUpper) ||
+      r5Lenient.test(textUpper) ||
+      r6.test(textUpper) ||
+      r6Lenient.test(textUpper)
+    );
+  };
+
+  const hasAnyDateInText = (fileText: string): boolean => {
+    const textUpper = fileText.toUpperCase();
+    
+    const monthRegexStr = '(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)';
+    
+    // Pattern 1: DD Month YYYY or Month DD, YYYY
+    const datePattern1 = new RegExp(`\\b\\d{1,2}(?:th|st|nd|rd)?\\s+${monthRegexStr}\\s+\\d{4}\\b`, 'i');
+    const datePattern2 = new RegExp(`\\b${monthRegexStr}\\s+\\d{1,2}(?:th|st|nd|rd)?,?\\s+\\d{4}\\b`, 'i');
+    
+    // Pattern 2: DD-Month-YYYY
+    const datePattern3 = new RegExp(`\\b\\d{1,2}[-/. ]${monthRegexStr}[-/. ]\\d{4}\\b`, 'i');
+    
+    // Pattern 3: YYYY-MM-DD or MM/DD/YYYY or DD/MM/YYYY with 4-digit years
+    const datePattern4 = /\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b/;
+    const datePattern5 = /\b\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\b/;
+
+    return (
+      datePattern1.test(textUpper) ||
+      datePattern2.test(textUpper) ||
+      datePattern3.test(textUpper) ||
+      datePattern4.test(textUpper) ||
+      datePattern5.test(textUpper)
+    );
   };
 
   const isDateMatched = (fileText: string, formDateStr: string): boolean => {
@@ -1128,61 +1290,8 @@ startxref
     const fullMonth = monthNamesFull[monthIndex];
     const shortMonth = monthNamesShort[monthIndex];
     const monthNum = monthIndex + 1;
-    const monthNumStr = monthNum.toString();
-    const monthNumPadStr = monthNum < 10 ? '0' + monthNum : monthNumStr;
     
-    const dayStr = day.toString();
-    const dayPadStr = day < 10 ? '0' + day : dayStr;
-    
-    // Define common representations
-    const possibilities = [
-      // 28 November 2025
-      `${day} ${fullMonth} ${year}`,
-      `${dayPadStr} ${fullMonth} ${year}`,
-      `${fullMonth} ${day}, ${year}`,
-      `${fullMonth} ${dayPadStr}, ${year}`,
-      
-      // 28 Nov 2025
-      `${day} ${shortMonth} ${year}`,
-      `${dayPadStr} ${shortMonth} ${year}`,
-      `${shortMonth} ${day}, ${year}`,
-      `${shortMonth} ${dayPadStr}, ${year}`,
-      
-      // 28-Nov-2025
-      `${day}-${shortMonth}-${year}`,
-      `${dayPadStr}-${shortMonth}-${year}`,
-      
-      // 28.11.2025
-      `${day}.${monthNumStr}.${year}`,
-      `${dayPadStr}.${monthNumPadStr}.${year}`,
-      
-      // 28/11/2025
-      `${day}/${monthNumStr}/${year}`,
-      `${dayPadStr}/${monthNumPadStr}/${year}`,
-      
-      // 11/28/2025
-      `${monthNumStr}/${day}/${year}`,
-      `${monthNumPadStr}/${dayPadStr}/${year}`,
-      
-      // 2025-11-28
-      `${year}-${monthNumPadStr}-${dayPadStr}`,
-      `${year}/${monthNumPadStr}/${dayPadStr}`,
-    ];
-    
-    // Check any possibility
-    for (const pos of possibilities) {
-      if (textUpper.includes(pos.toUpperCase())) {
-        return true;
-      }
-    }
-    
-    // Also, check if year and day are both present and either the month word (NOV/NOVEMBER) or month number is present.
-    const hasYear = textUpper.includes(year.toString());
-    const hasDay = textUpper.includes(day.toString());
-    const hasMonthWord = textUpper.includes(fullMonth) || textUpper.includes(shortMonth);
-    const hasMonthNum = textUpper.includes(monthNumStr) || textUpper.includes(monthNumPadStr);
-    
-    if (hasYear && hasDay && (hasMonthWord || hasMonthNum)) {
+    if (isTargetDateInText(textUpper, year, monthNum, day, fullMonth, shortMonth)) {
       return true;
     }
     
@@ -1190,6 +1299,27 @@ startxref
   };
 
   const validateFileAgainstForm = async (file: File, form: SMSForm): Promise<{ matched: boolean; reason?: string; content?: string }> => {
+    // Check file type restrictions if any checkboxes are ticked
+    if (form.allowedFileTypes && form.allowedFileTypes.length > 0) {
+      const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+      const validExts: string[] = [];
+      if (form.allowedFileTypes.includes('Word')) {
+        validExts.push('.doc', '.docx');
+      }
+      if (form.allowedFileTypes.includes('Excel')) {
+        validExts.push('.xls', '.xlsx');
+      }
+      if (form.allowedFileTypes.includes('PDF')) {
+        validExts.push('.pdf');
+      }
+      if (validExts.length > 0 && !validExts.includes(ext)) {
+        return {
+          matched: false,
+          reason: `File Type Mismatch: File type extension '${ext}' is not allowed for '${form.formCode}'. Allowed file types: ${form.allowedFileTypes.join(', ')}`
+        };
+      }
+    }
+
     const cleanFileName = file.name.trim().toUpperCase();
     const cleanFormCode = form.formCode.trim().toUpperCase();
     
@@ -1202,7 +1332,7 @@ startxref
       }
     }
 
-    if (!startsWithCode) {
+    if (!startsWithCode && !form.removeFilenameRestriction) {
       return {
         matched: false,
         reason: `Filename Mismatch: File name does not start with '${form.formCode}'`
@@ -1216,8 +1346,8 @@ startxref
       let hasCode = textUpper.includes(cleanFormCode) || 
         textUpper.replace(/[^A-Z0-9]/g, '').includes(cleanFormCode.replace(/[^A-Z0-9]/g, ''));
       if (!hasCode) {
-        // Fallback: If the filename starts with or contains the form code, consider it matched
-        if (cleanFileName.startsWith(cleanFormCode) || cleanFileName.includes(cleanFormCode)) {
+        // Fallback: If the filename starts with or contains the form code, or if filename restriction is removed
+        if (cleanFileName.startsWith(cleanFormCode) || cleanFileName.includes(cleanFormCode) || form.removeFilenameRestriction) {
           hasCode = true;
         }
       }
@@ -1227,26 +1357,43 @@ startxref
         // Fallback: try to match with the filename instead
         hasDescription = isDescriptionMatched(file.name, form.description);
       }
+      if (form.removeFilenameRestriction) {
+        hasDescription = true;
+      }
       
-      let hasDate = isDateMatched(text, form.formDate);
+      let hasDateInContent = isDateMatched(text, form.formDate);
+      let hasDateInFilename = isDateMatched(file.name, form.formDate);
+      let hasDate = hasDateInContent || hasDateInFilename;
+      let isMismatchingContentDate = false;
       if (!hasDate) {
-        // Fallback: try to match with the filename instead
-        hasDate = isDateMatched(file.name, form.formDate);
+        if (hasAnyDateInText(text)) {
+          isMismatchingContentDate = true;
+        }
+      }
+      if (form.removeFilenameRestriction) {
+        hasDate = true;
+        isMismatchingContentDate = false;
       }
 
-      if (!hasCode) {
+      if (!hasCode && !form.removeFilenameRestriction) {
         return {
           matched: false,
           reason: `Content Mismatch: Form Code '${form.formCode}' was not found in the file's text structure.`,
           content: text.slice(0, 1000)
         };
-      } else if (!hasDescription) {
+      } else if (!hasDescription && !form.removeFilenameRestriction) {
         return {
           matched: false,
           reason: `Content Mismatch: Form Description does not match saved database description.`,
           content: text.slice(0, 1000)
         };
-      } else if (!hasDate) {
+      } else if (isMismatchingContentDate && !form.removeFilenameRestriction) {
+        return {
+          matched: false,
+          reason: `Content Mismatch: File header/content contains a different date than expected '${form.formDate}'.`,
+          content: text.slice(0, 1000)
+        };
+      } else if (!hasDate && !form.removeFilenameRestriction) {
         return {
           matched: false,
           reason: `Content Mismatch: Form Date '${form.formDate}' was not found in the file's text structure.`,
@@ -1335,31 +1482,31 @@ startxref
     const sortedActiveForms = [...activeCategoryForms].sort((a, b) => b.formCode.length - a.formCode.length);
     let matchedCount = 0;
     let mismatchCount = 0;
-    let zipDetected = false;
 
-    // Check if there is any ZIP file dropped
+    const fileArray: File[] = [];
     for (let i = 0; i < files.length; i++) {
       if (files[i].name.toLowerCase().endsWith('.zip')) {
-        zipDetected = true;
         await handleZipUploadInternal(files[i]);
         return;
       }
+      fileArray.push(files[i]);
     }
 
     const updatedMap = { ...uploadedFilesMap };
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    for (const file of fileArray) {
       const cleanFileName = file.name.trim().toUpperCase();
 
-      let formMatch: SMSForm | undefined;
+      let candidateForms: SMSForm[] = [];
 
       if (targetFormId) {
-        // Direct target matching
-        formMatch = forms.find(f => f.id === targetFormId);
+        // Direct target matching (single form card upload)
+        const targetForm = forms.find(f => f.id === targetFormId);
+        if (targetForm) candidateForms = [targetForm];
       } else {
-        // Find if this matches any form code in the current category (longest first)
-        formMatch = sortedActiveForms.find(f => {
+        // Find ALL forms in the active category that match this formCode prefix or have removeFilenameRestriction
+        candidateForms = sortedActiveForms.filter(f => {
+          if (f.removeFilenameRestriction) return true;
           const cleanCode = f.formCode.trim().toUpperCase();
           if (!cleanFileName.startsWith(cleanCode)) return false;
           if (cleanFileName.length > cleanCode.length) {
@@ -1370,17 +1517,47 @@ startxref
         });
       }
 
-      if (formMatch) {
-        const validation = await validateFileAgainstForm(file, formMatch);
-        updatedMap[formMatch.id] = {
-          file,
-          matched: validation.matched,
-          reason: validation.reason,
-          content: validation.content
-        };
-        if (validation.matched) {
+      if (candidateForms.length > 0) {
+        let bestCandidate: { form: SMSForm; validation: { matched: boolean; reason?: string; content?: string }; score: number } | null = null;
+
+        for (const candidate of candidateForms) {
+          const validation = await validateFileAgainstForm(file, candidate);
+          if (validation.matched) {
+            let score = 100;
+            const cleanText = file.name.trim().toUpperCase().replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
+            const cleanDesc = candidate.description.trim().toUpperCase().replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
+            if (cleanText.includes(cleanDesc)) {
+              score += 50;
+            }
+            // Prefer forms that are not yet matched in updatedMap
+            if (!updatedMap[candidate.id] || !updatedMap[candidate.id].matched) {
+              score += 30;
+            }
+
+            if (!bestCandidate || score > bestCandidate.score) {
+              bestCandidate = { form: candidate, validation, score };
+            }
+          }
+        }
+
+        if (bestCandidate) {
+          updatedMap[bestCandidate.form.id] = {
+            file,
+            matched: true,
+            reason: bestCandidate.validation.reason,
+            content: bestCandidate.validation.content
+          };
           matchedCount++;
         } else {
+          // Candidate forms existed by formCode, but none passed strict description/content validation
+          const firstCandidate = candidateForms[0];
+          const validation = await validateFileAgainstForm(file, firstCandidate);
+          updatedMap[firstCandidate.id] = {
+            file,
+            matched: false,
+            reason: validation.reason,
+            content: validation.content
+          };
           mismatchCount++;
         }
       } else {
@@ -1414,9 +1591,7 @@ startxref
   const handleZipUploadInternal = async (zipFile: File) => {
     try {
       const zip = await JSZip.loadAsync(zipFile);
-      const activeCategoryForms = getVesselActiveCategoryForms();
-      const sortedActiveForms = [...activeCategoryForms].sort((a, b) => b.formCode.length - a.formCode.length);
-      const extractedList: { file: File; form: SMSForm }[] = [];
+      const extractedFiles: File[] = [];
       const promises: Promise<void>[] = [];
 
       zip.forEach((relativePath, zipEntry) => {
@@ -1425,50 +1600,19 @@ startxref
         const p = zipEntry.async('blob').then((blob) => {
           const name = zipEntry.name.split('/').pop() || zipEntry.name;
           const file = new File([blob], name, { type: 'application/octet-stream' });
-          const cleanFileName = name.trim().toUpperCase();
-
-          const formMatch = sortedActiveForms.find(f => {
-            const cleanCode = f.formCode.trim().toUpperCase();
-            if (!cleanFileName.startsWith(cleanCode)) return false;
-            if (cleanFileName.length > cleanCode.length) {
-              const nextChar = cleanFileName[cleanCode.length];
-              if (/^[A-Z0-9]$/.test(nextChar)) return false;
-            }
-            return true;
-          });
-
-          if (formMatch) {
-            extractedList.push({ file, form: formMatch });
-          }
+          extractedFiles.push(file);
         });
         promises.push(p);
       });
 
       await Promise.all(promises);
 
-      if (extractedList.length === 0) {
-        triggerToast('No files matching current category form codes found in the uploaded ZIP archive.', 'error');
+      if (extractedFiles.length === 0) {
+        triggerToast('No files found in the uploaded ZIP archive.', 'error');
         return;
       }
 
-      const updatedMap = { ...uploadedFilesMap };
-      let matched = 0;
-      let mismatch = 0;
-
-      for (const item of extractedList) {
-        const val = await validateFileAgainstForm(item.file, item.form);
-        updatedMap[item.form.id] = {
-          file: item.file,
-          matched: val.matched,
-          reason: val.reason,
-          content: val.content
-        };
-        if (val.matched) matched++;
-        else mismatch++;
-      }
-
-      setUploadedFilesMap(updatedMap);
-      triggerToast(`Extracted ${extractedList.length} files from ZIP: ${matched} matched, ${mismatch} mismatch.`, mismatch > 0 ? 'error' : 'success');
+      await handleProcessMultipleFiles(extractedFiles);
     } catch (e: any) {
       triggerToast(`Failed to extract ZIP archive: ${e.message}`, 'error');
     }
@@ -1791,6 +1935,9 @@ startxref
       setFormDescriptionInput(form.description);
       setFormDateInput(form.formDate);
       setFormScopeInput(form.scope);
+      setFormVesselTypeInput(form.vesselType || 'All Vessels');
+      setFormRemoveFilenameRestrictionInput(Boolean(form.removeFilenameRestriction));
+      setFormAllowedFileTypesInput(form.allowedFileTypes || []);
       setFormTypeInput(form.type || 'Form');
 
       // Determine flags from scope
@@ -1817,6 +1964,9 @@ startxref
       setFormDescriptionInput('');
       setFormDateInput(new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' }));
       setFormScopeInput('All Vessels');
+      setFormVesselTypeInput('All Vessels');
+      setFormRemoveFilenameRestrictionInput(false);
+      setFormAllowedFileTypesInput([]);
       setFormTypeInput('Form');
       setSelectedFlags([]);
     }
@@ -1841,7 +1991,10 @@ startxref
         description: formDescriptionInput,
         formDate: formDateInput,
         scope: formScopeInput,
-        type: formTypeInput
+        vesselType: formVesselTypeInput,
+        type: formTypeInput,
+        removeFilenameRestriction: formRemoveFilenameRestrictionInput,
+        allowedFileTypes: formAllowedFileTypesInput
       };
       updatedForms = forms.map(f => f.id === editingForm.id ? savedForm! : f);
       setForms(updatedForms);
@@ -1855,7 +2008,10 @@ startxref
         description: formDescriptionInput,
         formDate: formDateInput || new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' }),
         scope: formScopeInput,
-        type: formTypeInput
+        vesselType: formVesselTypeInput,
+        type: formTypeInput,
+        removeFilenameRestriction: formRemoveFilenameRestrictionInput,
+        allowedFileTypes: formAllowedFileTypesInput
       };
       updatedForms = [...forms, savedForm];
       setForms(updatedForms);
@@ -1905,7 +2061,7 @@ startxref
         }
       }
 
-      triggerToast(`Form ${code} deleted successfully.`, 'success');
+      triggerToast(`Form ${code} soft-deleted and moved to Recycle Bin.`, 'success');
     }
   };
 
@@ -2527,6 +2683,57 @@ startxref
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
               {/* Left Side: Category Forms Checklist & Header Matching (8 cols) */}
               <div className="xl:col-span-8 space-y-4">
+                {/* Big Drag & Drop Zone for Multiple Files & ZIPs */}
+                <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 space-y-4">
+                  <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <Folder className="w-4 h-4 text-blue-600" /> Bulk Drop &amp; Match Center
+                  </h4>
+                  <p className="text-xs text-slate-500 font-medium leading-relaxed">
+                    Save time by uploading multiple documents/spreadsheets/PDFs or a compiled ZIP archive. The system will extract them, read their filenames, match them to the correct checklist codes, and perform automated header scans simultaneously.
+                  </p>
+
+                  <div
+                    onDragEnter={handleDrag}
+                    onDragOver={handleDrag}
+                    onDragLeave={handleDrag}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDragActive(false);
+                      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        handleProcessMultipleFiles(e.dataTransfer.files);
+                      }
+                    }}
+                    className={`border-2 border-dashed rounded-2xl h-36 flex flex-col items-center justify-center p-6 text-center transition-all relative ${
+                      dragActive ? 'border-blue-500 bg-blue-50/50 shadow-inner' : 'border-slate-200 hover:border-blue-400 bg-slate-50/30'
+                    }`}
+                  >
+                    <Upload className="w-7 h-7 text-blue-500 mb-2 shrink-0" />
+                    <p className="text-xs font-extrabold text-slate-700">
+                      Drag &amp; drop multiple report files or a ZIP archive here
+                    </p>
+                    <p className="text-[10px] text-slate-400 font-medium mt-1">
+                      Supports .docx, .doc, .xlsx, .xls, .pdf and .zip files • Files are matching by prefix automatically
+                    </p>
+                    <div className="mt-3 relative">
+                      <span className="px-3.5 py-1.5 bg-white border border-slate-200 text-slate-600 text-[10px] font-black uppercase tracking-wider rounded-lg hover:bg-slate-50 transition-all inline-block shadow-2xs cursor-pointer">
+                        Select Files
+                      </span>
+                      <input
+                        type="file"
+                        multiple
+                        accept=".docx,.doc,.xlsx,.xls,.pdf,.zip"
+                        onChange={(e) => {
+                          if (e.target.files && e.target.files.length > 0) {
+                            handleProcessMultipleFiles(e.target.files);
+                          }
+                        }}
+                        className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 space-y-4">
                   <div className="flex justify-between items-center pb-2 border-b border-slate-50">
                     <div className="space-y-0.5">
@@ -2568,12 +2775,38 @@ startxref
                                   <span className="px-2 py-0.5 bg-slate-800 text-white font-mono text-[10px] font-black rounded-md tracking-tight uppercase">
                                     {form.formCode}
                                   </span>
+                                  <span className={`px-1.5 py-0.5 text-[9px] font-extrabold uppercase rounded border ${
+                                    form.type === 'Checklist' 
+                                      ? 'bg-purple-50 text-purple-700 border-purple-200' 
+                                      : 'bg-blue-50 text-blue-700 border-blue-200'
+                                  }`}>
+                                    {form.type || 'Form'}
+                                  </span>
                                   <h5 className="text-xs font-black text-slate-700">{form.description}</h5>
                                 </div>
-                                <div className="flex items-center gap-3 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                                  <span>Target Date: {form.formDate}</span>
+                                <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                                  <span>Form Date: {form.formDate}</span>
                                   <span>•</span>
                                   <span>Scope: {form.scope}</span>
+                                  {form.vesselType && form.vesselType !== 'All Vessels' && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="text-slate-600">Vessel Type: {form.vesselType}</span>
+                                    </>
+                                  )}
+                                  <span>•</span>
+                                  {form.allowedFileTypes && form.allowedFileTypes.length > 0 ? (
+                                    <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded border border-indigo-100 font-extrabold">
+                                      📁 {form.allowedFileTypes.join(', ')}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400 font-medium">📁 All File Types</span>
+                                  )}
+                                  {form.removeFilenameRestriction && (
+                                    <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded border border-amber-200 font-extrabold">
+                                      🔓 No Filename Limit
+                                    </span>
+                                  )}
                                 </div>
                               </div>
 
@@ -2602,7 +2835,26 @@ startxref
                                   <div className="flex items-center gap-3 text-slate-400 text-xs">
                                     <Info className="w-4 h-4 shrink-0" />
                                     <p className="font-medium text-slate-500">
-                                      Upload a file (.docx, .doc, .xlsx, .xls, .pdf) starting with <strong className="font-bold text-slate-700">{form.formCode}</strong> to validate.
+                                      {(() => {
+                                        let typeDesc = "a file (.docx, .doc, .xlsx, .xls, .pdf)";
+                                        if (form.allowedFileTypes && form.allowedFileTypes.length > 0) {
+                                          const parts: string[] = [];
+                                          if (form.allowedFileTypes.includes('Word')) parts.push('Word (.doc, .docx)');
+                                          if (form.allowedFileTypes.includes('Excel')) parts.push('Excel (.xls, .xlsx)');
+                                          if (form.allowedFileTypes.includes('PDF')) parts.push('PDF (.pdf)');
+                                          typeDesc = `a ${parts.join(' / ')} file`;
+                                        }
+
+                                        if (form.removeFilenameRestriction) {
+                                          return `Upload ${typeDesc} (Filename prefix restriction removed) to validate.`;
+                                        } else {
+                                          return (
+                                            <>
+                                              Upload {typeDesc} starting with <strong className="font-bold text-slate-700">{form.formCode}</strong> to validate.
+                                            </>
+                                          );
+                                        }
+                                      })()}
                                     </p>
                                   </div>
 
@@ -2769,57 +3021,6 @@ startxref
                         );
                       })
                     )}
-                  </div>
-                </div>
-
-                {/* Big Drag & Drop Zone for Multiple Files & ZIPs */}
-                <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 space-y-4">
-                  <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                    <Folder className="w-4 h-4 text-blue-600" /> Bulk Drop &amp; Match Center
-                  </h4>
-                  <p className="text-xs text-slate-500 font-medium leading-relaxed">
-                    Save time by uploading multiple documents/spreadsheets/PDFs or a compiled ZIP archive. The system will extract them, read their filenames, match them to the correct checklist codes, and perform automated header scans simultaneously.
-                  </p>
-
-                  <div
-                    onDragEnter={handleDrag}
-                    onDragOver={handleDrag}
-                    onDragLeave={handleDrag}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setDragActive(false);
-                      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                        handleProcessMultipleFiles(e.dataTransfer.files);
-                      }
-                    }}
-                    className={`border-2 border-dashed rounded-2xl h-36 flex flex-col items-center justify-center p-6 text-center transition-all relative ${
-                      dragActive ? 'border-blue-500 bg-blue-50/50 shadow-inner' : 'border-slate-200 hover:border-blue-400 bg-slate-50/30'
-                    }`}
-                  >
-                    <Upload className="w-7 h-7 text-blue-500 mb-2 shrink-0" />
-                    <p className="text-xs font-extrabold text-slate-700">
-                      Drag &amp; drop multiple report files or a ZIP archive here
-                    </p>
-                    <p className="text-[10px] text-slate-400 font-medium mt-1">
-                      Supports .docx, .doc, .xlsx, .xls, .pdf and .zip files • Files are matching by prefix automatically
-                    </p>
-                    <div className="mt-3 relative">
-                      <span className="px-3.5 py-1.5 bg-white border border-slate-200 text-slate-600 text-[10px] font-black uppercase tracking-wider rounded-lg hover:bg-slate-50 transition-all inline-block shadow-2xs cursor-pointer">
-                        Select Files
-                      </span>
-                      <input
-                        type="file"
-                        multiple
-                        accept=".docx,.doc,.xlsx,.xls,.pdf,.zip"
-                        onChange={(e) => {
-                          if (e.target.files && e.target.files.length > 0) {
-                            handleProcessMultipleFiles(e.target.files);
-                          }
-                        }}
-                        className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-                      />
-                    </div>
                   </div>
                 </div>
               </div>
@@ -3044,15 +3245,16 @@ startxref
                 </div>
 
                 {/* Forms Table */}
-                <div className="overflow-x-auto rounded-xl border border-slate-100">
+                <div className="overflow-x-auto rounded-xl border border-slate-100 shadow-2xs">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-800 border-b border-slate-700 text-[10px] font-black text-white uppercase tracking-wider">
-                        <th className="px-4 py-3.5 w-[5%] text-center">#</th>
-                        <th className="px-4 py-3.5 w-[15%]">Form Code</th>
-                        <th className="px-4 py-3.5 w-[45%]">Description</th>
-                        <th className="px-4 py-3.5 w-[15%]">Form Date</th>
-                        <th className="px-4 py-3.5 w-[10%]">Scope</th>
+                        <th className="px-4 py-3.5 w-[4%] text-center">#</th>
+                        <th className="px-4 py-3.5 w-[14%]">Form Code</th>
+                        <th className="px-4 py-3.5 w-[10%]">Type</th>
+                        <th className="px-4 py-3.5 w-[32%]">Description</th>
+                        <th className="px-4 py-3.5 w-[12%]">Form Date</th>
+                        <th className="px-4 py-3.5 w-[18%]">Scope &amp; Limits</th>
                         <th className="px-4 py-3.5 w-[10%] text-center">Actions</th>
                       </tr>
                     </thead>
@@ -3067,19 +3269,57 @@ startxref
                             <td className="px-4 py-3 text-center text-slate-300 font-bold">
                               {idx + 1}
                             </td>
-                            <td className="px-4 py-3 font-black text-slate-400">
+                            <td className="px-4 py-3 font-mono font-black text-slate-700">
                               {f.formCode}
                             </td>
-                            <td className="px-4 py-3 text-slate-400 font-bold leading-normal">
+                            <td className="px-4 py-3">
+                              <span className={`px-2 py-0.5 text-[9px] font-extrabold uppercase rounded-md border inline-block ${
+                                f.type === 'Checklist' 
+                                  ? 'bg-purple-50 text-purple-700 border-purple-200' 
+                                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}>
+                                {f.type || 'Form'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-slate-600 font-bold leading-normal">
                               {f.description}
                             </td>
-                            <td className="px-4 py-3 text-slate-300">
+                            <td className="px-4 py-3 text-slate-500 font-medium">
                               {f.formDate}
                             </td>
                             <td className="px-4 py-3">
-                              <span className="px-2.5 py-1 bg-slate-800 text-white font-extrabold text-[9px] rounded-md tracking-wider inline-flex items-center gap-1">
-                                🌐 {f.scope}
-                              </span>
+                              <div className="flex flex-col gap-1 items-start">
+                                <div className="flex flex-wrap gap-1 items-center">
+                                  <span className="px-2 py-0.5 bg-slate-800 text-white font-extrabold text-[9px] rounded-md tracking-wider inline-flex items-center gap-1">
+                                    🌐 {f.scope}
+                                  </span>
+                                  {f.vesselType && f.vesselType !== 'All Vessels' && (
+                                    <span className="px-2 py-0.5 bg-slate-100 text-slate-700 font-bold text-[9px] rounded-md border border-slate-200">
+                                      🚢 {f.vesselType}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap gap-1 items-center">
+                                  {f.allowedFileTypes && f.allowedFileTypes.length > 0 ? (
+                                    <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 font-extrabold text-[9px] rounded-md border border-indigo-100">
+                                      📁 {f.allowedFileTypes.join(', ')}
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 bg-slate-100 text-slate-500 font-medium text-[9px] rounded-md">
+                                      📁 All file types
+                                    </span>
+                                  )}
+                                  {f.removeFilenameRestriction ? (
+                                    <span className="px-2 py-0.5 bg-amber-50 text-amber-700 font-bold text-[9px] rounded-md border border-amber-200">
+                                      🔓 No Filename Limit
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 bg-slate-50 text-slate-400 font-medium text-[9px] rounded-md border border-slate-200">
+                                      🔒 Prefix Check
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                             </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center justify-center gap-3">
@@ -3102,7 +3342,7 @@ startxref
 
                       {forms.filter(f => f.category === selectedCategory).length === 0 && (
                         <tr>
-                          <td colSpan={6} className="text-center p-12 text-slate-400 italic">
+                          <td colSpan={7} className="text-center p-12 text-slate-400 italic">
                             No forms defined under section {selectedCategory} yet.
                           </td>
                         </tr>
@@ -3252,6 +3492,86 @@ startxref
                       <option key={v.id} value={v.name}>{v.name}</option>
                     ))}
                 </select>
+              </div>
+
+              {/* Vessel Type Dropdown */}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel Type</label>
+                <select
+                  value={formVesselTypeInput}
+                  onChange={(e) => setFormVesselTypeInput(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
+                >
+                  <option value="All Types">All Types</option>
+                  <option value="Bulk Carrirer">Bulk Carrirer</option>
+                  <option value="Container">Container</option>
+                </select>
+              </div>
+
+              {/* File Type Limit Group */}
+              <div className="space-y-1.5 pt-1">
+                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">File Type limit</label>
+                <div className="flex flex-wrap gap-4 items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
+                  <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={formAllowedFileTypesInput.includes('Word')}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'Word']);
+                        } else {
+                          setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'Word'));
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    Word (.doc, .docx)
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={formAllowedFileTypesInput.includes('Excel')}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'Excel']);
+                        } else {
+                          setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'Excel'));
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    Excel (.xls, .xlsx)
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={formAllowedFileTypesInput.includes('PDF')}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'PDF']);
+                        } else {
+                          setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'PDF'));
+                        }
+                      }}
+                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    PDF (.pdf)
+                  </label>
+                </div>
+              </div>
+
+              {/* Remove Filename Restriction Checkbox */}
+              <div className="flex items-center gap-2 pt-1 pb-1">
+                <input
+                  type="checkbox"
+                  id="removeFilenameRestriction"
+                  checked={formRemoveFilenameRestrictionInput}
+                  onChange={(e) => setFormRemoveFilenameRestrictionInput(e.target.checked)}
+                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <label htmlFor="removeFilenameRestriction" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
+                  remove filename restriction
+                </label>
               </div>
 
               {/* Footer */}

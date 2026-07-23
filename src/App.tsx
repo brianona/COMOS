@@ -38,6 +38,7 @@ import {
   Activity,
   Anchor,
   Database,
+  HardDrive,
   Cloud,
   Package,
   Save,
@@ -330,9 +331,11 @@ interface Vessel {
   team_id: number;
   team_name?: string;
   owner?: 'Nissen' | 'Goodwill';
+  fleet_status?: 'In Active Fleet' | 'Out of Management';
   has_photo?: boolean;
   next_port?: string | null;
   route_status?: string | null;
+  shackles?: string | number | null;
   eta_atb?: string | null;
   etd_atd?: string | null;
   cargo?: string | null;
@@ -1382,7 +1385,7 @@ const SidebarContent = ({
                   onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
                   className={getSubItemClass(view === 'admin_cert_list')}
                 >
-                  <FileText className="w-3.5 h-3.5 shrink-0" /> Service Report Registry
+                  <FileText className="w-3.5 h-3.5 shrink-0" /> Certificate/Service Report list
                 </button>
               </motion.div>
             )}
@@ -1827,7 +1830,8 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     route_status: '',
     eta_atb: '',
     etd_atd: '',
-    cargo: ''
+    cargo: '',
+    shackles: ''
   });
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [sortConfig, setSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' } | null>({ key: 'expiration_date', direction: 'asc' });
@@ -1923,6 +1927,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       formData.append('name', editingVessel.name);
       formData.append('team_id', editingVessel.team_id ? String(editingVessel.team_id) : '');
       formData.append('owner', editingVessel.owner || 'Nissen');
+      formData.append('fleet_status', editingVessel.fleet_status || 'In Active Fleet');
       formData.append('flag', editingVessel.flag || '');
       formData.append('type', editingVessel.type || 'Bulk Carrier');
       formData.append('date_built', editingVessel.date_built || '');
@@ -3462,15 +3467,32 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         </div>
                       <div className="text-right shrink-0">
                         <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">{vessel.team_name}</span>
-                        <span className={cn(
-                          "inline-block mt-1 px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider",
-                          vessel.owner === 'Nissen' ? "bg-purple-50 text-purple-700" : "bg-orange-50 text-orange-700"
-                        )}>
-                          {vessel.owner || 'Nissen'}
-                        </span>
+                        <div className="flex items-center gap-1 justify-end mt-1">
+                          <span className={cn(
+                            "inline-block px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider",
+                            vessel.owner === 'Nissen' ? "bg-purple-50 text-purple-700" : "bg-orange-50 text-orange-700"
+                          )}>
+                            {vessel.owner || 'Nissen'}
+                          </span>
+                          <span className={cn(
+                            "inline-block px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider",
+                            (vessel.fleet_status || 'In Active Fleet') === 'In Active Fleet' ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-slate-100 text-slate-600 border border-slate-200"
+                          )}>
+                            {vessel.fleet_status || 'In Active Fleet'}
+                          </span>
+                        </div>
                       </div>
                     </div>
                     <div className="space-y-3">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-500">Fleet Status</span>
+                        <span className={cn(
+                          "px-2 py-0.5 rounded-full text-xs font-bold",
+                          (vessel.fleet_status || 'In Active Fleet') === 'In Active Fleet' ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-100 text-slate-600 border border-slate-200"
+                        )}>
+                          {vessel.fleet_status || 'In Active Fleet'}
+                        </span>
+                      </div>
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Flag</span>
                         <span className="font-bold text-slate-900">{vessel.flag || 'N/A'}</span>
@@ -4057,10 +4079,11 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                             
                           setRouteForm({
                             next_port: selectedVessel.next_port || latestArrival?.arrival_port || '',
-                            route_status: selectedVessel.route_status || '',
+                            route_status: selectedVessel.route_status === 'Anchor' ? 'At Anchor' : (selectedVessel.route_status || ''),
                             eta_atb: selectedVessel.eta_atb || '',
                             etd_atd: selectedVessel.etd_atd || '',
-                            cargo: selectedVessel.cargo || ''
+                            cargo: selectedVessel.cargo || '',
+                            shackles: selectedVessel.shackles != null ? String(selectedVessel.shackles) : ''
                           });
                           setIsEditingRoute(true);
                         }
@@ -4094,7 +4117,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                             <option value="">Select Status</option>
                             <option value="At sea">At sea</option>
                             <option value="In port">In port</option>
-                            <option value="Anchor">Anchor</option>
+                            <option value="At Anchor">At Anchor</option>
                             <option value="Drifting">Drifting</option>
                           </select>
                         </div>
@@ -4109,6 +4132,23 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           />
                         </div>
                       </div>
+                      {(routeForm.route_status === 'At Anchor' || routeForm.route_status === 'Anchor') && (
+                        <div className="space-y-1">
+                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">No. of Shackles</label>
+                          <input 
+                            type="number"
+                            step="1"
+                            min="0"
+                            value={routeForm.shackles}
+                            onChange={e => {
+                              const val = e.target.value.replace(/[^0-9]/g, '');
+                              setRouteForm({...routeForm, shackles: val});
+                            }}
+                            placeholder="Enter number of shackles"
+                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                          />
+                        </div>
+                      )}
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
                           <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">ETA / ATB (UTC)</label>
@@ -4149,7 +4189,14 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <div className="p-2 bg-green-100 rounded-lg shrink-0"><Activity className="w-3.5 h-3.5 text-green-600" /></div>
                         <div>
                           <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Status</p>
-                          <p className="text-xs font-bold text-slate-900">{selectedVessel.route_status || 'Not Set'}</p>
+                          <p className="text-xs font-bold text-slate-900">
+                            {selectedVessel.route_status === 'Anchor' ? 'At Anchor' : (selectedVessel.route_status || 'Not Set')}
+                            {(selectedVessel.route_status === 'At Anchor' || selectedVessel.route_status === 'Anchor') && selectedVessel.shackles && (
+                              <span className="block text-[10px] font-normal text-slate-500 mt-0.5">
+                                No. Shackles: {selectedVessel.shackles}
+                              </span>
+                            )}
+                          </p>
                         </div>
                       </div>
                       <div className="flex items-start gap-3">
@@ -4171,6 +4218,18 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <div>
                           <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Flag</p>
                           <p className="text-xs font-bold text-slate-900">{selectedVessel.flag || 'Not Set'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-emerald-100 rounded-lg shrink-0"><Shield className="w-3.5 h-3.5 text-emerald-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Fleet Status</p>
+                          <span className={cn(
+                            "inline-block px-2 py-0.5 rounded-full text-[10px] font-bold mt-0.5",
+                            (selectedVessel.fleet_status || 'In Active Fleet') === 'In Active Fleet' ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700"
+                          )}>
+                            {selectedVessel.fleet_status || 'In Active Fleet'}
+                          </span>
                         </div>
                       </div>
                       <div className="flex items-start gap-3">
@@ -4816,16 +4875,29 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         {[...teams].sort((a, b) => a.name.localeCompare(b.name)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                       </select>
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Owner</label>
-                      <select 
-                        value={editingVessel.owner || 'Nissen'}
-                        onChange={(e) => setEditingVessel({...editingVessel, owner: e.target.value as any})}
-                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                      >
-                        <option value="Nissen">Nissen</option>
-                        <option value="Goodwill">Goodwill</option>
-                      </select>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Owner</label>
+                        <select 
+                          value={editingVessel.owner || 'Nissen'}
+                          onChange={(e) => setEditingVessel({...editingVessel, owner: e.target.value as any})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        >
+                          <option value="Nissen">Nissen</option>
+                          <option value="Goodwill">Goodwill</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Fleet Status</label>
+                        <select 
+                          value={editingVessel.fleet_status || 'In Active Fleet'}
+                          onChange={(e) => setEditingVessel({...editingVessel, fleet_status: e.target.value as any})}
+                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        >
+                          <option value="In Active Fleet">In Active Fleet</option>
+                          <option value="Out of Management">Out of Management</option>
+                        </select>
+                      </div>
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Type</label>
@@ -6250,22 +6322,22 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. 121.0 E"
-                      value={form.position_long}
-                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
-                    />
-                  </div>
-                  <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
                     <input 
                       type="text" 
                       placeholder="e.g. 14.5 N"
                       value={form.position_lat}
                       onChange={(e) => setForm({ ...form, position_lat: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 121.0 E"
+                      value={form.position_long}
+                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
                       className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
                     />
                   </div>
@@ -7182,22 +7254,22 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify, isL
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. 121.0 E"
-                      value={form.position_long}
-                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
-                    />
-                  </div>
-                  <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
                     <input 
                       type="text" 
                       placeholder="e.g. 14.5 N"
                       value={form.position_lat}
                       onChange={(e) => setForm({ ...form, position_lat: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 121.0 E"
+                      value={form.position_long}
+                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
                       className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
                     />
                   </div>
@@ -7740,22 +7812,22 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. 121.0 E"
-                      value={form.position_long}
-                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
-                    />
-                  </div>
-                  <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
                     <input 
                       type="text" 
                       placeholder="e.g. 14.5 N"
                       value={form.position_lat}
                       onChange={(e) => setForm({ ...form, position_lat: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 121.0 E"
+                      value={form.position_long}
+                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
                       className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
                     />
                   </div>
@@ -8197,7 +8269,10 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
     { id: 'audit_records', label: 'Audits', icon: Shield },
     { id: 'non_conformities', label: 'Non-Conformities', icon: AlertTriangle },
     { id: 'trouble_reports', label: 'Trouble Reports', icon: Wrench },
-    { id: 'spare_parts_requisitions', label: 'Requisitions', icon: Package }
+    { id: 'spare_parts_requisitions', label: 'Requisitions', icon: Package },
+    { id: 'sms_uploads', label: 'SMS Uploads', icon: FileText },
+    { id: 'sms_forms', label: 'SMS Forms', icon: File },
+    { id: 'sms_submission_periods', label: 'SMS Deadlines', icon: Clock }
   ];
 
   const currentItems = data[activeTab] || [];
@@ -8364,24 +8439,30 @@ const RecycleBinView = ({ token, notify }: { token: string, notify: (type: 'succ
                             {activeTab === 'users' && item.username}
                             {activeTab === 'certificates' && item.name}
                             {activeTab === 'files' && item.original_name}
-                            {activeTab.includes('report') && `${item.vessel_name || 'Generic'} - ${item.voyage_number ? 'Voyage ' + item.voyage_number : 'Report ID ' + item.id}`}
+                            {activeTab.includes('report') && !activeTab.startsWith('sms') && `${item.vessel_name || 'Generic'} - ${item.voyage_number ? 'Voyage ' + item.voyage_number : 'Report ID ' + item.id}`}
                             {activeTab === 'crew_members' && `${item.first_name || ''} ${item.last_name || ''}`}
                             {activeTab === 'audit_records' && `Audit by ${item.lead_auditor || 'Unknown'}`}
                             {activeTab === 'non_conformities' && `NC - ${item.description ? (item.description.length > 40 ? item.description.substring(0, 40) + '...' : item.description) : 'No Description'}`}
                             {activeTab === 'trouble_reports' && `Trouble: ${item.subject || 'No Subject'}`}
                             {activeTab === 'spare_parts_requisitions' && `Requisition: ${item.requisition_no || 'Requisition ID ' + item.id}`}
+                            {activeTab === 'sms_uploads' && `${item.file_name || item.name} (${item.vessel_name || item.vesselName || 'Vessel'})`}
+                            {activeTab === 'sms_forms' && `${item.formCode} - ${item.description}`}
+                            {activeTab === 'sms_submission_periods' && `Submission Deadline: ${item.vessel_name || item.vesselName || item.vessel_id}`}
                           </span>
                           <span className="text-[10px] text-slate-400 font-medium">
                             {activeTab === 'vessels' && `Owner: ${item.owner}`}
                             {activeTab === 'users' && `Role: ${getRoleLabel(item.role)}`}
                             {activeTab === 'certificates' && `Vessel: ${item.vessel_name || 'Generic'}`}
                             {activeTab === 'files' && `Certificate: ${item.certificate_name}`}
-                            {activeTab.includes('report') && (item.utc_date_time || item.date) && `Date: ${format(new Date(item.utc_date_time || item.date), 'MMM dd, yyyy')}`}
+                            {activeTab.includes('report') && !activeTab.startsWith('sms') && (item.utc_date_time || item.date) && `Date: ${format(new Date(item.utc_date_time || item.date), 'MMM dd, yyyy')}`}
                             {activeTab === 'crew_members' && `Rank: ${item.rank || 'N/A'}`}
                             {activeTab === 'audit_records' && `Auditor: ${item.lead_auditor || 'N/A'}`}
                             {activeTab === 'non_conformities' && `Vessel: ${item.vessel_name || 'Generic'}`}
                             {activeTab === 'trouble_reports' && `Category: ${item.category || 'N/A'} | Status: ${item.status || 'N/A'}`}
                             {activeTab === 'spare_parts_requisitions' && `Status: ${item.status || 'N/A'}`}
+                            {activeTab === 'sms_uploads' && `Vessel: ${item.vessel_name} | Period: ${item.month} ${item.year} | Size: ${item.file_size}`}
+                            {activeTab === 'sms_forms' && `Category: ${item.category} | Scope: ${item.scope} | Type: ${item.type || 'Form'}`}
+                            {activeTab === 'sms_submission_periods' && `Vessel ID: ${item.vessel_id} | Target Period: ${item.month} ${item.year}`}
                             ID: {item.id}
                           </span>
                         </div>
@@ -8886,22 +8967,22 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify, isLoa
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. 121.0 E"
-                      value={form.position_long}
-                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
-                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
-                    />
-                  </div>
-                  <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Latitude</label>
                     <input 
                       type="text" 
                       placeholder="e.g. 14.5 N"
                       value={form.position_lat}
                       onChange={(e) => setForm({ ...form, position_lat: e.target.value })}
+                      className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Longitude</label>
+                    <input 
+                      type="text" 
+                      placeholder="e.g. 121.0 E"
+                      value={form.position_long}
+                      onChange={(e) => setForm({ ...form, position_long: e.target.value })}
                       className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
                     />
                   </div>
@@ -9239,6 +9320,7 @@ const AdminPanel = ({
   const [newVesselName, setNewVesselName] = useState('');
   const [newVesselTeam, setNewVesselTeam] = useState('');
   const [newVesselOwner, setNewVesselOwner] = useState('Nissen');
+  const [newVesselFleetStatus, setNewVesselFleetStatus] = useState<'In Active Fleet' | 'Out of Management'>('In Active Fleet');
   const [newVesselFlag, setNewVesselFlag] = useState('');
   const [newVesselType, setNewVesselType] = useState<'Bulk Carrier' | 'Container'>('Bulk Carrier');
   const [newVesselDateBuilt, setNewVesselDateBuilt] = useState('');
@@ -9271,12 +9353,30 @@ const AdminPanel = ({
   const [vesselSearch, setVesselSearch] = useState('');
   const [adminVesselFilterTeam, setAdminVesselFilterTeam] = useState('');
   const [adminVesselFilterOwner, setAdminVesselFilterOwner] = useState('');
+  const [adminVesselFilterFleetStatus, setAdminVesselFilterFleetStatus] = useState('');
   const [vesselSortField, setVesselSortField] = useState<'name' | 'team' | 'owner'>('name');
   const [vesselSortOrder, setVesselSortOrder] = useState<'asc' | 'desc'>('asc');
   const [certSearch, setCertSearch] = useState('');
   const [certSortField, setCertSortField] = useState<'name' | 'vessel' | 'expiration_date'>('expiration_date');
   const [certSortOrder, setCertSortOrder] = useState<'asc' | 'desc'>('asc');
   const [systemTime, setSystemTime] = useState<{ time: string, timezone: string } | null>(null);
+  const [storageStatus, setStorageStatus] = useState<{
+    totalBytes: number;
+    totalFiles: number;
+    formattedTotal: string;
+    b2Configured: boolean;
+    b2Bucket: string | null;
+    b2StoredFilesCount: number;
+    categories: Array<{
+      id: string;
+      label: string;
+      fileCount: number;
+      totalBytes: number;
+      formattedSize: string;
+      b2Count: number;
+    }>;
+  } | null>(null);
+  const [isLoadingStorage, setIsLoadingStorage] = useState(false);
   const user = JSON.parse(atob(token.split('.')[1]));
   const isAdmin = user.role === 'admin';
   const isTeamPic = user.role === 'team_pic' || user.role === 'user';
@@ -9295,13 +9395,31 @@ const AdminPanel = ({
     }
   }, [token]);
 
+  const fetchStorageStatus = useCallback(async () => {
+    setIsLoadingStorage(true);
+    try {
+      const res = await fetch('/api/admin/storage-status', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setStorageStatus(data);
+      }
+    } catch (e) {
+      console.error('Failed to load storage status:', e);
+    } finally {
+      setIsLoadingStorage(false);
+    }
+  }, [token]);
+
   useEffect(() => {
     if (adminTab === 'settings') {
       fetchSystemTime();
+      fetchStorageStatus();
       const interval = setInterval(fetchSystemTime, 30000);
       return () => clearInterval(interval);
     }
-  }, [adminTab, fetchSystemTime]);
+  }, [adminTab, fetchSystemTime, fetchStorageStatus]);
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -9613,6 +9731,7 @@ const AdminPanel = ({
       formData.append('name', newVesselName);
       formData.append('team_id', newVesselTeam ? String(newVesselTeam) : '');
       formData.append('owner', newVesselOwner);
+      formData.append('fleet_status', newVesselFleetStatus);
       formData.append('flag', newVesselFlag);
       formData.append('type', newVesselType);
       formData.append('date_built', newVesselDateBuilt);
@@ -9632,6 +9751,7 @@ const AdminPanel = ({
         setNewVesselName('');
         setNewVesselTeam('');
         setNewVesselOwner('Nissen');
+        setNewVesselFleetStatus('In Active Fleet');
         setNewVesselFlag('');
         setNewVesselType('Bulk Carrier');
         setNewVesselDateBuilt('');
@@ -9951,14 +10071,24 @@ const AdminPanel = ({
                     <option value="">Select Team</option>
                     {[...teams].sort((a, b) => a.name.localeCompare(b.name)).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
-                  <select 
-                    value={newVesselOwner}
-                    onChange={(e) => setNewVesselOwner(e.target.value)}
-                    className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                  >
-                    <option value="Nissen">Nissen</option>
-                    <option value="Goodwill">Goodwill</option>
-                  </select>
+                  <div className="grid grid-cols-2 gap-4">
+                    <select 
+                      value={newVesselOwner}
+                      onChange={(e) => setNewVesselOwner(e.target.value)}
+                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    >
+                      <option value="Nissen">Nissen</option>
+                      <option value="Goodwill">Goodwill</option>
+                    </select>
+                    <select 
+                      value={newVesselFleetStatus}
+                      onChange={(e) => setNewVesselFleetStatus(e.target.value as 'In Active Fleet' | 'Out of Management')}
+                      className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                    >
+                      <option value="In Active Fleet">In Active Fleet</option>
+                      <option value="Out of Management">Out of Management</option>
+                    </select>
+                  </div>
                   <select 
                     value={newVesselType}
                     onChange={(e) => setNewVesselType(e.target.value as 'Bulk Carrier' | 'Container')}
@@ -10472,6 +10602,17 @@ const AdminPanel = ({
                 <option value="Goodwill">Goodwill</option>
               </select>
 
+              {/* Fleet Status Filter */}
+              <select 
+                value={adminVesselFilterFleetStatus}
+                onChange={(e) => setAdminVesselFilterFleetStatus(e.target.value)}
+                className="px-2.5 py-1.5 bg-blue-50/50 border border-blue-100 rounded-lg text-[11px] font-bold uppercase tracking-wider text-slate-600 focus:ring-2 focus:ring-blue-500/20"
+              >
+                <option value="">All Fleet Statuses</option>
+                <option value="In Active Fleet">In Active Fleet</option>
+                <option value="Out of Management">Out of Management</option>
+              </select>
+
               <div className="h-4 w-[1px] bg-blue-100 hidden sm:block" />
 
               {/* Sort field */}
@@ -10502,7 +10643,8 @@ const AdminPanel = ({
                 const matchesSearch = (v.name || '').toLowerCase().includes(vesselSearch.toLowerCase());
                 const matchesTeam = adminVesselFilterTeam === '' || String(v.team_id) === adminVesselFilterTeam;
                 const matchesOwner = adminVesselFilterOwner === '' || v.owner === adminVesselFilterOwner;
-                return matchesSearch && matchesTeam && matchesOwner;
+                const matchesFleetStatus = adminVesselFilterFleetStatus === '' || (v.fleet_status || 'In Active Fleet') === adminVesselFilterFleetStatus;
+                return matchesSearch && matchesTeam && matchesOwner && matchesFleetStatus;
               })
               .sort((a, b) => {
                 let valA = '';
@@ -10548,12 +10690,20 @@ const AdminPanel = ({
                         <p className="text-[10px] text-slate-400 font-extrabold uppercase tracking-widest truncate">{v.team_name || 'No Team'}</p>
                       </div>
                     </div>
-                    <span className={cn(
-                      "px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-wider shrink-0",
-                      v.owner === 'Nissen' ? "bg-purple-100 text-purple-700" : "bg-orange-100 text-orange-700"
-                    )}>
-                      {v.owner || 'Nissen'}
-                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className={cn(
+                        "px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-wider",
+                        v.owner === 'Nissen' ? "bg-purple-100 text-purple-700" : "bg-orange-100 text-orange-700"
+                      )}>
+                        {v.owner || 'Nissen'}
+                      </span>
+                      <span className={cn(
+                        "px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-wider",
+                        (v.fleet_status || 'In Active Fleet') === 'In Active Fleet' ? "bg-emerald-100 text-emerald-800 border border-emerald-200" : "bg-slate-200 text-slate-700 border border-slate-300"
+                      )}>
+                        {v.fleet_status || 'In Active Fleet'}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="space-y-2 text-[11px] text-slate-500 border-t border-slate-100 pt-3">
@@ -11127,6 +11277,150 @@ const AdminPanel = ({
                     Saves automatically when you click the "Save Configuration" button at the bottom.
                   </span>
                 </div>
+
+                {/* System Storage Consumption Status */}
+                <div className="mt-6 pt-5 border-t border-blue-200/60 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-blue-900 flex items-center gap-1.5">
+                        <HardDrive className="w-4 h-4 text-blue-600" />
+                        System Storage Consumption Status
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Live calculated system storage consumption across all modules & off-site vault.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={fetchStorageStatus}
+                      disabled={isLoadingStorage}
+                      className="self-start sm:self-auto px-3 py-1.5 bg-white hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 shadow-xs active:scale-95 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isLoadingStorage ? 'animate-spin' : ''}`} />
+                      Refresh Storage Status
+                    </button>
+                  </div>
+
+                  {isLoadingStorage && !storageStatus ? (
+                    <div className="p-6 bg-white/70 rounded-xl border border-blue-100 text-center flex items-center justify-center gap-2 text-xs text-blue-600 font-medium">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      Calculating system storage consumption...
+                    </div>
+                  ) : storageStatus ? (
+                    <div className="space-y-4">
+                      {/* Metric Summary Cards */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        {/* Total Consumption */}
+                        <div className="p-3.5 bg-white rounded-xl border border-blue-100 shadow-2xs">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                            Total System Storage
+                          </span>
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-xl font-extrabold text-blue-950">
+                              {storageStatus.formattedTotal}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-medium">
+                              ({(storageStatus.totalBytes / (1024 * 1024)).toFixed(1)} MB)
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden mt-2">
+                            <div 
+                              className="bg-blue-600 h-full rounded-full transition-all duration-500" 
+                              style={{ width: `${Math.min(100, Math.max(5, (storageStatus.totalBytes / (500 * 1024 * 1024)) * 100))}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Total Files */}
+                        <div className="p-3.5 bg-white rounded-xl border border-blue-100 shadow-2xs">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                            Total System Documents
+                          </span>
+                          <div className="flex items-baseline gap-2">
+                            <span className="text-xl font-extrabold text-slate-800">
+                              {storageStatus.totalFiles}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-medium">Active Files</span>
+                          </div>
+                          <span className="text-[10px] text-emerald-600 font-semibold block mt-1.5">
+                            across {storageStatus.categories.length} categories
+                          </span>
+                        </div>
+
+                        {/* Backblaze Status */}
+                        <div className="p-3.5 bg-white rounded-xl border border-blue-100 shadow-2xs">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                            Backblaze B2 Vault
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                              storageStatus.b2Configured ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                            }`}>
+                              <span className={`w-2 h-2 rounded-full ${storageStatus.b2Configured ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                              {storageStatus.b2Configured ? 'Connected & Active' : 'Not Connected'}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-500 mt-1.5 truncate">
+                            {storageStatus.b2Configured 
+                              ? `Bucket: ${storageStatus.b2Bucket || 'Configured'} (${storageStatus.b2StoredFilesCount} files offloaded)`
+                              : 'Files stored in system database'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Storage Breakdown */}
+                      <div className="bg-white p-4 rounded-xl border border-blue-100 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                            Module Breakdown
+                          </span>
+                          <span className="text-[10px] font-medium text-slate-400">
+                            Storage Ratio
+                          </span>
+                        </div>
+
+                        <div className="space-y-2.5">
+                          {storageStatus.categories.map((cat) => {
+                            const percentage = storageStatus.totalBytes > 0 
+                              ? Math.round((cat.totalBytes / storageStatus.totalBytes) * 100) 
+                              : 0;
+                            return (
+                              <div key={cat.id} className="space-y-1">
+                                <div className="flex items-center justify-between text-xs">
+                                  <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                                    <FileText className="w-3.5 h-3.5 text-blue-500" />
+                                    {cat.label}
+                                  </span>
+                                  <div className="flex items-center gap-3 text-slate-500 font-mono text-[11px]">
+                                    <span>{cat.fileCount} file{cat.fileCount === 1 ? '' : 's'}</span>
+                                    <span className="font-bold text-slate-800 w-16 text-right">{cat.formattedSize}</span>
+                                    <span className="text-[10px] text-slate-400 w-8 text-right">{percentage}%</span>
+                                  </div>
+                                </div>
+                                <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                                  <div 
+                                    className="bg-blue-500 h-full rounded-full transition-all duration-300"
+                                    style={{ width: `${Math.max(percentage, cat.fileCount > 0 ? 3 : 0)}%` }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-white/60 rounded-xl border border-blue-100 text-center">
+                      <button
+                        type="button"
+                        onClick={fetchStorageStatus}
+                        className="px-4 py-2 bg-blue-600 text-white text-xs font-bold rounded-lg shadow-xs hover:bg-blue-700"
+                      >
+                        Load System Storage Status
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div>
@@ -11427,13 +11721,20 @@ const AdminPanel = ({
                           "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider",
                           log.action.startsWith('CREATE') ? "bg-green-100 text-green-700" :
                           log.action.startsWith('DELETE') ? "bg-red-100 text-red-700" :
+                          log.action.startsWith('DB_') ? "bg-purple-100 text-purple-700 font-mono" :
                           "bg-blue-100 text-blue-700"
                         )}>
                           {log.action}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-xs text-slate-600">
-                        {log.details}
+                        {log.action.startsWith('DB_') ? (
+                          <span className="font-mono text-[11px] text-slate-800 break-all bg-slate-50 px-2 py-1 rounded border border-slate-200 block">
+                            {log.details}
+                          </span>
+                        ) : (
+                          log.details
+                        )}
                       </td>
                     </tr>
                   ))
