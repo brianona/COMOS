@@ -897,6 +897,28 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
     }
   };
 
+  const handleDeleteProfile = async (member: CrewMember) => {
+    if (!confirm(`Are you sure you want to delete profile for ${member.name}? This action can be restored from the Recycle Bin.`)) return;
+    if (token) {
+      try {
+        const resp = await fetch(`/api/crew-members/${member.id}/profile`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          fetchCrew();
+        } else {
+          const err = await resp.json();
+          alert(`Failed to delete profile: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to delete crew member profile:', err);
+      }
+    } else {
+      saveCrewFallback(crew.filter(c => c.id !== member.id));
+    }
+  };
+
   const filteredCrew = crew.filter(member => {
     // List only crews that are currently assigned to a vessel and have an active contract
     const isAssigned = member.vesselId && member.vesselId !== 'any' && member.vesselId !== 'all';
@@ -1626,6 +1648,15 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                                               title="Edit Profile"
                                             >
                                               <Edit2 className="w-3.5 h-3.5" />
+                                            </button>
+                                          )}
+                                          {!isVesselUser && isAdminOrPic && (
+                                            <button 
+                                              onClick={() => handleDeleteProfile(c)} 
+                                              className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition-colors cursor-pointer"
+                                              title="Delete Profile"
+                                            >
+                                              <Trash2 className="w-3.5 h-3.5" />
                                             </button>
                                           )}
                                           <button 
@@ -2358,6 +2389,37 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
     });
   };
 
+  const handleDeleteProfile = async (member: CrewMember) => {
+    if (!confirm(`Are you sure you want to delete profile for ${member.name}? This action can be restored from the Recycle Bin.`)) return;
+
+    if (token) {
+      try {
+        const resp = await fetch(`/api/crew-members/${member.id}/profile`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (resp.ok) {
+          fetchCrew();
+          if (selectedCrew && selectedCrew.id === member.id) {
+            setSelectedCrew(null);
+          }
+        } else {
+          const err = await resp.json();
+          alert(`Failed to delete profile: ${err.error || 'Server error'}`);
+        }
+      } catch (err) {
+        console.error('Failed to delete crew member profile:', err);
+      }
+    } else {
+      const updatedList = crew.filter(c => c.id !== member.id);
+      setCrew(updatedList);
+      localStorage.setItem('comos_crew_list', JSON.stringify(updatedList));
+      if (selectedCrew && selectedCrew.id === member.id) {
+        setSelectedCrew(null);
+      }
+    }
+  };
+
   const handleProfilePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
@@ -2780,6 +2842,19 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                             <span>Edit</span>
                           </button>
                         )}
+                        {!isVesselUser && isAdminOrPic && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteProfile(member);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-600 hover:text-white transition-colors cursor-pointer"
+                            title="Delete Profile"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Delete</span>
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -3051,6 +3126,15 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                     className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-amber-100 flex items-center gap-1.5 cursor-pointer animate-in fade-in"
                   >
                     <Edit2 className="w-3.5 h-3.5" /> Edit Profile
+                  </button>
+                  <button 
+                    onClick={() => {
+                      const memberToDelete = selectedCrew;
+                      handleDeleteProfile(memberToDelete);
+                    }}
+                    className="px-4 py-2 bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-600 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer animate-in fade-in"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete Profile
                   </button>
                 </>
               )}

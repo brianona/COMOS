@@ -319,8 +319,18 @@ async function startServer() {
 
         const store = asyncLocalStorage.getStore();
         const req = store?.req;
-        const userId = req?.user?.id ?? null;
-        const username = req?.user?.username ?? req?.user?.role ?? (req?.body?.username ? `LOGIN:${req.body.username}` : 'SYSTEM');
+        
+        // Do NOT log system database updates (background queries, migration queries, or non-user requests)
+        if (!req || !req.user) {
+          return;
+        }
+
+        const userId = req.user.id ?? null;
+        const username = req.user.username ?? req.user.role;
+
+        if (!username || username === 'SYSTEM' || String(username).startsWith('SYSTEM') || userId === null) {
+          return;
+        }
 
         const match = sqlStr.trim().match(/^([A-Za-z]+)/);
         const verb = match ? match[1].toUpperCase() : 'QUERY';
@@ -567,6 +577,16 @@ async function startServer() {
         console.log('Adding shackles column to vessels table...');
         await pool.query("ALTER TABLE vessels ADD COLUMN shackles VARCHAR(255)");
       }
+
+      if (!columnNames.includes('loading_status')) {
+        console.log('Adding loading_status column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN loading_status VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('etb')) {
+        console.log('Adding etb column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN etb VARCHAR(255)");
+      }
     } catch (e: any) {
       console.error('Error during vessels table migration:', e.message);
     }
@@ -729,8 +749,9 @@ async function startServer() {
       for (const [key, val] of defaultSettings) {
         await pool.execute('INSERT INTO settings (setting_key, setting_value) VALUES (?, ?)', [key, val]);
       }
-    } else {
-      await pool.query(`
+    }
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS audit_logs (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT,
@@ -741,6 +762,11 @@ async function startServer() {
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
       )
     `);
+
+    // Delete any past system database updates logged in audit_logs
+    try {
+      await pool.query("DELETE FROM audit_logs WHERE username = 'SYSTEM' OR username LIKE 'SYSTEM%' OR user_id IS NULL");
+    } catch (_) {}
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS departure_attachments (
@@ -1583,7 +1609,6 @@ async function startServer() {
       } catch (e: any) {
         console.error('Error syncing next_port:', e.message);
       }
-    }
 
     // Seed initial data if empty
     const [teamRows]: any = await pool.query('SELECT COUNT(*) as count FROM teams');
@@ -1779,6 +1804,9 @@ async function startServer() {
 
   const logAudit = async (userId: number | null, username: string | null, action: string, details: string) => {
     try {
+      if (!userId || !username || username === 'SYSTEM' || String(username).startsWith('SYSTEM')) {
+        return;
+      }
       await pool.execute('INSERT INTO audit_logs (user_id, username, action, details) VALUES (?, ?, ?, ?)', [userId, username, action, details]);
     } catch (err) {
       console.error('Failed to log audit:', err);
@@ -2507,13 +2535,13 @@ async function startServer() {
   app.get('/api/vessels', authenticate, async (req: any, res) => {
     let vessels;
     if (req.user.role === 'admin') {
-      [vessels] = await pool.query("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL");
+      [vessels] = await pool.query("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL");
     } else if (req.user.role === 'vessel') {
       const vesselId = req.user.vessel_id;
       if (!vesselId) {
         return res.json([]);
       }
-      [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
+      [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
     } else {
       const teamIds = req.user.team_ids || [];
       if (teamIds.length === 0) {
@@ -2521,7 +2549,7 @@ async function startServer() {
       }
       const placeholders = teamIds.map(() => '?').join(',');
       const params = [...teamIds];
-      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.eta_atb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
+      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
     }
     res.json(vessels);
   });
@@ -2672,7 +2700,7 @@ async function startServer() {
   });
 
   app.put('/api/vessels/:id/route', authenticate, async (req: any, res) => {
-    const { next_port, route_status, eta_atb, etd_atd, cargo, operation_type, remark_from_vessel, shackles } = req.body;
+    const { next_port, route_status, eta_atb, etb, etd_atd, cargo, operation_type, remark_from_vessel, shackles, loading_status } = req.body;
     try {
       const [vessels]: any = await pool.execute('SELECT id, team_id FROM vessels WHERE id = ?', [req.params.id]);
       if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
@@ -2691,8 +2719,8 @@ async function startServer() {
       if (!hasAccess) return res.status(403).json({ error: 'Forbidden' });
 
       await pool.execute(
-        'UPDATE vessels SET next_port = ?, route_status = ?, eta_atb = ?, etd_atd = ?, cargo = ?, operation_type = ?, remark_from_vessel = ?, shackles = ? WHERE id = ?',
-        [next_port || null, route_status || null, eta_atb || null, etd_atd || null, cargo || null, operation_type || null, remark_from_vessel || null, shackles || null, req.params.id]
+        'UPDATE vessels SET next_port = ?, route_status = ?, eta_atb = ?, etb = ?, etd_atd = ?, cargo = ?, operation_type = ?, remark_from_vessel = ?, shackles = ?, loading_status = ? WHERE id = ?',
+        [next_port || null, route_status || null, eta_atb || null, etb || null, etd_atd || null, cargo || null, operation_type || null, remark_from_vessel || null, shackles || null, loading_status || null, req.params.id]
       );
 
       await logAudit(req.user.id, req.user.username, 'UPDATE_VESSEL_ROUTE', `Updated route for vessel ID ${req.params.id}`);
@@ -6017,8 +6045,29 @@ Generated by COMOS System
     }
   });
 
+  app.delete('/api/crew-members/:id/profile', authenticate, async (req: any, res) => {
+    try {
+      await pool.execute(
+        'UPDATE crew_members SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [req.params.id]
+      );
+      await logAudit(req.user.id, req.user.username, 'DELETE_CREW_MEMBER_PROFILE', `Soft deleted crew member profile ID ${req.params.id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.delete('/api/crew-members/:id', authenticate, async (req: any, res) => {
     try {
+      if (req.query.mode === 'profile' || req.query.permanent === 'true') {
+        await pool.execute(
+          'UPDATE crew_members SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [req.params.id]
+        );
+        await logAudit(req.user.id, req.user.username, 'DELETE_CREW_MEMBER_PROFILE', `Soft deleted crew member profile ID ${req.params.id}`);
+        return res.json({ success: true });
+      }
       await pool.execute(
         `UPDATE crew_members SET 
           vessel_id = '', 

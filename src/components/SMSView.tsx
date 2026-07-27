@@ -100,11 +100,11 @@ interface SMSViewProps {
 // Initial seed data for forms under categories
 const INITIAL_FORMS: SMSForm[] = [
   // 1. Monthly
-  { id: 'f_1', category: '1. Monthly', formCode: 'COMI-SM-1-1', description: 'ME & DG Jacket Cooling Fresh Water & BOILER Water condition Report', formDate: '28 November 2025', scope: 'All Vessels' },
-  { id: 'f_2', category: '1. Monthly', formCode: 'COMI-SM-1-2', description: 'Check List For Certificates & Documents', formDate: '22 May 2026', scope: 'All Vessels' },
-  { id: 'f_3', category: '1. Monthly', formCode: 'COMI-SM-1-3', description: 'Deck Part Monthly Maintenance Report', formDate: '28 November 2025', scope: 'All Vessels' },
-  { id: 'f_4', category: '1. Monthly', formCode: 'COMI-SM-1-3A', description: 'Deck Part Monthly Maintenance Report for Container (for 1952 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels' },
-  { id: 'f_5', category: '1. Monthly', formCode: 'COMI-SM-1-3B', description: 'Deck Part Monthly Maintenance Report for Container (for 2822 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels' },
+  { id: 'f_1', category: '1. Monthly', formCode: 'COMI-SM-1-1', description: 'ME & DG Jacket Cooling Fresh Water & BOILER Water condition Report', formDate: '28 November 2025', scope: 'All Vessels', vesselType: 'All Types' },
+  { id: 'f_2', category: '1. Monthly', formCode: 'COMI-SM-1-2', description: 'Check List For Certificates & Documents', formDate: '22 May 2026', scope: 'All Vessels', vesselType: 'All Types' },
+  { id: 'f_3', category: '1. Monthly', formCode: 'COMI-SM-1-3', description: 'Deck Part Monthly Maintenance Report', formDate: '28 November 2025', scope: 'All Vessels', vesselType: 'Bulk Carrier' },
+  { id: 'f_4', category: '1. Monthly', formCode: 'COMI-SM-1-3A', description: 'Deck Part Monthly Maintenance Report for Container (for 1952 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels', vesselType: 'Container' },
+  { id: 'f_5', category: '1. Monthly', formCode: 'COMI-SM-1-3B', description: 'Deck Part Monthly Maintenance Report for Container (for 2822 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels', vesselType: 'Container' },
   { id: 'f_6', category: '1. Monthly', formCode: 'COMI-SM-1-4', description: 'Engine Part Monthly Maintenance Report', formDate: '28 November 2025', scope: 'All Vessels' },
   { id: 'f_7', category: '1. Monthly', formCode: 'COMI-SM-1-5', description: 'Lube Oil Consumption Report', formDate: '28 November 2025', scope: 'All Vessels' },
   { id: 'f_malta_deck', category: '1. Monthly', formCode: 'COMI-SM-1-8-DECK-MALTA', description: 'Malta Flag State Deck Log & Safety Maintenance Checklist', formDate: '28 November 2025', scope: 'All Malta Vessels' },
@@ -183,8 +183,18 @@ const INITIAL_UPLOADS: VesselUpload[] = [
 export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode = 'management', flags = [] }) => {
   // Use either external vessels list or standard seed list
   const vesselsList = externalVessels && externalVessels.length > 0 
-    ? externalVessels.map((v, idx) => ({ id: v.id || `v_${idx}`, name: v.name, flag: v.flag }))
-    : INITIAL_SUBMISSIONS.map(s => ({ id: s.vesselId, name: s.vesselName, flag: null }));
+    ? externalVessels.map((v, idx) => ({ 
+        id: v.id || `v_${idx}`, 
+        name: v.name, 
+        flag: v.flag,
+        vessel_type: v.type || v.vessel_type || v.vesselType || 'Bulk Carrier'
+      }))
+    : INITIAL_SUBMISSIONS.map(s => ({ 
+        id: s.vesselId, 
+        name: s.vesselName, 
+        flag: null,
+        vessel_type: (s.vesselName.includes('CHEETAH') || s.vesselName.includes('MARS') || s.vesselName.includes('NEPTUNE') || s.vesselName.includes('CD ')) ? 'Container' : 'Bulk Carrier'
+      }));
 
   // Main Category/Tab Selection State
   const [selectedCategory, setSelectedCategory] = useState<string>('1. Monthly');
@@ -304,36 +314,55 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     setTimeout(() => setToastMessage(null), 4000);
   };
 
-  const isVesselInFormScope = (vessel: { id: string; name: string; flag: string | null }, scope: string) => {
+  const isVesselInFormScope = (
+    vessel: { id: string | number; name: string; flag: string | null; vessel_type?: string | null },
+    form: SMSForm
+  ) => {
+    // 1. Check Scope (Vessel Name or Flag)
+    const scope = form.scope;
+    let scopeMatched = false;
     if (!scope || scope === 'All Vessels') {
-      return true;
-    }
-    
-    // Specific Vessel Name check (exact match)
-    if (vessel.name === scope) {
-      return true;
-    }
-    
-    // If the scope is flags-based
-    if (scope.startsWith('All ')) {
-      if (vessel.flag) {
-        const cleanScope = scope.toLowerCase();
-        const cleanFlag = vessel.flag.toLowerCase();
-        if (cleanScope.includes(cleanFlag)) {
-          return true;
-        }
+      scopeMatched = true;
+    } else if (vessel.name === scope) {
+      scopeMatched = true;
+    } else if (scope.startsWith('All ') && vessel.flag) {
+      const cleanScope = scope.toLowerCase();
+      const cleanFlag = vessel.flag.toLowerCase();
+      if (cleanScope.includes(cleanFlag)) {
+        scopeMatched = true;
       }
     }
-    
+
+    if (!scopeMatched) return false;
+
+    // 2. Check Vessel Type
+    const formVesselType = form.vesselType;
+    if (!formVesselType || formVesselType === 'All Vessels' || formVesselType === 'All Types') {
+      return true;
+    }
+
+    const vesselTypeStr = (vessel.vessel_type || '').toLowerCase().trim();
+    const formVesselTypeStr = formVesselType.toLowerCase().trim();
+
+    if (!vesselTypeStr) return true;
+
+    // Normalize potential typos e.g., "bulk carrirer" vs "bulk carrier"
+    const normalize = (s: string) => s.replace(/carrirer/g, 'carrier').replace(/\s+/g, ' ');
+    const normVessel = normalize(vesselTypeStr);
+    const normForm = normalize(formVesselTypeStr);
+
+    if (normVessel === normForm) return true;
+    if (normVessel.includes(normForm) || normForm.includes(normVessel)) return true;
+
     return false;
   };
 
-  // Helper to filter forms based on active category and selected vessel scope
+  // Helper to filter forms based on active category, selected vessel scope, and vessel type
   const getVesselActiveCategoryForms = () => {
     const targetVessel = vesselsList.find(v => String(v.id) === String(reportingVesselId));
     const catForms = forms.filter(f => f.category === selectedCategory);
     if (!targetVessel) return catForms;
-    return catForms.filter(f => isVesselInFormScope(targetVessel, f.scope));
+    return catForms.filter(f => isVesselInFormScope(targetVessel, f));
   };
 
   const parseAllowedFileTypes = (val: any): string[] => {
@@ -2759,7 +2788,7 @@ startxref
                           <FileText className="w-6 h-6" />
                         </div>
                         <p className="text-xs text-slate-400 font-semibold italic">
-                          No forms defined in SMS Management for "{selectedCategory}" that match this vessel's scope.
+                          No forms defined in SMS Management for "{selectedCategory}" that match this vessel's scope or vessel type.
                         </p>
                       </div>
                     ) : (
@@ -3503,7 +3532,7 @@ startxref
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
                 >
                   <option value="All Types">All Types</option>
-                  <option value="Bulk Carrirer">Bulk Carrirer</option>
+                  <option value="Bulk Carrier">Bulk Carrier</option>
                   <option value="Container">Container</option>
                 </select>
               </div>

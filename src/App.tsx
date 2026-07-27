@@ -14,6 +14,9 @@ import {
   Upload, 
   MessageSquare,
   Search,
+  Filter,
+  RotateCcw,
+  Check,
   CheckCircle2,
   CheckSquare,
   Clock,
@@ -336,7 +339,9 @@ interface Vessel {
   next_port?: string | null;
   route_status?: string | null;
   shackles?: string | number | null;
+  loading_status?: string | null;
   eta_atb?: string | null;
+  etb?: string | null;
   etd_atd?: string | null;
   cargo?: string | null;
   operation_type?: string | null;
@@ -1849,6 +1854,11 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
   const [routingForm, setRoutingForm] = useState<Record<number, Partial<Vessel>>>({});
   const [isSavingAll, setIsSavingAll] = useState(false);
+  const [routingSearch, setRoutingSearch] = useState('');
+  const [routingStatusFilter, setRoutingStatusFilter] = useState('');
+  const [routingOwnerFilter, setRoutingOwnerFilter] = useState('');
+  const [routingLoadingFilter, setRoutingLoadingFilter] = useState('');
+  const [savingVesselId, setSavingVesselId] = useState<number | null>(null);
   const [isRecognizing, setIsRecognizing] = useState(false);
   const [uploadFileType, setUploadFileType] = useState<'certificate' | 'supporting'>('certificate');
   const [tempPreviewUrl, setTempPreviewUrl] = useState<string | null>(null);
@@ -1863,10 +1873,17 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
         .filter(r => r.vessel_id === v.id)
         .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
       
+      const isLadenBallast = v.route_status === 'Laden' || v.route_status === 'Ballast';
+      const defaultLoadingStatus = v.loading_status || (isLadenBallast ? v.route_status : '');
+      const defaultRouteStatus = isLadenBallast ? '' : (v.route_status || '');
+
       initialForm[v.id] = {
         next_port: v.next_port || latestArrival?.arrival_port || '',
-        route_status: v.route_status || '',
+        route_status: defaultRouteStatus,
+        shackles: v.shackles != null ? String(v.shackles) : '',
+        loading_status: defaultLoadingStatus,
         eta_atb: v.eta_atb || '',
+        etb: v.etb || '',
         etd_atd: v.etd_atd || '',
         cargo: v.cargo || '',
         operation_type: v.operation_type || latestArrival?.operation_type || '',
@@ -1916,6 +1933,126 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
     }
     setIsSavingAll(false);
   };
+
+  const handleSaveSingleRouting = async (vesselId: number) => {
+    setSavingVesselId(vesselId);
+    try {
+      const data = routingForm[vesselId];
+      const res = await fetch(`/api/vessels/${vesselId}/route`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(data),
+      });
+      if (res.ok) {
+        notify('success', `Vessel routing saved successfully`);
+        fetchData();
+      } else {
+        notify('error', `Failed to save vessel routing`);
+      }
+    } catch (err) {
+      notify('error', `Error saving vessel routing`);
+    } finally {
+      setSavingVesselId(null);
+    }
+  };
+
+  const isVesselModified = useCallback((v: Vessel) => {
+    const form = routingForm[v.id];
+    if (!form) return false;
+    const origShackles = v.shackles != null ? String(v.shackles) : '';
+    const formShackles = form.shackles != null ? String(form.shackles) : '';
+    return (
+      (form.next_port || '') !== (v.next_port || '') ||
+      (form.route_status || '') !== (v.route_status || '') ||
+      formShackles !== origShackles ||
+      (form.loading_status || '') !== (v.loading_status || '') ||
+      (form.eta_atb || '') !== (v.eta_atb || '') ||
+      (form.etb || '') !== (v.etb || '') ||
+      (form.etd_atd || '') !== (v.etd_atd || '') ||
+      (form.cargo || '') !== (v.cargo || '') ||
+      (form.operation_type || '') !== (v.operation_type || '') ||
+      (form.remark_from_vessel || '') !== (v.remark_from_vessel || '')
+    );
+  }, [routingForm]);
+
+  const modifiedVesselsCount = React.useMemo(() => {
+    return vessels.filter(v => isVesselModified(v)).length;
+  }, [vessels, isVesselModified]);
+
+  const routingMetrics = React.useMemo(() => {
+    let atSea = 0;
+    let inPort = 0;
+    let atAnchor = 0;
+    let drifting = 0;
+
+    vessels.forEach(v => {
+      const form = routingForm[v.id];
+      const status = form?.route_status || v.route_status || '';
+      if (status === 'At sea') atSea++;
+      else if (status === 'In Port' || status === 'In port') inPort++;
+      else if (status === 'At Anchor' || status === 'Anchor') atAnchor++;
+      else if (status === 'Drifting') drifting++;
+    });
+
+    return { total: vessels.length, atSea, inPort, atAnchor, drifting };
+  }, [vessels, routingForm]);
+
+  const filteredGroupedVessels = React.useMemo(() => {
+    const groups: Record<string, Vessel[]> = {};
+    
+    vessels.forEach(v => {
+      const form = routingForm[v.id] || {};
+      const owner = v.owner || 'Other';
+      const currentStatus = form.route_status || v.route_status || '';
+      const currentLoading = form.loading_status || v.loading_status || '';
+      const currentPort = form.next_port || v.next_port || '';
+      const currentCargo = form.cargo || v.cargo || '';
+
+      if (routingSearch) {
+        const q = routingSearch.toLowerCase();
+        const matchName = v.name.toLowerCase().includes(q);
+        const matchPort = currentPort.toLowerCase().includes(q);
+        const matchCargo = currentCargo.toLowerCase().includes(q);
+        const matchTeam = (v.team_name || '').toLowerCase().includes(q);
+        if (!matchName && !matchPort && !matchCargo && !matchTeam) return;
+      }
+
+      if (routingStatusFilter) {
+        if (routingStatusFilter === 'At Anchor') {
+          if (currentStatus !== 'At Anchor' && currentStatus !== 'Anchor') return;
+        } else if (currentStatus !== routingStatusFilter) {
+          return;
+        }
+      }
+
+      if (routingOwnerFilter && owner !== routingOwnerFilter) return;
+
+      if (routingLoadingFilter && currentLoading !== routingLoadingFilter) return;
+
+      if (!groups[owner]) groups[owner] = [];
+      groups[owner].push(v);
+    });
+
+    const sortedOwners = Object.keys(groups).sort((a, b) => {
+      const priority = { 'Nissen': 1, 'Goodwill': 2 };
+      const pA = priority[a as keyof typeof priority] || 99;
+      const pB = priority[b as keyof typeof priority] || 99;
+      if (pA !== pB) return pA - pB;
+      return a.localeCompare(b);
+    });
+
+    sortedOwners.forEach(owner => {
+      groups[owner].sort((a, b) => {
+        const teamA = a.team_name || '';
+        const teamB = b.team_name || '';
+        const teamComp = teamA.localeCompare(teamB);
+        if (teamComp !== 0) return teamComp;
+        return a.name.localeCompare(b.name);
+      });
+    });
+
+    return { sortedOwners, groups };
+  }, [vessels, routingForm, routingSearch, routingStatusFilter, routingOwnerFilter, routingLoadingFilter]);
 
   const handleUpdateVessel = async () => {
     if (!editingVessel || !editingVessel.name) {
@@ -2834,6 +2971,60 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   })()}
                 </div>
 
+                {/* 4. Expiring Crew Contracts KPI */}
+                <div 
+                  onClick={() => setView('crew_list')}
+                  className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
+                >
+                  {(() => {
+                    const now = new Date();
+                    now.setHours(0, 0, 0, 0);
+                    let criticalCount = 0;
+                    let warningCount = 0;
+
+                    (crewMembers || []).forEach(c => {
+                      const isAssigned = c.vesselId && c.vesselId !== 'any' && c.vesselId !== 'all';
+                      const hasActiveContract = c.contractEndDate && c.contractEndDate !== '';
+                      if (isAssigned && hasActiveContract) {
+                        const endDate = new Date(c.contractEndDate);
+                        if (!isNaN(endDate.getTime())) {
+                          endDate.setHours(0, 0, 0, 0);
+                          const diffDays = (endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+                          const hasExtension = typeof c.extensionsCount === 'number' && c.extensionsCount > 0;
+                          if (diffDays < 30) {
+                            criticalCount++;
+                          } else if (hasExtension || diffDays < 120) {
+                            warningCount++;
+                          }
+                        }
+                      }
+                    });
+
+                    const totalExpiring = criticalCount + warningCount;
+
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-4">
+                          <div className={cn(
+                            "p-2.5 rounded-xl transition-all",
+                            criticalCount > 0 ? "bg-red-50 text-red-600 group-hover:bg-red-600 group-hover:text-white" : "bg-amber-50 text-amber-600 group-hover:bg-amber-600 group-hover:text-white"
+                          )}>
+                            <Users className="w-5 h-5" />
+                          </div>
+                          <div className="text-right">
+                            <span className="text-2xl font-black text-slate-800 tracking-tight leading-none block">{totalExpiring}</span>
+                            <span className="text-[9px] text-red-500 font-bold uppercase mt-0.5 block">{criticalCount} Urgent</span>
+                          </div>
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Crew Contracts</h3>
+                          <p className="text-[10px] text-slate-500 mt-0.5 font-medium">{warningCount} Warning (&lt;120d)</p>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+
 
                 {/* 5. Pending Requisitions KPI */}
                 <div 
@@ -2967,6 +3158,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                           next_port: v.next_port || '',
                                           route_status: v.route_status || '',
                                           eta_atb: v.eta_atb || '',
+                                          etb: v.etb || '',
                                           etd_atd: v.etd_atd || '',
                                           cargo: v.cargo || ''
                                         });
@@ -3102,6 +3294,83 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           );
                         })
                       )}
+                    </div>
+                  </div>
+
+                  {/* Expiring Crew Contracts Tracker */}
+                  <div className="bg-white rounded-2xl border border-blue-100/70 shadow-sm p-5 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                          <Users className="w-4 h-4 text-amber-500" />
+                          Expiring Crew Contracts
+                        </h2>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">Crew contracts expiring soon (&lt; 120 Days)</p>
+                      </div>
+                      <button 
+                        onClick={() => setView('crew_list')}
+                        className="text-[10px] font-bold text-blue-600 hover:underline"
+                      >
+                        All Crew
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {(() => {
+                        const now = new Date();
+                        now.setHours(0, 0, 0, 0);
+
+                        const expiringMembers = (crewMembers || []).filter(c => {
+                          const isAssigned = c.vesselId && c.vesselId !== 'any' && c.vesselId !== 'all';
+                          const hasActiveContract = c.contractEndDate && c.contractEndDate !== '';
+                          if (!isAssigned || !hasActiveContract) return false;
+                          
+                          const endDate = new Date(c.contractEndDate);
+                          if (isNaN(endDate.getTime())) return false;
+                          endDate.setHours(0, 0, 0, 0);
+                          
+                          const diffDays = (endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+                          const hasExtension = typeof c.extensionsCount === 'number' && c.extensionsCount > 0;
+                          return diffDays < 120 || hasExtension;
+                        }).sort((a, b) => new Date(a.contractEndDate).getTime() - new Date(b.contractEndDate).getTime());
+
+                        if (expiringMembers.length === 0) {
+                          return (
+                            <div className="bg-blue-50/30 p-4 rounded-xl text-center border border-blue-100/30">
+                              <CheckCircle2 className="w-5 h-5 text-emerald-500 mx-auto mb-2" />
+                              <p className="text-xs text-slate-500 font-semibold">All crew contracts are active and valid</p>
+                            </div>
+                          );
+                        }
+
+                        return expiringMembers.slice(0, 4).map(c => {
+                          const endDate = new Date(c.contractEndDate);
+                          endDate.setHours(0, 0, 0, 0);
+                          const diffDays = Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+                          const isCritical = diffDays < 30;
+                          const vesselObj = vessels.find(v => String(v.id) === String(c.vesselId));
+
+                          return (
+                            <div 
+                              key={c.id} 
+                              onClick={() => setView('crew_list')}
+                              className="p-3 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-100/60 cursor-pointer transition-all flex items-center justify-between gap-2 group"
+                            >
+                              <div className="min-w-0">
+                                <h3 className="font-bold text-slate-800 text-xs truncate group-hover:text-blue-600 transition-colors">{c.name}</h3>
+                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5 leading-none">{c.rank} • {vesselObj?.name || 'Vessel'}</div>
+                                <div className="text-[9px] font-medium text-slate-500 font-mono mt-1">Contract End: {c.contractEndDate}</div>
+                              </div>
+                              <span className={cn(
+                                "shrink-0 inline-block px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border",
+                                isCritical ? "bg-red-50 text-red-700 border-red-100" : "bg-amber-50 text-amber-700 border-amber-100"
+                              )}>
+                                {isCritical ? (diffDays <= 0 ? 'Expired' : `${diffDays}d left`) : `${diffDays}d left`}
+                              </span>
+                            </div>
+                          );
+                        });
+                      })()}
                     </div>
                   </div>
 
@@ -3682,157 +3951,488 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 latestOperationType={getLatestArrivalOperationType(vessels[0].id)}
               />
             ) : (
-              <div className="space-y-8">
-                <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="space-y-6">
+                {/* Routing Header */}
+                <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-blue-100/80 shadow-xs">
                   <div>
-                    <h1 className="text-3xl font-bold tracking-tight mb-2 text-slate-900">Vessel Routing</h1>
-                    <p className="text-slate-500">Update destination, status, and ETA for all assigned vessels in one place.</p>
+                    <div className="flex items-center gap-2">
+                      <h1 className="text-2xl font-bold tracking-tight text-slate-900">Vessel Routing</h1>
+                      <span className="bg-blue-50 text-blue-700 text-xs font-bold px-2.5 py-0.5 rounded-full border border-blue-100">
+                        {vessels.length} Vessels
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Manage navigational status, port schedules, and cargo details across all fleet operations.
+                    </p>
                   </div>
-                  <button 
-                    onClick={handleSaveAllRouting}
-                    disabled={isSavingAll}
-                    className="flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 disabled:opacity-50"
-                  >
-                    {isSavingAll ? (
-                      <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <Save className="w-4 h-4" />
+                  <div className="flex items-center gap-3">
+                    {modifiedVesselsCount > 0 && (
+                      <div className="flex items-center gap-2 bg-amber-50 text-amber-800 border border-amber-200/80 px-3.5 py-2 rounded-xl text-xs font-bold shadow-xs">
+                        <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                        <span>{modifiedVesselsCount} Unsaved {modifiedVesselsCount === 1 ? 'Change' : 'Changes'}</span>
+                      </div>
                     )}
-                    Save All Changes
-                  </button>
+                    <button 
+                      onClick={handleSaveAllRouting}
+                      disabled={isSavingAll}
+                      className="flex items-center gap-2 bg-blue-600 text-white px-5 py-2.5 rounded-xl text-xs font-bold hover:bg-blue-700 active:bg-blue-800 transition-all shadow-md shadow-blue-500/10 disabled:opacity-50"
+                    >
+                      {isSavingAll ? (
+                        <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                      ) : (
+                        <Save className="w-4 h-4" />
+                      )}
+                      Save All Changes
+                    </button>
+                  </div>
                 </header>
 
+                {/* Fleet Quick Metrics Pills */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                  <button
+                    onClick={() => setRoutingStatusFilter('')}
+                    className={cn(
+                      "flex items-center justify-between p-3.5 rounded-xl border transition-all text-left",
+                      !routingStatusFilter
+                        ? "bg-slate-900 text-white border-slate-900 shadow-sm"
+                        : "bg-white text-slate-700 border-slate-200/80 hover:border-slate-300 hover:bg-slate-50"
+                    )}
+                  >
+                    <div>
+                      <p className={cn("text-[10px] font-bold uppercase tracking-wider", !routingStatusFilter ? "text-slate-300" : "text-slate-400")}>Total Fleet</p>
+                      <p className="text-lg font-black mt-0.5">{routingMetrics.total}</p>
+                    </div>
+                    <Ship className={cn("w-5 h-5 opacity-70", !routingStatusFilter ? "text-white" : "text-slate-400")} />
+                  </button>
+
+                  <button
+                    onClick={() => setRoutingStatusFilter(routingStatusFilter === 'At sea' ? '' : 'At sea')}
+                    className={cn(
+                      "flex items-center justify-between p-3.5 rounded-xl border transition-all text-left",
+                      routingStatusFilter === 'At sea'
+                        ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                        : "bg-white text-slate-700 border-blue-100 hover:border-blue-300 hover:bg-blue-50/50"
+                    )}
+                  >
+                    <div>
+                      <p className={cn("text-[10px] font-bold uppercase tracking-wider", routingStatusFilter === 'At sea' ? "text-blue-100" : "text-blue-600")}>At Sea</p>
+                      <p className="text-lg font-black mt-0.5">{routingMetrics.atSea}</p>
+                    </div>
+                    <Navigation className={cn("w-5 h-5 opacity-80", routingStatusFilter === 'At sea' ? "text-white" : "text-blue-500")} />
+                  </button>
+
+                  <button
+                    onClick={() => setRoutingStatusFilter(routingStatusFilter === 'In Port' ? '' : 'In Port')}
+                    className={cn(
+                      "flex items-center justify-between p-3.5 rounded-xl border transition-all text-left",
+                      routingStatusFilter === 'In Port'
+                        ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                        : "bg-white text-slate-700 border-emerald-100 hover:border-emerald-300 hover:bg-emerald-50/50"
+                    )}
+                  >
+                    <div>
+                      <p className={cn("text-[10px] font-bold uppercase tracking-wider", routingStatusFilter === 'In Port' ? "text-emerald-100" : "text-emerald-600")}>In Port</p>
+                      <p className="text-lg font-black mt-0.5">{routingMetrics.inPort}</p>
+                    </div>
+                    <Anchor className={cn("w-5 h-5 opacity-80", routingStatusFilter === 'In Port' ? "text-white" : "text-emerald-500")} />
+                  </button>
+
+                  <button
+                    onClick={() => setRoutingStatusFilter(routingStatusFilter === 'At Anchor' ? '' : 'At Anchor')}
+                    className={cn(
+                      "flex items-center justify-between p-3.5 rounded-xl border transition-all text-left",
+                      routingStatusFilter === 'At Anchor'
+                        ? "bg-amber-600 text-white border-amber-600 shadow-sm"
+                        : "bg-white text-slate-700 border-amber-100 hover:border-amber-300 hover:bg-amber-50/50"
+                    )}
+                  >
+                    <div>
+                      <p className={cn("text-[10px] font-bold uppercase tracking-wider", routingStatusFilter === 'At Anchor' ? "text-amber-100" : "text-amber-600")}>At Anchor</p>
+                      <p className="text-lg font-black mt-0.5">{routingMetrics.atAnchor}</p>
+                    </div>
+                    <Anchor className={cn("w-5 h-5 opacity-80", routingStatusFilter === 'At Anchor' ? "text-white" : "text-amber-500")} />
+                  </button>
+
+                  <button
+                    onClick={() => setRoutingStatusFilter(routingStatusFilter === 'Drifting' ? '' : 'Drifting')}
+                    className={cn(
+                      "flex items-center justify-between p-3.5 rounded-xl border transition-all text-left",
+                      routingStatusFilter === 'Drifting'
+                        ? "bg-purple-600 text-white border-purple-600 shadow-sm"
+                        : "bg-white text-slate-700 border-purple-100 hover:border-purple-300 hover:bg-purple-50/50"
+                    )}
+                  >
+                    <div>
+                      <p className={cn("text-[10px] font-bold uppercase tracking-wider", routingStatusFilter === 'Drifting' ? "text-purple-100" : "text-purple-600")}>Drifting</p>
+                      <p className="text-lg font-black mt-0.5">{routingMetrics.drifting}</p>
+                    </div>
+                    <Compass className={cn("w-5 h-5 opacity-80", routingStatusFilter === 'Drifting' ? "text-white" : "text-purple-500")} />
+                  </button>
+                </div>
+
+                {/* Filter and Search Bar */}
+                <div className="bg-white p-4 rounded-2xl border border-blue-100/80 shadow-xs flex flex-wrap items-center gap-3">
+                  <div className="relative flex-1 min-w-[220px]">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input 
+                      type="text"
+                      value={routingSearch}
+                      onChange={e => setRoutingSearch(e.target.value)}
+                      placeholder="Search vessel name, next port, cargo..."
+                      className="w-full pl-10 pr-8 py-2 bg-slate-50 border border-slate-200/80 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
+                    />
+                    {routingSearch && (
+                      <button 
+                        onClick={() => setRoutingSearch('')} 
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-md"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Owner Filter */}
+                    <div className="relative">
+                      <select 
+                        value={routingOwnerFilter}
+                        onChange={e => setRoutingOwnerFilter(e.target.value)}
+                        className="px-3 py-2 pr-8 bg-slate-50 border border-slate-200/80 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:border-blue-500 outline-none cursor-pointer appearance-none"
+                      >
+                        <option value="">All Fleet Owners</option>
+                        {groupedVessels.sortedOwners.map(o => (
+                          <option key={o} value={o}>{o}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+
+                    {/* Navigational Status Filter */}
+                    <div className="relative">
+                      <select 
+                        value={routingStatusFilter}
+                        onChange={e => setRoutingStatusFilter(e.target.value)}
+                        className="px-3 py-2 pr-8 bg-slate-50 border border-slate-200/80 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:border-blue-500 outline-none cursor-pointer appearance-none"
+                      >
+                        <option value="">All Navigational Statuses</option>
+                        <option value="At sea">At sea</option>
+                        <option value="In Port">In Port</option>
+                        <option value="At Anchor">At Anchor</option>
+                        <option value="Drifting">Drifting</option>
+                      </select>
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+
+                    {/* Loading Status Filter */}
+                    <div className="relative">
+                      <select 
+                        value={routingLoadingFilter}
+                        onChange={e => setRoutingLoadingFilter(e.target.value)}
+                        className="px-3 py-2 pr-8 bg-slate-50 border border-slate-200/80 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:border-blue-500 outline-none cursor-pointer appearance-none"
+                      >
+                        <option value="">All Loading Statuses</option>
+                        <option value="Laden">Laden</option>
+                        <option value="Ballast">Ballast</option>
+                      </select>
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+
+                    {(routingSearch || routingStatusFilter || routingOwnerFilter || routingLoadingFilter) && (
+                      <button 
+                        onClick={() => {
+                          setRoutingSearch('');
+                          setRoutingStatusFilter('');
+                          setRoutingOwnerFilter('');
+                          setRoutingLoadingFilter('');
+                        }}
+                        className="flex items-center gap-1 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-bold rounded-xl transition-all"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Reset Filters
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Table Content */}
                 <div className="space-y-6">
-                  {groupedVessels.sortedOwners.map(owner => (
-                    <div key={owner} className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
-                      <div className="px-6 py-4 bg-slate-50 border-b border-blue-100 flex items-center justify-between">
-                        <h2 className={cn(
-                          "text-sm font-black uppercase tracking-widest",
-                          owner === 'Nissen' ? "text-purple-600" : "text-orange-600"
-                        )}>
-                          {owner}
-                        </h2>
-                        <span className="text-[10px] font-bold text-slate-400 bg-white px-3 py-1 rounded-full shadow-sm border border-blue-50">
-                          {groupedVessels.groups[owner].length} Vessels
-                        </span>
+                  {filteredGroupedVessels.sortedOwners.length === 0 ? (
+                    <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-3">
+                      <div className="w-12 h-12 bg-slate-100 text-slate-400 rounded-2xl flex items-center justify-center mx-auto">
+                        <Filter className="w-6 h-6" />
                       </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                          <thead>
-                            <tr className="bg-blue-50/10 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                              <th className="px-6 py-3 min-w-[200px]">Vessel</th>
-                              <th className="px-6 py-3 min-w-[200px]">Destination / Next Port</th>
-                              <th className="px-6 py-3 w-52">Status</th>
-                              <th className="px-6 py-3 w-40">Operation Type</th>
-                              <th className="px-6 py-3 w-44">ETA / ATB (UTC)</th>
-                              <th className="px-6 py-3 w-44">ETD/ATD at Arrival (UTC)</th>
-                              <th className="px-6 py-3 min-w-[350px]">Cargo</th>
-                              <th className="px-6 py-3 min-w-[300px]">Remark from Vessel</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-blue-50">
-                            {groupedVessels.groups[owner].map(v => {
-                              const form = routingForm[v.id] || {};
-                              return (
-                                <tr key={v.id} className="hover:bg-blue-50/20 transition-colors">
-                                  <td className="px-6 py-4">
-                                    <div className="flex items-center gap-3">
-                                      {v.has_photo ? (
-                                        <div className="w-8 h-8 rounded-lg overflow-hidden border border-blue-100 shrink-0">
-                                          <img 
-                                            src={`/api/vessels/${v.id}/photo?token=${token}&t=${Date.now()}`} 
-                                            alt={v.name}
-                                            className="w-full h-full object-cover"
-                                            referrerPolicy="no-referrer"
+                      <h3 className="text-base font-bold text-slate-800">No vessels match your filters</h3>
+                      <p className="text-xs text-slate-500 max-w-sm mx-auto">Try clearing your search term or adjusting filter options to view vessel routes.</p>
+                      <button 
+                        onClick={() => {
+                          setRoutingSearch('');
+                          setRoutingStatusFilter('');
+                          setRoutingOwnerFilter('');
+                          setRoutingLoadingFilter('');
+                        }}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl text-xs font-bold transition-all"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Clear All Filters
+                      </button>
+                    </div>
+                  ) : (
+                    filteredGroupedVessels.sortedOwners.map(owner => (
+                      <div key={owner} className="bg-white rounded-2xl border border-blue-100 shadow-xs overflow-hidden">
+                        <div className="px-6 py-3.5 bg-slate-50/80 border-b border-blue-100 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <h2 className={cn(
+                              "text-xs font-black uppercase tracking-widest",
+                              owner === 'Nissen' ? "text-purple-700" : "text-orange-700"
+                            )}>
+                              {owner} Fleet
+                            </h2>
+                            <span className="text-[10px] font-bold text-slate-500 bg-white px-2.5 py-0.5 rounded-full shadow-xs border border-slate-200/60">
+                              {filteredGroupedVessels.groups[owner].length} {filteredGroupedVessels.groups[owner].length === 1 ? 'Vessel' : 'Vessels'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse">
+                            <thead>
+                              <tr className="bg-slate-100/60 border-b border-blue-100 text-[10px] uppercase font-bold tracking-wider text-slate-500 sticky top-0 z-10 backdrop-blur-md">
+                                <th className="px-5 py-3 min-w-[220px]">Vessel</th>
+                                <th className="px-5 py-3 min-w-[220px]">Destination & Nav Status</th>
+                                <th className="px-5 py-3 min-w-[220px]">Operation & Cargo</th>
+                                <th className="px-5 py-3 min-w-[220px]">Schedule / Timings (UTC)</th>
+                                <th className="px-5 py-3 min-w-[220px]">Vessel Remark</th>
+                                <th className="px-4 py-3 min-w-[100px] text-center">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {filteredGroupedVessels.groups[owner].map(v => {
+                                const form = routingForm[v.id] || {};
+                                const modified = isVesselModified(v);
+                                const currentNavStatus = form.route_status || '';
+                                const currentLoadStatus = form.loading_status || '';
+
+                                return (
+                                  <tr 
+                                    key={v.id} 
+                                    className={cn(
+                                      "group transition-colors",
+                                      modified ? "bg-amber-50/30 hover:bg-amber-50/50 border-l-4 border-l-amber-500" : "hover:bg-blue-50/20"
+                                    )}
+                                  >
+                                    {/* Vessel Name & Info */}
+                                    <td className="px-5 py-3.5">
+                                      <div className="flex items-center gap-3">
+                                        {v.has_photo ? (
+                                          <div className="w-9 h-9 rounded-xl overflow-hidden border border-slate-200/80 shrink-0 shadow-xs">
+                                            <img 
+                                              src={`/api/vessels/${v.id}/photo?token=${token}&t=${Date.now()}`} 
+                                              alt={v.name}
+                                              className="w-full h-full object-cover"
+                                              referrerPolicy="no-referrer"
+                                            />
+                                          </div>
+                                        ) : (
+                                          <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0">
+                                            <Ship className="w-4 h-4 text-blue-600" />
+                                          </div>
+                                        )}
+                                        <div className="min-w-0">
+                                          <p className="text-xs font-bold text-slate-900 truncate leading-snug">{v.name}</p>
+                                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">{v.team_name || 'Fleet'}</p>
+                                          {modified && (
+                                            <div className="mt-1">
+                                              <span className="inline-block px-1.5 py-0.5 text-[9px] font-extrabold uppercase bg-amber-100 text-amber-800 border border-amber-200/80 rounded shrink-0">
+                                                Unsaved
+                                              </span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </td>
+
+                                    {/* Destination / Next Port & Nav Status */}
+                                    <td className="px-5 py-3.5 min-w-[210px]">
+                                      <div className="space-y-2">
+                                        <div>
+                                          <label className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">Next Port</label>
+                                          <input 
+                                            type="text"
+                                            value={form.next_port || ''}
+                                            onChange={e => handleUpdateRoutingRow(v.id, 'next_port', e.target.value)}
+                                            className="w-full px-2.5 py-1.5 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                                            placeholder="Enter next port..."
                                           />
                                         </div>
-                                      ) : (
-                                        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
-                                          <Ship className="w-4 h-4 text-blue-600" />
+                                        <div>
+                                          <label className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">Nav Status</label>
+                                          <select 
+                                            value={currentNavStatus}
+                                            onChange={e => handleUpdateRoutingRow(v.id, 'route_status', e.target.value)}
+                                            className={cn(
+                                              "w-full px-2.5 py-1.5 border rounded-xl text-xs font-bold outline-none cursor-pointer transition-all",
+                                              currentNavStatus === 'At sea' ? "bg-blue-50 text-blue-800 border-blue-200" :
+                                              currentNavStatus === 'In Port' ? "bg-emerald-50 text-emerald-800 border-emerald-200" :
+                                              (currentNavStatus === 'At Anchor' || currentNavStatus === 'Anchor') ? "bg-amber-50 text-amber-800 border-amber-200" :
+                                              currentNavStatus === 'Drifting' ? "bg-purple-50 text-purple-800 border-purple-200" :
+                                              "bg-slate-50 text-slate-700 border-slate-200"
+                                            )}
+                                          >
+                                            <option value="" className="bg-white text-slate-700 font-medium">Select Nav Status</option>
+                                            <option value="At sea" className="bg-white text-slate-800 font-medium">At sea</option>
+                                            <option value="In Port" className="bg-white text-slate-800 font-medium">In Port</option>
+                                            <option value="At Anchor" className="bg-white text-slate-800 font-medium">At Anchor</option>
+                                            <option value="Drifting" className="bg-white text-slate-800 font-medium">Drifting</option>
+                                          </select>
+
+                                          {(currentNavStatus === 'At Anchor' || currentNavStatus === 'Anchor') && (
+                                            <div className="pt-1">
+                                              <div className="flex items-center gap-1 mb-0.5">
+                                                <Anchor className="w-3 h-3 text-amber-600" />
+                                                <label className="text-[9px] font-bold uppercase text-amber-700">No. of shackles</label>
+                                              </div>
+                                              <input 
+                                                type="number"
+                                                step="1"
+                                                min="0"
+                                                value={form.shackles || ''}
+                                                onChange={e => {
+                                                  const val = e.target.value.replace(/[^0-9]/g, '');
+                                                  handleUpdateRoutingRow(v.id, 'shackles', val);
+                                                }}
+                                                placeholder="Shackles"
+                                                className="w-full px-2.5 py-1 bg-white border border-amber-300 rounded-lg text-xs font-bold text-slate-800 focus:ring-2 focus:ring-amber-500/20 outline-none"
+                                              />
+                                            </div>
+                                          )}
                                         </div>
-                                      )}
-                                      <div>
-                                        <p className="text-sm font-bold text-slate-900 leading-tight">{v.name}</p>
-                                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{v.team_name}</p>
                                       </div>
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <input 
-                                      type="text"
-                                      value={form.next_port || ''}
-                                      onChange={e => handleUpdateRoutingRow(v.id, 'next_port', e.target.value)}
-                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                      placeholder="Next Port"
-                                    />
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <select 
-                                      value={form.route_status || ''}
-                                      onChange={e => handleUpdateRoutingRow(v.id, 'route_status', e.target.value)}
-                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
-                                    >
-                                      <option value="">Select Status</option>
-                                      <option value="Laden">Laden</option>
-                                      <option value="Ballast">Ballast</option>
-                                    </select>
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <select 
-                                      value={form.operation_type || ''}
-                                      onChange={e => handleUpdateRoutingRow(v.id, 'operation_type', e.target.value)}
-                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
-                                    >
-                                      <option value="">Select Operation</option>
-                                      <option value="LOADING">LOADING</option>
-                                      <option value="DISCHARGING">DISCHARGING</option>
-                                      <option value="BUNKERING">BUNKERING</option>
-                                      <option value="ship-to-ship cargo operation">SHIP-TO-SHIP CARGO OPERATION</option>
-                                      <option value="Others">Others</option>
-                                    </select>
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <input 
-                                      type="datetime-local"
-                                      value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
-                                      onChange={e => handleUpdateRoutingRow(v.id, 'eta_atb', e.target.value.replace('T', ' '))}
-                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                    />
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <input 
-                                      type="datetime-local"
-                                      value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
-                                      onChange={e => handleUpdateRoutingRow(v.id, 'etd_atd', e.target.value.replace('T', ' '))}
-                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                    />
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <input 
-                                      type="text"
-                                      value={form.cargo || ''}
-                                      onChange={e => handleUpdateRoutingRow(v.id, 'cargo', e.target.value)}
-                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                      placeholder="Cargo"
-                                    />
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <input 
-                                      type="text"
-                                      value={form.remark_from_vessel || ''}
-                                      onChange={e => handleUpdateRoutingRow(v.id, 'remark_from_vessel', e.target.value)}
-                                      className="w-full px-3 py-1.5 bg-slate-50 border border-slate-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
-                                      placeholder="Remark from Vessel"
-                                    />
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                                    </td>
+
+                                    {/* Operation & Cargo */}
+                                    <td className="px-5 py-3.5 min-w-[220px]">
+                                      <div className="space-y-2">
+                                        <div>
+                                          <label className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">Loading Status</label>
+                                          <select 
+                                            value={currentLoadStatus}
+                                            onChange={e => handleUpdateRoutingRow(v.id, 'loading_status', e.target.value)}
+                                            className={cn(
+                                              "w-full px-2.5 py-1.5 border rounded-xl text-xs font-bold outline-none cursor-pointer transition-all",
+                                              currentLoadStatus === 'Laden' ? "bg-sky-50 text-sky-800 border-sky-200" :
+                                              currentLoadStatus === 'Ballast' ? "bg-teal-50 text-teal-800 border-teal-200" :
+                                              "bg-slate-50 text-slate-700 border-slate-200"
+                                            )}
+                                          >
+                                            <option value="" className="bg-white text-slate-700 font-medium">Select Loading</option>
+                                            <option value="Laden" className="bg-white text-slate-800 font-medium">Laden</option>
+                                            <option value="Ballast" className="bg-white text-slate-800 font-medium">Ballast</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">Operation Type</label>
+                                          <select 
+                                            value={form.operation_type || ''}
+                                            onChange={e => handleUpdateRoutingRow(v.id, 'operation_type', e.target.value)}
+                                            className="w-full px-2.5 py-1.5 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all cursor-pointer"
+                                          >
+                                            <option value="">Select Operation</option>
+                                            <option value="LOADING">LOADING</option>
+                                            <option value="DISCHARGING">DISCHARGING</option>
+                                            <option value="BUNKERING">BUNKERING</option>
+                                            <option value="ship-to-ship cargo operation">SHIP-TO-SHIP</option>
+                                            <option value="Others">Others</option>
+                                          </select>
+                                        </div>
+                                        <div>
+                                          <label className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">Cargo Details</label>
+                                          <input 
+                                            type="text"
+                                            value={form.cargo || ''}
+                                            onChange={e => handleUpdateRoutingRow(v.id, 'cargo', e.target.value)}
+                                            className="w-full px-2.5 py-1.5 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                                            placeholder="Cargo details..."
+                                          />
+                                        </div>
+                                      </div>
+                                    </td>
+
+                                    {/* Schedule / Timings (ETA / ETB / ETD) */}
+                                    <td className="px-5 py-3.5 min-w-[220px]">
+                                      <div className="space-y-2">
+                                        <div>
+                                          <span className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">ETA (Arrival)</span>
+                                          <input 
+                                            type="datetime-local"
+                                            value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
+                                            onChange={e => handleUpdateRoutingRow(v.id, 'eta_atb', e.target.value.replace('T', ' '))}
+                                            className="w-full px-2.5 py-1 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
+                                          />
+                                        </div>
+                                        <div>
+                                          <span className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">ETB (Berthing)</span>
+                                          <input 
+                                            type="datetime-local"
+                                            value={form.etb ? form.etb.replace(' ', 'T').substring(0, 16) : ''}
+                                            onChange={e => handleUpdateRoutingRow(v.id, 'etb', e.target.value.replace('T', ' '))}
+                                            className="w-full px-2.5 py-1 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
+                                          />
+                                        </div>
+                                        <div>
+                                          <span className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">ETD / ATD (Departure)</span>
+                                          <input 
+                                            type="datetime-local"
+                                            value={form.etd_atd ? form.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
+                                            onChange={e => handleUpdateRoutingRow(v.id, 'etd_atd', e.target.value.replace('T', ' '))}
+                                            className="w-full px-2.5 py-1 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500/20 outline-none transition-all"
+                                          />
+                                        </div>
+                                      </div>
+                                    </td>
+
+                                    {/* Vessel Remark */}
+                                    <td className="px-5 py-3.5">
+                                      <input 
+                                        type="text"
+                                        value={form.remark_from_vessel || ''}
+                                        onChange={e => handleUpdateRoutingRow(v.id, 'remark_from_vessel', e.target.value)}
+                                        className="w-full px-3 py-1.5 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                                        placeholder="Remarks..."
+                                      />
+                                    </td>
+
+                                    {/* Row Save Action */}
+                                    <td className="px-4 py-3.5 text-center">
+                                      {modified ? (
+                                        <button 
+                                          onClick={() => handleSaveSingleRouting(v.id)}
+                                          disabled={savingVesselId === v.id}
+                                          className="inline-flex items-center gap-1 bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-xs shadow-amber-500/20"
+                                          title="Save changes for this vessel"
+                                        >
+                                          {savingVesselId === v.id ? (
+                                            <div className="w-3.5 h-3.5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                                          ) : (
+                                            <Save className="w-3.5 h-3.5" />
+                                          )}
+                                          <span>Save</span>
+                                        </button>
+                                      ) : (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 bg-slate-50 px-2 py-1 rounded-md border border-slate-100">
+                                          <Check className="w-3 h-3 text-emerald-500" />
+                                          Synced
+                                        </span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </div>
             )
@@ -4080,15 +4680,19 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           setRouteForm({
                             next_port: selectedVessel.next_port || latestArrival?.arrival_port || '',
                             route_status: selectedVessel.route_status === 'Anchor' ? 'At Anchor' : (selectedVessel.route_status || ''),
+                            loading_status: selectedVessel.loading_status || '',
+                            operation_type: selectedVessel.operation_type || '',
                             eta_atb: selectedVessel.eta_atb || '',
+                            etb: selectedVessel.etb || '',
                             etd_atd: selectedVessel.etd_atd || '',
                             cargo: selectedVessel.cargo || '',
-                            shackles: selectedVessel.shackles != null ? String(selectedVessel.shackles) : ''
+                            shackles: selectedVessel.shackles != null ? String(selectedVessel.shackles) : '',
+                            remark_from_vessel: selectedVessel.remark_from_vessel || ''
                           });
                           setIsEditingRoute(true);
                         }
                       }}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-white border border-blue-100 rounded-lg text-[10px] font-bold text-blue-600 hover:bg-blue-50 transition-colors shadow-sm"
+                      className="flex items-center gap-1.5 px-3 py-1 bg-white border border-blue-100 rounded-lg text-[10px] font-bold text-blue-600 hover:bg-blue-50 transition-colors shadow-xs"
                     >
                       {isEditingRoute ? <><Save className="w-3 h-3" /> Save Changes</> : <><Edit2 className="w-3 h-3" /> Edit Route</>}
                     </button>
@@ -4106,35 +4710,42 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                           className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
                         />
                       </div>
+
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Status</label>
+                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Navigational Status</label>
                           <select 
                             value={routeForm.route_status}
                             onChange={e => setRouteForm({...routeForm, route_status: e.target.value})}
-                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 cursor-pointer font-medium text-slate-800"
                           >
                             <option value="">Select Status</option>
                             <option value="At sea">At sea</option>
-                            <option value="In port">In port</option>
+                            <option value="In Port">In Port</option>
                             <option value="At Anchor">At Anchor</option>
                             <option value="Drifting">Drifting</option>
                           </select>
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Cargo</label>
-                          <input 
-                            type="text"
-                            value={routeForm.cargo}
-                            onChange={e => setRouteForm({...routeForm, cargo: e.target.value})}
-                            placeholder="e.g. Crude Oil"
-                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
-                          />
+                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Loading Status</label>
+                          <select 
+                            value={routeForm.loading_status}
+                            onChange={e => setRouteForm({...routeForm, loading_status: e.target.value})}
+                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 cursor-pointer font-medium text-slate-800"
+                          >
+                            <option value="">Select Loading</option>
+                            <option value="Laden">Laden</option>
+                            <option value="Ballast">Ballast</option>
+                          </select>
                         </div>
                       </div>
+
                       {(routeForm.route_status === 'At Anchor' || routeForm.route_status === 'Anchor') && (
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">No. of Shackles</label>
+                          <label className="text-[9px] font-bold uppercase text-amber-700 ml-1 flex items-center gap-1">
+                            <Anchor className="w-3 h-3 text-amber-600" />
+                            No. of Shackles
+                          </label>
                           <input 
                             type="number"
                             step="1"
@@ -4144,31 +4755,81 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               const val = e.target.value.replace(/[^0-9]/g, '');
                               setRouteForm({...routeForm, shackles: val});
                             }}
-                            placeholder="Enter number of shackles"
-                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                            placeholder="Enter shackles"
+                            className="w-full px-3 py-1.5 bg-white border border-amber-300 rounded-lg text-xs focus:ring-2 focus:ring-amber-500/20 outline-none font-bold text-slate-800"
                           />
                         </div>
                       )}
+
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Operation Type</label>
+                        <select 
+                          value={routeForm.operation_type}
+                          onChange={e => setRouteForm({...routeForm, operation_type: e.target.value})}
+                          className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 cursor-pointer font-medium text-slate-800"
+                        >
+                          <option value="">Select Operation</option>
+                          <option value="LOADING">LOADING</option>
+                          <option value="DISCHARGING">DISCHARGING</option>
+                          <option value="BUNKERING">BUNKERING</option>
+                          <option value="ship-to-ship cargo operation">SHIP-TO-SHIP</option>
+                          <option value="Others">Others</option>
+                        </select>
+                      </div>
+
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">ETA / ATB (UTC)</label>
+                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">ETA (UTC)</label>
                           <input 
                             type="datetime-local"
                             value={routeForm.eta_atb ? routeForm.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
                             onChange={e => setRouteForm({...routeForm, eta_atb: e.target.value.replace('T', ' ')})}
-                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 font-semibold"
                           />
                         </div>
                         <div className="space-y-1">
-                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">ETD/ATD at Arrival (UTC)</label>
+                          <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">ETB (UTC)</label>
                           <input 
                             type="datetime-local"
-                            value={routeForm.etd_atd ? routeForm.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
-                            onChange={e => setRouteForm({...routeForm, etd_atd: e.target.value.replace('T', ' ')})}
-                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                            value={routeForm.etb ? routeForm.etb.replace(' ', 'T').substring(0, 16) : ''}
+                            onChange={e => setRouteForm({...routeForm, etb: e.target.value.replace('T', ' ')})}
+                            className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 font-semibold"
                           />
                         </div>
                       </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">ETD / ATD (UTC)</label>
+                        <input 
+                          type="datetime-local"
+                          value={routeForm.etd_atd ? routeForm.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
+                          onChange={e => setRouteForm({...routeForm, etd_atd: e.target.value.replace('T', ' ')})}
+                          className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 font-semibold"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Cargo Details</label>
+                        <input 
+                          type="text"
+                          value={routeForm.cargo}
+                          onChange={e => setRouteForm({...routeForm, cargo: e.target.value})}
+                          placeholder="e.g. Crude Oil / 50,000 MT"
+                          className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Vessel Remark</label>
+                        <input 
+                          type="text"
+                          value={routeForm.remark_from_vessel}
+                          onChange={e => setRouteForm({...routeForm, remark_from_vessel: e.target.value})}
+                          placeholder="Remarks from vessel..."
+                          className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                        />
+                      </div>
+
                       <button 
                         onClick={() => setIsEditingRoute(false)}
                         className="mt-2 text-[10px] font-bold text-slate-400 hover:text-slate-600 text-center underline"
@@ -4188,29 +4849,60 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                       <div className="flex items-start gap-3">
                         <div className="p-2 bg-green-100 rounded-lg shrink-0"><Activity className="w-3.5 h-3.5 text-green-600" /></div>
                         <div>
-                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Status</p>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Nav Status</p>
                           <p className="text-xs font-bold text-slate-900">
                             {selectedVessel.route_status === 'Anchor' ? 'At Anchor' : (selectedVessel.route_status || 'Not Set')}
                             {(selectedVessel.route_status === 'At Anchor' || selectedVessel.route_status === 'Anchor') && selectedVessel.shackles && (
-                              <span className="block text-[10px] font-normal text-slate-500 mt-0.5">
-                                No. Shackles: {selectedVessel.shackles}
+                              <span className="block text-[10px] font-normal text-amber-700 mt-0.5">
+                                Shackles: {selectedVessel.shackles}
                               </span>
                             )}
                           </p>
                         </div>
                       </div>
                       <div className="flex items-start gap-3">
+                        <div className="p-2 bg-sky-100 rounded-lg shrink-0"><Ship className="w-3.5 h-3.5 text-sky-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Loading Status</p>
+                          <p className="text-xs font-bold text-slate-900">{selectedVessel.loading_status || 'Not Set'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <div className="p-2 bg-indigo-100 rounded-lg shrink-0"><Compass className="w-3.5 h-3.5 text-indigo-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Operation Type</p>
+                          <p className="text-xs font-bold text-slate-900">{selectedVessel.operation_type || 'Not Set'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3">
                         <div className="p-2 bg-amber-100 rounded-lg shrink-0"><Clock className="w-3.5 h-3.5 text-amber-600" /></div>
                         <div>
-                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">ETA / ATB (UTC)</p>
-                          <p className="text-xs font-bold text-slate-900">{selectedVessel.eta_atb ? selectedVessel.eta_atb.replace('T', ' ') : 'Not Set'}</p>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">ETA / ETB (UTC)</p>
+                          <p className="text-xs font-bold text-slate-900">ETA: {selectedVessel.eta_atb ? selectedVessel.eta_atb.replace('T', ' ') : 'Not Set'}</p>
+                          {selectedVessel.etb && (
+                            <p className="text-xs font-bold text-slate-700 mt-0.5">ETB: {selectedVessel.etb.replace('T', ' ')}</p>
+                          )}
                         </div>
                       </div>
                       <div className="flex items-start gap-3">
                         <div className="p-2 bg-purple-100 rounded-lg shrink-0"><Anchor className="w-3.5 h-3.5 text-purple-600" /></div>
                         <div>
-                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">ETD/ATD at Arrival (UTC)</p>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">ETD / ATD (UTC)</p>
                           <p className="text-xs font-bold text-slate-900">{selectedVessel.etd_atd ? selectedVessel.etd_atd.replace('T', ' ') : 'Not Set'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3 col-span-2">
+                        <div className="p-2 bg-orange-100 rounded-lg shrink-0"><Package className="w-3.5 h-3.5 text-orange-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Cargo Details</p>
+                          <p className="text-xs font-bold text-slate-900">{selectedVessel.cargo || 'No cargo information'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-3 col-span-2">
+                        <div className="p-2 bg-slate-100 rounded-lg shrink-0"><FileText className="w-3.5 h-3.5 text-slate-600" /></div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Vessel Remark</p>
+                          <p className="text-xs font-medium text-slate-800">{selectedVessel.remark_from_vessel || 'No remarks provided'}</p>
                         </div>
                       </div>
                       <div className="flex items-start gap-3">
@@ -4251,13 +4943,6 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <div>
                           <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Max Fuel Cons.</p>
                           <p className="text-xs font-bold text-slate-900">{selectedVessel.max_fuel_consumption || 'Not Set'}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-start gap-3 col-span-2">
-                        <div className="p-2 bg-orange-100 rounded-lg shrink-0"><Package className="w-3.5 h-3.5 text-orange-600" /></div>
-                        <div>
-                          <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Cargo Details</p>
-                          <p className="text-xs font-bold text-slate-900">{selectedVessel.cargo || 'No cargo information'}</p>
                         </div>
                       </div>
                     </div>
@@ -8582,6 +9267,43 @@ const VesselRoutingUserView = ({
                     className="w-full pl-11 pr-10 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none appearance-none cursor-pointer"
                   >
                     <option value="">SELECT STATUS...</option>
+                    <option value="At sea">At sea</option>
+                    <option value="In Port">In Port</option>
+                    <option value="At Anchor">At Anchor</option>
+                    <option value="Drifting">Drifting</option>
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-slate-400 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+
+              {(form.route_status === 'At Anchor' || form.route_status === 'Anchor') && (
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">No. of shackles</label>
+                  <div className="relative">
+                    <Anchor className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input 
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={form.shackles || ''}
+                      onChange={e => onUpdateRow(vessel.id, 'shackles', e.target.value.replace(/[^0-9]/g, ''))}
+                      className="w-full pl-11 pr-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                      placeholder="Enter number of shackles..."
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Loading Status</label>
+                <div className="relative">
+                  <Activity className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <select 
+                    value={form.loading_status || ''}
+                    onChange={e => onUpdateRow(vessel.id, 'loading_status', e.target.value)}
+                    className="w-full pl-11 pr-10 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none appearance-none cursor-pointer"
+                  >
+                    <option value="">SELECT LOADING STATUS...</option>
                     <option value="Laden">Laden</option>
                     <option value="Ballast">Ballast</option>
                   </select>
@@ -8612,13 +9334,26 @@ const VesselRoutingUserView = ({
 
             <div className="space-y-6">
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">ETA / ATB (Arrival Schedule UTC)</label>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">ETA (Arrival Schedule UTC)</label>
                 <div className="relative">
                   <Clock className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input 
                     type="datetime-local"
                     value={form.eta_atb ? form.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
                     onChange={e => onUpdateRow(vessel.id, 'eta_atb', e.target.value.replace('T', ' '))}
+                    className="w-full pl-11 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">ETB (Berthing Schedule UTC)</label>
+                <div className="relative">
+                  <Clock className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input 
+                    type="datetime-local"
+                    value={form.etb ? form.etb.replace(' ', 'T').substring(0, 16) : ''}
+                    onChange={e => onUpdateRow(vessel.id, 'etb', e.target.value.replace('T', ' '))}
                     className="w-full pl-11 pr-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
                   />
                 </div>
