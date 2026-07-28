@@ -24,12 +24,16 @@ import {
   File,
   X,
   Eye,
+  EyeOff,
+  Copy,
   Menu,
   Edit2,
   Settings,
   ChevronDown,
   ArrowUp,
   ArrowDown,
+  ArrowLeft,
+  Home,
   ArrowUpDown,
   AlertCircle,
   Mail,
@@ -298,6 +302,7 @@ interface User {
   email?: string;
   device_id?: string | null;
   is_verified?: boolean;
+  plain_password?: string | null;
 }
 
 const getRoleLabel = (role: string) => {
@@ -348,6 +353,7 @@ interface Vessel {
   remark_from_vessel?: string | null;
   flag?: string | null;
   type?: 'Bulk Carrier' | 'Container';
+  email?: string | null;
   date_built?: string | null;
   min_fuel_consumption?: string | null;
   max_fuel_consumption?: string | null;
@@ -1168,7 +1174,7 @@ const SidebarContent = ({
         {user.role !== 'vessel' && (
           <button 
             onClick={() => { setView('vessels'); setIsSidebarOpen(false); }}
-            className={getTopLevelClass(view === 'vessels')}
+            className={getTopLevelClass(view === 'vessels' || view === 'vessel_details')}
           >
             <Ship className="w-4 h-4" /> Vessels
           </button>
@@ -1765,8 +1771,105 @@ const CAT7_CERTS = [
   "7.24 Mooring Management Plan"
 ];
 
+type ViewType = 'dashboard' | 'vessels' | 'vessel_details' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about' | 'sms' | 'sms_reporting';
+
+const getViewTitle = (v: ViewType): string => {
+  switch (v) {
+    case 'dashboard': return 'Fleet Dashboard';
+    case 'vessels': return 'Vessel List';
+    case 'vessel_details': return 'Vessel Details';
+    case 'routing': return 'Route Overview';
+    case 'noon_to_noon': return 'Noon to Noon Report';
+    case 'departure': return 'Departure Report';
+    case 'arrival': return 'Arrival Report';
+    case 'fuel_consumption': return 'Fuel Analytics';
+    case 'defects_5_2': return 'Trouble Reports (5.2)';
+    case 'defects_1_6': return 'Technical Defects (1.6)';
+    case 'spare_requisition_ship': return 'Spare Requisition';
+    case 'spare_quotation_pic': return 'Spare Quotation';
+    case 'spare_logistic_pic': return 'Spare Logistics';
+    case 'spare_delivery_note_ship': return 'Spare Delivery Note';
+    case 'bunker_bdn': return 'Bunker BDN';
+    case 'bunker_fuel_analysis': return 'Fuel Analysis';
+    case 'lube_oil_analysis': return 'Lube Oil Analysis';
+    case 'lube_oil_requisition': return 'Lube Oil Requisition';
+    case 'lube_oil_ldr': return 'Lube Oil LDR';
+    case 'store_requisition': return 'Store Requisition';
+    case 'chemical_requisition': return 'Chemical Requisition';
+    case 'store_chemical_requisition': return 'Store & Chemical Requisitions';
+    case 'crew_list': return 'Crew Matrix & List';
+    case 'crew_compliance': return 'Crew Compliance';
+    case 'audit_list': return 'Audits Overview';
+    case 'audit_internal': return 'Internal Audits';
+    case 'audit_external': return 'External Audits';
+    case 'audit_vir': return 'Vessel Inspection Reports';
+    case 'audit_navigational': return 'Navigational Audits';
+    case 'sms': return 'SMS Manuals & Procedures';
+    case 'sms_reporting': return 'SMS Incidents & Reporting';
+    case 'admin': return 'Admin Settings';
+    case 'admin_vessel_list': return 'Admin Vessel List';
+    case 'admin_cert_list': return 'Admin Certificates';
+    case 'admin_new_vessel': return 'Add New Vessel';
+    case 'admin_add_cert': return 'Add Certificate';
+    case 'admin_recycle_bin': return 'Recycle Bin';
+    case 'slideshow': return 'Slideshow';
+    case 'other_report': return 'Other Reports';
+    case 'about': return 'About COMOS';
+    default: return 'COMOS Portal';
+  }
+};
+
 const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
-  const [view, setView] = useState<'dashboard' | 'vessels' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about' | 'sms' | 'sms_reporting'>('dashboard');
+  const [view, setRawView] = useState<ViewType>('dashboard');
+  const [viewHistory, setViewHistory] = useState<ViewType[]>([]);
+
+  const setView = useCallback((newView: ViewType | ((prev: ViewType) => ViewType)) => {
+    setRawView(currentView => {
+      const targetView = typeof newView === 'function' ? newView(currentView) : newView;
+      if (targetView !== currentView) {
+        setViewHistory(prev => {
+          if (prev.length > 0 && prev[prev.length - 1] === currentView) return prev;
+          return [...prev, currentView].slice(-30);
+        });
+        try {
+          if (window.location.hash !== '#' + targetView) {
+            window.history.pushState({ view: targetView }, '', '#' + targetView);
+          }
+        } catch (e) {}
+      }
+      return targetView;
+    });
+  }, []);
+
+  const handleGoBack = useCallback(() => {
+    setViewHistory(prev => {
+      if (prev.length === 0) {
+        setRawView('dashboard');
+        return prev;
+      }
+      const lastView = prev[prev.length - 1];
+      setRawView(lastView);
+      try {
+        if (window.location.hash !== '#' + lastView) {
+          window.history.pushState({ view: lastView }, '', '#' + lastView);
+        }
+      } catch (e) {}
+      return prev.slice(0, prev.length - 1);
+    });
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = (event: PopStateEvent) => {
+      const hashView = window.location.hash.replace('#', '') as ViewType;
+      if (hashView && hashView !== view) {
+        setRawView(hashView);
+      } else if (event.state?.view) {
+        setRawView(event.state.view as ViewType);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [view]);
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -2067,6 +2170,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       formData.append('fleet_status', editingVessel.fleet_status || 'In Active Fleet');
       formData.append('flag', editingVessel.flag || '');
       formData.append('type', editingVessel.type || 'Bulk Carrier');
+      formData.append('email', editingVessel.email || '');
       formData.append('date_built', editingVessel.date_built || '');
       formData.append('min_fuel_consumption', editingVessel.min_fuel_consumption || '');
       formData.append('max_fuel_consumption', editingVessel.max_fuel_consumption || '');
@@ -2342,7 +2446,6 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   }, [fetchData]);
 
   const fetchCertDetails = async (cert: Certificate, isRefresh = false) => {
-    setSelectedVessel(null);
     if (!isRefresh) {
       setTempPreviewUrl(null);
       setPreviewFile(null);
@@ -2720,17 +2823,29 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row relative">
       {/* Mobile Top Bar */}
-      <div className="lg:hidden bg-white border-b border-blue-100 p-4 flex items-center justify-between sticky top-0 z-40">
-        <button 
-          onClick={() => setView('dashboard')}
-          className="flex items-center gap-2"
-        >
-          <LogoContainer size="xs" className="border-none shadow-none" />
-          <span className="font-bold text-blue-900 tracking-tight">COMOS</span>
-        </button>
+      <div className="lg:hidden bg-white border-b border-blue-100 p-3.5 flex items-center justify-between sticky top-0 z-40 shadow-2xs">
+        <div className="flex items-center gap-2">
+          {(viewHistory.length > 0 || view !== 'dashboard') && (
+            <button 
+              onClick={handleGoBack}
+              className="px-2.5 py-1.5 bg-slate-900 text-white hover:bg-blue-600 rounded-xl text-xs font-bold flex items-center gap-1 transition-all shadow-xs active:scale-95 cursor-pointer"
+              title="Go Back"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Back</span>
+            </button>
+          )}
+          <button 
+            onClick={() => setView('dashboard')}
+            className="flex items-center gap-2"
+          >
+            <LogoContainer size="xs" className="border-none shadow-none" />
+            <span className="font-bold text-blue-900 tracking-tight">COMOS</span>
+          </button>
+        </div>
         <button 
           onClick={() => setIsSidebarOpen(true)}
-          className="p-2 text-slate-500 hover:bg-blue-50 rounded-lg transition-colors"
+          className="p-2 text-slate-500 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
         >
           <Menu className="w-6 h-6" />
         </button>
@@ -2841,6 +2956,68 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
       {/* Main Content */}
       <main className="flex-1 min-w-0">
         <div className="p-4 md:p-8 max-w-7xl mx-auto">
+          {/* Universal Navigation & Back Bar */}
+          <div className="mb-6 bg-white/95 backdrop-blur-md p-3 rounded-2xl border border-slate-200/80 shadow-xs flex flex-wrap items-center justify-between gap-3 sticky top-2 z-30">
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                onClick={handleGoBack}
+                disabled={viewHistory.length === 0 && view === 'dashboard'}
+                className={cn(
+                  "flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all duration-200 cursor-pointer select-none shrink-0",
+                  (viewHistory.length > 0 || view !== 'dashboard')
+                    ? "bg-slate-900 text-white hover:bg-blue-600 shadow-xs active:scale-95 hover:shadow-md"
+                    : "bg-slate-100 text-slate-400 cursor-not-allowed opacity-50"
+                )}
+                title={viewHistory.length > 0 ? `Go back to ${getViewTitle(viewHistory[viewHistory.length - 1])}` : "Go back"}
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back</span>
+                {viewHistory.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/20 text-[10px] font-black">
+                    {viewHistory.length}
+                  </span>
+                )}
+              </button>
+
+              <div className="flex items-center gap-2 text-xs text-slate-600 font-medium min-w-0 truncate">
+                <button 
+                  onClick={() => setView('dashboard')}
+                  className="hover:text-blue-600 hover:underline flex items-center gap-1.5 text-slate-700 font-extrabold shrink-0"
+                >
+                  <Home className="w-4 h-4 text-slate-400" />
+                  <span className="hidden sm:inline">Fleet Dashboard</span>
+                </button>
+
+                {view !== 'dashboard' && (
+                  <>
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+                    <span className="font-extrabold text-blue-900 bg-blue-50/80 px-2.5 py-1 rounded-lg border border-blue-100 truncate">
+                      {getViewTitle(view)}
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {viewHistory.length > 0 && (
+                <span className="hidden md:inline text-[11px] font-bold text-slate-500 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200/60">
+                  Previous: <strong className="text-slate-800">{getViewTitle(viewHistory[viewHistory.length - 1])}</strong>
+                </span>
+              )}
+
+              {view !== 'dashboard' && (
+                <button
+                  onClick={() => setView('dashboard')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-extrabold transition-colors border border-blue-100 cursor-pointer"
+                  title="Return to Main Dashboard"
+                >
+                  <Home className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Dashboard</span>
+                </button>
+              )}
+            </div>
+          </div>
           {Object.values(loadingStates).some(Boolean) && (
             <div className="mb-6 bg-blue-50/75 border border-blue-100/60 rounded-2xl p-4 flex items-center justify-between shadow-xs animate-in slide-in-from-top-4 fade-in duration-300">
               <div className="flex items-center gap-3">
@@ -3116,7 +3293,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                               </td>
                             </tr>
                           ) : (
-                            vessels.slice(0, 5).map(v => {
+                            vessels.slice(0, 10).map(v => {
                               const routeStatusColors: Record<string, string> = {
                                 'Underway': 'bg-emerald-50 text-emerald-700 border-emerald-100',
                                 'At Port': 'bg-blue-50 text-blue-700 border-blue-100',
@@ -3541,7 +3718,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   const vessel = vessels.find(v => v.id === cert.vessel_id);
-                                  if (vessel) setSelectedVessel(vessel);
+                                  if (vessel) {
+                                    setSelectedVessel(vessel);
+                                    setView('vessel_details');
+                                  }
                                 }}
                                 className="text-left hover:text-blue-600 hover:underline transition-colors animate-none"
                               >
@@ -3716,7 +3896,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   <div 
                     key={vessel.id} 
                     className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm hover:shadow-md cursor-pointer hover:border-blue-200 transition-all"
-                    onClick={() => setSelectedVessel(vessel)}
+                    onClick={() => {
+                      setSelectedVessel(vessel);
+                      setView('vessel_details');
+                    }}
                   >
                     <div className="flex items-center justify-between mb-6">
                         <div className="flex items-center gap-3 min-w-0">
@@ -3767,6 +3950,10 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <span className="font-bold text-slate-900">{vessel.flag || 'N/A'}</span>
                       </div>
                       <div className="flex items-center justify-between text-sm">
+                        <span className="text-slate-500">Email Address</span>
+                        <span className="font-bold text-slate-900 truncate max-w-[180px]" title={vessel.email || ''}>{vessel.email || 'N/A'}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Type</span>
                         <span className="font-bold text-slate-900">{vessel.type || 'Bulk Carrier'}</span>
                       </div>
@@ -3798,6 +3985,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         onClick={(e) => {
                           e.stopPropagation();
                           setSelectedVessel(vessel);
+                          setView('vessel_details');
                         }}
                         className="flex-1 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-bold hover:bg-blue-100 transition-colors"
                       >
@@ -3831,6 +4019,837 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {view === 'vessel_details' && (
+            <div className="space-y-8 animate-fadeIn">
+              {/* Header Navigation Bar */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-blue-100 shadow-xs">
+                <div className="flex items-center gap-4">
+                  <button 
+                    onClick={() => setView('vessels')}
+                    className="p-2.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-xl transition-colors flex items-center gap-1.5 font-bold text-xs"
+                    title="Back to Vessels"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span>Back to Vessels</span>
+                  </button>
+                  <div>
+                    <h1 className="text-2xl md:text-3xl font-extrabold text-slate-900 flex items-center gap-2">
+                      {(selectedVessel || vessels[0])?.name || 'Vessel Details'}
+                    </h1>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Dedicated Vessel Profile, Operational Status, Reports & Action Shortcuts
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {/* Vessel Switcher Dropdown */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400 hidden sm:inline">Switch Vessel:</span>
+                    <select 
+                      value={selectedVessel?.id ? String(selectedVessel.id) : (vessels[0]?.id ? String(vessels[0].id) : '')}
+                      onChange={(e) => {
+                        const v = vessels.find(item => String(item.id) === e.target.value);
+                        if (v) setSelectedVessel(v);
+                      }}
+                      className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
+                    >
+                      {vessels.map(v => (
+                        <option key={v.id} value={String(v.id)}>{v.name} ({v.team_name || 'No Team'})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (selectedVessel || vessels[0]) && (
+                    <button 
+                      onClick={() => setEditingVessel(selectedVessel || vessels[0])}
+                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-blue-100 rounded-xl text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-600 transition-colors shadow-xs"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                      <span>Edit Profile</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {(() => {
+                const v = selectedVessel || vessels[0];
+                if (!v) {
+                  return (
+                    <div className="p-12 text-center bg-white rounded-2xl border border-slate-200">
+                      <Ship className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                      <h3 className="text-lg font-bold text-slate-800">No Vessel Selected</h3>
+                      <p className="text-sm text-slate-500 mt-1">Please select a vessel from the list.</p>
+                      <button onClick={() => setView('vessels')} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold">
+                        Go to Vessels List
+                      </button>
+                    </div>
+                  );
+                }
+
+                const vCerts = certs.filter(c => c.vessel_id === v.id);
+                const latestNoon = [...noonReports].filter(r => r.vessel_id === v.id).sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
+                const latestDep = [...departureReports].filter(r => r.vessel_id === v.id).sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
+                const latestArr = [...arrivalReports].filter(r => r.vessel_id === v.id).sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
+
+                return (
+                  <div className="space-y-8">
+                    {/* Vessel Hero Banner */}
+                    <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 rounded-3xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden">
+                      <div className="absolute right-0 top-0 bottom-0 opacity-10 pointer-events-none flex items-center pr-12">
+                        <Ship className="w-72 h-72 text-white" />
+                      </div>
+
+                      <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
+                        <div className="flex items-center gap-5">
+                          {v.has_photo ? (
+                            <div className="w-20 h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden border-2 border-white/20 bg-white/10 shrink-0 shadow-lg">
+                              <img 
+                                src={`/api/vessels/${v.id}/photo?token=${token}&t=${Date.now()}`} 
+                                alt={v.name}
+                                className="w-full h-full object-cover"
+                                referrerPolicy="no-referrer"
+                              />
+                            </div>
+                          ) : (
+                            <div className="w-20 h-20 md:w-24 md:h-24 rounded-2xl bg-blue-600/30 border border-white/20 flex items-center justify-center shrink-0 shadow-lg">
+                              <Ship className="w-10 h-10 text-white" />
+                            </div>
+                          )}
+
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-blue-500/20 text-blue-200 border border-blue-400/30">
+                                {v.team_name || 'Unassigned Team'}
+                              </span>
+                              <span className={cn(
+                                "px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider",
+                                v.owner === 'Nissen' ? "bg-purple-500/20 text-purple-200 border border-purple-400/30" : "bg-orange-500/20 text-orange-200 border border-orange-400/30"
+                              )}>
+                                Owner: {v.owner || 'Nissen'}
+                              </span>
+                              <span className={cn(
+                                "px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider",
+                                (v.fleet_status || 'In Active Fleet') === 'In Active Fleet' ? "bg-emerald-500/20 text-emerald-300 border border-emerald-400/30" : "bg-slate-500/20 text-slate-300 border border-slate-400/30"
+                              )}>
+                                {v.fleet_status || 'In Active Fleet'}
+                              </span>
+                            </div>
+
+                            <h2 className="text-2xl md:text-4xl font-black text-white tracking-tight">{v.name}</h2>
+
+                            <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-blue-200/80 font-medium">
+                              <span className="flex items-center gap-1.5"><Flag className="w-3.5 h-3.5 text-blue-400" /> Flag: <strong className="text-white">{v.flag || 'N/A'}</strong></span>
+                              <span className="flex items-center gap-1.5"><Mail className="w-3.5 h-3.5 text-blue-400" /> Email: <strong className="text-white">{v.email ? <a href={`mailto:${v.email}`} className="hover:underline text-blue-200">{v.email}</a> : 'N/A'}</strong></span>
+                              <span className="flex items-center gap-1.5"><Anchor className="w-3.5 h-3.5 text-blue-400" /> Type: <strong className="text-white">{v.type || 'Bulk Carrier'}</strong></span>
+                              <span className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5 text-blue-400" /> Built: <strong className="text-white">{v.date_built || 'N/A'}</strong></span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Quick Primary Actions in Hero */}
+                        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                          <button 
+                            onClick={() => {
+                              setSelectedVessel(v);
+                              setView('noon_to_noon');
+                            }}
+                            className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-5 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl text-xs font-bold transition-all shadow-lg shadow-blue-900/50"
+                          >
+                            <FileText className="w-4 h-4" />
+                            <span>Submit Noon Report</span>
+                          </button>
+                          <button 
+                            onClick={() => {
+                              setSelectedVessel(v);
+                              setView('departure');
+                            }}
+                            className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-5 py-3 bg-white/10 hover:bg-white/20 text-white rounded-2xl text-xs font-bold backdrop-blur-sm border border-white/15 transition-all"
+                          >
+                            <Navigation className="w-4 h-4 text-sky-400" />
+                            <span>Departure Report</span>
+                          </button>
+                          <button 
+                            onClick={() => {
+                              setSelectedVessel(v);
+                              setView('arrival');
+                            }}
+                            className="flex-1 md:flex-initial flex items-center justify-center gap-2 px-5 py-3 bg-white/10 hover:bg-white/20 text-white rounded-2xl text-xs font-bold backdrop-blur-sm border border-white/15 transition-all"
+                          >
+                            <MapPin className="w-4 h-4 text-emerald-400" />
+                            <span>Arrival Report</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Shortcuts Section */}
+                    <div className="bg-white p-6 rounded-3xl border border-blue-100 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                        <div>
+                          <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                            <Activity className="w-5 h-5 text-blue-600" /> Action Shortcuts & Quick Services
+                          </h3>
+                          <p className="text-xs text-slate-500">Instant access to vessel reports, requisitions, fuel analyses, and audits</p>
+                        </div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 bg-blue-50 text-blue-700 rounded-lg">
+                          12 Shortcuts
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">
+                        <button 
+                          onClick={() => { setSelectedVessel(v); setView('noon_to_noon'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/80 to-white border border-blue-100 hover:border-blue-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-blue-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-blue-600 transition-colors">Noon to Noon Report</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Submit daily noon position, weather, and fuel log</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setSelectedVessel(v); setView('departure'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-sky-50/80 to-white border border-sky-100 hover:border-sky-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-sky-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <Navigation className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-sky-600 transition-colors">Departure Report</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Record port departure, drafts, and cargo status</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setSelectedVessel(v); setView('arrival'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-emerald-50/80 to-white border border-emerald-100 hover:border-emerald-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-emerald-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <Anchor className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-emerald-600 transition-colors">Arrival Report</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Log port arrival, pilot, anchorage & operations</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('lube_oil_ldr'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-indigo-50/80 to-white border border-indigo-100 hover:border-indigo-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-indigo-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <Droplets className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors">Lube Oil LDR</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Daily lube oil consumption logs & soundings</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('lube_oil_analysis'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-purple-50/80 to-white border border-purple-100 hover:border-purple-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-purple-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <FlaskConical className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-purple-600 transition-colors">Lube Oil Analysis</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Laboratory oil sample test reports & water ppm</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('bunker_bdn'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-amber-50/80 to-white border border-amber-100 hover:border-amber-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-amber-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <Fuel className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-amber-600 transition-colors">Bunker BDN</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Bunker delivery notes & fuel specifications</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('bunker_fuel_analysis'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-orange-50/80 to-white border border-orange-100 hover:border-orange-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-orange-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <FlaskConical className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-orange-600 transition-colors">Fuel Analysis</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Fuel testing results, viscosity & flashpoint</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('defects_5_2'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-rose-50/80 to-white border border-rose-100 hover:border-rose-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-rose-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <Wrench className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-rose-600 transition-colors">Trouble Reports</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Report machinery defect, hull issues & rectification</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('spare_requisition_ship'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-cyan-50/80 to-white border border-cyan-100 hover:border-cyan-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-cyan-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <Package className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-cyan-600 transition-colors">Spare Requisitions</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Request technical spares & track RFQ approvals</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('crew_list'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-teal-50/80 to-white border border-teal-100 hover:border-teal-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-teal-600 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <Users className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-teal-600 transition-colors">Crew & Audits</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Onboard crew matrix, internal/external audits</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('sms'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-slate-50/80 to-white border border-slate-200 hover:border-slate-400 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-slate-800 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <ShieldCheck className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-slate-700 transition-colors">SMS Manuals</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Safety Management System procedures & checklists</p>
+                        </button>
+
+                        <button 
+                          onClick={() => { setView('fuel_consumption'); }}
+                          className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/80 to-white border border-blue-100 hover:border-blue-300 hover:shadow-md transition-all text-left group cursor-pointer"
+                        >
+                          <div className="p-2.5 bg-blue-700 text-white rounded-xl w-fit mb-3 group-hover:scale-105 transition-transform">
+                            <Activity className="w-5 h-5" />
+                          </div>
+                          <h4 className="text-xs font-extrabold text-slate-900 group-hover:text-blue-700 transition-colors">Fuel Analytics</h4>
+                          <p className="text-[10px] text-slate-500 mt-1 line-clamp-2">Historical speed, voyage performance & fuel chart</p>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Main 2-Column Dashboard Grid */}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                      {/* Left Column (7 cols): Route & Recent Reports */}
+                      <div className="lg:col-span-7 space-y-8">
+                        {/* Route & Navigational Status */}
+                        <div className="bg-white p-6 rounded-3xl border border-blue-100 shadow-sm space-y-6">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                            <div className="flex items-center gap-2.5">
+                              <div className="p-2 bg-blue-100 text-blue-700 rounded-xl">
+                                <Compass className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <h3 className="text-base font-extrabold text-slate-900">Current Route & Navigational Status</h3>
+                                <p className="text-xs text-slate-500">Live voyage positioning, schedule, and cargo information</p>
+                              </div>
+                            </div>
+
+                            <button 
+                              onClick={() => {
+                                if (isEditingRoute) {
+                                  handleUpdateRoute();
+                                } else {
+                                  const latestArrival = [...arrivalReports]
+                                    .filter(r => r.vessel_id === v.id)
+                                    .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
+                                    
+                                  setRouteForm({
+                                    next_port: v.next_port || latestArrival?.arrival_port || '',
+                                    route_status: v.route_status === 'Anchor' ? 'At Anchor' : (v.route_status || ''),
+                                    loading_status: v.loading_status || '',
+                                    operation_type: v.operation_type || '',
+                                    eta_atb: v.eta_atb || '',
+                                    etb: v.etb || '',
+                                    etd_atd: v.etd_atd || '',
+                                    cargo: v.cargo || '',
+                                    shackles: v.shackles != null ? String(v.shackles) : '',
+                                    remark_from_vessel: v.remark_from_vessel || ''
+                                  });
+                                  setIsEditingRoute(true);
+                                }
+                              }}
+                              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-50 border border-blue-100 rounded-xl text-xs font-bold text-blue-700 hover:bg-blue-100 transition-colors shadow-xs"
+                            >
+                              {isEditingRoute ? <><Save className="w-4 h-4" /> Save Route Changes</> : <><Edit2 className="w-4 h-4" /> Edit Route</>}
+                            </button>
+                          </div>
+
+                          {isEditingRoute ? (
+                            <div className="space-y-4 bg-slate-50/60 p-5 rounded-2xl border border-slate-200">
+                              <div className="space-y-1">
+                                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Destination / Next Port</label>
+                                <input 
+                                  type="text"
+                                  value={routeForm.next_port}
+                                  onChange={e => setRouteForm({...routeForm, next_port: e.target.value})}
+                                  placeholder="e.g. Singapore"
+                                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20"
+                                />
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                  <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Navigational Status</label>
+                                  <select 
+                                    value={routeForm.route_status}
+                                    onChange={e => setRouteForm({...routeForm, route_status: e.target.value})}
+                                    className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                                  >
+                                    <option value="">Select Status</option>
+                                    <option value="At sea">At sea</option>
+                                    <option value="In Port">In Port</option>
+                                    <option value="At Anchor">At Anchor</option>
+                                    <option value="Drifting">Drifting</option>
+                                  </select>
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Loading Status</label>
+                                  <select 
+                                    value={routeForm.loading_status}
+                                    onChange={e => setRouteForm({...routeForm, loading_status: e.target.value})}
+                                    className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                                  >
+                                    <option value="">Select Loading</option>
+                                    <option value="Laden">Laden</option>
+                                    <option value="Ballast">Ballast</option>
+                                  </select>
+                                </div>
+                              </div>
+
+                              {(routeForm.route_status === 'At Anchor' || routeForm.route_status === 'Anchor') && (
+                                <div className="space-y-1">
+                                  <label className="text-xs font-bold uppercase tracking-wider text-amber-700 flex items-center gap-1">
+                                    <Anchor className="w-3.5 h-3.5 text-amber-600" />
+                                    No. of Shackles
+                                  </label>
+                                  <input 
+                                    type="number"
+                                    step="1"
+                                    min="0"
+                                    value={routeForm.shackles}
+                                    onChange={e => {
+                                      const val = e.target.value.replace(/[^0-9]/g, '');
+                                      setRouteForm({...routeForm, shackles: val});
+                                    }}
+                                    placeholder="Enter shackles"
+                                    className="w-full px-4 py-2 bg-white border border-amber-300 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-amber-500/20"
+                                  />
+                                </div>
+                              )}
+
+                              <div className="space-y-1">
+                                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Operation Type</label>
+                                <select 
+                                  value={routeForm.operation_type}
+                                  onChange={e => setRouteForm({...routeForm, operation_type: e.target.value})}
+                                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                                >
+                                  <option value="">Select Operation</option>
+                                  <option value="LOADING">LOADING</option>
+                                  <option value="DISCHARGING">DISCHARGING</option>
+                                  <option value="BUNKERING">BUNKERING</option>
+                                  <option value="ship-to-ship cargo operation">SHIP-TO-SHIP</option>
+                                  <option value="Others">Others</option>
+                                </select>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                  <label className="text-xs font-bold uppercase tracking-wider text-slate-500">ETA (UTC)</label>
+                                  <input 
+                                    type="datetime-local"
+                                    value={routeForm.eta_atb ? routeForm.eta_atb.replace(' ', 'T').substring(0, 16) : ''}
+                                    onChange={e => setRouteForm({...routeForm, eta_atb: e.target.value.replace('T', ' ')})}
+                                    className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-xs font-bold uppercase tracking-wider text-slate-500">ETB (UTC)</label>
+                                  <input 
+                                    type="datetime-local"
+                                    value={routeForm.etb ? routeForm.etb.replace(' ', 'T').substring(0, 16) : ''}
+                                    onChange={e => setRouteForm({...routeForm, etb: e.target.value.replace('T', ' ')})}
+                                    className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="space-y-1">
+                                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">ETD / ATD (UTC)</label>
+                                <input 
+                                  type="datetime-local"
+                                  value={routeForm.etd_atd ? routeForm.etd_atd.replace(' ', 'T').substring(0, 16) : ''}
+                                  onChange={e => setRouteForm({...routeForm, etd_atd: e.target.value.replace('T', ' ')})}
+                                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20"
+                                />
+                              </div>
+
+                              <div className="space-y-1">
+                                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Cargo Details</label>
+                                <input 
+                                  type="text"
+                                  value={routeForm.cargo}
+                                  onChange={e => setRouteForm({...routeForm, cargo: e.target.value})}
+                                  placeholder="e.g. Iron Ore / 75,000 MT"
+                                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20"
+                                />
+                              </div>
+
+                              <div className="space-y-1">
+                                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Vessel Remark</label>
+                                <textarea 
+                                  rows={5}
+                                  value={routeForm.remark_from_vessel}
+                                  onChange={e => setRouteForm({...routeForm, remark_from_vessel: e.target.value})}
+                                  placeholder="Enter vessel remarks..."
+                                  className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 resize-y"
+                                />
+                              </div>
+
+                              <div className="flex items-center gap-3 pt-2">
+                                <button 
+                                  onClick={handleUpdateRoute}
+                                  className="flex-1 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 transition-colors"
+                                >
+                                  Save Changes
+                                </button>
+                                <button 
+                                  onClick={() => setIsEditingRoute(false)}
+                                  className="px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Destination / Next Port</span>
+                                <span className="text-sm font-extrabold text-slate-900 block">{v.next_port || 'Not Set'}</span>
+                              </div>
+
+                              <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Navigational Status</span>
+                                <span className="text-sm font-extrabold text-slate-900 block">
+                                  {v.route_status === 'Anchor' ? 'At Anchor' : (v.route_status || 'Not Set')}
+                                  {(v.route_status === 'At Anchor' || v.route_status === 'Anchor') && v.shackles && (
+                                    <span className="block text-xs font-bold text-amber-700 mt-0.5">
+                                      Shackles: {v.shackles}
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+
+                              <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Loading Status</span>
+                                <span className="text-sm font-extrabold text-slate-900 block">{v.loading_status || 'Not Set'}</span>
+                              </div>
+
+                              <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Operation Type</span>
+                                <span className="text-sm font-extrabold text-slate-900 block">{v.operation_type || 'Not Set'}</span>
+                              </div>
+
+                              <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">ETA / ETB (UTC)</span>
+                                <span className="text-xs font-extrabold text-slate-900 block">ETA: {v.eta_atb ? v.eta_atb.replace('T', ' ') : 'Not Set'}</span>
+                                {v.etb && <span className="text-xs font-bold text-slate-700 block mt-0.5">ETB: {v.etb.replace('T', ' ')}</span>}
+                              </div>
+
+                              <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">ETD / ATD (UTC)</span>
+                                <span className="text-xs font-extrabold text-slate-900 block">{v.etd_atd ? v.etd_atd.replace('T', ' ') : 'Not Set'}</span>
+                              </div>
+
+                              <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1 md:col-span-2">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Cargo Details</span>
+                                <span className="text-xs font-extrabold text-slate-900 block">{v.cargo || 'No cargo information recorded'}</span>
+                              </div>
+
+                              <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1 md:col-span-2">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Vessel Remarks</span>
+                                <p className="text-xs font-medium text-slate-800 whitespace-pre-wrap">{v.remark_from_vessel || 'No remarks provided'}</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Recent Operational Logs */}
+                        <div className="bg-white p-6 rounded-3xl border border-blue-100 shadow-sm space-y-6">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                            <div className="flex items-center gap-2.5">
+                              <div className="p-2 bg-indigo-100 text-indigo-700 rounded-xl">
+                                <History className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <h3 className="text-base font-extrabold text-slate-900">Latest Operational Reports</h3>
+                                <p className="text-xs text-slate-500">Most recent voyage reports logged for {v.name}</p>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-4">
+                            {/* Latest Noon Report */}
+                            <div className="p-5 rounded-2xl bg-blue-50/40 border border-blue-100 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="p-1.5 bg-blue-600 text-white rounded-lg text-xs font-extrabold">NOON</span>
+                                  <span className="text-xs font-extrabold text-slate-900">Latest Noon Report</span>
+                                </div>
+                                {latestNoon ? (
+                                  <span className="text-[10px] font-bold text-slate-500">{latestNoon.utc_date_time ? format(parseISO(latestNoon.utc_date_time), 'yyyy-MM-dd HH:mm UTC') : ''}</span>
+                                ) : (
+                                  <span className="text-[10px] font-medium text-slate-400">No reports</span>
+                                )}
+                              </div>
+
+                              {latestNoon ? (
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1">
+                                  <div>
+                                    <span className="text-[10px] text-slate-400 font-bold block uppercase">Position</span>
+                                    <span className="font-bold text-slate-800">{latestNoon.position_lat || 'N/A'}, {latestNoon.position_long || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] text-slate-400 font-bold block uppercase">Beaufort / Wind</span>
+                                    <span className="font-bold text-slate-800">{latestNoon.wind_scale || 'N/A'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] text-slate-400 font-bold block uppercase">Distance To Go</span>
+                                    <span className="font-bold text-slate-800">{latestNoon.distance_to_go || 'N/A'} NM</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] text-slate-400 font-bold block uppercase">Cargo Status</span>
+                                    <span className="font-bold text-slate-800 capitalize">{latestNoon.cargo_status || 'N/A'}</span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-slate-400 italic">No noon reports filed yet for this vessel.</p>
+                              )}
+                            </div>
+
+                            {/* Latest Departure / Arrival */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <div className="p-4 rounded-2xl bg-sky-50/40 border border-sky-100 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-extrabold text-sky-900 flex items-center gap-1">
+                                    <Navigation className="w-3.5 h-3.5 text-sky-600" /> Latest Departure
+                                  </span>
+                                  {latestDep && <span className="text-[10px] text-slate-500 font-bold">{latestDep.port}</span>}
+                                </div>
+                                {latestDep ? (
+                                  <div className="text-xs text-slate-700 space-y-0.5 pt-1">
+                                    <p><strong className="text-slate-900">UTC:</strong> {latestDep.utc_date_time ? format(parseISO(latestDep.utc_date_time), 'yyyy-MM-dd HH:mm') : ''}</p>
+                                    <p><strong className="text-slate-900">Next Port:</strong> {latestDep.next_port || 'N/A'}</p>
+                                    <p><strong className="text-slate-900">Cargo:</strong> {latestDep.cargo || 'N/A'}</p>
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-slate-400 italic pt-1">No departure report available.</p>
+                                )}
+                              </div>
+
+                              <div className="p-4 rounded-2xl bg-emerald-50/40 border border-emerald-100 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-extrabold text-emerald-900 flex items-center gap-1">
+                                    <Anchor className="w-3.5 h-3.5 text-emerald-600" /> Latest Arrival
+                                  </span>
+                                  {latestArr && <span className="text-[10px] text-slate-500 font-bold">{latestArr.arrival_port}</span>}
+                                </div>
+                                {latestArr ? (
+                                  <div className="text-xs text-slate-700 space-y-0.5 pt-1">
+                                    <p><strong className="text-slate-900">UTC:</strong> {latestArr.utc_date_time ? format(parseISO(latestArr.utc_date_time), 'yyyy-MM-dd HH:mm') : ''}</p>
+                                    <p><strong className="text-slate-900">Operation:</strong> {latestArr.operation_type || 'N/A'}</p>
+                                    <p><strong className="text-slate-900">Cargo:</strong> {latestArr.cargo || 'N/A'}</p>
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-slate-400 italic pt-1">No arrival report available.</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right Column (5 cols): Specs, Charterer Fuel Limits, Certificates */}
+                      <div className="lg:col-span-5 space-y-8">
+                        {/* Technical Specifications */}
+                        <div className="bg-white p-6 rounded-3xl border border-blue-100 shadow-sm space-y-5">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                            <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                              <Shield className="w-5 h-5 text-blue-600" /> Vessel Specifications
+                            </h3>
+                            <span className="text-xs font-bold text-slate-500">{v.type || 'Bulk Carrier'}</span>
+                          </div>
+
+                          <div className="space-y-3 text-xs">
+                            <div className="flex items-center justify-between py-1.5 border-b border-slate-50">
+                              <span className="text-slate-500 font-medium">Flag</span>
+                              <span className="font-extrabold text-slate-900">{v.flag || 'N/A'}</span>
+                            </div>
+                            <div className="flex items-center justify-between py-1.5 border-b border-slate-50">
+                              <span className="text-slate-500 font-medium">Email Address</span>
+                              <span className="font-extrabold text-slate-900">{v.email ? <a href={`mailto:${v.email}`} className="text-blue-600 hover:underline">{v.email}</a> : 'N/A'}</span>
+                            </div>
+                            <div className="flex items-center justify-between py-1.5 border-b border-slate-50">
+                              <span className="text-slate-500 font-medium">Team Name</span>
+                              <span className="font-extrabold text-slate-900">{v.team_name || 'Unassigned'}</span>
+                            </div>
+                            <div className="flex items-center justify-between py-1.5 border-b border-slate-50">
+                              <span className="text-slate-500 font-medium">Owner</span>
+                              <span className="font-extrabold text-slate-900">{v.owner || 'Nissen'}</span>
+                            </div>
+                            <div className="flex items-center justify-between py-1.5 border-b border-slate-50">
+                              <span className="text-slate-500 font-medium">Fleet Status</span>
+                              <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold", (v.fleet_status || 'In Active Fleet') === 'In Active Fleet' ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600")}>
+                                {v.fleet_status || 'In Active Fleet'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between py-1.5 border-b border-slate-50">
+                              <span className="text-slate-500 font-medium">Date Built</span>
+                              <span className="font-extrabold text-slate-900">{v.date_built || 'N/A'}</span>
+                            </div>
+                            <div className="flex items-center justify-between py-1.5 border-b border-slate-50">
+                              <span className="text-slate-500 font-medium">Min Fuel Consumption</span>
+                              <span className="font-extrabold text-slate-900">{v.min_fuel_consumption || 'N/A'} MT/day</span>
+                            </div>
+                            <div className="flex items-center justify-between py-1.5">
+                              <span className="text-slate-500 font-medium">Max Fuel Consumption</span>
+                              <span className="font-extrabold text-slate-900">{v.max_fuel_consumption || 'N/A'} MT/day</span>
+                            </div>
+                          </div>
+
+                          {/* Charterer Fuel Limits Section */}
+                          {(v.charterer_min_hsfo || v.charterer_max_hsfo || v.charterer_min_lsfo || v.charterer_max_lsfo || v.charterer_min_mgo || v.charterer_max_mgo) && (
+                            <div className="pt-3 border-t border-slate-100 space-y-3">
+                              <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider">Charterer Fuel Consumption Limits</h4>
+                              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                  <span className="text-[9px] font-bold text-slate-400 block uppercase">HSFO Range</span>
+                                  <span className="font-bold text-slate-800">{v.charterer_min_hsfo || '0'} - {v.charterer_max_hsfo || '0'} MT</span>
+                                </div>
+                                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                  <span className="text-[9px] font-bold text-slate-400 block uppercase">LSFO Range</span>
+                                  <span className="font-bold text-slate-800">{v.charterer_min_lsfo || '0'} - {v.charterer_max_lsfo || '0'} MT</span>
+                                </div>
+                                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                  <span className="text-[9px] font-bold text-slate-400 block uppercase">MGO Range</span>
+                                  <span className="font-bold text-slate-800">{v.charterer_min_mgo || '0'} - {v.charterer_max_mgo || '0'} MT</span>
+                                </div>
+                                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                  <span className="text-[9px] font-bold text-slate-400 block uppercase">MDO Range</span>
+                                  <span className="font-bold text-slate-800">{v.charterer_min_mdo || '0'} - {v.charterer_max_mdo || '0'} MT</span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Certificates & Service Reports */}
+                        <div className="bg-white p-6 rounded-3xl border border-blue-100 shadow-sm space-y-5">
+                          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                            <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                              <FileText className="w-5 h-5 text-blue-600" /> Certificates & Reports
+                            </h3>
+                            <span className="text-xs font-bold px-2 py-0.5 bg-blue-50 text-blue-700 rounded-lg">
+                              {vCerts.length} total
+                            </span>
+                          </div>
+
+                          {/* Certificate Stats */}
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="p-3 bg-blue-50/50 rounded-xl border border-blue-100/60 text-center">
+                              <span className="block text-lg font-extrabold text-slate-900">{vCerts.length}</span>
+                              <span className="text-[9px] font-bold uppercase text-slate-400">Total</span>
+                            </div>
+                            <div className="p-3 bg-amber-50/50 rounded-xl border border-amber-100/60 text-center">
+                              <span className="block text-lg font-extrabold text-amber-600">
+                                {vCerts.filter(c => getStatus(c.expiration_date) === 'expiring' || getStatus(c.expiration_date) === 'expiring soon').length}
+                              </span>
+                              <span className="text-[9px] font-bold uppercase text-amber-600">Expiring</span>
+                            </div>
+                            <div className="p-3 bg-red-50/50 rounded-xl border border-red-100/60 text-center">
+                              <span className="block text-lg font-extrabold text-red-600">
+                                {vCerts.filter(c => getStatus(c.expiration_date) === 'expired').length}
+                              </span>
+                              <span className="text-[9px] font-bold uppercase text-red-500">Expired</span>
+                            </div>
+                          </div>
+
+                          {/* Search Certificates */}
+                          <div className="relative">
+                            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <input 
+                              type="text"
+                              placeholder="Search certificates..."
+                              value={vesselCertSearch}
+                              onChange={e => setVesselCertSearch(e.target.value)}
+                              className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500/20 outline-none"
+                            />
+                          </div>
+
+                          {/* Certificate Items List */}
+                          <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1">
+                            {(() => {
+                              const filtered = vCerts
+                                .filter(c => c.name.toLowerCase().includes(vesselCertSearch.toLowerCase()))
+                                .sort((a, b) => {
+                                  const statusOrder = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3 };
+                                  const statusA = getStatus(a.expiration_date);
+                                  const statusB = getStatus(b.expiration_date);
+                                  return statusOrder[statusA] - statusOrder[statusB];
+                                });
+
+                              if (filtered.length === 0) {
+                                return (
+                                  <div className="p-6 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                                    <p className="text-xs text-slate-400 font-medium">No certificates or service reports found for this vessel.</p>
+                                  </div>
+                                );
+                              }
+
+                              return filtered.map(cert => (
+                                <div 
+                                  key={cert.id}
+                                  onClick={() => fetchCertDetails(cert)}
+                                  className="p-3.5 bg-slate-50/60 hover:bg-blue-50/40 border border-slate-100 hover:border-blue-200 rounded-2xl transition-all cursor-pointer group flex items-center justify-between gap-3"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <h5 className="text-xs font-bold text-slate-900 truncate group-hover:text-blue-600 transition-colors">{cert.name}</h5>
+                                    <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
+                                      <Clock className="w-3 h-3 text-slate-400" />
+                                      <span>Exp: {cert.expiration_date}</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span className={cn(
+                                      "px-2 py-0.5 rounded-full text-[8px] font-bold uppercase tracking-wider",
+                                      getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
+                                      getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
+                                      getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
+                                      "bg-emerald-100 text-emerald-700"
+                                    )}>
+                                      {getStatus(cert.expiration_date)}
+                                    </span>
+                                    <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-600 transition-colors" />
+                                  </div>
+                                </div>
+                              ));
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -3868,6 +4887,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
               setUploadFileType={setUploadFileType}
               fetchCertDetails={fetchCertDetails}
               setSelectedVessel={setSelectedVessel}
+              onViewVesselDetails={(v) => { setSelectedVessel(v); setView('vessel_details'); }}
               flags={flags}
               setFlags={setFlags}
             />
@@ -4392,11 +5412,11 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
                                     {/* Vessel Remark */}
                                     <td className="px-5 py-3.5">
-                                      <input 
-                                        type="text"
+                                      <textarea 
+                                        rows={5}
                                         value={form.remark_from_vessel || ''}
                                         onChange={e => handleUpdateRoutingRow(v.id, 'remark_from_vessel', e.target.value)}
-                                        className="w-full px-3 py-1.5 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                                        className="w-full px-3 py-2 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all resize-y"
                                         placeholder="Remarks..."
                                       />
                                     </td>
@@ -4619,7 +5639,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
       {createPortal(
         <AnimatePresence>
-          {selectedVessel && (
+          {false && selectedVessel && (
             <>
                 <motion.div 
                   initial={{ opacity: 0 }}
@@ -4821,12 +5841,12 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
                       <div className="space-y-1">
                         <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Vessel Remark</label>
-                        <input 
-                          type="text"
+                        <textarea 
+                          rows={5}
                           value={routeForm.remark_from_vessel}
                           onChange={e => setRouteForm({...routeForm, remark_from_vessel: e.target.value})}
                           placeholder="Remarks from vessel..."
-                          className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20"
+                          className="w-full px-3 py-2 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 resize-y"
                         />
                       </div>
 
@@ -5594,6 +6614,16 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                         <option value="Bulk Carrier">Bulk Carrier</option>
                         <option value="Container">Container</option>
                       </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Email Address</label>
+                      <input 
+                        type="email" 
+                        placeholder="e.g. vessel@shipping.com" 
+                        value={editingVessel.email || ''}
+                        onChange={(e) => setEditingVessel({...editingVessel, email: e.target.value})}
+                        className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                      />
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1">
@@ -6561,7 +7591,7 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const defaultForm = {
-    vessel_id: String(user.vessel_id || ''),
+    vessel_id: String(user.vessel_id || (vessels[0]?.id ? String(vessels[0].id) : '')),
     utc_date_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
     position_long: '',
     position_lat: '',
@@ -7395,29 +8425,29 @@ const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notify, isLo
                   </select>
                 </div>
 
-                {/* Wind Scale dropdown */}
+                {/* Beaufort Scale dropdown */}
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Wind Scale</label>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Beaufort Scale</label>
                   <select
                     value={form.wind_scale}
                     onChange={(e) => setForm({ ...form, wind_scale: e.target.value })}
                     required
                     className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
                   >
-                    <option value="">Select Wind Scale</option>
-                    <option value="Calm 0~0.2m/sec">Calm 0~0.2m/sec</option>
-                    <option value="Light Air 0.3~1.5m/sec">Light Air 0.3~1.5m/sec</option>
-                    <option value="Light Breeze 1.6~3.3m/sec">Light Breeze 1.6~3.3m/sec</option>
-                    <option value="Gentle Breeze 3.4~5.4m/sec">Gentle Breeze 3.4~5.4m/sec</option>
-                    <option value="Moderate Breeze 5.5~7.9m/sec">Moderate Breeze 5.5~7.9m/sec</option>
-                    <option value="Fresh Breeze 8.0~10.7m/sec">Fresh Breeze  8.0~10.7m/sec</option>
-                    <option value="Strong Breeze 10.8~13.8m/sec">Strong Breeze 10.8~13.8m/sec</option>
-                    <option value="Near Gale 13.9~17.1m/sec">Near Gale 13.9~17.1m/sec</option>
-                    <option value="Gale 17.2 ~24.4m/sec">Gale 17.2 ~24.4m/sec</option>
-                    <option value="Strong Gale 20.8~24.4m/sec">Strong Gale 20.8~24.4m/sec</option>
-                    <option value="Storm 24.5 ~ 28.4m/sec">Storm 24.5 ~ 28.4m/sec</option>
-                    <option value="Violent Storm 28.5~32.6m/sec">Violent Storm 28.5~32.6m/sec</option>
-                    <option value="Hurricane 32.7m/sec">Hurricane 32.7m/sec</option>
+                    <option value="">Select Beaufort Scale</option>
+                    <option value="BF 0 - Calm (0~0.2 m/s)">BF 0 - Calm (0~0.2 m/s)</option>
+                    <option value="BF 1 - Light Air (0.3~1.5 m/s)">BF 1 - Light Air (0.3~1.5 m/s)</option>
+                    <option value="BF 2 - Light Breeze (1.6~3.3 m/s)">BF 2 - Light Breeze (1.6~3.3 m/s)</option>
+                    <option value="BF 3 - Gentle Breeze (3.4~5.4 m/s)">BF 3 - Gentle Breeze (3.4~5.4 m/s)</option>
+                    <option value="BF 4 - Moderate Breeze (5.5~7.9 m/s)">BF 4 - Moderate Breeze (5.5~7.9 m/s)</option>
+                    <option value="BF 5 - Fresh Breeze (8.0~10.7 m/s)">BF 5 - Fresh Breeze (8.0~10.7 m/s)</option>
+                    <option value="BF 6 - Strong Breeze (10.8~13.8 m/s)">BF 6 - Strong Breeze (10.8~13.8 m/s)</option>
+                    <option value="BF 7 - Near Gale (13.9~17.1 m/s)">BF 7 - Near Gale (13.9~17.1 m/s)</option>
+                    <option value="BF 8 - Gale (17.2~20.7 m/s)">BF 8 - Gale (17.2~20.7 m/s)</option>
+                    <option value="BF 9 - Strong Gale (20.8~24.4 m/s)">BF 9 - Strong Gale (20.8~24.4 m/s)</option>
+                    <option value="BF 10 - Storm (24.5~28.4 m/s)">BF 10 - Storm (24.5~28.4 m/s)</option>
+                    <option value="BF 11 - Violent Storm (28.5~32.6 m/s)">BF 11 - Violent Storm (28.5~32.6 m/s)</option>
+                    <option value="BF 12 - Hurricane (≥32.7 m/s)">BF 12 - Hurricane (≥32.7 m/s)</option>
                   </select>
                 </div>
 
@@ -7727,7 +8757,7 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify, isL
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const defaultForm = {
-    vessel_id: String(user.vessel_id || ''),
+    vessel_id: String(user.vessel_id || (vessels[0]?.id ? String(vessels[0].id) : '')),
     voyage_number: '',
     utc_date_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
     port: '',
@@ -7896,9 +8926,23 @@ const OtherReportView = ({ user, token, vessels, reports, onRefresh, notify, isL
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Vessel</label>
-                    <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
-                      {selectedVesselName}
-                    </div>
+                    {user.role === 'vessel' && user.vessel_id ? (
+                      <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
+                        {selectedVesselName}
+                      </div>
+                    ) : (
+                      <select
+                        value={form.vessel_id}
+                        onChange={(e) => setForm({ ...form, vessel_id: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
+                      >
+                        <option value="">Select Vessel</option>
+                        {vessels.map(v => (
+                          <option key={v.id} value={String(v.id)}>{v.name}</option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Voyage Number</label>
@@ -8192,7 +9236,7 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const defaultForm = {
-    vessel_id: String(user.vessel_id || ''),
+    vessel_id: String(user.vessel_id || (vessels[0]?.id ? String(vessels[0].id) : '')),
     voyage_number: '',
     utc_date_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
     arrival_port: '',
@@ -8454,9 +9498,23 @@ const ArrivalView = ({ user, token, vessels, reports, departureReports, onRefres
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Vessel</label>
-                    <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
-                      {selectedVesselName}
-                    </div>
+                    {user.role === 'vessel' && user.vessel_id ? (
+                      <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
+                        {selectedVesselName}
+                      </div>
+                    ) : (
+                      <select
+                        value={form.vessel_id}
+                        onChange={(e) => setForm({ ...form, vessel_id: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
+                      >
+                        <option value="">Select Vessel</option>
+                        {vessels.map(v => (
+                          <option key={v.id} value={String(v.id)}>{v.name}</option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Voyage Number</label>
@@ -9439,7 +10497,7 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify, isLoa
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const defaultForm = {
-    vessel_id: String(user.vessel_id || ''),
+    vessel_id: String(user.vessel_id || (vessels[0]?.id ? String(vessels[0].id) : '')),
     voyage_number: '',
     utc_date_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
     departure_port: '',
@@ -9659,9 +10717,23 @@ const DepartureView = ({ user, token, vessels, reports, onRefresh, notify, isLoa
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Vessel</label>
-                    <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
-                      {selectedVesselName}
-                    </div>
+                    {user.role === 'vessel' && user.vessel_id ? (
+                      <div className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900">
+                        {selectedVesselName}
+                      </div>
+                    ) : (
+                      <select
+                        value={form.vessel_id}
+                        onChange={(e) => setForm({ ...form, vessel_id: e.target.value })}
+                        required
+                        className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
+                      >
+                        <option value="">Select Vessel</option>
+                        {vessels.map(v => (
+                          <option key={v.id} value={String(v.id)}>{v.name}</option>
+                        ))}
+                      </select>
+                    )}
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Voyage Number</label>
@@ -10013,6 +11085,7 @@ const AdminPanel = ({
   uploadFileType, setUploadFileType,
   fetchCertDetails,
   setSelectedVessel,
+  onViewVesselDetails,
   flags,
   setFlags
 }: { 
@@ -10048,6 +11121,7 @@ const AdminPanel = ({
   setUploadFileType: (type: 'certificate' | 'supporting') => void,
   fetchCertDetails: (cert: Certificate, isRefresh?: boolean) => Promise<void>,
   setSelectedVessel: (v: Vessel | null) => void,
+  onViewVesselDetails?: (v: Vessel) => void,
   flags: VesselFlag[],
   setFlags: React.Dispatch<React.SetStateAction<VesselFlag[]>>
 }) => {
@@ -10058,6 +11132,7 @@ const AdminPanel = ({
   const [newVesselFleetStatus, setNewVesselFleetStatus] = useState<'In Active Fleet' | 'Out of Management'>('In Active Fleet');
   const [newVesselFlag, setNewVesselFlag] = useState('');
   const [newVesselType, setNewVesselType] = useState<'Bulk Carrier' | 'Container'>('Bulk Carrier');
+  const [newVesselEmail, setNewVesselEmail] = useState('');
   const [newVesselDateBuilt, setNewVesselDateBuilt] = useState('');
   const [newVesselMinFuel, setNewVesselMinFuel] = useState('');
   const [newVesselMaxFuel, setNewVesselMaxFuel] = useState('');
@@ -10071,6 +11146,7 @@ const AdminPanel = ({
   const [newCertNumber, setNewCertNumber] = useState('');
   const [newCertAccessType, setNewCertAccessType] = useState<'office' | 'vessel' | 'any'>('office');
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [visiblePasswords, setVisiblePasswords] = useState<{ [userId: number]: boolean }>({});
   const [deviceRequests, setDeviceRequests] = useState<DeviceRegistrationRequest[]>([]);
   const [registeredDevices, setRegisteredDevices] = useState<RegisteredDevice[]>([]);
   const [deviceToRemove, setDeviceToRemove] = useState<number | null>(null);
@@ -10469,6 +11545,7 @@ const AdminPanel = ({
       formData.append('fleet_status', newVesselFleetStatus);
       formData.append('flag', newVesselFlag);
       formData.append('type', newVesselType);
+      formData.append('email', newVesselEmail);
       formData.append('date_built', newVesselDateBuilt);
       formData.append('min_fuel_consumption', newVesselMinFuel);
       formData.append('max_fuel_consumption', newVesselMaxFuel);
@@ -10489,6 +11566,7 @@ const AdminPanel = ({
         setNewVesselFleetStatus('In Active Fleet');
         setNewVesselFlag('');
         setNewVesselType('Bulk Carrier');
+        setNewVesselEmail('');
         setNewVesselDateBuilt('');
         setNewVesselMinFuel('');
         setNewVesselMaxFuel('');
@@ -10832,6 +11910,13 @@ const AdminPanel = ({
                     <option value="Bulk Carrier">Bulk Carrier</option>
                     <option value="Container">Container</option>
                   </select>
+                  <input 
+                    type="email" 
+                    placeholder="Email Address (e.g. vessel@shipping.com)" 
+                    value={newVesselEmail}
+                    onChange={(e) => setNewVesselEmail(e.target.value)}
+                    className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                  />
                   <div className="grid grid-cols-2 gap-4">
                     <select 
                       value={newVesselFlag}
@@ -11401,7 +12486,10 @@ const AdminPanel = ({
               <div 
                 key={v.id} 
                 className="bg-slate-50/50 hover:bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 shadow-xs hover:shadow-md cursor-pointer transition-all flex flex-col justify-between group relative"
-                onClick={() => setSelectedVessel(v)}
+                onClick={() => {
+                  setSelectedVessel(v);
+                  if (onViewVesselDetails) onViewVesselDetails(v);
+                }}
               >
                 <div>
                   <div className="flex items-center justify-between gap-3 mb-4">
@@ -11446,6 +12534,12 @@ const AdminPanel = ({
                       <span>Flag:</span>
                       <span className="font-bold text-slate-700">{v.flag || 'N/A'}</span>
                     </div>
+                    {v.email && (
+                      <div className="flex justify-between">
+                        <span>Email:</span>
+                        <span className="font-bold text-blue-600 truncate ml-2" title={v.email}>{v.email}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between">
                       <span>Type:</span>
                       <span className="font-bold text-slate-700">{v.type || 'Bulk Carrier'}</span>
@@ -11689,7 +12783,16 @@ const AdminPanel = ({
                 <div className="grid grid-cols-2 gap-4">
                   <select 
                     value={newUserRole}
-                    onChange={(e) => setNewUserRole(e.target.value as any)}
+                    onChange={(e) => {
+                      const selectedRole = e.target.value as any;
+                      setNewUserRole(selectedRole);
+                      if (selectedRole === 'vessel' && newUserVessel) {
+                        const v = vessels.find(x => x.id === newUserVessel);
+                        if (v && v.email) {
+                          setNewUserEmail(v.email);
+                        }
+                      }
+                    }}
                     className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                   >
                     <option value="user">PIC Role</option>
@@ -11700,7 +12803,16 @@ const AdminPanel = ({
                   {newUserRole === 'vessel' && (
                     <select 
                       value={newUserVessel || ''}
-                      onChange={(e) => setNewUserVessel(e.target.value ? Number(e.target.value) : null)}
+                      onChange={(e) => {
+                        const vesselId = e.target.value ? Number(e.target.value) : null;
+                        setNewUserVessel(vesselId);
+                        if (vesselId) {
+                          const v = vessels.find(x => x.id === vesselId);
+                          if (v && v.email) {
+                            setNewUserEmail(v.email);
+                          }
+                        }
+                      }}
                       className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                     >
                       <option value="">Assign Vessel</option>
@@ -11743,50 +12855,99 @@ const AdminPanel = ({
               <h2 className="font-bold mb-6 flex items-center gap-2 text-blue-900"><Users className="w-5 h-5" /> User List</h2>
               <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
                 {users.map(u => (
-                  <div key={u.id} className="flex items-center justify-between p-3 bg-blue-50/50 rounded-xl group">
-                    <div>
-                      <p className="text-sm font-bold text-slate-900">{u.username}</p>
-                      <div className="flex items-center gap-2">
-                        <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{getRoleLabel(u.role)}</p>
-                        {u.role === 'vessel' && (
-                          <>
-                            <span className="text-slate-300">•</span>
-                            <span className={cn(
-                              "text-[9px] font-black uppercase tracking-tighter px-1.5 py-0.5 rounded border",
-                              u.is_verified 
-                                ? "bg-green-100 text-green-700 border-green-200" 
-                                : "bg-orange-100 text-orange-700 border-orange-200"
-                            )}>
-                              {u.is_verified ? 'Verified' : 'Unverified'}
-                            </span>
-                          </>
-                        )}
-                        <span className="text-slate-300">•</span>
-                        <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
-                          {u.team_ids.length > 0 
-                            ? u.team_ids.map(tid => teams.find(t => t.id === tid)?.name).filter(Boolean).join(', ')
-                            : 'No Teams'}
-                        </p>
+                  <div key={u.id} className="p-3 bg-blue-50/50 rounded-xl space-y-2 group">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-bold text-slate-900">{u.username}</p>
+                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                          <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{getRoleLabel(u.role)}</p>
+                          {u.role === 'vessel' && (
+                            <>
+                              <span className="text-slate-300">•</span>
+                              <span className={cn(
+                                "text-[9px] font-black uppercase tracking-tighter px-1.5 py-0.5 rounded border",
+                                u.is_verified 
+                                  ? "bg-green-100 text-green-700 border-green-200" 
+                                  : "bg-orange-100 text-orange-700 border-orange-200"
+                              )}>
+                                {u.is_verified ? 'Verified' : 'Unverified'}
+                              </span>
+                            </>
+                          )}
+                          {u.email && (
+                            <>
+                              <span className="text-slate-300">•</span>
+                              <span className="text-[10px] text-blue-600 font-medium truncate max-w-[180px]">{u.email}</span>
+                            </>
+                          )}
+                          <span className="text-slate-300">•</span>
+                          <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
+                            {u.team_ids.length > 0 
+                              ? u.team_ids.map(tid => teams.find(t => t.id === tid)?.name).filter(Boolean).join(', ')
+                              : 'No Teams'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={() => {
+                            setEditingUser(u);
+                            setNewPassword('');
+                            setNewUserEmail(u.email || '');
+                          }}
+                          className="p-2 hover:bg-blue-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                          title="Edit User"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleDeleteUser(u.id)}
+                          className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
+                          title="Delete User"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button 
-                        onClick={() => {
-                          setEditingUser(u);
-                          setNewPassword('');
-                          setNewUserEmail(u.email || '');
-                        }}
-                        className="p-2 hover:bg-blue-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button 
-                        onClick={() => handleDeleteUser(u.id)}
-                        className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+
+                    {/* Vessel Role Password Viewer */}
+                    {u.role === 'vessel' && (
+                      <div className="flex items-center justify-between pt-1.5 border-t border-blue-100/60">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Vessel Password:</span>
+                          <span className="font-mono text-xs font-bold text-slate-800 bg-white px-2 py-0.5 rounded border border-blue-100">
+                            {visiblePasswords[u.id] 
+                              ? (u.plain_password || '(Not recorded)') 
+                              : '••••••••'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setVisiblePasswords(prev => ({ ...prev, [u.id]: !prev[u.id] }))}
+                            className="p-1 hover:bg-blue-100 text-slate-500 hover:text-blue-700 rounded transition-colors text-xs flex items-center gap-1"
+                            title={visiblePasswords[u.id] ? "Hide Password" : "Show Password"}
+                          >
+                            {visiblePasswords[u.id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                            <span className="text-[10px] font-bold">{visiblePasswords[u.id] ? 'Hide' : 'Show'}</span>
+                          </button>
+                          {u.plain_password && visiblePasswords[u.id] && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(u.plain_password || '');
+                                notify('success', 'Password copied to clipboard');
+                              }}
+                              className="p-1 hover:bg-blue-100 text-slate-500 hover:text-blue-700 rounded transition-colors text-xs flex items-center gap-1"
+                              title="Copy Password"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                              <span className="text-[10px] font-bold">Copy</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -12870,7 +14031,15 @@ const AdminPanel = ({
                       <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Role</label>
                       <select 
                         value={editingUser.role}
-                        onChange={(e) => setEditingUser({...editingUser, role: e.target.value as any})}
+                        onChange={(e) => {
+                          const selectedRole = e.target.value as any;
+                          let newEmail = editingUser.email;
+                          if (selectedRole === 'vessel' && editingUser.vessel_id) {
+                            const v = vessels.find(x => x.id === editingUser.vessel_id);
+                            if (v && v.email) newEmail = v.email;
+                          }
+                          setEditingUser({...editingUser, role: selectedRole, email: newEmail});
+                        }}
                         className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                       >
                         <option value="user">PIC</option>
@@ -12884,7 +14053,15 @@ const AdminPanel = ({
                         <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Assigned Vessel</label>
                         <select 
                           value={editingUser.vessel_id || ''}
-                          onChange={(e) => setEditingUser({...editingUser, vessel_id: e.target.value ? Number(e.target.value) : null})}
+                          onChange={(e) => {
+                            const vesselId = e.target.value ? Number(e.target.value) : null;
+                            const v = vessels.find(x => x.id === vesselId);
+                            setEditingUser({
+                              ...editingUser, 
+                              vessel_id: vesselId,
+                              ...(v && v.email ? { email: v.email } : {})
+                            });
+                          }}
                           className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                         >
                           <option value="">None</option>
@@ -12893,6 +14070,28 @@ const AdminPanel = ({
                       </div>
                     )}
                   </div>
+                  {editingUser.role === 'vessel' && (
+                    <div className="p-3 bg-amber-50/80 border border-amber-200/60 rounded-xl flex items-center justify-between">
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-amber-800">Current Saved Password</p>
+                        <p className="text-xs font-mono font-bold text-amber-950 mt-0.5">
+                          {editingUser.plain_password ? editingUser.plain_password : '(Not recorded - set a new password above)'}
+                        </p>
+                      </div>
+                      {editingUser.plain_password && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(editingUser.plain_password || '');
+                            notify('success', 'Password copied to clipboard');
+                          }}
+                          className="px-2.5 py-1 bg-amber-200/80 hover:bg-amber-300 text-amber-900 rounded-lg text-xs font-bold transition-colors flex items-center gap-1"
+                        >
+                          <Copy className="w-3 h-3" /> Copy
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {editingUser.role === 'vessel' && editingUser.is_verified && (
                     <div className="p-3 bg-blue-50 rounded-xl flex items-center justify-between">
                       <div>

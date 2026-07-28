@@ -434,6 +434,11 @@ async function startServer() {
         console.log('Migrating users table: Adding is_verified...');
         await pool.query('ALTER TABLE users ADD COLUMN is_verified BOOLEAN NOT NULL DEFAULT FALSE');
       }
+
+      if (!columnNames.includes('plain_password')) {
+        console.log('Migrating users table: Adding plain_password...');
+        await pool.query('ALTER TABLE users ADD COLUMN plain_password VARCHAR(255)');
+      }
     } catch (e: any) {
       console.error('Error during users table migration:', e.message);
     }
@@ -485,6 +490,7 @@ async function startServer() {
         min_fuel_consumption VARCHAR(255),
         max_fuel_consumption VARCHAR(255),
         type VARCHAR(255) DEFAULT 'Bulk Carrier',
+        email VARCHAR(255),
         FOREIGN KEY (team_id) REFERENCES teams(id)
       )
     `);
@@ -581,6 +587,11 @@ async function startServer() {
       if (!columnNames.includes('loading_status')) {
         console.log('Adding loading_status column to vessels table...');
         await pool.query("ALTER TABLE vessels ADD COLUMN loading_status VARCHAR(255)");
+      }
+
+      if (!columnNames.includes('email')) {
+        console.log('Adding email column to vessels table...');
+        await pool.query("ALTER TABLE vessels ADD COLUMN email VARCHAR(255)");
       }
 
       if (!columnNames.includes('etb')) {
@@ -2405,7 +2416,7 @@ async function startServer() {
   app.get('/api/users', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
     try {
-      const [users]: any = await pool.query('SELECT id, username, role, vessel_id, email, device_id, is_verified FROM users WHERE deleted_at IS NULL');
+      const [users]: any = await pool.query('SELECT id, username, role, vessel_id, email, device_id, is_verified, plain_password FROM users WHERE deleted_at IS NULL');
       const usersWithTeams = await Promise.all(users.map(async (u: any) => {
         const [teams]: any = await pool.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [u.id]);
         return { ...u, team_ids: teams.map((t: any) => t.team_id) };
@@ -2430,7 +2441,7 @@ async function startServer() {
       if (!isMatch) return res.status(400).json({ error: 'Incorrect current password' });
 
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await pool.execute('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, req.user.id]);
+      await pool.execute('UPDATE users SET password = ?, plain_password = ? WHERE id = ?', [hashedPassword, newPassword, req.user.id]);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2438,12 +2449,30 @@ async function startServer() {
   });
 
   app.post('/api/users', authenticate, isTeamPicOrAdmin, async (req, res) => {
-    const { username, password, role, team_ids, vessel_id, email, notify } = req.body;
+    let { username, password, role, team_ids, vessel_id, email, notify } = req.body;
+
+    // Automatically set vessel email if role is vessel or vessel_id is provided
+    if ((role === 'vessel' || vessel_id) && vessel_id) {
+      try {
+        const [vessels]: any = await pool.execute('SELECT email FROM vessels WHERE id = ?', [vessel_id]);
+        if (vessels.length > 0 && vessels[0].email) {
+          if (!email || role === 'vessel') {
+            email = vessels[0].email;
+          }
+        }
+      } catch (err) {
+        console.error('Error auto-setting vessel user email:', err);
+      }
+    }
+
     const hashedPassword = bcrypt.hashSync(password, 10);
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
-      const [result]: any = await conn.execute('INSERT INTO users (username, password, role, vessel_id, email) VALUES (?, ?, ?, ?, ?)', [username, hashedPassword, role || 'user', vessel_id || null, email || null]);
+      const [result]: any = await conn.execute(
+        'INSERT INTO users (username, password, plain_password, role, vessel_id, email) VALUES (?, ?, ?, ?, ?, ?)', 
+        [username, hashedPassword, password, role || 'user', vessel_id || null, email || null]
+      );
       const userId = result.insertId;
       
       if (team_ids && Array.isArray(team_ids)) {
@@ -2494,7 +2523,22 @@ async function startServer() {
   });
 
   app.put('/api/users/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
-    const { username, team_ids, role, password, vessel_id, email, device_id, is_verified } = req.body;
+    let { username, team_ids, role, password, vessel_id, email, device_id, is_verified } = req.body;
+
+    // Automatically set vessel email if role is vessel or vessel_id is provided
+    if ((role === 'vessel' || vessel_id) && vessel_id) {
+      try {
+        const [vessels]: any = await pool.execute('SELECT email FROM vessels WHERE id = ?', [vessel_id]);
+        if (vessels.length > 0 && vessels[0].email) {
+          if (!email || role === 'vessel') {
+            email = vessels[0].email;
+          }
+        }
+      } catch (err) {
+        console.error('Error auto-setting vessel user email on update:', err);
+      }
+    }
+
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -2502,8 +2546,8 @@ async function startServer() {
       if (password) {
         const hashedPassword = bcrypt.hashSync(password, 10);
         await conn.execute(
-          'UPDATE users SET username = ?, role = ?, password = ?, vessel_id = ?, email = ?, device_id = ?, is_verified = ? WHERE id = ?', 
-          [username, role, hashedPassword, vessel_id || null, email || null, device_id || null, is_verified ? 1 : 0, req.params.id]
+          'UPDATE users SET username = ?, role = ?, password = ?, plain_password = ?, vessel_id = ?, email = ?, device_id = ?, is_verified = ? WHERE id = ?', 
+          [username, role, hashedPassword, password, vessel_id || null, email || null, device_id || null, is_verified ? 1 : 0, req.params.id]
         );
       } else {
         await conn.execute(
@@ -2535,13 +2579,13 @@ async function startServer() {
   app.get('/api/vessels', authenticate, async (req: any, res) => {
     let vessels;
     if (req.user.role === 'admin') {
-      [vessels] = await pool.query("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL");
+      [vessels] = await pool.query("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL");
     } else if (req.user.role === 'vessel') {
       const vesselId = req.user.vessel_id;
       if (!vesselId) {
         return res.json([]);
       }
-      [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
+      [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
     } else {
       const teamIds = req.user.team_ids || [];
       if (teamIds.length === 0) {
@@ -2549,7 +2593,7 @@ async function startServer() {
       }
       const placeholders = teamIds.map(() => '?').join(',');
       const params = [...teamIds];
-      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
+      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
     }
     res.json(vessels);
   });
@@ -2570,7 +2614,7 @@ async function startServer() {
   });
 
   app.post('/api/vessels', authenticate, isTeamPicOrAdmin, upload.single('photo'), async (req: any, res) => {
-    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, type, fleet_status } = req.body;
+    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, type, fleet_status, email } = req.body;
     try {
       // If team_pic or user, they can only add to their own teams
       if ((req.user.role === 'team_pic' || req.user.role === 'user') && team_id && !req.user.team_ids.includes(Number(team_id))) {
@@ -2581,8 +2625,8 @@ async function startServer() {
       const photoMimetype = req.file ? req.file.mimetype : null;
 
       await pool.execute(
-        'INSERT INTO vessels (name, team_id, owner, fleet_status, flag, date_built, min_fuel_consumption, max_fuel_consumption, type, photo_data, photo_mimetype) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
-        [name, team_id || null, owner || 'Nissen', fleet_status || 'In Active Fleet', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', photoData, photoMimetype]
+        'INSERT INTO vessels (name, team_id, owner, fleet_status, flag, date_built, min_fuel_consumption, max_fuel_consumption, type, email, photo_data, photo_mimetype) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
+        [name, team_id || null, owner || 'Nissen', fleet_status || 'In Active Fleet', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', email || null, photoData, photoMimetype]
       );
       await logAudit(req.user.id, req.user.username, 'CREATE_VESSEL', `Created vessel: ${name}`);
       res.json({ success: true });
@@ -2596,7 +2640,7 @@ async function startServer() {
   });
 
   app.put('/api/vessels/:id', authenticate, isTeamPicOrAdmin, upload.single('photo'), async (req: any, res) => {
-    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, type, fleet_status } = req.body;
+    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, type, fleet_status, email } = req.body;
     try {
       const [vessels]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [req.params.id]);
       if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
@@ -2612,13 +2656,13 @@ async function startServer() {
 
       if (photoData !== undefined) {
         await pool.execute(
-          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, fleet_status = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, type = ?, photo_data = ?, photo_mimetype = ? WHERE id = ?', 
-          [name, team_id || null, owner, fleet_status || 'In Active Fleet', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', photoData, photoMimetype, req.params.id]
+          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, fleet_status = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, type = ?, email = ?, photo_data = ?, photo_mimetype = ? WHERE id = ?', 
+          [name, team_id || null, owner, fleet_status || 'In Active Fleet', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', email || null, photoData, photoMimetype, req.params.id]
         );
       } else {
         await pool.execute(
-          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, fleet_status = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, type = ? WHERE id = ?', 
-          [name, team_id || null, owner, fleet_status || 'In Active Fleet', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', req.params.id]
+          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, fleet_status = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, type = ?, email = ? WHERE id = ?', 
+          [name, team_id || null, owner, fleet_status || 'In Active Fleet', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', email || null, req.params.id]
         );
       }
       
