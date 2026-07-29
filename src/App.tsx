@@ -11146,6 +11146,9 @@ const AdminPanel = ({
   const [newCertNumber, setNewCertNumber] = useState('');
   const [newCertAccessType, setNewCertAccessType] = useState<'office' | 'vessel' | 'any'>('office');
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [userSearchQuery, setUserSearchQuery] = useState('');
+  const [userRoleFilter, setUserRoleFilter] = useState<string>('all');
+  const [userTeamFilter, setUserTeamFilter] = useState<string>('all');
   const [visiblePasswords, setVisiblePasswords] = useState<{ [userId: number]: boolean }>({});
   const [deviceRequests, setDeviceRequests] = useState<DeviceRegistrationRequest[]>([]);
   const [registeredDevices, setRegisteredDevices] = useState<RegisteredDevice[]>([]);
@@ -12852,105 +12855,222 @@ const AdminPanel = ({
             </section>
 
             <section className="bg-white p-6 rounded-2xl border border-blue-100 shadow-sm">
-              <h2 className="font-bold mb-6 flex items-center gap-2 text-blue-900"><Users className="w-5 h-5" /> User List</h2>
-              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-                {users.map(u => (
-                  <div key={u.id} className="p-3 bg-blue-50/50 rounded-xl space-y-2 group">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-bold text-slate-900">{u.username}</p>
-                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
-                          <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{getRoleLabel(u.role)}</p>
-                          {u.role === 'vessel' && (
-                            <>
-                              <span className="text-slate-300">•</span>
-                              <span className={cn(
-                                "text-[9px] font-black uppercase tracking-tighter px-1.5 py-0.5 rounded border",
-                                u.is_verified 
-                                  ? "bg-green-100 text-green-700 border-green-200" 
-                                  : "bg-orange-100 text-orange-700 border-orange-200"
-                              )}>
-                                {u.is_verified ? 'Verified' : 'Unverified'}
-                              </span>
-                            </>
-                          )}
-                          {u.email && (
-                            <>
-                              <span className="text-slate-300">•</span>
-                              <span className="text-[10px] text-blue-600 font-medium truncate max-w-[180px]">{u.email}</span>
-                            </>
-                          )}
-                          <span className="text-slate-300">•</span>
-                          <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
-                            {u.team_ids.length > 0 
-                              ? u.team_ids.map(tid => teams.find(t => t.id === tid)?.name).filter(Boolean).join(', ')
-                              : 'No Teams'}
-                          </p>
-                        </div>
+              {(() => {
+                const filteredUsers = users.filter(u => {
+                  const query = userSearchQuery.trim().toLowerCase();
+                  const matchesSearch = !query || 
+                    u.username.toLowerCase().includes(query) || 
+                    (u.email && u.email.toLowerCase().includes(query)) ||
+                    (u.role && getRoleLabel(u.role).toLowerCase().includes(query));
+
+                  const matchesRole = userRoleFilter === 'all' || u.role === userRoleFilter;
+
+                  const matchesTeam = userTeamFilter === 'all' || 
+                    (userTeamFilter === 'no_team' ? u.team_ids.length === 0 : u.team_ids.includes(Number(userTeamFilter)));
+
+                  return matchesSearch && matchesRole && matchesTeam;
+                });
+
+                const isFiltered = userSearchQuery !== '' || userRoleFilter !== 'all' || userTeamFilter !== 'all';
+
+                return (
+                  <>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                      <div className="flex items-center gap-2">
+                        <h2 className="font-bold flex items-center gap-2 text-blue-900"><Users className="w-5 h-5" /> User List</h2>
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
+                          {filteredUsers.length} {filteredUsers.length === 1 ? 'user' : 'users'}
+                        </span>
                       </div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button 
+                      {isFiltered && (
+                        <button
                           onClick={() => {
-                            setEditingUser(u);
-                            setNewPassword('');
-                            setNewUserEmail(u.email || '');
+                            setUserSearchQuery('');
+                            setUserRoleFilter('all');
+                            setUserTeamFilter('all');
                           }}
-                          className="p-2 hover:bg-blue-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
-                          title="Edit User"
+                          className="text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 self-start sm:self-auto"
                         >
-                          <Edit2 className="w-4 h-4" />
+                          <X className="w-3.5 h-3.5" /> Clear Filters
                         </button>
-                        <button 
-                          onClick={() => handleDeleteUser(u.id)}
-                          className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
-                          title="Delete User"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                      )}
+                    </div>
+
+                    {/* Search & Filter Controls */}
+                    <div className="space-y-3 mb-4 p-3 bg-slate-50/80 rounded-xl border border-slate-100">
+                      <div className="relative">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          placeholder="Search username, email, role..."
+                          value={userSearchQuery}
+                          onChange={(e) => setUserSearchQuery(e.target.value)}
+                          className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 transition-all placeholder:text-slate-400"
+                        />
+                        {userSearchQuery && (
+                          <button
+                            onClick={() => setUserSearchQuery('')}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1 ml-0.5">Role Filter</label>
+                          <select
+                            value={userRoleFilter}
+                            onChange={(e) => setUserRoleFilter(e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                          >
+                            <option value="all">All Roles</option>
+                            <option value="admin">Admin</option>
+                            <option value="team_pic">Management (Team PIC)</option>
+                            <option value="user">PIC Role</option>
+                            <option value="vessel">Vessel Role</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1 ml-0.5">Team Filter</label>
+                          <select
+                            value={userTeamFilter}
+                            onChange={(e) => setUserTeamFilter(e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                          >
+                            <option value="all">All Teams</option>
+                            <option value="no_team">No Teams</option>
+                            {[...teams].sort((a, b) => a.name.localeCompare(b.name)).map(t => (
+                              <option key={t.id} value={String(t.id)}>{t.name}</option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
                     </div>
 
-                    {/* Vessel Role Password Viewer */}
-                    {u.role === 'vessel' && (
-                      <div className="flex items-center justify-between pt-1.5 border-t border-blue-100/60">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Vessel Password:</span>
-                          <span className="font-mono text-xs font-bold text-slate-800 bg-white px-2 py-0.5 rounded border border-blue-100">
-                            {visiblePasswords[u.id] 
-                              ? (u.plain_password || '(Not recorded)') 
-                              : '••••••••'}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setVisiblePasswords(prev => ({ ...prev, [u.id]: !prev[u.id] }))}
-                            className="p-1 hover:bg-blue-100 text-slate-500 hover:text-blue-700 rounded transition-colors text-xs flex items-center gap-1"
-                            title={visiblePasswords[u.id] ? "Hide Password" : "Show Password"}
-                          >
-                            {visiblePasswords[u.id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                            <span className="text-[10px] font-bold">{visiblePasswords[u.id] ? 'Hide' : 'Show'}</span>
-                          </button>
-                          {u.plain_password && visiblePasswords[u.id] && (
+                    <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
+                      {filteredUsers.length === 0 ? (
+                        <div className="py-10 text-center bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+                          <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                          <p className="text-sm font-bold text-slate-600">No users found</p>
+                          <p className="text-xs text-slate-400 mt-0.5">Try adjusting your search query or filters.</p>
+                          {isFiltered && (
                             <button
-                              type="button"
                               onClick={() => {
-                                navigator.clipboard.writeText(u.plain_password || '');
-                                notify('success', 'Password copied to clipboard');
+                                setUserSearchQuery('');
+                                setUserRoleFilter('all');
+                                setUserTeamFilter('all');
                               }}
-                              className="p-1 hover:bg-blue-100 text-slate-500 hover:text-blue-700 rounded transition-colors text-xs flex items-center gap-1"
-                              title="Copy Password"
+                              className="mt-3 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-xs font-bold transition-colors"
                             >
-                              <Copy className="w-3.5 h-3.5" />
-                              <span className="text-[10px] font-bold">Copy</span>
+                              Reset Filters
                             </button>
                           )}
                         </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
+                      ) : (
+                        filteredUsers.map(u => (
+                          <div key={u.id} className="p-3 bg-blue-50/50 rounded-xl space-y-2 group">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-sm font-bold text-slate-900">{u.username}</p>
+                                <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                                  <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{getRoleLabel(u.role)}</p>
+                                  {u.role === 'vessel' && (
+                                    <>
+                                      <span className="text-slate-300">•</span>
+                                      <span className={cn(
+                                        "text-[9px] font-black uppercase tracking-tighter px-1.5 py-0.5 rounded border",
+                                        u.is_verified 
+                                          ? "bg-green-100 text-green-700 border-green-200" 
+                                          : "bg-orange-100 text-orange-700 border-orange-200"
+                                      )}>
+                                        {u.is_verified ? 'Verified' : 'Unverified'}
+                                      </span>
+                                    </>
+                                  )}
+                                  {u.email && (
+                                    <>
+                                      <span className="text-slate-300">•</span>
+                                      <span className="text-[10px] text-blue-600 font-medium truncate max-w-[180px]">{u.email}</span>
+                                    </>
+                                  )}
+                                  <span className="text-slate-300">•</span>
+                                  <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
+                                    {u.team_ids.length > 0 
+                                      ? u.team_ids.map(tid => teams.find(t => t.id === tid)?.name).filter(Boolean).join(', ')
+                                      : 'No Teams'}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button 
+                                  onClick={() => {
+                                    setEditingUser(u);
+                                    setNewPassword('');
+                                    setNewUserEmail(u.email || '');
+                                  }}
+                                  className="p-2 hover:bg-blue-100 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
+                                  title="Edit User"
+                                >
+                                  <Edit2 className="w-4 h-4" />
+                                </button>
+                                <button 
+                                  onClick={() => handleDeleteUser(u.id)}
+                                  className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors"
+                                  title="Delete User"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Vessel Role Password Viewer */}
+                            {u.role === 'vessel' && (
+                              <div className="flex items-center justify-between pt-1.5 border-t border-blue-100/60">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Vessel Password:</span>
+                                  <span className="font-mono text-xs font-bold text-slate-800 bg-white px-2 py-0.5 rounded border border-blue-100">
+                                    {visiblePasswords[u.id] 
+                                      ? (u.plain_password || '(Not recorded)') 
+                                      : '••••••••'}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setVisiblePasswords(prev => ({ ...prev, [u.id]: !prev[u.id] }))}
+                                    className="p-1 hover:bg-blue-100 text-slate-500 hover:text-blue-700 rounded transition-colors text-xs flex items-center gap-1"
+                                    title={visiblePasswords[u.id] ? "Hide Password" : "Show Password"}
+                                  >
+                                    {visiblePasswords[u.id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                    <span className="text-[10px] font-bold">{visiblePasswords[u.id] ? 'Hide' : 'Show'}</span>
+                                  </button>
+                                  {u.plain_password && visiblePasswords[u.id] && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        navigator.clipboard.writeText(u.plain_password || '');
+                                        notify('success', 'Password copied to clipboard');
+                                      }}
+                                      className="p-1 hover:bg-blue-100 text-slate-500 hover:text-blue-700 rounded transition-colors text-xs flex items-center gap-1"
+                                      title="Copy Password"
+                                    >
+                                      <Copy className="w-3.5 h-3.5" />
+                                      <span className="text-[10px] font-bold">Copy</span>
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </section>
           </div>
         </div>

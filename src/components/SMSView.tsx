@@ -40,6 +40,8 @@ import {
   FileCode,
   Archive,
   FileSpreadsheet,
+  ArrowUp,
+  ArrowDown,
   File as FileIcon
 } from 'lucide-react';
 
@@ -68,6 +70,35 @@ export interface SMSForm {
   vesselType?: string;
   removeFilenameRestriction?: boolean;
   allowedFileTypes?: string[];
+  sort_order?: number;
+  isHira?: boolean;
+}
+
+export interface FormFileEntry {
+  file: File;
+  matched: boolean;
+  reason?: string;
+  content?: string;
+}
+
+export interface UploadedFormState {
+  files: FormFileEntry[];
+  matched: boolean;
+  file?: File;
+  reason?: string;
+  content?: string;
+}
+
+function createFormFileState(files: FormFileEntry[]): UploadedFormState {
+  const allMatched = files.length > 0 && files.every(f => f.matched);
+  const first = files[0];
+  return {
+    files,
+    matched: allMatched,
+    file: first?.file,
+    reason: first?.reason,
+    content: first?.content,
+  };
 }
 
 export interface VesselSubmissionPeriod {
@@ -131,6 +162,7 @@ const INITIAL_FORMS: SMSForm[] = [
   { id: 'f_17', category: '5. Occasional', formCode: 'COMI-SM-5-1', description: 'Hot Work Authorization Permit', formDate: '28 November 2025', scope: 'All Vessels' },
   { id: 'f_18', category: '5. Occasional', formCode: 'COMI-SM-5-2', description: 'Enclosed Space Entry Permit', formDate: '28 November 2025', scope: 'All Vessels' },
   { id: 'f_19', category: '5. Occasional', formCode: 'COMI-SM-5-3', description: 'Working At Height / Overboard Permit', formDate: '12 January 2026', scope: 'All Vessels' },
+  { id: 'f_hira', category: '5. Occasional', formCode: 'COMI-SM-5-HIRA', description: 'Hazard Identification & Risk Assessment (HIRA) Form', formDate: '28 November 2025', scope: 'All Vessels', isHira: true },
 
   // 6. Letter Form
   { id: 'f_20', category: '6. Letter Form', formCode: 'COMI-SM-6-1', description: 'Safety Equipment Requisition Letter', formDate: '11 February 2026', scope: 'All Vessels' },
@@ -231,6 +263,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [formVesselTypeInput, setFormVesselTypeInput] = useState('All Vessels');
   const [formRemoveFilenameRestrictionInput, setFormRemoveFilenameRestrictionInput] = useState(false);
   const [formAllowedFileTypesInput, setFormAllowedFileTypesInput] = useState<string[]>([]);
+  const [formIsHiraInput, setFormIsHiraInput] = useState(false);
   const [formTypeInput, setFormTypeInput] = useState<'Form' | 'Checklist'>('Form');
   const [selectedFlags, setSelectedFlags] = useState<string[]>([]);
 
@@ -290,8 +323,8 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [reportingYear, setReportingYear] = useState<string>('2026');
   
   // uploadedFilesMap holds files uploaded for each form
-  // key: form.id, value: { file, matched, reason, content }
-  const [uploadedFilesMap, setUploadedFilesMap] = useState<Record<string, { file: File; matched: boolean; reason?: string; content?: string }>>({});
+  // key: form.id, value: UploadedFormState
+  const [uploadedFilesMap, setUploadedFilesMap] = useState<Record<string, UploadedFormState>>({});
 
   // B2 Backblaze Upload simulation states
   const [simulateB2Failure, setSimulateB2Failure] = useState<boolean>(false);
@@ -384,14 +417,19 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
       const savedForms = localStorage.getItem('comos_sms_manage_forms');
       if (savedForms) {
         const parsed = JSON.parse(savedForms);
-        setForms(parsed.map((f: any) => ({
+        const mapped = parsed.map((f: any, idx: number) => ({
           ...f,
           removeFilenameRestriction: Boolean(f.removeFilenameRestriction),
-          allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes)
-        })));
+          allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes),
+          sort_order: typeof f.sort_order === 'number' ? f.sort_order : idx,
+          isHira: Boolean(f.isHira)
+        }));
+        mapped.sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+        setForms(mapped);
       } else {
-        setForms(INITIAL_FORMS);
-        localStorage.setItem('comos_sms_manage_forms', JSON.stringify(INITIAL_FORMS));
+        const seeded = INITIAL_FORMS.map((f, idx) => ({ ...f, sort_order: f.sort_order ?? idx }));
+        setForms(seeded);
+        localStorage.setItem('comos_sms_manage_forms', JSON.stringify(seeded));
       }
       return;
     }
@@ -403,13 +441,18 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
       if (response.ok) {
         const data = await response.json();
         if (data && data.length > 0) {
-          setForms(data.map((f: any) => ({
+          const mapped = data.map((f: any, idx: number) => ({
             ...f,
             removeFilenameRestriction: Boolean(f.removeFilenameRestriction),
-            allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes)
-          })));
+            allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes),
+            sort_order: typeof f.sort_order === 'number' ? f.sort_order : idx,
+            isHira: Boolean(f.isHira)
+          }));
+          mapped.sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+          setForms(mapped);
         } else {
-          setForms(INITIAL_FORMS);
+          const seeded = INITIAL_FORMS.map((f, idx) => ({ ...f, sort_order: f.sort_order ?? idx }));
+          setForms(seeded);
         }
       }
     } catch (e) {
@@ -1484,23 +1527,38 @@ startxref
     }
     
     const file = new File([blob], `${form.formCode}_Blank_Report.${format}`, { type: blob.type });
+    const entry: FormFileEntry = {
+      file,
+      matched: true,
+      content: `Blank Form of type ${format.toUpperCase()}`
+    };
     
-    setUploadedFilesMap(prev => ({
-      ...prev,
-      [form.id]: {
-        file,
-        matched: true,
-        content: `Blank Form of type ${format.toUpperCase()}`
-      }
-    }));
+    setUploadedFilesMap(prev => {
+      const existingFiles = form.isHira && prev[form.id] ? prev[form.id].files : [];
+      return {
+        ...prev,
+        [form.id]: createFormFileState([...existingFiles, entry])
+      };
+    });
     triggerToast(`Successfully generated and matched blank ${format.toUpperCase()} form for ${form.formCode}!`, 'success');
   };
 
-  const handleRemoveReportingFile = (formId: string) => {
+  const handleRemoveReportingFile = (formId: string, fileIndex?: number) => {
     setUploadedFilesMap(prev => {
-      const copy = { ...prev };
-      delete copy[formId];
-      return copy;
+      const existing = prev[formId];
+      if (!existing) return prev;
+
+      if (fileIndex !== undefined && existing.files && existing.files.length > 1) {
+        const newFiles = existing.files.filter((_, idx) => idx !== fileIndex);
+        return {
+          ...prev,
+          [formId]: createFormFileState(newFiles)
+        };
+      } else {
+        const copy = { ...prev };
+        delete copy[formId];
+        return copy;
+      }
     });
     triggerToast('File removed from category queue.', 'success');
   };
@@ -1534,7 +1592,9 @@ startxref
         if (targetForm) candidateForms = [targetForm];
       } else {
         // Find ALL forms in the active category that match this formCode prefix or have removeFilenameRestriction
+        // EXCLUDE HIRA forms from bulk matching (HIRA forms must be uploaded individually)
         candidateForms = sortedActiveForms.filter(f => {
+          if (f.isHira) return false;
           if (f.removeFilenameRestriction) return true;
           const cleanCode = f.formCode.trim().toUpperCase();
           if (!cleanFileName.startsWith(cleanCode)) return false;
@@ -1570,43 +1630,77 @@ startxref
         }
 
         if (bestCandidate) {
-          updatedMap[bestCandidate.form.id] = {
+          const targetForm = bestCandidate.form;
+          const newEntry: FormFileEntry = {
             file,
             matched: true,
             reason: bestCandidate.validation.reason,
             content: bestCandidate.validation.content
           };
+
+          if (targetForm.isHira) {
+            const existingFiles = updatedMap[targetForm.id]?.files || [];
+            const filtered = existingFiles.filter(e => e.file.name.toLowerCase() !== file.name.toLowerCase());
+            updatedMap[targetForm.id] = createFormFileState([...filtered, newEntry]);
+          } else {
+            updatedMap[targetForm.id] = createFormFileState([newEntry]);
+          }
           matchedCount++;
         } else {
           // Candidate forms existed by formCode, but none passed strict description/content validation
           const firstCandidate = candidateForms[0];
           const validation = await validateFileAgainstForm(file, firstCandidate);
-          updatedMap[firstCandidate.id] = {
+          const newEntry: FormFileEntry = {
             file,
             matched: false,
             reason: validation.reason,
             content: validation.content
           };
+
+          if (firstCandidate.isHira) {
+            const existingFiles = updatedMap[firstCandidate.id]?.files || [];
+            const filtered = existingFiles.filter(e => e.file.name.toLowerCase() !== file.name.toLowerCase());
+            updatedMap[firstCandidate.id] = createFormFileState([...filtered, newEntry]);
+          } else {
+            updatedMap[firstCandidate.id] = createFormFileState([newEntry]);
+          }
           mismatchCount++;
         }
       } else {
-        // If it starts with another form code from ANOTHER category, indicate mismatch
+        // Check if file matches a HIRA form in the active category or any category
+        const hiraMatchInActive = activeCategoryForms.find(f => f.isHira && (
+          cleanFileName.startsWith(f.formCode.trim().toUpperCase()) ||
+          cleanFileName.includes(f.formCode.trim().toUpperCase())
+        ));
         const sortedAllForms = [...forms].sort((a, b) => b.formCode.length - a.formCode.length);
-        const generalFormMatch = sortedAllForms.find(f => {
-          const cleanCode = f.formCode.trim().toUpperCase();
-          if (!cleanFileName.startsWith(cleanCode)) return false;
-          if (cleanFileName.length > cleanCode.length) {
-            const nextChar = cleanFileName[cleanCode.length];
-            if (/^[A-Z0-9]$/.test(nextChar)) return false;
-          }
-          return true;
-        });
-        if (generalFormMatch) {
+        const generalHiraMatch = sortedAllForms.find(f => f.isHira && (
+          cleanFileName.startsWith(f.formCode.trim().toUpperCase()) ||
+          cleanFileName.includes(f.formCode.trim().toUpperCase())
+        ));
+
+        if (hiraMatchInActive || generalHiraMatch) {
           mismatchCount++;
-          triggerToast(`File ${file.name} belongs to category "${generalFormMatch.category}" instead of "${selectedCategory}"!`, 'error');
+          const targetCode = (hiraMatchInActive || generalHiraMatch)?.formCode;
+          triggerToast(`Skipped '${file.name}': HIRA form (${targetCode}) cannot be uploaded in bulk. HIRA forms must be uploaded individually on the form card.`, 'error');
         } else {
-          mismatchCount++;
-          triggerToast(`File ${file.name} does not match any known form codes.`, 'error');
+          // If it starts with another form code from ANOTHER category, indicate mismatch
+          const generalFormMatch = sortedAllForms.find(f => {
+            if (f.isHira) return false;
+            const cleanCode = f.formCode.trim().toUpperCase();
+            if (!cleanFileName.startsWith(cleanCode)) return false;
+            if (cleanFileName.length > cleanCode.length) {
+              const nextChar = cleanFileName[cleanCode.length];
+              if (/^[A-Z0-9]$/.test(nextChar)) return false;
+            }
+            return true;
+          });
+          if (generalFormMatch) {
+            mismatchCount++;
+            triggerToast(`File ${file.name} belongs to category "${generalFormMatch.category}" instead of "${selectedCategory}"!`, 'error');
+          } else {
+            mismatchCount++;
+            triggerToast(`File ${file.name} does not match any known form codes.`, 'error');
+          }
         }
       }
     }
@@ -1649,19 +1743,26 @@ startxref
 
   const handleDownloadPartialZip = async () => {
     const activeCategoryForms = getVesselActiveCategoryForms();
-    const matchedItems = activeCategoryForms
-      .map(form => uploadedFilesMap[form.id])
-      .filter(item => item && item.matched);
+    const matchedFiles: File[] = [];
 
-    if (matchedItems.length === 0) {
+    activeCategoryForms.forEach(form => {
+      const formState = uploadedFilesMap[form.id];
+      if (formState && formState.files) {
+        formState.files.forEach(entry => {
+          if (entry.matched) matchedFiles.push(entry.file);
+        });
+      }
+    });
+
+    if (matchedFiles.length === 0) {
       triggerToast('There are no matched valid files to compile into a ZIP.', 'error');
       return;
     }
 
     try {
       const zip = new JSZip();
-      matchedItems.forEach(item => {
-        zip.file(item.file.name, item.file);
+      matchedFiles.forEach(file => {
+        zip.file(file.name, file);
       });
 
       const targetVessel = vesselsList.find(v => String(v.id) === String(reportingVesselId));
@@ -1690,19 +1791,35 @@ startxref
       return;
     }
 
+    const isMonthlyCategory = selectedCategory === '1. Monthly' || selectedCategory.toLowerCase().includes('monthly');
     const activeCategoryForms = getVesselActiveCategoryForms();
-    const matchedItems = activeCategoryForms
-      .map(form => uploadedFilesMap[form.id])
-      .filter(item => item && item.matched);
+    const matchedForms = activeCategoryForms.filter(form => uploadedFilesMap[form.id]?.matched);
+    const matchedFiles: File[] = [];
+
+    activeCategoryForms.forEach(form => {
+      const formState = uploadedFilesMap[form.id];
+      if (formState && formState.files) {
+        formState.files.forEach(entry => {
+          if (entry.matched) matchedFiles.push(entry.file);
+        });
+      }
+    });
 
     if (activeCategoryForms.length === 0) {
-      triggerToast('No forms are required for this category.', 'error');
+      triggerToast('No forms are defined for this category.', 'error');
       return;
     }
 
-    if (matchedItems.length < activeCategoryForms.length) {
-      triggerToast('Cannot upload to server: File checklist is incomplete. All required checklists must be uploaded, matched, and validated.', 'error');
-      return;
+    if (isMonthlyCategory) {
+      if (matchedForms.length < activeCategoryForms.length) {
+        triggerToast('Cannot upload to server: File checklist is incomplete. All required monthly checklists must be uploaded, matched, and validated.', 'error');
+        return;
+      }
+    } else {
+      if (matchedFiles.length === 0) {
+        triggerToast('Cannot upload to server: Please upload and match at least one file or checklist before uploading.', 'error');
+        return;
+      }
     }
 
     setB2UploadStatus('zipping');
@@ -1710,10 +1827,10 @@ startxref
     setB2UploadError('');
 
     try {
-      // 1. Zip all files
+      // 1. Zip all matched files
       const zip = new JSZip();
-      matchedItems.forEach(item => {
-        zip.file(item.file.name, item.file);
+      matchedFiles.forEach(file => {
+        zip.file(file.name, file);
       });
 
       const blob = await zip.generateAsync({ type: 'blob' });
@@ -1967,6 +2084,7 @@ startxref
       setFormVesselTypeInput(form.vesselType || 'All Vessels');
       setFormRemoveFilenameRestrictionInput(Boolean(form.removeFilenameRestriction));
       setFormAllowedFileTypesInput(form.allowedFileTypes || []);
+      setFormIsHiraInput(Boolean(form.isHira));
       setFormTypeInput(form.type || 'Form');
 
       // Determine flags from scope
@@ -1996,6 +2114,7 @@ startxref
       setFormVesselTypeInput('All Vessels');
       setFormRemoveFilenameRestrictionInput(false);
       setFormAllowedFileTypesInput([]);
+      setFormIsHiraInput(false);
       setFormTypeInput('Form');
       setSelectedFlags([]);
     }
@@ -2023,13 +2142,17 @@ startxref
         vesselType: formVesselTypeInput,
         type: formTypeInput,
         removeFilenameRestriction: formRemoveFilenameRestrictionInput,
-        allowedFileTypes: formAllowedFileTypesInput
+        allowedFileTypes: formAllowedFileTypesInput,
+        isHira: formIsHiraInput
       };
       updatedForms = forms.map(f => f.id === editingForm.id ? savedForm! : f);
       setForms(updatedForms);
       localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
     } else {
       // Create mode
+      const categoryForms = forms.filter(f => f.category === selectedCategory);
+      const maxOrder = categoryForms.reduce((max, f) => Math.max(max, f.sort_order ?? 0), -1);
+
       savedForm = {
         id: 'f_' + Date.now(),
         category: selectedCategory,
@@ -2040,7 +2163,9 @@ startxref
         vesselType: formVesselTypeInput,
         type: formTypeInput,
         removeFilenameRestriction: formRemoveFilenameRestrictionInput,
-        allowedFileTypes: formAllowedFileTypesInput
+        allowedFileTypes: formAllowedFileTypesInput,
+        isHira: formIsHiraInput,
+        sort_order: maxOrder + 1
       };
       updatedForms = [...forms, savedForm];
       setForms(updatedForms);
@@ -2069,6 +2194,52 @@ startxref
       'success'
     );
     setShowFormModal(false);
+  };
+
+  const handleReorderForm = async (formId: string, direction: 'up' | 'down') => {
+    const categoryForms = forms.filter(f => f.category === selectedCategory);
+    const currentIndex = categoryForms.findIndex(f => f.id === formId);
+    if (currentIndex === -1) return;
+
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= categoryForms.length) return;
+
+    const updatedCategoryForms = [...categoryForms];
+    const temp = updatedCategoryForms[currentIndex];
+    updatedCategoryForms[currentIndex] = updatedCategoryForms[targetIndex];
+    updatedCategoryForms[targetIndex] = temp;
+
+    updatedCategoryForms.forEach((f, idx) => {
+      f.sort_order = idx;
+    });
+
+    let catIdx = 0;
+    const updatedForms = forms.map(f => {
+      if (f.category === selectedCategory) {
+        return updatedCategoryForms[catIdx++];
+      }
+      return f;
+    });
+
+    setForms(updatedForms);
+    localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
+
+    if (token) {
+      try {
+        await fetch('/api/sms/forms/reorder', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updatedCategoryForms.map((f, idx) => ({ id: f.id, sort_order: idx })))
+        });
+      } catch (err) {
+        console.error('Failed to sync reordered forms to server:', err);
+      }
+    }
+
+    triggerToast(`Form order updated for ${selectedCategory}`, 'success');
   };
 
   const handleDeleteForm = async (id: string, code: string) => {
@@ -2742,7 +2913,7 @@ startxref
                       Drag &amp; drop multiple report files or a ZIP archive here
                     </p>
                     <p className="text-[10px] text-slate-400 font-medium mt-1">
-                      Supports .docx, .doc, .xlsx, .xls, .pdf and .zip files • Files are matching by prefix automatically
+                      Supports .docx, .doc, .xlsx, .xls, .pdf and .zip files • Matched by prefix automatically • <span className="text-purple-600 font-bold">HIRA forms excluded (upload individually)</span>
                     </p>
                     <div className="mt-3 relative">
                       <span className="px-3.5 py-1.5 bg-white border border-slate-200 text-slate-600 text-[10px] font-black uppercase tracking-wider rounded-lg hover:bg-slate-50 transition-all inline-block shadow-2xs cursor-pointer">
@@ -2776,7 +2947,7 @@ startxref
                     </div>
 
                      <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-extrabold uppercase tracking-widest rounded-full">
-                      {getVesselActiveCategoryForms().length} Forms Required
+                      {getVesselActiveCategoryForms().length} {(selectedCategory === '1. Monthly' || selectedCategory.toLowerCase().includes('monthly')) ? 'Forms Required' : 'Available Forms'}
                     </span>
                   </div>
 
@@ -2834,6 +3005,11 @@ startxref
                                   {form.removeFilenameRestriction && (
                                     <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded border border-amber-200 font-extrabold">
                                       🔓 No Filename Limit
+                                    </span>
+                                  )}
+                                  {form.isHira && (
+                                    <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 rounded border border-purple-200 font-extrabold">
+                                      ⚡ HIRA Form (Multiple Attachments)
                                     </span>
                                   )}
                                 </div>
@@ -2960,27 +3136,78 @@ startxref
                                   </div>
                                 </div>
                               ) : fileState.matched ? (
-                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2 text-xs">
-                                      <FileText className="w-4 h-4 text-emerald-600" />
-                                      <span className="font-extrabold text-slate-700">{fileState.file.name}</span>
-                                      <span className="text-[10px] text-slate-400 font-bold">({(fileState.file.size / 1024).toFixed(1)} KB)</span>
-                                    </div>
-                                    <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider flex items-center gap-1">
-                                      ✓ Form Code, description, and form date matched database successfully.
-                                    </p>
-                                  </div>
+                                <div className="space-y-2">
+                                  {fileState.files && fileState.files.length > 0 ? (
+                                    fileState.files.map((fileEntry, fileIdx) => (
+                                      <div key={fileIdx} className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 p-2 bg-white rounded-xl border border-slate-200/60 shadow-xs">
+                                        <div className="space-y-0.5">
+                                          <div className="flex items-center gap-2 text-xs">
+                                            <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                                            <span className="font-extrabold text-slate-700">{fileEntry.file.name}</span>
+                                            <span className="text-[10px] text-slate-400 font-bold">({(fileEntry.file.size / 1024).toFixed(1)} KB)</span>
+                                          </div>
+                                          <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider flex items-center gap-1">
+                                            ✓ Form Code, description, and form date matched database successfully.
+                                          </p>
+                                        </div>
 
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <button
-                                      onClick={() => handleRemoveReportingFile(form.id)}
-                                      className="p-1.5 hover:bg-white text-slate-400 hover:text-red-500 rounded-lg transition-all border border-transparent hover:border-slate-100 cursor-pointer"
-                                      title="Remove Uploaded File"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
-                                  </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                          <button
+                                            onClick={() => handleRemoveReportingFile(form.id, fileIdx)}
+                                            className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-red-500 rounded-lg transition-all border border-transparent hover:border-slate-200 cursor-pointer"
+                                            title="Remove Uploaded File"
+                                          >
+                                            <Trash2 className="w-4 h-4" />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))
+                                  ) : (
+                                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                                      <div className="space-y-1">
+                                        <div className="flex items-center gap-2 text-xs">
+                                          <FileText className="w-4 h-4 text-emerald-600" />
+                                          <span className="font-extrabold text-slate-700">{fileState.file.name}</span>
+                                          <span className="text-[10px] text-slate-400 font-bold">({(fileState.file.size / 1024).toFixed(1)} KB)</span>
+                                        </div>
+                                        <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider flex items-center gap-1">
+                                          ✓ Form Code, description, and form date matched database successfully.
+                                        </p>
+                                      </div>
+
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                          onClick={() => handleRemoveReportingFile(form.id)}
+                                          className="p-1.5 hover:bg-white text-slate-400 hover:text-red-500 rounded-lg transition-all border border-transparent hover:border-slate-100 cursor-pointer"
+                                          title="Remove Uploaded File"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* For HIRA form, show Add Additional File button */}
+                                  {form.isHira && (
+                                    <div className="pt-2 flex justify-end">
+                                      <div className="relative inline-block">
+                                        <span className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-purple-100 inline-flex items-center gap-1.5 cursor-pointer">
+                                          <Plus className="w-3.5 h-3.5" /> Attach Additional HIRA File
+                                        </span>
+                                        <input
+                                          type="file"
+                                          accept=".docx,.doc,.xlsx,.xls,.pdf"
+                                          multiple
+                                          onChange={(e) => {
+                                            if (e.target.files && e.target.files.length > 0) {
+                                              handleProcessMultipleFiles(e.target.files, form.id);
+                                            }
+                                          }}
+                                          className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="space-y-3">
@@ -3103,6 +3330,7 @@ startxref
 
                   {/* Dynamic Alert depending on completeness */}
                   {(() => {
+                    const isMonthlyCategory = selectedCategory === '1. Monthly' || selectedCategory.toLowerCase().includes('monthly');
                     const catForms = getVesselActiveCategoryForms();
                     const matchedCount = catForms.filter(f => uploadedFilesMap[f.id]?.matched).length;
                     const isIncomplete = matchedCount < catForms.length;
@@ -3111,32 +3339,62 @@ startxref
                       return null;
                     }
 
-                    if (isIncomplete) {
-                      return (
-                        <div className="p-3.5 bg-amber-50/75 rounded-2xl border border-amber-100/70 text-slate-600 text-xs leading-relaxed space-y-2">
-                          <p className="font-semibold text-amber-800">⚠️ Incomplete Category Package</p>
-                          <p className="text-[11px] text-slate-500 leading-relaxed font-medium">
-                            Your form checklist for <strong>{selectedCategory}</strong> is not fully uploaded. Under SMM regulations, you can download a partial ZIP with mismatching files removed to back up progress and complete the list later.
-                          </p>
-                          <button
-                            type="button"
-                            onClick={handleDownloadPartialZip}
-                            disabled={matchedCount === 0}
-                            className="w-full py-2 border border-amber-200 bg-white hover:bg-amber-50 text-amber-700 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            <Download className="w-4 h-4" /> Download Clean ZIP ({matchedCount})
-                          </button>
-                        </div>
-                      );
+                    if (isMonthlyCategory) {
+                      if (isIncomplete) {
+                        return (
+                          <div className="p-3.5 bg-amber-50/75 rounded-2xl border border-amber-100/70 text-slate-600 text-xs leading-relaxed space-y-2">
+                            <p className="font-semibold text-amber-800">⚠️ Incomplete Monthly Category Package</p>
+                            <p className="text-[11px] text-slate-500 leading-relaxed font-medium">
+                              Your form checklist for <strong>{selectedCategory}</strong> is not fully uploaded. Under SMM regulations, all required monthly forms must be uploaded before submitting, or you can download a partial ZIP to back up progress.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={handleDownloadPartialZip}
+                              disabled={matchedCount === 0}
+                              className="w-full py-2 border border-amber-200 bg-white hover:bg-amber-50 text-amber-700 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <Download className="w-4 h-4" /> Download Clean ZIP ({matchedCount})
+                            </button>
+                          </div>
+                        );
+                      } else {
+                        return (
+                          <div className="p-3.5 bg-emerald-50 text-slate-600 text-xs leading-relaxed space-y-1.5 border border-emerald-100 rounded-2xl">
+                            <p className="font-extrabold text-emerald-800">✓ Compliance Package Complete</p>
+                            <p className="text-[11px] text-emerald-600 font-semibold">
+                              All required monthly checklists have been uploaded, matched, and validated against the compliance database structure. You are authorized to submit to B2 cloud servers!
+                            </p>
+                          </div>
+                        );
+                      }
                     } else {
-                      return (
-                        <div className="p-3.5 bg-emerald-50 text-slate-600 text-xs leading-relaxed space-y-1.5 border border-emerald-100">
-                          <p className="font-extrabold text-emerald-800">✓ Compliance Package Complete</p>
-                          <p className="text-[11px] text-emerald-600 font-semibold">
-                            All required checklists have been uploaded, matched, and validated against the compliance database structure. You are authorized to submit to B2 cloud servers!
-                          </p>
-                        </div>
-                      );
+                      // Non-monthly category: checklist completion is optional
+                      if (matchedCount === 0) {
+                        return (
+                          <div className="p-3.5 bg-blue-50/70 text-slate-600 text-xs leading-relaxed space-y-1.5 border border-blue-100 rounded-2xl">
+                            <p className="font-bold text-blue-900">ℹ️ Optional Submission Category</p>
+                            <p className="text-[11px] text-slate-600 font-medium">
+                              Completing all forms is optional for <strong>{selectedCategory}</strong>. Upload and match at least one form or checklist to enable cloud submission.
+                            </p>
+                          </div>
+                        );
+                      } else {
+                        return (
+                          <div className="p-3.5 bg-emerald-50 text-slate-600 text-xs leading-relaxed space-y-2 border border-emerald-100 rounded-2xl">
+                            <p className="font-extrabold text-emerald-800">✓ Ready for Submission ({matchedCount} {matchedCount === 1 ? 'file' : 'files'} matched)</p>
+                            <p className="text-[11px] text-emerald-700 font-medium">
+                              Full checklist completion is not required for <strong>{selectedCategory}</strong>. You are authorized to upload your matched file(s) to the cloud server!
+                            </p>
+                            <button
+                              type="button"
+                              onClick={handleDownloadPartialZip}
+                              className="w-full py-1.5 border border-emerald-200 bg-white hover:bg-emerald-50 text-emerald-800 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5" /> Download Clean ZIP ({matchedCount})
+                            </button>
+                          </div>
+                        );
+                      }
                     }
                   })()}
 
@@ -3147,9 +3405,14 @@ startxref
                         type="button"
                         onClick={handleUploadToBackblazeCloud}
                         disabled={(() => {
+                          const isMonthlyCategory = selectedCategory === '1. Monthly' || selectedCategory.toLowerCase().includes('monthly');
                           const catForms = getVesselActiveCategoryForms();
                           const matchedCount = catForms.filter(f => uploadedFilesMap[f.id]?.matched).length;
-                          return catForms.length === 0 || matchedCount < catForms.length;
+                          if (isMonthlyCategory) {
+                            return catForms.length === 0 || matchedCount < catForms.length;
+                          } else {
+                            return matchedCount === 0;
+                          }
                         })()}
                         className="w-full py-3 bg-blue-600 disabled:opacity-50 hover:bg-blue-700 text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-md shadow-blue-100 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
                       >
@@ -3278,104 +3541,153 @@ startxref
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-800 border-b border-slate-700 text-[10px] font-black text-white uppercase tracking-wider">
-                        <th className="px-4 py-3.5 w-[4%] text-center">#</th>
+                        <th className="px-3 py-3.5 w-[4%] text-center">#</th>
+                        <th className="px-3 py-3.5 w-[8%] text-center">Order</th>
                         <th className="px-4 py-3.5 w-[14%]">Form Code</th>
                         <th className="px-4 py-3.5 w-[10%]">Type</th>
-                        <th className="px-4 py-3.5 w-[32%]">Description</th>
+                        <th className="px-4 py-3.5 w-[28%]">Description</th>
                         <th className="px-4 py-3.5 w-[12%]">Form Date</th>
-                        <th className="px-4 py-3.5 w-[18%]">Scope &amp; Limits</th>
-                        <th className="px-4 py-3.5 w-[10%] text-center">Actions</th>
+                        <th className="px-4 py-3.5 w-[16%]">Scope &amp; Limits</th>
+                        <th className="px-4 py-3.5 w-[8%] text-center">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs font-semibold">
-                      {forms
-                        .filter(f => f.category === selectedCategory && (
+                      {(() => {
+                        const categoryForms = forms.filter(f => f.category === selectedCategory);
+                        const filteredForms = categoryForms.filter(f =>
                           f.formCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           f.description.toLowerCase().includes(searchQuery.toLowerCase())
-                        ))
-                        .map((f, idx) => (
-                          <tr key={f.id} className="hover:bg-slate-50/40 transition-colors">
-                            <td className="px-4 py-3 text-center text-slate-300 font-bold">
-                              {idx + 1}
-                            </td>
-                            <td className="px-4 py-3 font-mono font-black text-slate-700">
-                              {f.formCode}
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className={`px-2 py-0.5 text-[9px] font-extrabold uppercase rounded-md border inline-block ${
-                                f.type === 'Checklist' 
-                                  ? 'bg-purple-50 text-purple-700 border-purple-200' 
-                                  : 'bg-blue-50 text-blue-700 border-blue-200'
-                              }`}>
-                                {f.type || 'Form'}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 text-slate-600 font-bold leading-normal">
-                              {f.description}
-                            </td>
-                            <td className="px-4 py-3 text-slate-500 font-medium">
-                              {f.formDate}
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="flex flex-col gap-1 items-start">
-                                <div className="flex flex-wrap gap-1 items-center">
-                                  <span className="px-2 py-0.5 bg-slate-800 text-white font-extrabold text-[9px] rounded-md tracking-wider inline-flex items-center gap-1">
-                                    🌐 {f.scope}
-                                  </span>
-                                  {f.vesselType && f.vesselType !== 'All Vessels' && (
-                                    <span className="px-2 py-0.5 bg-slate-100 text-slate-700 font-bold text-[9px] rounded-md border border-slate-200">
-                                      🚢 {f.vesselType}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="flex flex-wrap gap-1 items-center">
-                                  {f.allowedFileTypes && f.allowedFileTypes.length > 0 ? (
-                                    <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 font-extrabold text-[9px] rounded-md border border-indigo-100">
-                                      📁 {f.allowedFileTypes.join(', ')}
-                                    </span>
-                                  ) : (
-                                    <span className="px-2 py-0.5 bg-slate-100 text-slate-500 font-medium text-[9px] rounded-md">
-                                      📁 All file types
-                                    </span>
-                                  )}
-                                  {f.removeFilenameRestriction ? (
-                                    <span className="px-2 py-0.5 bg-amber-50 text-amber-700 font-bold text-[9px] rounded-md border border-amber-200">
-                                      🔓 No Filename Limit
-                                    </span>
-                                  ) : (
-                                    <span className="px-2 py-0.5 bg-slate-50 text-slate-400 font-medium text-[9px] rounded-md border border-slate-200">
-                                      🔒 Prefix Check
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <div className="flex items-center justify-center gap-3">
-                                <button
-                                  onClick={() => handleOpenFormModal(f)}
-                                  className="text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                >
-                                  <Edit3 className="w-3.5 h-3.5" /> Edit
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteForm(f.id, f.formCode)}
-                                  className="text-red-500 hover:text-red-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" /> Delete
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                        );
 
-                      {forms.filter(f => f.category === selectedCategory).length === 0 && (
-                        <tr>
-                          <td colSpan={7} className="text-center p-12 text-slate-400 italic">
-                            No forms defined under section {selectedCategory} yet.
-                          </td>
-                        </tr>
-                      )}
+                        if (categoryForms.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={8} className="text-center p-12 text-slate-400 italic">
+                                No forms defined under section {selectedCategory} yet.
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        if (filteredForms.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={8} className="text-center p-8 text-slate-400 italic">
+                                No forms match search query "{searchQuery}".
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return filteredForms.map((f) => {
+                          const categoryIdx = categoryForms.findIndex(item => item.id === f.id);
+                          const isFirst = categoryIdx === 0;
+                          const isLast = categoryIdx === categoryForms.length - 1;
+
+                          return (
+                            <tr key={f.id} className="hover:bg-slate-50/40 transition-colors">
+                              <td className="px-3 py-3 text-center text-slate-400 font-extrabold text-[11px]">
+                                {categoryIdx + 1}
+                              </td>
+                              <td className="px-2 py-3 text-center">
+                                <div className="flex items-center justify-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleReorderForm(f.id, 'up')}
+                                    disabled={isFirst}
+                                    className="p-1 rounded-md bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 disabled:opacity-20 disabled:hover:bg-slate-100 disabled:hover:text-slate-600 transition-all cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                                    title="Move Form Up"
+                                  >
+                                    <ArrowUp className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleReorderForm(f.id, 'down')}
+                                    disabled={isLast}
+                                    className="p-1 rounded-md bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 disabled:opacity-20 disabled:hover:bg-slate-100 disabled:hover:text-slate-600 transition-all cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                                    title="Move Form Down"
+                                  >
+                                    <ArrowDown className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 font-mono font-black text-slate-700">
+                                {f.formCode}
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`px-2 py-0.5 text-[9px] font-extrabold uppercase rounded-md border inline-block ${
+                                  f.type === 'Checklist' 
+                                    ? 'bg-purple-50 text-purple-700 border-purple-200' 
+                                    : 'bg-blue-50 text-blue-700 border-blue-200'
+                                }`}>
+                                  {f.type || 'Form'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-slate-600 font-bold leading-normal">
+                                {f.description}
+                              </td>
+                              <td className="px-4 py-3 text-slate-500 font-medium">
+                                {f.formDate}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex flex-col gap-1 items-start">
+                                  <div className="flex flex-wrap gap-1 items-center">
+                                    <span className="px-2 py-0.5 bg-slate-800 text-white font-extrabold text-[9px] rounded-md tracking-wider inline-flex items-center gap-1">
+                                      🌐 {f.scope}
+                                    </span>
+                                    {f.vesselType && f.vesselType !== 'All Vessels' && (
+                                      <span className="px-2 py-0.5 bg-slate-100 text-slate-700 font-bold text-[9px] rounded-md border border-slate-200">
+                                        🚢 {f.vesselType}
+                                      </span>
+                                    )}
+                                    {f.isHira && (
+                                      <span className="px-2 py-0.5 bg-purple-100 text-purple-700 font-extrabold text-[9px] rounded-md border border-purple-200">
+                                        ⚡ HIRA Form
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex flex-wrap gap-1 items-center">
+                                    {f.allowedFileTypes && f.allowedFileTypes.length > 0 ? (
+                                      <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 font-extrabold text-[9px] rounded-md border border-indigo-100">
+                                        📁 {f.allowedFileTypes.join(', ')}
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 bg-slate-100 text-slate-500 font-medium text-[9px] rounded-md">
+                                        📁 All file types
+                                      </span>
+                                    )}
+                                    {f.removeFilenameRestriction ? (
+                                      <span className="px-2 py-0.5 bg-amber-50 text-amber-700 font-bold text-[9px] rounded-md border border-amber-200">
+                                        🔓 No Filename Limit
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 bg-slate-50 text-slate-400 font-medium text-[9px] rounded-md border border-slate-200">
+                                        🔒 Prefix Check
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center justify-center gap-3">
+                                  <button
+                                    onClick={() => handleOpenFormModal(f)}
+                                    className="text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" /> Edit
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteForm(f.id, f.formCode)}
+                                    className="text-red-500 hover:text-red-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
                     </tbody>
                   </table>
                 </div>
@@ -3589,18 +3901,34 @@ startxref
                 </div>
               </div>
 
-              {/* Remove Filename Restriction Checkbox */}
-              <div className="flex items-center gap-2 pt-1 pb-1">
-                <input
-                  type="checkbox"
-                  id="removeFilenameRestriction"
-                  checked={formRemoveFilenameRestrictionInput}
-                  onChange={(e) => setFormRemoveFilenameRestrictionInput(e.target.checked)}
-                  className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                />
-                <label htmlFor="removeFilenameRestriction" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
-                  remove filename restriction
-                </label>
+              {/* Form Option Checkboxes */}
+              <div className="space-y-2 pt-1 pb-1 bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="isHira"
+                    checked={formIsHiraInput}
+                    onChange={(e) => setFormIsHiraInput(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <label htmlFor="isHira" className="text-xs font-bold text-slate-800 cursor-pointer select-none flex items-center gap-1.5">
+                    HIRA Form
+                    <span className="text-[10px] text-slate-400 font-normal">(Allow vessel users to attach multiple files with similar prefixes)</span>
+                  </label>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="removeFilenameRestriction"
+                    checked={formRemoveFilenameRestrictionInput}
+                    onChange={(e) => setFormRemoveFilenameRestrictionInput(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <label htmlFor="removeFilenameRestriction" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
+                    remove filename restriction
+                  </label>
+                </div>
               </div>
 
               {/* Footer */}

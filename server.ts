@@ -1362,6 +1362,12 @@ async function startServer() {
       if (!smsColNames.includes('allowedFileTypes')) {
         await pool.query("ALTER TABLE sms_forms ADD COLUMN allowedFileTypes VARCHAR(255) NULL");
       }
+      if (!smsColNames.includes('sort_order')) {
+        await pool.query("ALTER TABLE sms_forms ADD COLUMN sort_order INT DEFAULT 0");
+      }
+      if (!smsColNames.includes('isHira')) {
+        await pool.query("ALTER TABLE sms_forms ADD COLUMN isHira TINYINT(1) DEFAULT 0");
+      }
     } catch (e: any) {
       console.error('Error migrating sms_forms columns:', e.message);
     }
@@ -2865,7 +2871,7 @@ async function startServer() {
   // SMS Forms Routes
   app.get('/api/sms/forms', authenticate, async (req, res) => {
     try {
-      const [rows]: any = await pool.query('SELECT * FROM sms_forms WHERE deleted_at IS NULL');
+      const [rows]: any = await pool.query('SELECT * FROM sms_forms WHERE deleted_at IS NULL ORDER BY sort_order ASC, id ASC');
       res.json(rows);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2873,20 +2879,37 @@ async function startServer() {
   });
 
   app.post('/api/sms/forms', authenticate, async (req, res) => {
-    const { id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes } = req.body;
+    const { id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira } = req.body;
     const allowedTypesVal = Array.isArray(allowedFileTypes) ? JSON.stringify(allowedFileTypes) : (allowedFileTypes || null);
+    const orderVal = typeof sort_order === 'number' ? sort_order : 0;
+    const isHiraVal = isHira ? 1 : 0;
     try {
       const [exists]: any = await pool.execute('SELECT id FROM sms_forms WHERE id = ?', [id]);
       if (exists.length > 0) {
         await pool.execute(
-          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, deleted_at = NULL WHERE id = ?',
-          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, id]
+          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, deleted_at = NULL WHERE id = ?',
+          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, id]
         );
       } else {
         await pool.execute(
-          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [id, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal]
+          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal]
         );
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/forms/reorder', authenticate, async (req, res) => {
+    const items = req.body;
+    if (!Array.isArray(items)) return res.status(400).json({ error: 'Invalid payload: expected an array of items' });
+    try {
+      for (const item of items) {
+        if (item && item.id) {
+          await pool.execute('UPDATE sms_forms SET sort_order = ? WHERE id = ?', [item.sort_order ?? 0, item.id]);
+        }
       }
       res.json({ success: true });
     } catch (e: any) {
