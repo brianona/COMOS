@@ -3160,15 +3160,17 @@ startxref
                                   </div>
 
                                   <div className="flex flex-wrap items-center gap-3 shrink-0">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDownloadFormTemplate(form)}
-                                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-emerald-100 flex items-center gap-1.5 cursor-pointer"
-                                      title={form.template_file_name ? `Download form template: ${form.template_file_name}` : "Download form template"}
-                                    >
-                                      <Download className="w-3.5 h-3.5" />
-                                      Download Form
-                                    </button>
+                                    {form.template_file_name && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDownloadFormTemplate(form)}
+                                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-emerald-100 flex items-center gap-1.5 cursor-pointer"
+                                        title={`Download form template: ${form.template_file_name}`}
+                                      >
+                                        <Download className="w-3.5 h-3.5" />
+                                        Download Form
+                                      </button>
+                                    )}
 
                                     <div className="relative shrink-0">
                                       <span className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-blue-100 inline-block cursor-pointer">
@@ -3723,14 +3725,16 @@ startxref
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex items-center justify-center gap-3">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDownloadFormTemplate(f)}
-                                    className="text-emerald-600 hover:text-emerald-800 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                    title={f.template_file_name ? `Download template: ${f.template_file_name}` : "Download form template"}
-                                  >
-                                    <Download className="w-3.5 h-3.5" /> Template
-                                  </button>
+                                  {f.template_file_name && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDownloadFormTemplate(f)}
+                                      className="text-emerald-600 hover:text-emerald-800 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                      title={`Download template: ${f.template_file_name}`}
+                                    >
+                                      <Download className="w-3.5 h-3.5" /> Template
+                                    </button>
+                                  )}
                                   <button
                                     onClick={() => handleOpenFormModal(f)}
                                     className="text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
@@ -3762,9 +3766,9 @@ startxref
       {/* Add / Edit Form Modal */}
       {showFormModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[150] p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden animate-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
             {/* Modal Header */}
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-5 flex justify-between items-center">
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-5 py-3.5 flex justify-between items-center shrink-0">
               <div>
                 <h3 className="text-sm font-black tracking-tight uppercase">
                   {editingForm ? 'Edit Form Definition' : 'Add New Form Definition'}
@@ -3775,275 +3779,284 @@ startxref
               </div>
               <button 
                 onClick={() => setShowFormModal(false)}
-                className="p-1 bg-white/10 hover:bg-white/20 text-white/80 hover:text-white rounded-lg transition-all"
+                className="p-1.5 bg-white/10 hover:bg-white/20 text-white/80 hover:text-white rounded-lg transition-all cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {/* Modal Body / Form */}
-            <form onSubmit={handleSaveFormSubmit} className="p-5 space-y-4 text-xs font-semibold">
-              <div className="space-y-1">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Form Code</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. COMI-SM-1-6"
-                  value={formCodeInput}
-                  onChange={(e) => setFormCodeInput(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 font-bold"
-                />
-              </div>
+            <form onSubmit={handleSaveFormSubmit} className="flex flex-col flex-1 overflow-hidden">
+              <div className="p-4 space-y-3 text-xs font-semibold overflow-y-auto max-h-[calc(90vh-110px)]">
+                {/* Row 1: Code, Type, Date */}
+                <div className="grid grid-cols-12 gap-3 items-start">
+                  <div className="col-span-5 space-y-1">
+                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Form Code</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. COMI-SM-1-6"
+                      value={formCodeInput}
+                      onChange={(e) => setFormCodeInput(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 font-bold"
+                    />
+                  </div>
 
-              {/* Form or Checklist Radio Buttons */}
-              <div className="space-y-1.5">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Type</label>
-                <div className="flex items-center gap-6 py-1">
-                  <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
+                  <div className="col-span-3 space-y-1">
+                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Type</label>
+                    <div className="flex items-center gap-3 py-1">
+                      <label className="flex items-center gap-1.5 cursor-pointer font-bold text-slate-700 text-xs select-none">
+                        <input
+                          type="radio"
+                          name="formType"
+                          value="Form"
+                          checked={formTypeInput === 'Form'}
+                          onChange={() => setFormTypeInput('Form')}
+                          className="w-3.5 h-3.5 text-blue-600 border-slate-300 focus:ring-blue-500"
+                        />
+                        Form
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer font-bold text-slate-700 text-xs select-none">
+                        <input
+                          type="radio"
+                          name="formType"
+                          value="Checklist"
+                          checked={formTypeInput === 'Checklist'}
+                          onChange={() => setFormTypeInput('Checklist')}
+                          className="w-3.5 h-3.5 text-blue-600 border-slate-300 focus:ring-blue-500"
+                        />
+                        Checklist
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="col-span-4 space-y-1">
+                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Form Date</label>
                     <input
-                      type="radio"
-                      name="formType"
-                      value="Form"
-                      checked={formTypeInput === 'Form'}
-                      onChange={() => setFormTypeInput('Form')}
-                      className="w-4 h-4 text-blue-600 border-slate-300 focus:ring-blue-500"
+                      type="text"
+                      placeholder="e.g. 28 November 2025"
+                      value={formDateInput}
+                      onChange={(e) => setFormDateInput(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 font-semibold"
                     />
-                    Form
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-700">
-                    <input
-                      type="radio"
-                      name="formType"
-                      value="Checklist"
-                      checked={formTypeInput === 'Checklist'}
-                      onChange={() => setFormTypeInput('Checklist')}
-                      className="w-4 h-4 text-blue-600 border-slate-300 focus:ring-blue-500"
-                    />
-                    Checklist
-                  </label>
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-1">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Description</label>
-                <textarea
-                  required
-                  rows={3}
-                  placeholder="Describe the purpose, checklist, or report target..."
-                  value={formDescriptionInput}
-                  onChange={(e) => setFormDescriptionInput(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 leading-relaxed font-semibold"
-                />
-              </div>
+                {/* Row 2: Description */}
+                <div className="space-y-1">
+                  <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Description</label>
+                  <textarea
+                    required
+                    rows={2}
+                    placeholder="Describe the purpose, checklist, or report target..."
+                    value={formDescriptionInput}
+                    onChange={(e) => setFormDescriptionInput(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 leading-relaxed font-semibold text-xs"
+                  />
+                </div>
 
-              <div className="space-y-1">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Form Date</label>
-                <input
-                  type="text"
-                  placeholder="e.g. 28 November 2025"
-                  value={formDateInput}
-                  onChange={(e) => setFormDateInput(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 font-semibold"
-                />
-              </div>
+                {/* Row 3: Vessel Scope & Vessel Type */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel Scope</label>
+                    <select
+                      value={formScopeInput}
+                      onChange={(e) => setFormScopeInput(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
+                    >
+                      {selectedFlags.length === 0 || selectedFlags.length === flags.length ? (
+                        <option value="All Vessels">All Vessels</option>
+                      ) : selectedFlags.length === 1 ? (
+                        <option value={`All ${selectedFlags[0]} Vessels`}>All {selectedFlags[0]} Vessels</option>
+                      ) : (
+                        <option value={`All ${getFlagsFormatted(selectedFlags)} flags`}>
+                          All {getFlagsFormatted(selectedFlags)} flags
+                        </option>
+                      )}
 
-              {/* Flag Selection Checkboxes */}
-              <div className="space-y-1.5 bg-slate-50/50 p-3 rounded-xl border border-slate-100">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Flags Scope</label>
-                <div className="grid grid-cols-2 gap-2 pt-1">
-                  {flags.map((f: any) => {
-                    const isChecked = selectedFlags.includes(f.name);
-                    return (
-                      <label key={f.id} className="flex items-center gap-2 cursor-pointer py-1 px-2.5 rounded-lg hover:bg-slate-100/80 transition-colors text-slate-700 font-bold text-[11px]">
+                      {vesselsList
+                        .filter(v => selectedFlags.length === 0 || selectedFlags.includes(v.flag || ''))
+                        .map(v => (
+                          <option key={v.id} value={v.name}>{v.name}</option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel Type</label>
+                    <select
+                      value={formVesselTypeInput}
+                      onChange={(e) => setFormVesselTypeInput(e.target.value)}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
+                    >
+                      <option value="All Types">All Types</option>
+                      <option value="Bulk Carrier">Bulk Carrier</option>
+                      <option value="Container">Container</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Row 4: Flags Scope & File Type Limit */}
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Flags Scope */}
+                  <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
+                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Flags Scope</label>
+                    <div className="grid grid-cols-2 gap-1 pt-0.5">
+                      {flags.map((f: any) => {
+                        const isChecked = selectedFlags.includes(f.name);
+                        return (
+                          <label key={f.id} className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 transition-colors text-slate-700 font-bold text-[11px] select-none">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => handleFlagCheckboxChange(f.name, e.target.checked)}
+                              className="w-3.5 h-3.5 rounded text-blue-600 border-slate-300 focus:ring-blue-500 cursor-pointer"
+                            />
+                            {f.name}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* File Type Limit */}
+                  <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
+                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">File Type Limit</label>
+                    <div className="flex flex-wrap gap-2.5 items-center pt-1">
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-bold text-slate-700">
                         <input
                           type="checkbox"
-                          checked={isChecked}
-                          onChange={(e) => handleFlagCheckboxChange(f.name, e.target.checked)}
-                          className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-blue-500/50 cursor-pointer"
+                          checked={formAllowedFileTypesInput.includes('Word')}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'Word']);
+                            } else {
+                              setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'Word'));
+                            }
+                          }}
+                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                         />
-                        {f.name}
+                        Word
                       </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Vessel Scope Dropdown */}
-              <div className="space-y-1">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel Scope</label>
-                <select
-                  value={formScopeInput}
-                  onChange={(e) => setFormScopeInput(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
-                >
-                  {/* First Option (Group Option) */}
-                  {selectedFlags.length === 0 || selectedFlags.length === flags.length ? (
-                    <option value="All Vessels">All Vessels</option>
-                  ) : selectedFlags.length === 1 ? (
-                    <option value={`All ${selectedFlags[0]} Vessels`}>All {selectedFlags[0]} Vessels</option>
-                  ) : (
-                    <option value={`All ${getFlagsFormatted(selectedFlags)} flags`}>
-                      All {getFlagsFormatted(selectedFlags)} flags
-                    </option>
-                  )}
-
-                  {/* Individual Vessels based on filtered flags */}
-                  {vesselsList
-                    .filter(v => selectedFlags.length === 0 || selectedFlags.includes(v.flag || ''))
-                    .map(v => (
-                      <option key={v.id} value={v.name}>{v.name}</option>
-                    ))}
-                </select>
-              </div>
-
-              {/* Vessel Type Dropdown */}
-              <div className="space-y-1">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel Type</label>
-                <select
-                  value={formVesselTypeInput}
-                  onChange={(e) => setFormVesselTypeInput(e.target.value)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
-                >
-                  <option value="All Types">All Types</option>
-                  <option value="Bulk Carrier">Bulk Carrier</option>
-                  <option value="Container">Container</option>
-                </select>
-              </div>
-
-              {/* File Type Limit Group */}
-              <div className="space-y-1.5 pt-1">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">File Type limit</label>
-                <div className="flex flex-wrap gap-4 items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
-                  <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={formAllowedFileTypesInput.includes('Word')}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'Word']);
-                        } else {
-                          setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'Word'));
-                        }
-                      }}
-                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                    />
-                    Word (.doc, .docx)
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={formAllowedFileTypesInput.includes('Excel')}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'Excel']);
-                        } else {
-                          setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'Excel'));
-                        }
-                      }}
-                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                    />
-                    Excel (.xls, .xlsx)
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-slate-700">
-                    <input
-                      type="checkbox"
-                      checked={formAllowedFileTypesInput.includes('PDF')}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'PDF']);
-                        } else {
-                          setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'PDF'));
-                        }
-                      }}
-                      className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                    />
-                    PDF (.pdf)
-                  </label>
-                </div>
-              </div>
-
-              {/* Form Template File Upload */}
-              <div className="space-y-1.5 pt-1">
-                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                  Form Template / Blank File (For Vessel Download)
-                </label>
-                {formTemplateFileInput ? (
-                  <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-200">
-                    <div className="flex items-center gap-2 overflow-hidden">
-                      <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <div className="truncate">
-                        <p className="text-xs font-extrabold text-slate-800 truncate">{formTemplateFileInput.name}</p>
-                        {formTemplateFileInput.size ? (
-                          <p className="text-[10px] text-slate-400 font-bold">{(formTemplateFileInput.size / 1024).toFixed(1)} KB</p>
-                        ) : null}
-                      </div>
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-bold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={formAllowedFileTypesInput.includes('Excel')}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'Excel']);
+                            } else {
+                              setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'Excel'));
+                            }
+                          }}
+                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                        Excel
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-bold text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={formAllowedFileTypesInput.includes('PDF')}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'PDF']);
+                            } else {
+                              setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'PDF'));
+                            }
+                          }}
+                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                        PDF
+                      </label>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setFormTemplateFileInput(null)}
-                      className="p-1.5 hover:bg-slate-200 text-slate-400 hover:text-red-500 rounded-lg transition-all cursor-pointer shrink-0"
-                      title="Remove Template File"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
                   </div>
-                ) : (
-                  <div className="relative">
-                    <span className="w-full py-2.5 px-3 border border-dashed border-slate-300 hover:border-blue-400 bg-slate-50 hover:bg-blue-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs">
-                      <Upload className="w-4 h-4 text-blue-500" /> Upload Blank Form / Template File
-                    </span>
-                    <input
-                      type="file"
-                      accept=".docx,.doc,.xlsx,.xls,.pdf"
-                      onChange={handleTemplateFileChange}
-                      className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* Form Option Checkboxes */}
-              <div className="space-y-2 pt-1 pb-1 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="isHira"
-                    checked={formIsHiraInput}
-                    onChange={(e) => setFormIsHiraInput(e.target.checked)}
-                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                  />
-                  <label htmlFor="isHira" className="text-xs font-bold text-slate-800 cursor-pointer select-none flex items-center gap-1.5">
-                    HIRA Form
-                    <span className="text-[10px] text-slate-400 font-normal">(Allow vessel users to attach multiple files with similar prefixes)</span>
-                  </label>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="removeFilenameRestriction"
-                    checked={formRemoveFilenameRestrictionInput}
-                    onChange={(e) => setFormRemoveFilenameRestrictionInput(e.target.checked)}
-                    className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                  />
-                  <label htmlFor="removeFilenameRestriction" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
-                    remove filename restriction
-                  </label>
+                {/* Row 5: Form Template File & Form Options */}
+                <div className="grid grid-cols-2 gap-3 items-center">
+                  {/* Form Template File Upload */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+                      Form Template / Blank File
+                    </label>
+                    {formTemplateFileInput ? (
+                      <div className="flex items-center justify-between p-2 bg-slate-50 rounded-xl border border-slate-200">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <div className="truncate">
+                            <p className="text-xs font-extrabold text-slate-800 truncate">{formTemplateFileInput.name}</p>
+                            {formTemplateFileInput.size ? (
+                              <p className="text-[10px] text-slate-400 font-bold">{(formTemplateFileInput.size / 1024).toFixed(1)} KB</p>
+                            ) : null}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setFormTemplateFileInput(null)}
+                          className="p-1 hover:bg-slate-200 text-slate-400 hover:text-red-500 rounded-lg transition-all cursor-pointer shrink-0"
+                          title="Remove Template File"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="relative">
+                        <span className="w-full py-2 px-3 border border-dashed border-slate-300 hover:border-blue-400 bg-slate-50 hover:bg-blue-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs">
+                          <Upload className="w-3.5 h-3.5 text-blue-500" /> Upload Blank Form / Template
+                        </span>
+                        <input
+                          type="file"
+                          accept=".docx,.doc,.xlsx,.xls,.pdf"
+                          onChange={handleTemplateFileChange}
+                          className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Form Option Checkboxes */}
+                  <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100 space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        id="isHira"
+                        checked={formIsHiraInput}
+                        onChange={(e) => setFormIsHiraInput(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                      />
+                      <label htmlFor="isHira" className="text-xs font-bold text-slate-800 cursor-pointer select-none">
+                        HIRA Form <span className="text-[10px] text-slate-400 font-normal">(Multiple files)</span>
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        id="removeFilenameRestriction"
+                        checked={formRemoveFilenameRestrictionInput}
+                        onChange={(e) => setFormRemoveFilenameRestrictionInput(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                      />
+                      <label htmlFor="removeFilenameRestriction" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
+                        Remove filename restriction
+                      </label>
+                    </div>
+                  </div>
                 </div>
               </div>
 
               {/* Footer */}
-              <div className="flex gap-2 justify-end pt-3 border-t border-slate-100">
+              <div className="flex gap-2 justify-end px-5 py-3 bg-slate-50/80 border-t border-slate-100 shrink-0 mt-auto">
                 <button
                   type="button"
                   onClick={() => setShowFormModal(false)}
-                  className="px-4 py-2 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-50 transition-colors font-bold cursor-pointer"
+                  className="px-4 py-1.5 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-100 transition-colors text-xs font-bold cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all font-bold shadow-md shadow-blue-50 cursor-pointer"
+                  className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all text-xs font-bold shadow-md shadow-blue-100 cursor-pointer"
                 >
                   Save Definition
                 </button>
