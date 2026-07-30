@@ -72,6 +72,10 @@ export interface SMSForm {
   allowedFileTypes?: string[];
   sort_order?: number;
   isHira?: boolean;
+  template_file_name?: string;
+  template_file_data?: string;
+  template_file_mimetype?: string;
+  template_file_size?: number;
 }
 
 export interface FormFileEntry {
@@ -266,6 +270,29 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [formIsHiraInput, setFormIsHiraInput] = useState(false);
   const [formTypeInput, setFormTypeInput] = useState<'Form' | 'Checklist'>('Form');
   const [selectedFlags, setSelectedFlags] = useState<string[]>([]);
+  const [formTemplateFileInput, setFormTemplateFileInput] = useState<{
+    name: string;
+    data?: string;
+    mimetype?: string;
+    size?: number;
+  } | null>(null);
+
+  const handleTemplateFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const base64Data = evt.target?.result as string;
+      setFormTemplateFileInput({
+        name: file.name,
+        data: base64Data,
+        mimetype: file.type || 'application/octet-stream',
+        size: file.size
+      });
+      triggerToast(`Attached form template file: ${file.name}`, 'success');
+    };
+    reader.readAsDataURL(file);
+  };
 
   const getFlagsFormatted = (arr: string[]) => {
     if (arr.length === 0) return '';
@@ -1514,6 +1541,55 @@ startxref
     triggerToast(`Generated valid template file (${format.toUpperCase()}) for ${form.formCode}`, 'success');
   };
 
+  const handleDownloadFormTemplate = async (form: SMSForm) => {
+    if (form.template_file_name) {
+      if (form.template_file_data && form.template_file_data.startsWith('data:')) {
+        try {
+          const res = await fetch(form.template_file_data);
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = form.template_file_name;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          triggerToast(`Downloaded form template: ${form.template_file_name}`, 'success');
+          return;
+        } catch (err) {
+          console.error('Base64 template download failed:', err);
+        }
+      }
+      if (token) {
+        try {
+          triggerToast(`Downloading template for ${form.formCode}...`, 'info');
+          const res = await fetch(`/api/sms/forms/${form.id}/download-template`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = form.template_file_name || `${form.formCode}_Template.docx`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            triggerToast(`Downloaded form template: ${form.template_file_name}`, 'success');
+            return;
+          }
+        } catch (err) {
+          console.error('Server template download error:', err);
+        }
+      }
+    }
+
+    triggerToast(`Generating standard form template for ${form.formCode}...`, 'info');
+    await handleGenerateTestFile(form, 'docx');
+  };
+
   const handleGenerateAndMatchBlankFile = async (form: SMSForm, format: 'docx' | 'xlsx' | 'pdf' = 'docx') => {
     const vesselName = vesselsList.find(v => String(v.id) === String(reportingVesselId))?.name || 'Vessel';
     let blob: Blob;
@@ -2087,6 +2163,17 @@ startxref
       setFormIsHiraInput(Boolean(form.isHira));
       setFormTypeInput(form.type || 'Form');
 
+      if (form.template_file_name) {
+        setFormTemplateFileInput({
+          name: form.template_file_name,
+          data: form.template_file_data,
+          mimetype: form.template_file_mimetype,
+          size: form.template_file_size
+        });
+      } else {
+        setFormTemplateFileInput(null);
+      }
+
       // Determine flags from scope
       let initialSelectedFlags: string[] = [];
       if (form.scope && form.scope !== 'All Vessels') {
@@ -2117,6 +2204,7 @@ startxref
       setFormIsHiraInput(false);
       setFormTypeInput('Form');
       setSelectedFlags([]);
+      setFormTemplateFileInput(null);
     }
     setShowFormModal(true);
   };
@@ -2143,7 +2231,11 @@ startxref
         type: formTypeInput,
         removeFilenameRestriction: formRemoveFilenameRestrictionInput,
         allowedFileTypes: formAllowedFileTypesInput,
-        isHira: formIsHiraInput
+        isHira: formIsHiraInput,
+        template_file_name: formTemplateFileInput?.name,
+        template_file_data: formTemplateFileInput?.data,
+        template_file_mimetype: formTemplateFileInput?.mimetype,
+        template_file_size: formTemplateFileInput?.size
       };
       updatedForms = forms.map(f => f.id === editingForm.id ? savedForm! : f);
       setForms(updatedForms);
@@ -2165,7 +2257,11 @@ startxref
         removeFilenameRestriction: formRemoveFilenameRestrictionInput,
         allowedFileTypes: formAllowedFileTypesInput,
         isHira: formIsHiraInput,
-        sort_order: maxOrder + 1
+        sort_order: maxOrder + 1,
+        template_file_name: formTemplateFileInput?.name,
+        template_file_data: formTemplateFileInput?.data,
+        template_file_mimetype: formTemplateFileInput?.mimetype,
+        template_file_size: formTemplateFileInput?.size
       };
       updatedForms = [...forms, savedForm];
       setForms(updatedForms);
@@ -3064,59 +3160,15 @@ startxref
                                   </div>
 
                                   <div className="flex flex-wrap items-center gap-3 shrink-0">
-                                    {currentUser?.role === 'admin' && (
-                                      <>
-                                        <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-2xs overflow-hidden">
-                                          <select
-                                            id={`format-select-${form.id}`}
-                                            className="px-2 py-1 bg-slate-50 text-[10px] font-extrabold text-slate-500 border-r border-slate-200 focus:outline-none cursor-pointer h-full"
-                                            defaultValue="docx"
-                                          >
-                                            <option value="docx">.DOCX</option>
-                                            <option value="doc">.DOC</option>
-                                            <option value="xlsx">.XLSX</option>
-                                            <option value="xls">.XLS</option>
-                                            <option value="pdf">.PDF</option>
-                                          </select>
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              const sel = document.getElementById(`format-select-${form.id}`) as HTMLSelectElement;
-                                              handleGenerateTestFile(form, (sel?.value || 'docx') as any);
-                                            }}
-                                            className="px-2.5 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
-                                            title="Download valid template file with matching headers"
-                                          >
-                                            <FileCode className="w-3.5 h-3.5 text-blue-500" />
-                                            Valid Demo
-                                          </button>
-                                        </div>
-
-                                        <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-2xs overflow-hidden">
-                                          <select
-                                            id={`blank-format-select-${form.id}`}
-                                            className="px-2 py-1 bg-slate-50 text-[10px] font-extrabold text-slate-500 border-r border-slate-200 focus:outline-none cursor-pointer h-full"
-                                            defaultValue="docx"
-                                          >
-                                            <option value="docx">.DOCX</option>
-                                            <option value="xlsx">.XLSX</option>
-                                            <option value="pdf">.PDF</option>
-                                          </select>
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              const sel = document.getElementById(`blank-format-select-${form.id}`) as HTMLSelectElement;
-                                              handleGenerateAndMatchBlankFile(form, (sel?.value || 'docx') as any);
-                                            }}
-                                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
-                                            title="Submit an authorized blank file to the compliance queue"
-                                          >
-                                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                                            Blank Form
-                                          </button>
-                                        </div>
-                                      </>
-                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDownloadFormTemplate(form)}
+                                      className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-emerald-100 flex items-center gap-1.5 cursor-pointer"
+                                      title={form.template_file_name ? `Download form template: ${form.template_file_name}` : "Download form template"}
+                                    >
+                                      <Download className="w-3.5 h-3.5" />
+                                      Download Form
+                                    </button>
 
                                     <div className="relative shrink-0">
                                       <span className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-blue-100 inline-block cursor-pointer">
@@ -3645,6 +3697,7 @@ startxref
                                         ⚡ HIRA Form
                                       </span>
                                     )}
+
                                   </div>
                                   <div className="flex flex-wrap gap-1 items-center">
                                     {f.allowedFileTypes && f.allowedFileTypes.length > 0 ? (
@@ -3670,6 +3723,14 @@ startxref
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex items-center justify-center gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadFormTemplate(f)}
+                                    className="text-emerald-600 hover:text-emerald-800 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                    title={f.template_file_name ? `Download template: ${f.template_file_name}` : "Download form template"}
+                                  >
+                                    <Download className="w-3.5 h-3.5" /> Template
+                                  </button>
                                   <button
                                     onClick={() => handleOpenFormModal(f)}
                                     className="text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
@@ -3899,6 +3960,46 @@ startxref
                     PDF (.pdf)
                   </label>
                 </div>
+              </div>
+
+              {/* Form Template File Upload */}
+              <div className="space-y-1.5 pt-1">
+                <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+                  Form Template / Blank File (For Vessel Download)
+                </label>
+                {formTemplateFileInput ? (
+                  <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <div className="truncate">
+                        <p className="text-xs font-extrabold text-slate-800 truncate">{formTemplateFileInput.name}</p>
+                        {formTemplateFileInput.size ? (
+                          <p className="text-[10px] text-slate-400 font-bold">{(formTemplateFileInput.size / 1024).toFixed(1)} KB</p>
+                        ) : null}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setFormTemplateFileInput(null)}
+                      className="p-1.5 hover:bg-slate-200 text-slate-400 hover:text-red-500 rounded-lg transition-all cursor-pointer shrink-0"
+                      title="Remove Template File"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <span className="w-full py-2.5 px-3 border border-dashed border-slate-300 hover:border-blue-400 bg-slate-50 hover:bg-blue-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs">
+                      <Upload className="w-4 h-4 text-blue-500" /> Upload Blank Form / Template File
+                    </span>
+                    <input
+                      type="file"
+                      accept=".docx,.doc,.xlsx,.xls,.pdf"
+                      onChange={handleTemplateFileChange}
+                      className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Form Option Checkboxes */}

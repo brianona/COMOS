@@ -1368,6 +1368,18 @@ async function startServer() {
       if (!smsColNames.includes('isHira')) {
         await pool.query("ALTER TABLE sms_forms ADD COLUMN isHira TINYINT(1) DEFAULT 0");
       }
+      if (!smsColNames.includes('template_file_name')) {
+        await pool.query("ALTER TABLE sms_forms ADD COLUMN template_file_name VARCHAR(255) NULL");
+      }
+      if (!smsColNames.includes('template_file_data')) {
+        await pool.query("ALTER TABLE sms_forms ADD COLUMN template_file_data LONGBLOB NULL");
+      }
+      if (!smsColNames.includes('template_file_mimetype')) {
+        await pool.query("ALTER TABLE sms_forms ADD COLUMN template_file_mimetype VARCHAR(255) NULL");
+      }
+      if (!smsColNames.includes('template_file_size')) {
+        await pool.query("ALTER TABLE sms_forms ADD COLUMN template_file_size INT NULL");
+      }
     } catch (e: any) {
       console.error('Error migrating sms_forms columns:', e.message);
     }
@@ -2872,28 +2884,119 @@ async function startServer() {
   app.get('/api/sms/forms', authenticate, async (req, res) => {
     try {
       const [rows]: any = await pool.query('SELECT * FROM sms_forms WHERE deleted_at IS NULL ORDER BY sort_order ASC, id ASC');
-      res.json(rows);
+      const processed = rows.map((r: any) => ({
+        ...r,
+        removeFilenameRestriction: Boolean(r.removeFilenameRestriction),
+        isHira: Boolean(r.isHira),
+        allowedFileTypes: typeof r.allowedFileTypes === 'string' ? JSON.parse(r.allowedFileTypes) : r.allowedFileTypes,
+        template_file_data: r.template_file_data ? (Buffer.isBuffer(r.template_file_data) ? r.template_file_data.toString('utf-8') : String(r.template_file_data)) : undefined
+      }));
+      res.json(processed);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/forms/:id/download-template', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.execute(
+        'SELECT template_file_name, template_file_data, template_file_mimetype FROM sms_forms WHERE id = ? AND deleted_at IS NULL',
+        [req.params.id]
+      );
+      if (!rows || rows.length === 0 || !rows[0].template_file_data) {
+        return res.status(404).json({ error: 'No template file found for this form.' });
+      }
+      const item = rows[0];
+      const rawData = item.template_file_data;
+
+      let buffer: Buffer;
+      if (Buffer.isBuffer(rawData) && rawData.length > 7 && rawData.toString('utf8', 0, 7) === 'B2_KEY:') {
+        buffer = await handleFileRetrieve(rawData);
+      } else {
+        let str = Buffer.isBuffer(rawData) ? rawData.toString('utf-8') : String(rawData);
+        if (str.startsWith('B2_KEY:')) {
+          buffer = await handleFileRetrieve(Buffer.from(str));
+        } else if (str.startsWith('data:')) {
+          const base64Part = str.split(',')[1] || str;
+          buffer = Buffer.from(base64Part, 'base64');
+        } else {
+          buffer = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData, 'base64');
+        }
+      }
+
+      res.setHeader('Content-Type', item.template_file_mimetype || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(item.template_file_name || 'form_template')}"`);
+      res.send(buffer);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
   app.post('/api/sms/forms', authenticate, async (req, res) => {
-    const { id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira } = req.body;
+    const { id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size } = req.body;
     const allowedTypesVal = Array.isArray(allowedFileTypes) ? JSON.stringify(allowedFileTypes) : (allowedFileTypes || null);
     const orderVal = typeof sort_order === 'number' ? sort_order : 0;
     const isHiraVal = isHira ? 1 : 0;
+    const tFileName = template_file_name || null;
+    const tFileMime = template_file_mimetype || null;
+    const tFileSize = typeof template_file_size === 'number' ? template_file_size : null;
+
     try {
-      const [exists]: any = await pool.execute('SELECT id FROM sms_forms WHERE id = ?', [id]);
+      const [exists]: any = await pool.execute('SELECT id, template_file_name, template_file_data, template_file_mimetype, template_file_size FROM sms_forms WHERE id = ?', [id]);
+      
+      let finalTFileName = tFileName;
+      let finalTFileData: Buffer | null = null;
+      let finalTFileMime = tFileMime;
+      let finalTFileSize = tFileSize;
+
+      if (template_file_data !== undefined) {
+        if (template_file_data) {
+          let fileBuf: Buffer;
+          let mime = tFileMime || 'application/octet-stream';
+          if (typeof template_file_data === 'string' && template_file_data.startsWith('data:')) {
+            const parsed = parseBase64DataUrl(template_file_data);
+            if (parsed) {
+              mime = parsed.mimetype;
+              fileBuf = parsed.buffer;
+            } else {
+              fileBuf = Buffer.from(template_file_data);
+            }
+          } else if (Buffer.isBuffer(template_file_data)) {
+            fileBuf = template_file_data;
+          } else if (typeof template_file_data === 'string' && template_file_data.startsWith('B2_KEY:')) {
+            fileBuf = Buffer.from(template_file_data);
+          } else {
+            fileBuf = Buffer.from(template_file_data, 'base64');
+          }
+
+          if (fileBuf.length > 7 && fileBuf.toString('utf8', 0, 7) === 'B2_KEY:') {
+            finalTFileData = fileBuf;
+          } else {
+            finalTFileData = await handleFileUpload(tFileName || `template_${id}`, mime, fileBuf, 'sms_templates');
+          }
+          finalTFileMime = mime;
+        } else {
+          finalTFileName = null;
+          finalTFileData = null;
+          finalTFileMime = null;
+          finalTFileSize = null;
+        }
+      } else if (exists.length > 0) {
+        finalTFileName = exists[0].template_file_name;
+        finalTFileData = exists[0].template_file_data;
+        finalTFileMime = exists[0].template_file_mimetype;
+        finalTFileSize = exists[0].template_file_size;
+      }
+
       if (exists.length > 0) {
         await pool.execute(
-          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, deleted_at = NULL WHERE id = ?',
-          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, id]
+          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, template_file_name = ?, template_file_data = ?, template_file_mimetype = ?, template_file_size = ?, deleted_at = NULL WHERE id = ?',
+          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, id]
         );
       } else {
         await pool.execute(
-          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [id, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal]
+          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize]
         );
       }
       res.json({ success: true });
