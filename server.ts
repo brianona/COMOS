@@ -1380,6 +1380,9 @@ async function startServer() {
       if (!smsColNames.includes('template_file_size')) {
         await pool.query("ALTER TABLE sms_forms ADD COLUMN template_file_size INT NULL");
       }
+      if (!smsColNames.includes('template_files')) {
+        await pool.query("ALTER TABLE sms_forms ADD COLUMN template_files LONGTEXT NULL");
+      }
     } catch (e: any) {
       console.error('Error migrating sms_forms columns:', e.message);
     }
@@ -2889,7 +2892,8 @@ async function startServer() {
         removeFilenameRestriction: Boolean(r.removeFilenameRestriction),
         isHira: Boolean(r.isHira),
         allowedFileTypes: typeof r.allowedFileTypes === 'string' ? JSON.parse(r.allowedFileTypes) : r.allowedFileTypes,
-        template_file_data: r.template_file_data ? (Buffer.isBuffer(r.template_file_data) ? r.template_file_data.toString('utf-8') : String(r.template_file_data)) : undefined
+        template_file_data: r.template_file_data ? (Buffer.isBuffer(r.template_file_data) ? r.template_file_data.toString('utf-8') : String(r.template_file_data)) : undefined,
+        template_files: typeof r.template_files === 'string' ? (() => { try { return JSON.parse(r.template_files); } catch(e) { return []; } })() : (r.template_files || [])
       }));
       res.json(processed);
     } catch (e: any) {
@@ -2900,32 +2904,62 @@ async function startServer() {
   app.get('/api/sms/forms/:id/download-template', authenticate, async (req, res) => {
     try {
       const [rows]: any = await pool.execute(
-        'SELECT template_file_name, template_file_data, template_file_mimetype FROM sms_forms WHERE id = ? AND deleted_at IS NULL',
+        'SELECT template_file_name, template_file_data, template_file_mimetype, template_files FROM sms_forms WHERE id = ? AND deleted_at IS NULL',
         [req.params.id]
       );
-      if (!rows || rows.length === 0 || !rows[0].template_file_data) {
+      if (!rows || rows.length === 0) {
         return res.status(404).json({ error: 'No template file found for this form.' });
       }
       const item = rows[0];
-      const rawData = item.template_file_data;
+      let tName = item.template_file_name;
+      let rawData = item.template_file_data;
+      let tMime = item.template_file_mimetype;
 
+      if (req.query.fileIndex !== undefined || req.query.filename) {
+        let tFiles: any[] = [];
+        try {
+          tFiles = typeof item.template_files === 'string' ? JSON.parse(item.template_files) : (item.template_files || []);
+        } catch (e) {
+          tFiles = [];
+        }
+        let selectedFile: any = null;
+        if (req.query.fileIndex !== undefined) {
+          const idx = parseInt(String(req.query.fileIndex), 10);
+          if (!isNaN(idx) && tFiles[idx]) {
+            selectedFile = tFiles[idx];
+          }
+        }
+        if (!selectedFile && req.query.filename) {
+          selectedFile = tFiles.find((f: any) => f.name === req.query.filename);
+        }
+        if (selectedFile && selectedFile.data) {
+          tName = selectedFile.name || tName;
+          rawData = selectedFile.data;
+          tMime = selectedFile.mimetype || tMime;
+        }
+      }
+
+      if (!rawData) {
+        return res.status(404).json({ error: 'No template file found for this form.' });
+      }
+      const rawDataForBuffer = rawData;
       let buffer: Buffer;
-      if (Buffer.isBuffer(rawData) && rawData.length > 7 && rawData.toString('utf8', 0, 7) === 'B2_KEY:') {
-        buffer = await handleFileRetrieve(rawData);
+      if (Buffer.isBuffer(rawDataForBuffer) && rawDataForBuffer.length > 7 && rawDataForBuffer.toString('utf8', 0, 7) === 'B2_KEY:') {
+        buffer = await handleFileRetrieve(rawDataForBuffer);
       } else {
-        let str = Buffer.isBuffer(rawData) ? rawData.toString('utf-8') : String(rawData);
+        let str = Buffer.isBuffer(rawDataForBuffer) ? rawDataForBuffer.toString('utf-8') : String(rawDataForBuffer);
         if (str.startsWith('B2_KEY:')) {
           buffer = await handleFileRetrieve(Buffer.from(str));
         } else if (str.startsWith('data:')) {
           const base64Part = str.split(',')[1] || str;
           buffer = Buffer.from(base64Part, 'base64');
         } else {
-          buffer = Buffer.isBuffer(rawData) ? rawData : Buffer.from(rawData, 'base64');
+          buffer = Buffer.isBuffer(rawDataForBuffer) ? rawDataForBuffer : Buffer.from(rawDataForBuffer, 'base64');
         }
       }
 
-      res.setHeader('Content-Type', item.template_file_mimetype || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(item.template_file_name || 'form_template')}"`);
+      res.setHeader('Content-Type', tMime || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(tName || 'form_template')}"`);
       res.send(buffer);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2933,7 +2967,7 @@ async function startServer() {
   });
 
   app.post('/api/sms/forms', authenticate, async (req, res) => {
-    const { id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size } = req.body;
+    const { id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files } = req.body;
     const allowedTypesVal = Array.isArray(allowedFileTypes) ? JSON.stringify(allowedFileTypes) : (allowedFileTypes || null);
     const orderVal = typeof sort_order === 'number' ? sort_order : 0;
     const isHiraVal = isHira ? 1 : 0;
@@ -2942,7 +2976,18 @@ async function startServer() {
     const tFileSize = typeof template_file_size === 'number' ? template_file_size : null;
 
     try {
-      const [exists]: any = await pool.execute('SELECT id, template_file_name, template_file_data, template_file_mimetype, template_file_size FROM sms_forms WHERE id = ?', [id]);
+      if (formCode && typeof formCode === 'string') {
+        const trimmedCode = formCode.trim();
+        const [dupRows]: any = await pool.execute(
+          'SELECT id FROM sms_forms WHERE LOWER(TRIM(formCode)) = LOWER(?) AND id != ? AND deleted_at IS NULL',
+          [trimmedCode, id || '']
+        );
+        if (dupRows && dupRows.length > 0) {
+          return res.status(400).json({ error: `Form Code "${trimmedCode}" already exists. Form codes must be unique.` });
+        }
+      }
+
+      const [exists]: any = await pool.execute('SELECT id, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files FROM sms_forms WHERE id = ?', [id]);
       
       let finalTFileName = tFileName;
       let finalTFileData: Buffer | null = null;
@@ -2988,15 +3033,65 @@ async function startServer() {
         finalTFileSize = exists[0].template_file_size;
       }
 
+      let finalTemplateFilesVal: string | null = null;
+      if (template_files !== undefined) {
+        if (Array.isArray(template_files) && template_files.length > 0) {
+          const processedFiles = [];
+          for (let idx = 0; idx < template_files.length; idx++) {
+            const tf = template_files[idx];
+            if (!tf || !tf.name) continue;
+            let fileDataStr = tf.data;
+            if (tf.data) {
+              let fileBuf: Buffer | null = null;
+              let mime = tf.mimetype || 'application/octet-stream';
+              if (typeof tf.data === 'string' && tf.data.startsWith('data:')) {
+                const parsed = parseBase64DataUrl(tf.data);
+                if (parsed) {
+                  mime = parsed.mimetype;
+                  fileBuf = parsed.buffer;
+                } else {
+                  fileBuf = Buffer.from(tf.data);
+                }
+              } else if (Buffer.isBuffer(tf.data)) {
+                fileBuf = tf.data;
+              } else if (typeof tf.data === 'string' && tf.data.startsWith('B2_KEY:')) {
+                fileDataStr = tf.data;
+              } else if (typeof tf.data === 'string') {
+                fileBuf = Buffer.from(tf.data, 'base64');
+              }
+              if (fileBuf) {
+                if (fileBuf.length > 7 && fileBuf.toString('utf8', 0, 7) === 'B2_KEY:') {
+                  fileDataStr = fileBuf.toString('utf8');
+                } else {
+                  const uploadedBuf = await handleFileUpload(`${tf.name}_${idx}_${id}`, mime, fileBuf, 'sms_templates');
+                  fileDataStr = uploadedBuf.toString('utf8');
+                }
+              }
+            }
+            processedFiles.push({
+              name: tf.name,
+              data: fileDataStr,
+              mimetype: tf.mimetype || 'application/octet-stream',
+              size: typeof tf.size === 'number' ? tf.size : null
+            });
+          }
+          finalTemplateFilesVal = JSON.stringify(processedFiles);
+        } else {
+          finalTemplateFilesVal = null;
+        }
+      } else if (exists.length > 0) {
+        finalTemplateFilesVal = exists[0].template_files || null;
+      }
+
       if (exists.length > 0) {
         await pool.execute(
-          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, template_file_name = ?, template_file_data = ?, template_file_mimetype = ?, template_file_size = ?, deleted_at = NULL WHERE id = ?',
-          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, id]
+          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, template_file_name = ?, template_file_data = ?, template_file_mimetype = ?, template_file_size = ?, template_files = ?, deleted_at = NULL WHERE id = ?',
+          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal, id]
         );
       } else {
         await pool.execute(
-          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [id, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize]
+          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [id, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal]
         );
       }
       res.json({ success: true });
@@ -4595,6 +4690,11 @@ Generated by COMOS System
   }
 
   // Certificate Expiration Check Logic
+  const lastCheckTimestamps: Record<string, number> = {
+    office: 0,
+    vessel: 0,
+    all: 0,
+  };
   let officeAlertTimeout: NodeJS.Timeout | null = null;
   let vesselAlertTimeout: NodeJS.Timeout | null = null;
 
@@ -4707,8 +4807,53 @@ Generated by COMOS System
 
   async function checkExpirations(targetType?: 'office' | 'vessel'): Promise<number> {
     console.log(`Checking certificate expirations${targetType ? ` for ${targetType}` : ''}...`);
+    if (!pool) return 0;
+
+    // 1. In-memory deduplication check (to catch rapid double calls in the same process)
+    const nowTimestamp = Date.now();
+    const typeKey = targetType || 'all';
+    // If it ran within the last 10 seconds, skip to prevent double execution
+    if (nowTimestamp - lastCheckTimestamps[typeKey] < 10000) {
+      console.log(`Skipping checkExpirations('${typeKey}') - executed too recently in memory.`);
+      return 0;
+    }
+    lastCheckTimestamps[typeKey] = nowTimestamp;
+
     let totalEmailsSent = 0;
     try {
+      const settings = await getSmtpSettings();
+
+      // 2. Database-backed deduplication (to catch duplicates across multiple running container processes)
+      if (targetType && settings) {
+        const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
+        const lastSentStr = settings[lastSentKey];
+        if (lastSentStr) {
+          const lastSent = new Date(lastSentStr);
+          const diffMs = Date.now() - lastSent.getTime();
+          
+          // Minimum safe interval between automated runs of the same target type is 4 hours
+          let minIntervalMs = 4 * 60 * 60 * 1000;
+          
+          const scheduleType = targetType === 'office' ? 
+            settings.ALERT_SCHEDULE_TYPE : 
+            settings.VESSEL_ALERT_SCHEDULE_TYPE;
+          
+          if (scheduleType === 'interval') {
+            const hoursKey = targetType === 'office' ? 'ALERT_INTERVAL_HOURS' : 'VESSEL_ALERT_INTERVAL_HOURS';
+            const hours = parseInt(settings[hoursKey] || '24');
+            // If the user's custom interval is less than 4h, safety window is 80% of their interval
+            if (hours < 4) {
+              minIntervalMs = hours * 0.8 * 60 * 60 * 1000;
+            }
+          }
+          
+          if (diffMs < minIntervalMs) {
+            console.log(`Skipping automated ${targetType} alert check. Already checked/sent successfully in DB ${(diffMs / 1000 / 60).toFixed(1)} minutes ago.`);
+            return 0;
+          }
+        }
+      }
+
       let query = `
         SELECT c.*, COALESCE(v.name, 'General') as vessel_name, t.name as team_name
         FROM certificates c
@@ -4775,13 +4920,26 @@ Generated by COMOS System
       if (teamAlertCount === 0 && vesselAlertCount === 0) {
         console.log('No certificates require alerts at this time.');
         await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. No alerts found.`, 'LAST_ALERT_LOG']);
+        if (targetType) {
+          const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
+          await pool.execute(
+            'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+            [lastSentKey, new Date().toISOString(), new Date().toISOString()]
+          );
+        }
         return 0;
       }
 
-      const settings = await getSmtpSettings();
       if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
         console.log('Email alerts are disabled in settings.');
         await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alerts are disabled.`, 'LAST_ALERT_LOG']);
+        if (targetType) {
+          const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
+          await pool.execute(
+            'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+            [lastSentKey, new Date().toISOString(), new Date().toISOString()]
+          );
+        }
         return 0;
       }
       const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
@@ -4831,6 +4989,13 @@ Generated by COMOS System
       } else {
         console.warn('RESEND_API_KEY incomplete in both settings and environment. Skipping email alerts.');
         await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Resend API settings incomplete (Missing API Key).`, 'LAST_ALERT_LOG']);
+      }
+      if (targetType) {
+        const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
+        await pool.execute(
+          'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+          [lastSentKey, new Date().toISOString(), new Date().toISOString()]
+        );
       }
       console.log(`Certificate expiration check completed. Sent ${totalEmailsSent} alert email(s).`);
       return totalEmailsSent;

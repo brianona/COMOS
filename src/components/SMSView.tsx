@@ -76,6 +76,12 @@ export interface SMSForm {
   template_file_data?: string;
   template_file_mimetype?: string;
   template_file_size?: number;
+  template_files?: {
+    name: string;
+    data?: string;
+    mimetype?: string;
+    size?: number;
+  }[];
 }
 
 export interface FormFileEntry {
@@ -83,6 +89,7 @@ export interface FormFileEntry {
   matched: boolean;
   reason?: string;
   content?: string;
+  arrayBuffer?: ArrayBuffer;
 }
 
 export interface UploadedFormState {
@@ -276,6 +283,12 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     mimetype?: string;
     size?: number;
   } | null>(null);
+  const [formTemplateFilesInput, setFormTemplateFilesInput] = useState<{
+    name: string;
+    data?: string;
+    mimetype?: string;
+    size?: number;
+  }[]>([]);
 
   const handleTemplateFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -293,6 +306,45 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     };
     reader.readAsDataURL(file);
   };
+
+  const handleTemplateFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    const newFilesList = [...formTemplateFilesInput];
+    let loadedCount = 0;
+    
+    (Array.from(files) as File[]).forEach((file: File) => {
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const base64Data = evt.target?.result as string;
+        newFilesList.push({
+          name: file.name,
+          data: base64Data,
+          mimetype: file.type || 'application/octet-stream',
+          size: file.size
+        });
+        loadedCount++;
+        if (loadedCount === files.length) {
+          setFormTemplateFilesInput(newFilesList);
+          triggerToast(`Attached ${files.length} template files`, 'success');
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  useEffect(() => {
+    if (formIsHiraInput) {
+      if (formTemplateFileInput && formTemplateFilesInput.length === 0) {
+        setFormTemplateFilesInput([formTemplateFileInput]);
+      }
+    } else {
+      if (formTemplateFilesInput.length > 0 && !formTemplateFileInput) {
+        setFormTemplateFileInput(formTemplateFilesInput[0]);
+      }
+    }
+  }, [formIsHiraInput]);
 
   const getFlagsFormatted = (arr: string[]) => {
     if (arr.length === 0) return '';
@@ -362,14 +414,14 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [b2UploadProgress, setB2UploadProgress] = useState<number>(0);
 
   // Status Alerts/Toasts State
-  const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   // States for expanding ZIP files to display internal files individually
   const [expandedZipIds, setExpandedZipIds] = useState<Record<string, boolean>>({});
   const [zipContents, setZipContents] = useState<Record<string, Array<{ name: string; size: number; isSimulated: boolean; parentZipId: string }>>>({});
   const [loadingZips, setLoadingZips] = useState<Record<string, boolean>>({});
 
-  const triggerToast = (text: string, type: 'success' | 'error' = 'success') => {
+  const triggerToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => setToastMessage(null), 4000);
   };
@@ -438,6 +490,27 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     return [];
   };
 
+  const safeSaveFormsToLocalStorage = (formsToSave: SMSForm[]) => {
+    try {
+      localStorage.setItem('comos_sms_manage_forms', JSON.stringify(formsToSave));
+    } catch (err) {
+      console.warn('LocalStorage quota exceeded, saving metadata without template file data:', err);
+      const stripped = formsToSave.map(f => ({
+        ...f,
+        template_file_data: undefined,
+        template_files: f.template_files?.map(tf => ({
+          ...tf,
+          data: undefined
+        }))
+      }));
+      try {
+        localStorage.setItem('comos_sms_manage_forms', JSON.stringify(stripped));
+      } catch (innerErr) {
+        console.error('Failed to save even stripped forms to LocalStorage:', innerErr);
+      }
+    }
+  };
+
   // Fetch forms from MySQL server or LocalStorage fallback
   const fetchSMSForms = async () => {
     if (!token) {
@@ -449,14 +522,15 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
           removeFilenameRestriction: Boolean(f.removeFilenameRestriction),
           allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes),
           sort_order: typeof f.sort_order === 'number' ? f.sort_order : idx,
-          isHira: Boolean(f.isHira)
+          isHira: Boolean(f.isHira),
+          template_files: typeof f.template_files === 'string' ? (() => { try { return JSON.parse(f.template_files); } catch(e) { return []; } })() : (f.template_files || [])
         }));
         mapped.sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
         setForms(mapped);
       } else {
         const seeded = INITIAL_FORMS.map((f, idx) => ({ ...f, sort_order: f.sort_order ?? idx }));
         setForms(seeded);
-        localStorage.setItem('comos_sms_manage_forms', JSON.stringify(seeded));
+        safeSaveFormsToLocalStorage(seeded);
       }
       return;
     }
@@ -1144,12 +1218,54 @@ startxref
     return result + ' ' + utf16Result;
   };
 
-  const extractTextFromFile = async (file: File): Promise<string> => {
+  const safeReadFileAsArrayBuffer = async (file: File, cachedBuffer?: ArrayBuffer): Promise<ArrayBuffer> => {
+    if (cachedBuffer && cachedBuffer.byteLength > 0) {
+      return cachedBuffer;
+    }
+    // Attempt 1: Direct file.arrayBuffer()
+    try {
+      const buf = await file.arrayBuffer();
+      if (buf && buf.byteLength > 0) return buf;
+    } catch (e) {
+      console.warn(`file.arrayBuffer() failed for ${file.name}, trying FileReader fallback...`, e);
+    }
+
+    // Attempt 2: FileReader API
+    try {
+      return await new Promise<ArrayBuffer>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (reader.result instanceof ArrayBuffer) {
+            resolve(reader.result);
+          } else {
+            reject(new Error('FileReader did not return ArrayBuffer'));
+          }
+        };
+        reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+        reader.readAsArrayBuffer(file);
+      });
+    } catch (e) {
+      console.warn(`FileReader failed for ${file.name}, trying Blob slice fallback...`, e);
+    }
+
+    // Attempt 3: Blob slice arrayBuffer
+    try {
+      const sliced = file.slice(0, file.size, file.type);
+      const buf = await sliced.arrayBuffer();
+      if (buf && buf.byteLength > 0) return buf;
+    } catch (e) {
+      console.warn(`Blob slice failed for ${file.name}:`, e);
+    }
+
+    throw new Error(`The requested file '${file.name}' could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.`);
+  };
+
+  const extractTextFromFile = async (file: File, cachedBuffer?: ArrayBuffer): Promise<string> => {
     const ext = file.name.split('.').pop()?.toLowerCase();
     
     if (ext === 'pdf') {
       try {
-        const arrayBuffer = await file.arrayBuffer();
+        const arrayBuffer = await safeReadFileAsArrayBuffer(file, cachedBuffer);
         const data = new Uint8Array(arrayBuffer);
         const loadingTask = pdfjsLib.getDocument({ data });
         const pdfDoc = await loadingTask.promise;
@@ -1173,7 +1289,8 @@ startxref
       }
     } else if (ext === 'docx' || ext === 'xlsx') {
       try {
-        const zip = await JSZip.loadAsync(file);
+        const arrayBuffer = await safeReadFileAsArrayBuffer(file, cachedBuffer);
+        const zip = await JSZip.loadAsync(arrayBuffer);
         let combinedText = '';
         const files = Object.keys(zip.files);
         for (const filename of files) {
@@ -1371,7 +1488,8 @@ startxref
     );
   };
 
-  const isDateMatched = (fileText: string, formDateStr: string): boolean => {
+  const isDateMatched = (fileText: string, formDateStr?: string): boolean => {
+    if (!formDateStr || !formDateStr.trim()) return true;
     const textUpper = fileText.toUpperCase();
     const dateObj = new Date(formDateStr);
     
@@ -1397,7 +1515,11 @@ startxref
     return false;
   };
 
-  const validateFileAgainstForm = async (file: File, form: SMSForm): Promise<{ matched: boolean; reason?: string; content?: string }> => {
+  const validateFileAgainstForm = async (
+    file: File, 
+    form: SMSForm, 
+    cachedBuffer?: ArrayBuffer
+  ): Promise<{ matched: boolean; reason?: string; content?: string; arrayBuffer?: ArrayBuffer }> => {
     // Check file type restrictions if any checkboxes are ticked
     if (form.allowedFileTypes && form.allowedFileTypes.length > 0) {
       const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
@@ -1439,7 +1561,14 @@ startxref
     }
 
     try {
-      const text = await extractTextFromFile(file);
+      let arrayBuffer: ArrayBuffer | undefined = cachedBuffer;
+      try {
+        arrayBuffer = await safeReadFileAsArrayBuffer(file, cachedBuffer);
+      } catch (e) {
+        console.warn(`Buffer read warning for ${file.name}:`, e);
+      }
+
+      const text = await extractTextFromFile(file, arrayBuffer);
       const textUpper = text.toUpperCase();
       
       let hasCode = textUpper.includes(cleanFormCode) || 
@@ -1478,30 +1607,35 @@ startxref
         return {
           matched: false,
           reason: `Content Mismatch: Form Code '${form.formCode}' was not found in the file's text structure.`,
-          content: text.slice(0, 1000)
+          content: text.slice(0, 1000),
+          arrayBuffer
         };
       } else if (!hasDescription && !form.removeFilenameRestriction) {
         return {
           matched: false,
           reason: `Content Mismatch: Form Description does not match saved database description.`,
-          content: text.slice(0, 1000)
+          content: text.slice(0, 1000),
+          arrayBuffer
         };
       } else if (isMismatchingContentDate && !form.removeFilenameRestriction) {
         return {
           matched: false,
           reason: `Content Mismatch: File header/content contains a different date than expected '${form.formDate}'.`,
-          content: text.slice(0, 1000)
+          content: text.slice(0, 1000),
+          arrayBuffer
         };
       } else if (!hasDate && !form.removeFilenameRestriction) {
         return {
           matched: false,
           reason: `Content Mismatch: Form Date '${form.formDate}' was not found in the file's text structure.`,
-          content: text.slice(0, 1000)
+          content: text.slice(0, 1000),
+          arrayBuffer
         };
       } else {
         return {
           matched: true,
-          content: text.slice(0, 1000)
+          content: text.slice(0, 1000),
+          arrayBuffer
         };
       }
     } catch (error: any) {
@@ -1541,21 +1675,30 @@ startxref
     triggerToast(`Generated valid template file (${format.toUpperCase()}) for ${form.formCode}`, 'success');
   };
 
-  const handleDownloadFormTemplate = async (form: SMSForm) => {
-    if (form.template_file_name) {
-      if (form.template_file_data && form.template_file_data.startsWith('data:')) {
+  const handleDownloadFormTemplate = async (form: SMSForm, fileIndex?: number) => {
+    let targetFileName = form.template_file_name;
+    let targetFileData = form.template_file_data;
+
+    if (fileIndex !== undefined && form.template_files && form.template_files[fileIndex]) {
+      const targetFile = form.template_files[fileIndex];
+      targetFileName = targetFile.name;
+      targetFileData = targetFile.data;
+    }
+
+    if (targetFileName) {
+      if (targetFileData && targetFileData.startsWith('data:')) {
         try {
-          const res = await fetch(form.template_file_data);
+          const res = await fetch(targetFileData);
           const blob = await res.blob();
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = form.template_file_name;
+          a.download = targetFileName;
           document.body.appendChild(a);
           a.click();
           a.remove();
           URL.revokeObjectURL(url);
-          triggerToast(`Downloaded form template: ${form.template_file_name}`, 'success');
+          triggerToast(`Downloaded form template: ${targetFileName}`, 'success');
           return;
         } catch (err) {
           console.error('Base64 template download failed:', err);
@@ -1564,7 +1707,8 @@ startxref
       if (token) {
         try {
           triggerToast(`Downloading template for ${form.formCode}...`, 'info');
-          const res = await fetch(`/api/sms/forms/${form.id}/download-template`, {
+          const urlParams = fileIndex !== undefined ? `?fileIndex=${fileIndex}` : '';
+          const res = await fetch(`/api/sms/forms/${form.id}/download-template${urlParams}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           if (res.ok) {
@@ -1572,12 +1716,12 @@ startxref
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = form.template_file_name || `${form.formCode}_Template.docx`;
+            a.download = targetFileName || `${form.formCode}_Template.docx`;
             document.body.appendChild(a);
             a.click();
             a.remove();
             URL.revokeObjectURL(url);
-            triggerToast(`Downloaded form template: ${form.template_file_name}`, 'success');
+            triggerToast(`Downloaded form template: ${targetFileName}`, 'success');
             return;
           }
         } catch (err) {
@@ -1603,10 +1747,12 @@ startxref
     }
     
     const file = new File([blob], `${form.formCode}_Blank_Report.${format}`, { type: blob.type });
+    const arrayBuffer = await blob.arrayBuffer();
     const entry: FormFileEntry = {
       file,
       matched: true,
-      content: `Blank Form of type ${format.toUpperCase()}`
+      content: `Blank Form of type ${format.toUpperCase()}`,
+      arrayBuffer
     };
     
     setUploadedFilesMap(prev => {
@@ -1668,7 +1814,7 @@ startxref
         if (targetForm) candidateForms = [targetForm];
       } else {
         // Find ALL forms in the active category that match this formCode prefix or have removeFilenameRestriction
-        // EXCLUDE HIRA forms from bulk matching (HIRA forms must be uploaded individually)
+        // EXCLUDE Multiple file forms from bulk matching (Multiple file forms must be uploaded individually)
         candidateForms = sortedActiveForms.filter(f => {
           if (f.isHira) return false;
           if (f.removeFilenameRestriction) return true;
@@ -1683,7 +1829,7 @@ startxref
       }
 
       if (candidateForms.length > 0) {
-        let bestCandidate: { form: SMSForm; validation: { matched: boolean; reason?: string; content?: string }; score: number } | null = null;
+        let bestCandidate: { form: SMSForm; validation: { matched: boolean; reason?: string; content?: string; arrayBuffer?: ArrayBuffer }; score: number } | null = null;
 
         for (const candidate of candidateForms) {
           const validation = await validateFileAgainstForm(file, candidate);
@@ -1707,11 +1853,20 @@ startxref
 
         if (bestCandidate) {
           const targetForm = bestCandidate.form;
+          let buf: ArrayBuffer | undefined = bestCandidate.validation.arrayBuffer;
+          if (!buf) {
+            try {
+              buf = await safeReadFileAsArrayBuffer(file);
+            } catch (e) {
+              console.warn(`Buffer read warning for ${file.name}:`, e);
+            }
+          }
           const newEntry: FormFileEntry = {
             file,
             matched: true,
             reason: bestCandidate.validation.reason,
-            content: bestCandidate.validation.content
+            content: bestCandidate.validation.content,
+            arrayBuffer: buf
           };
 
           if (targetForm.isHira) {
@@ -1726,11 +1881,20 @@ startxref
           // Candidate forms existed by formCode, but none passed strict description/content validation
           const firstCandidate = candidateForms[0];
           const validation = await validateFileAgainstForm(file, firstCandidate);
+          let buf: ArrayBuffer | undefined = validation.arrayBuffer;
+          if (!buf) {
+            try {
+              buf = await safeReadFileAsArrayBuffer(file);
+            } catch (e) {
+              console.warn(`Buffer read warning for ${file.name}:`, e);
+            }
+          }
           const newEntry: FormFileEntry = {
             file,
             matched: false,
             reason: validation.reason,
-            content: validation.content
+            content: validation.content,
+            arrayBuffer: buf
           };
 
           if (firstCandidate.isHira) {
@@ -1757,7 +1921,7 @@ startxref
         if (hiraMatchInActive || generalHiraMatch) {
           mismatchCount++;
           const targetCode = (hiraMatchInActive || generalHiraMatch)?.formCode;
-          triggerToast(`Skipped '${file.name}': HIRA form (${targetCode}) cannot be uploaded in bulk. HIRA forms must be uploaded individually on the form card.`, 'error');
+          triggerToast(`Skipped '${file.name}': Multiple File form (${targetCode}) cannot be uploaded in bulk. Multiple file forms must be uploaded individually on the form card.`, 'error');
         } else {
           // If it starts with another form code from ANOTHER category, indicate mismatch
           const generalFormMatch = sortedAllForms.find(f => {
@@ -1819,27 +1983,29 @@ startxref
 
   const handleDownloadPartialZip = async () => {
     const activeCategoryForms = getVesselActiveCategoryForms();
-    const matchedFiles: File[] = [];
+    const matchedEntries: FormFileEntry[] = [];
 
     activeCategoryForms.forEach(form => {
       const formState = uploadedFilesMap[form.id];
       if (formState && formState.files) {
         formState.files.forEach(entry => {
-          if (entry.matched) matchedFiles.push(entry.file);
+          if (entry.matched) matchedEntries.push(entry);
         });
       }
     });
 
-    if (matchedFiles.length === 0) {
+    if (matchedEntries.length === 0) {
       triggerToast('There are no matched valid files to compile into a ZIP.', 'error');
       return;
     }
 
     try {
       const zip = new JSZip();
-      matchedFiles.forEach(file => {
-        zip.file(file.name, file);
-      });
+      for (const entry of matchedEntries) {
+        const buf = await safeReadFileAsArrayBuffer(entry.file, entry.arrayBuffer);
+        entry.arrayBuffer = buf;
+        zip.file(entry.file.name, buf);
+      }
 
       const targetVessel = vesselsList.find(v => String(v.id) === String(reportingVesselId));
       const vName = targetVessel ? targetVessel.name.replace(/\s+/g, '_') : 'Vessel';
@@ -1870,13 +2036,13 @@ startxref
     const isMonthlyCategory = selectedCategory === '1. Monthly' || selectedCategory.toLowerCase().includes('monthly');
     const activeCategoryForms = getVesselActiveCategoryForms();
     const matchedForms = activeCategoryForms.filter(form => uploadedFilesMap[form.id]?.matched);
-    const matchedFiles: File[] = [];
+    const matchedEntries: FormFileEntry[] = [];
 
     activeCategoryForms.forEach(form => {
       const formState = uploadedFilesMap[form.id];
       if (formState && formState.files) {
         formState.files.forEach(entry => {
-          if (entry.matched) matchedFiles.push(entry.file);
+          if (entry.matched) matchedEntries.push(entry);
         });
       }
     });
@@ -1892,7 +2058,7 @@ startxref
         return;
       }
     } else {
-      if (matchedFiles.length === 0) {
+      if (matchedEntries.length === 0) {
         triggerToast('Cannot upload to server: Please upload and match at least one file or checklist before uploading.', 'error');
         return;
       }
@@ -1903,11 +2069,25 @@ startxref
     setB2UploadError('');
 
     try {
-      // 1. Zip all matched files
+      // 1. Zip all matched files using in-memory ArrayBuffers
       const zip = new JSZip();
-      matchedFiles.forEach(file => {
-        zip.file(file.name, file);
-      });
+
+      for (let i = 0; i < matchedEntries.length; i++) {
+        const entry = matchedEntries[i];
+        const file = entry.file;
+        let data: ArrayBuffer;
+
+        try {
+          data = await safeReadFileAsArrayBuffer(file, entry.arrayBuffer);
+          entry.arrayBuffer = data; // Cache buffer on entry for future retries
+        } catch (readErr: any) {
+          console.error(`Error reading ${file.name}:`, readErr);
+          throw new Error(`File access permission error: Could not read local file "${file.name}". The browser permission to read this file expired or was restricted by your operating system. Please re-select this form.`);
+        }
+
+        zip.file(file.name, data);
+        setB2UploadProgress(Math.floor(15 + (i / Math.max(1, matchedEntries.length)) * 25));
+      }
 
       const blob = await zip.generateAsync({ type: 'blob' });
       const vNameClean = targetVessel.name.replace(/\s+/g, '_');
@@ -2155,7 +2335,7 @@ startxref
       setEditingForm(form);
       setFormCodeInput(form.formCode);
       setFormDescriptionInput(form.description);
-      setFormDateInput(form.formDate);
+      setFormDateInput(form.formDate || '');
       setFormScopeInput(form.scope);
       setFormVesselTypeInput(form.vesselType || 'All Vessels');
       setFormRemoveFilenameRestrictionInput(Boolean(form.removeFilenameRestriction));
@@ -2172,6 +2352,12 @@ startxref
         });
       } else {
         setFormTemplateFileInput(null);
+      }
+
+      if (form.template_files) {
+        setFormTemplateFilesInput(form.template_files);
+      } else {
+        setFormTemplateFilesInput([]);
       }
 
       // Determine flags from scope
@@ -2196,7 +2382,7 @@ startxref
       setEditingForm(null);
       setFormCodeInput('');
       setFormDescriptionInput('');
-      setFormDateInput(new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' }));
+      setFormDateInput('');
       setFormScopeInput('All Vessels');
       setFormVesselTypeInput('All Vessels');
       setFormRemoveFilenameRestrictionInput(false);
@@ -2205,6 +2391,7 @@ startxref
       setFormTypeInput('Form');
       setSelectedFlags([]);
       setFormTemplateFileInput(null);
+      setFormTemplateFilesInput([]);
     }
     setShowFormModal(true);
   };
@@ -2235,11 +2422,12 @@ startxref
         template_file_name: formTemplateFileInput?.name,
         template_file_data: formTemplateFileInput?.data,
         template_file_mimetype: formTemplateFileInput?.mimetype,
-        template_file_size: formTemplateFileInput?.size
+        template_file_size: formTemplateFileInput?.size,
+        template_files: formIsHiraInput ? formTemplateFilesInput : undefined
       };
       updatedForms = forms.map(f => f.id === editingForm.id ? savedForm! : f);
       setForms(updatedForms);
-      localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
+      safeSaveFormsToLocalStorage(updatedForms);
     } else {
       // Create mode
       const categoryForms = forms.filter(f => f.category === selectedCategory);
@@ -2250,7 +2438,7 @@ startxref
         category: selectedCategory,
         formCode: formCodeInput,
         description: formDescriptionInput,
-        formDate: formDateInput || new Date().toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' }),
+        formDate: formDateInput,
         scope: formScopeInput,
         vesselType: formVesselTypeInput,
         type: formTypeInput,
@@ -2261,11 +2449,12 @@ startxref
         template_file_name: formTemplateFileInput?.name,
         template_file_data: formTemplateFileInput?.data,
         template_file_mimetype: formTemplateFileInput?.mimetype,
-        template_file_size: formTemplateFileInput?.size
+        template_file_size: formTemplateFileInput?.size,
+        template_files: formIsHiraInput ? formTemplateFilesInput : undefined
       };
       updatedForms = [...forms, savedForm];
       setForms(updatedForms);
-      localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
+      safeSaveFormsToLocalStorage(updatedForms);
     }
 
     if (token && savedForm) {
@@ -2318,7 +2507,7 @@ startxref
     });
 
     setForms(updatedForms);
-    localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
+    safeSaveFormsToLocalStorage(updatedForms);
 
     if (token) {
       try {
@@ -2342,7 +2531,7 @@ startxref
     if (window.confirm(`Are you sure you want to delete form ${code}?`)) {
       const updatedForms = forms.filter(f => f.id !== id);
       setForms(updatedForms);
-      localStorage.setItem('comos_sms_manage_forms', JSON.stringify(updatedForms));
+      safeSaveFormsToLocalStorage(updatedForms);
 
       if (token) {
         try {
@@ -2689,6 +2878,10 @@ startxref
             <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
               <Check className="w-3.5 h-3.5" />
             </div>
+          ) : toastMessage.type === 'info' ? (
+            <div className="w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+              <Info className="w-3.5 h-3.5" />
+            </div>
           ) : (
             <div className="w-5 h-5 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
               <AlertCircle className="w-3.5 h-3.5" />
@@ -3009,7 +3202,7 @@ startxref
                       Drag &amp; drop multiple report files or a ZIP archive here
                     </p>
                     <p className="text-[10px] text-slate-400 font-medium mt-1">
-                      Supports .docx, .doc, .xlsx, .xls, .pdf and .zip files • Matched by prefix automatically • <span className="text-purple-600 font-bold">HIRA forms excluded (upload individually)</span>
+                      Supports .docx, .doc, .xlsx, .xls, .pdf and .zip files • Matched by prefix automatically • <span className="text-purple-600 font-bold">Mutiple file forms excluded (upload individually)</span>
                     </p>
                     <div className="mt-3 relative">
                       <span className="px-3.5 py-1.5 bg-white border border-slate-200 text-slate-600 text-[10px] font-black uppercase tracking-wider rounded-lg hover:bg-slate-50 transition-all inline-block shadow-2xs cursor-pointer">
@@ -3081,8 +3274,12 @@ startxref
                                   <h5 className="text-xs font-black text-slate-700">{form.description}</h5>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
-                                  <span>Form Date: {form.formDate}</span>
-                                  <span>•</span>
+                                  {form.formDate && (
+                                    <>
+                                      <span>Form Date: {form.formDate}</span>
+                                      <span>•</span>
+                                    </>
+                                  )}
                                   <span>Scope: {form.scope}</span>
                                   {form.vesselType && form.vesselType !== 'All Vessels' && (
                                     <>
@@ -3105,7 +3302,7 @@ startxref
                                   )}
                                   {form.isHira && (
                                     <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 rounded border border-purple-200 font-extrabold">
-                                      ⚡ HIRA Form (Multiple Attachments)
+                                      ⚡ Multiple Files
                                     </span>
                                   )}
                                 </div>
@@ -3160,7 +3357,27 @@ startxref
                                   </div>
 
                                   <div className="flex flex-wrap items-center gap-3 shrink-0">
-                                    {form.template_file_name && (
+                                    {form.isHira && form.template_files && form.template_files.length > 0 ? (
+                                      <div className="relative inline-block text-left">
+                                        <select
+                                          onChange={(e) => {
+                                            const idx = parseInt(e.target.value, 10);
+                                            if (!isNaN(idx)) {
+                                              handleDownloadFormTemplate(form, idx);
+                                            }
+                                            e.target.value = "";
+                                          }}
+                                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-emerald-100 focus:outline-none cursor-pointer"
+                                        >
+                                          <option value="" disabled selected className="text-slate-800 bg-white">Download template...</option>
+                                          {form.template_files.map((tf, index) => (
+                                            <option key={index} value={index} className="text-slate-800 bg-white font-semibold">
+                                              {tf.name.length > 20 ? tf.name.slice(0, 20) + '...' : tf.name} ({typeof tf.size === 'number' ? (tf.size / 1024).toFixed(1) : '0.0'} KB)
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    ) : form.template_file_name ? (
                                       <button
                                         type="button"
                                         onClick={() => handleDownloadFormTemplate(form)}
@@ -3170,7 +3387,7 @@ startxref
                                         <Download className="w-3.5 h-3.5" />
                                         Download Form
                                       </button>
-                                    )}
+                                    ) : null}
 
                                     <div className="relative shrink-0">
                                       <span className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-blue-100 inline-block cursor-pointer">
@@ -3246,7 +3463,7 @@ startxref
                                     <div className="pt-2 flex justify-end">
                                       <div className="relative inline-block">
                                         <span className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-purple-100 inline-flex items-center gap-1.5 cursor-pointer">
-                                          <Plus className="w-3.5 h-3.5" /> Attach Additional HIRA File
+                                          <Plus className="w-3.5 h-3.5" /> Attach Additional Form File
                                         </span>
                                         <input
                                           type="file"
@@ -3510,26 +3727,37 @@ startxref
                     ) : (
                       <div className="p-4 bg-rose-50 text-rose-800 rounded-2xl border border-rose-100 space-y-3">
                         <p className="font-black text-xs uppercase tracking-wider flex items-center gap-1.5">
-                          <XCircle className="w-4 h-4" /> B2 Connection Error
+                          <XCircle className="w-4 h-4" /> {
+                            b2UploadError.toLowerCase().includes('permission') || 
+                            b2UploadError.toLowerCase().includes('could not be read') ||
+                            b2UploadError.toLowerCase().includes('file access')
+                              ? 'Local File Access Permission Error'
+                              : 'B2 Connection Error'
+                          }
                         </p>
                         <p className="text-[11px] text-rose-700 font-semibold leading-relaxed bg-white/50 p-2.5 rounded-xl border border-rose-100/50">
                           {b2UploadError}
                         </p>
                         <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
-                          Your upload package is preserved in browser cache. Please download the ZIP immediately to preserve your matched reports and re-upload it later.
+                          {compiledZipBlob 
+                            ? 'Your upload package was compiled and preserved in browser memory. Download the ZIP to preserve your matched reports.'
+                            : 'If a local browser file handle permission error occurred, click "Try Upload Again" or re-select the affected files to refresh access.'
+                          }
                         </p>
                         <div className="space-y-2">
-                          <button
-                            type="button"
-                            onClick={handleDownloadCompiledZipAfterFailure}
-                            className="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-black uppercase tracking-wider rounded-lg transition-all shadow-xs flex items-center justify-center gap-1.5"
-                          >
-                            <Download className="w-3.5 h-3.5" /> Download Preserved ZIP
-                          </button>
+                          {compiledZipBlob && (
+                            <button
+                              type="button"
+                              onClick={handleDownloadCompiledZipAfterFailure}
+                              className="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-black uppercase tracking-wider rounded-lg transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <Download className="w-3.5 h-3.5" /> Download Preserved ZIP
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setB2UploadStatus('idle')}
-                            className="w-full py-1.5 bg-white border border-rose-200 text-slate-600 hover:bg-rose-50 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all"
+                            className="w-full py-1.5 bg-white border border-rose-200 text-slate-600 hover:bg-rose-50 text-[10px] font-black uppercase tracking-wider rounded-lg transition-all cursor-pointer"
                           >
                             Try Upload Again
                           </button>
@@ -3681,7 +3909,7 @@ startxref
                                 {f.description}
                               </td>
                               <td className="px-4 py-3 text-slate-500 font-medium">
-                                {f.formDate}
+                                {f.formDate || '—'}
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex flex-col gap-1 items-start">
@@ -3696,7 +3924,7 @@ startxref
                                     )}
                                     {f.isHira && (
                                       <span className="px-2 py-0.5 bg-purple-100 text-purple-700 font-extrabold text-[9px] rounded-md border border-purple-200">
-                                        ⚡ HIRA Form
+                                        ⚡ Multiple File Form
                                       </span>
                                     )}
 
@@ -3724,8 +3952,43 @@ startxref
                                 </div>
                               </td>
                               <td className="px-4 py-3">
-                                <div className="flex items-center justify-center gap-3">
-                                  {f.template_file_name && (
+                                <div className="flex flex-col items-center justify-center gap-2">
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      onClick={() => handleOpenFormModal(f)}
+                                      className="text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" /> Edit
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteForm(f.id, f.formCode)}
+                                      className="text-red-500 hover:text-red-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" /> Delete
+                                    </button>
+                                  </div>
+
+                                  {f.isHira && f.template_files && f.template_files.length > 0 ? (
+                                    <div className="relative inline-block text-left">
+                                      <select
+                                        onChange={(e) => {
+                                          const idx = parseInt(e.target.value, 10);
+                                          if (!isNaN(idx)) {
+                                            handleDownloadFormTemplate(f, idx);
+                                          }
+                                          e.target.value = "";
+                                        }}
+                                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-[10px] font-extrabold uppercase tracking-wide rounded-md py-1 px-1.5 focus:outline-none cursor-pointer"
+                                      >
+                                        <option value="" disabled selected>Download template...</option>
+                                        {f.template_files.map((tf, index) => (
+                                          <option key={index} value={index}>
+                                            {tf.name.length > 20 ? tf.name.slice(0, 20) + '...' : tf.name} ({typeof tf.size === 'number' ? (tf.size / 1024).toFixed(1) : '0.0'} KB)
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  ) : f.template_file_name ? (
                                     <button
                                       type="button"
                                       onClick={() => handleDownloadFormTemplate(f)}
@@ -3734,19 +3997,7 @@ startxref
                                     >
                                       <Download className="w-3.5 h-3.5" /> Template
                                     </button>
-                                  )}
-                                  <button
-                                    onClick={() => handleOpenFormModal(f)}
-                                    className="text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                  >
-                                    <Edit3 className="w-3.5 h-3.5" /> Edit
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteForm(f.id, f.formCode)}
-                                    className="text-red-500 hover:text-red-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" /> Delete
-                                  </button>
+                                  ) : null}
                                 </div>
                               </td>
                             </tr>
@@ -3973,46 +4224,97 @@ startxref
                 </div>
 
                 {/* Row 5: Form Template File & Form Options */}
-                <div className="grid grid-cols-2 gap-3 items-center">
+                <div className="grid grid-cols-2 gap-3 items-start">
                   {/* Form Template File Upload */}
-                  <div className="space-y-1">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                      Form Template / Blank File
-                    </label>
-                    {formTemplateFileInput ? (
-                      <div className="flex items-center justify-between p-2 bg-slate-50 rounded-xl border border-slate-200">
-                        <div className="flex items-center gap-2 overflow-hidden">
-                          <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                          <div className="truncate">
-                            <p className="text-xs font-extrabold text-slate-800 truncate">{formTemplateFileInput.name}</p>
-                            {formTemplateFileInput.size ? (
-                              <p className="text-[10px] text-slate-400 font-bold">{(formTemplateFileInput.size / 1024).toFixed(1)} KB</p>
-                            ) : null}
-                          </div>
+                  {formIsHiraInput ? (
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+                        Form Templates / Blank Files ({formTemplateFilesInput.length})
+                      </label>
+                      
+                      {formTemplateFilesInput.length > 0 && (
+                        <div className="max-h-24 overflow-y-auto space-y-1 p-1 bg-slate-50 rounded-xl border border-slate-100 mb-1.5">
+                          {formTemplateFilesInput.map((tf, index) => (
+                            <div key={index} className="flex items-center justify-between p-1 bg-white rounded-lg border border-slate-200 shadow-3xs">
+                              <div className="flex items-center gap-1.5 overflow-hidden">
+                                <FileText className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                                <div className="truncate text-left">
+                                  <p className="text-[10px] font-extrabold text-slate-800 truncate leading-tight">{tf.name}</p>
+                                  {tf.size ? (
+                                    <p className="text-[8px] text-slate-400 font-bold">{(tf.size / 1024).toFixed(1)} KB</p>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const updated = [...formTemplateFilesInput];
+                                  updated.splice(index, 1);
+                                  setFormTemplateFilesInput(updated);
+                                }}
+                                className="p-0.5 hover:bg-slate-100 text-slate-400 hover:text-red-500 rounded-md transition-all cursor-pointer shrink-0"
+                                title="Remove File"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ))}
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setFormTemplateFileInput(null)}
-                          className="p-1 hover:bg-slate-200 text-slate-400 hover:text-red-500 rounded-lg transition-all cursor-pointer shrink-0"
-                          title="Remove Template File"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ) : (
+                      )}
+
                       <div className="relative">
-                        <span className="w-full py-2 px-3 border border-dashed border-slate-300 hover:border-blue-400 bg-slate-50 hover:bg-blue-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs">
-                          <Upload className="w-3.5 h-3.5 text-blue-500" /> Upload Blank Form / Template
+                        <span className="w-full py-2 px-3 border border-dashed border-slate-300 hover:border-purple-400 bg-slate-50 hover:bg-purple-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs">
+                          <Plus className="w-3.5 h-3.5 text-purple-500" /> Upload Template File(s)
                         </span>
                         <input
                           type="file"
+                          multiple
                           accept=".docx,.doc,.xlsx,.xls,.pdf"
-                          onChange={handleTemplateFileChange}
+                          onChange={handleTemplateFilesChange}
                           className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
                         />
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+                        Form Template / Blank File
+                      </label>
+                      {formTemplateFileInput ? (
+                        <div className="flex items-center justify-between p-2 bg-slate-50 rounded-xl border border-slate-200">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                            <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                            <div className="truncate">
+                              <p className="text-xs font-extrabold text-slate-800 truncate">{formTemplateFileInput.name}</p>
+                              {formTemplateFileInput.size ? (
+                                <p className="text-[10px] text-slate-400 font-bold">{(formTemplateFileInput.size / 1024).toFixed(1)} KB</p>
+                              ) : null}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setFormTemplateFileInput(null)}
+                            className="p-1 hover:bg-slate-200 text-slate-400 hover:text-red-500 rounded-lg transition-all cursor-pointer shrink-0"
+                            title="Remove Template File"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <span className="w-full py-2 px-3 border border-dashed border-slate-300 hover:border-blue-400 bg-slate-50 hover:bg-blue-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs">
+                            <Upload className="w-3.5 h-3.5 text-blue-500" /> Upload Blank Form / Template
+                          </span>
+                          <input
+                            type="file"
+                            accept=".docx,.doc,.xlsx,.xls,.pdf"
+                            onChange={handleTemplateFileChange}
+                            className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Form Option Checkboxes */}
                   <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100 space-y-1.5">
@@ -4025,7 +4327,7 @@ startxref
                         className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
                       />
                       <label htmlFor="isHira" className="text-xs font-bold text-slate-800 cursor-pointer select-none">
-                        HIRA Form <span className="text-[10px] text-slate-400 font-normal">(Multiple files)</span>
+                        Multiple Files
                       </label>
                     </div>
 
