@@ -1176,8 +1176,8 @@ startxref
     return new Blob([content], { type: 'application/pdf' });
   };
 
-  const extractLegacyOfficeText = async (file: File): Promise<string> => {
-    const buffer = await file.arrayBuffer();
+  const extractLegacyOfficeText = async (file: File, cachedBuffer?: ArrayBuffer): Promise<string> => {
+    const buffer = await safeReadFileAsArrayBuffer(file, cachedBuffer);
     const bytes = new Uint8Array(buffer);
     
     let result = '';
@@ -1220,7 +1220,7 @@ startxref
 
   const safeReadFileAsArrayBuffer = async (file: File, cachedBuffer?: ArrayBuffer): Promise<ArrayBuffer> => {
     if (cachedBuffer && cachedBuffer.byteLength > 0) {
-      return cachedBuffer;
+      return cachedBuffer.slice(0);
     }
     // Attempt 1: Direct file.arrayBuffer()
     try {
@@ -1232,7 +1232,7 @@ startxref
 
     // Attempt 2: FileReader API
     try {
-      return await new Promise<ArrayBuffer>((resolve, reject) => {
+      const buf = await new Promise<ArrayBuffer>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => {
           if (reader.result instanceof ArrayBuffer) {
@@ -1244,6 +1244,7 @@ startxref
         reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
         reader.readAsArrayBuffer(file);
       });
+      if (buf && buf.byteLength > 0) return buf;
     } catch (e) {
       console.warn(`FileReader failed for ${file.name}, trying Blob slice fallback...`, e);
     }
@@ -1257,7 +1258,7 @@ startxref
       console.warn(`Blob slice failed for ${file.name}:`, e);
     }
 
-    throw new Error(`The requested file '${file.name}' could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.`);
+    throw new Error(`Local File Access Error: Could not read file "${file.name}". The browser reference to this file expired or was restricted by your operating system. Please re-select this form.`);
   };
 
   const extractTextFromFile = async (file: File, cachedBuffer?: ArrayBuffer): Promise<string> => {
@@ -1266,7 +1267,7 @@ startxref
     if (ext === 'pdf') {
       try {
         const arrayBuffer = await safeReadFileAsArrayBuffer(file, cachedBuffer);
-        const data = new Uint8Array(arrayBuffer);
+        const data = new Uint8Array(arrayBuffer.slice(0));
         const loadingTask = pdfjsLib.getDocument({ data });
         const pdfDoc = await loadingTask.promise;
         let extractedText = '';
@@ -1290,7 +1291,7 @@ startxref
     } else if (ext === 'docx' || ext === 'xlsx') {
       try {
         const arrayBuffer = await safeReadFileAsArrayBuffer(file, cachedBuffer);
-        const zip = await JSZip.loadAsync(arrayBuffer);
+        const zip = await JSZip.loadAsync(arrayBuffer.slice(0));
         let combinedText = '';
         const files = Object.keys(zip.files);
         for (const filename of files) {
@@ -1310,12 +1311,19 @@ startxref
       }
     } else if (ext === 'doc' || ext === 'xls') {
       try {
-        return await extractLegacyOfficeText(file);
+        return await extractLegacyOfficeText(file, cachedBuffer);
       } catch (e) {
         console.error('Error parsing legacy Office file:', e);
         return '';
       }
     } else {
+      if (cachedBuffer && cachedBuffer.byteLength > 0) {
+        try {
+          return new TextDecoder('utf-8', { fatal: false }).decode(cachedBuffer.slice(0));
+        } catch (e) {
+          // fallback
+        }
+      }
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = (ev) => resolve((ev.target?.result as string) || '');
@@ -2143,7 +2151,12 @@ startxref
 
         if (!response.ok) {
           const errText = await response.text();
-          throw new Error(errText || 'Backblaze S3 write error');
+          let serverMessage = errText;
+          try {
+            const parsed = JSON.parse(errText);
+            if (parsed.error) serverMessage = parsed.error;
+          } catch (e) {}
+          throw new Error(serverMessage || 'Backblaze S3 write error');
         }
 
         const result = await response.json();
