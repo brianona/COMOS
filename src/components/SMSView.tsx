@@ -293,16 +293,32 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const handleTemplateFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    setTemplateUploading({
+      isUploading: true,
+      fileName: file.name,
+      progress: 30
+    });
+
     const reader = new FileReader();
     reader.onload = (evt) => {
       const base64Data = evt.target?.result as string;
-      setFormTemplateFileInput({
-        name: file.name,
-        data: base64Data,
-        mimetype: file.type || 'application/octet-stream',
-        size: file.size
+      setTemplateUploading({
+        isUploading: true,
+        fileName: file.name,
+        progress: 85
       });
-      triggerToast(`Attached form template file: ${file.name}`, 'success');
+
+      setTimeout(() => {
+        setFormTemplateFileInput({
+          name: file.name,
+          data: base64Data,
+          mimetype: file.type || 'application/octet-stream',
+          size: file.size
+        });
+        setTemplateUploading(null);
+        triggerToast(`Attached form template file: ${file.name}`, 'success');
+      }, 300);
     };
     reader.readAsDataURL(file);
   };
@@ -310,6 +326,12 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const handleTemplateFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+
+    setTemplateUploading({
+      isUploading: true,
+      fileName: `${files.length} template file(s)`,
+      progress: 20
+    });
     
     const newFilesList = [...formTemplateFilesInput];
     let loadedCount = 0;
@@ -325,9 +347,19 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
           size: file.size
         });
         loadedCount++;
+        const pct = Math.round((loadedCount / files.length) * 100);
+        setTemplateUploading({
+          isUploading: true,
+          fileName: file.name,
+          progress: Math.min(95, pct)
+        });
+
         if (loadedCount === files.length) {
-          setFormTemplateFilesInput(newFilesList);
-          triggerToast(`Attached ${files.length} template files`, 'success');
+          setTimeout(() => {
+            setFormTemplateFilesInput(newFilesList);
+            setTemplateUploading(null);
+            triggerToast(`Attached ${files.length} template file(s)`, 'success');
+          }, 300);
         }
       };
       reader.readAsDataURL(file);
@@ -395,6 +427,23 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [uploadingMonth, setUploadingMonth] = useState('June');
   const [uploadingYear, setUploadingYear] = useState('2026');
   const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null);
+
+  // Active Uploading & Processing Animation states
+  const [processingFilesState, setProcessingFilesState] = useState<{
+    isProcessing: boolean;
+    currentFileName: string;
+    processedCount: number;
+    totalCount: number;
+    progressPercent: number;
+    statusText: string;
+    targetFormCode?: string;
+  } | null>(null);
+
+  const [templateUploading, setTemplateUploading] = useState<{
+    isUploading: boolean;
+    fileName: string;
+    progress: number;
+  } | null>(null);
 
   // SMS Reporting specific state variables
   const [reportingVesselId, setReportingVesselId] = useState<string>('');
@@ -1549,6 +1598,22 @@ startxref
       }
     }
 
+    // If the form allows Multiple Files (isHira) or has filename restriction removed,
+    // skip strict filename code prefix and header content/date verification.
+    if (form.isHira || form.removeFilenameRestriction) {
+      let arrayBuffer: ArrayBuffer | undefined = cachedBuffer;
+      try {
+        arrayBuffer = await safeReadFileAsArrayBuffer(file, cachedBuffer);
+      } catch (e) {
+        console.warn(`Buffer read warning for ${file.name}:`, e);
+      }
+      return {
+        matched: true,
+        content: `File uploaded for form ${form.formCode}`,
+        arrayBuffer
+      };
+    }
+
     const cleanFileName = file.name.trim().toUpperCase();
     const cleanFormCode = form.formCode.trim().toUpperCase();
     
@@ -1809,9 +1874,39 @@ startxref
       fileArray.push(files[i]);
     }
 
+    if (fileArray.length === 0) return;
+
+    const targetFormObj = targetFormId ? forms.find(f => f.id === targetFormId) : null;
+
+    setProcessingFilesState({
+      isProcessing: true,
+      currentFileName: fileArray.length === 1 ? fileArray[0].name : `${fileArray.length} file(s)`,
+      processedCount: 0,
+      totalCount: fileArray.length,
+      progressPercent: 10,
+      statusText: `Uploading & parsing ${fileArray.length} file(s)...`,
+      targetFormCode: targetFormObj?.formCode
+    });
+
     const updatedMap = { ...uploadedFilesMap };
 
-    for (const file of fileArray) {
+    for (let idx = 0; idx < fileArray.length; idx++) {
+      const file = fileArray[idx];
+      const currentPct = Math.min(95, Math.round(((idx + 1) / fileArray.length) * 100));
+
+      setProcessingFilesState({
+        isProcessing: true,
+        currentFileName: file.name,
+        processedCount: idx + 1,
+        totalCount: fileArray.length,
+        progressPercent: currentPct,
+        statusText: `Validating header & form structure (${idx + 1}/${fileArray.length})...`,
+        targetFormCode: targetFormObj?.formCode
+      });
+
+      // Brief delay so progress bar transition is visible and smooth
+      await new Promise(r => setTimeout(r, 120));
+
       const cleanFileName = file.name.trim().toUpperCase();
 
       let candidateForms: SMSForm[] = [];
@@ -1822,9 +1917,7 @@ startxref
         if (targetForm) candidateForms = [targetForm];
       } else {
         // Find ALL forms in the active category that match this formCode prefix or have removeFilenameRestriction
-        // EXCLUDE Multiple file forms from bulk matching (Multiple file forms must be uploaded individually)
         candidateForms = sortedActiveForms.filter(f => {
-          if (f.isHira) return false;
           if (f.removeFilenameRestriction) return true;
           const cleanCode = f.formCode.trim().toUpperCase();
           if (!cleanFileName.startsWith(cleanCode)) return false;
@@ -1843,6 +1936,10 @@ startxref
           const validation = await validateFileAgainstForm(file, candidate);
           if (validation.matched) {
             let score = 100;
+            const cleanCandidateCode = candidate.formCode.trim().toUpperCase();
+            if (cleanFileName.startsWith(cleanCandidateCode)) {
+              score += 100;
+            }
             const cleanText = file.name.trim().toUpperCase().replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
             const cleanDesc = candidate.description.trim().toUpperCase().replace(/AND/g, '').replace(/[^A-Z0-9]/g, '');
             if (cleanText.includes(cleanDesc)) {
@@ -1915,45 +2012,42 @@ startxref
           mismatchCount++;
         }
       } else {
-        // Check if file matches a HIRA form in the active category or any category
-        const hiraMatchInActive = activeCategoryForms.find(f => f.isHira && (
-          cleanFileName.startsWith(f.formCode.trim().toUpperCase()) ||
-          cleanFileName.includes(f.formCode.trim().toUpperCase())
-        ));
         const sortedAllForms = [...forms].sort((a, b) => b.formCode.length - a.formCode.length);
-        const generalHiraMatch = sortedAllForms.find(f => f.isHira && (
-          cleanFileName.startsWith(f.formCode.trim().toUpperCase()) ||
-          cleanFileName.includes(f.formCode.trim().toUpperCase())
-        ));
-
-        if (hiraMatchInActive || generalHiraMatch) {
-          mismatchCount++;
-          const targetCode = (hiraMatchInActive || generalHiraMatch)?.formCode;
-          triggerToast(`Skipped '${file.name}': Multiple File form (${targetCode}) cannot be uploaded in bulk. Multiple file forms must be uploaded individually on the form card.`, 'error');
-        } else {
-          // If it starts with another form code from ANOTHER category, indicate mismatch
-          const generalFormMatch = sortedAllForms.find(f => {
-            if (f.isHira) return false;
-            const cleanCode = f.formCode.trim().toUpperCase();
-            if (!cleanFileName.startsWith(cleanCode)) return false;
-            if (cleanFileName.length > cleanCode.length) {
-              const nextChar = cleanFileName[cleanCode.length];
-              if (/^[A-Z0-9]$/.test(nextChar)) return false;
-            }
-            return true;
-          });
-          if (generalFormMatch) {
-            mismatchCount++;
-            triggerToast(`File ${file.name} belongs to category "${generalFormMatch.category}" instead of "${selectedCategory}"!`, 'error');
-          } else {
-            mismatchCount++;
-            triggerToast(`File ${file.name} does not match any known form codes.`, 'error');
+        // If it starts with another form code from ANOTHER category, indicate mismatch
+        const generalFormMatch = sortedAllForms.find(f => {
+          const cleanCode = f.formCode.trim().toUpperCase();
+          if (!cleanFileName.startsWith(cleanCode)) return false;
+          if (cleanFileName.length > cleanCode.length) {
+            const nextChar = cleanFileName[cleanCode.length];
+            if (/^[A-Z0-9]$/.test(nextChar)) return false;
           }
+          return true;
+        });
+        if (generalFormMatch) {
+          mismatchCount++;
+          triggerToast(`File ${file.name} belongs to category "${generalFormMatch.category}" instead of "${selectedCategory}"!`, 'error');
+        } else {
+          mismatchCount++;
+          triggerToast(`File ${file.name} does not match any known form codes.`, 'error');
         }
       }
     }
 
+    setProcessingFilesState({
+      isProcessing: true,
+      currentFileName: 'Validation & matching complete',
+      processedCount: fileArray.length,
+      totalCount: fileArray.length,
+      progressPercent: 100,
+      statusText: `Processed ${fileArray.length} file(s) (${matchedCount} matched, ${mismatchCount} mismatch)`
+    });
+
     setUploadedFilesMap(updatedMap);
+
+    setTimeout(() => {
+      setProcessingFilesState(null);
+    }, 600);
+
     if (matchedCount > 0 || mismatchCount > 0) {
       triggerToast(`Processed files: ${matchedCount} matched, ${mismatchCount} mismatch.`, mismatchCount > 0 ? 'error' : 'success');
     }
@@ -1961,6 +2055,15 @@ startxref
 
   const handleZipUploadInternal = async (zipFile: File) => {
     try {
+      setProcessingFilesState({
+        isProcessing: true,
+        currentFileName: zipFile.name,
+        processedCount: 0,
+        totalCount: 1,
+        progressPercent: 15,
+        statusText: `Unpacking ZIP archive: ${zipFile.name}...`
+      });
+
       const zip = await JSZip.loadAsync(zipFile);
       const extractedFiles: File[] = [];
       const promises: Promise<void>[] = [];
@@ -1979,12 +2082,23 @@ startxref
       await Promise.all(promises);
 
       if (extractedFiles.length === 0) {
+        setProcessingFilesState(null);
         triggerToast('No files found in the uploaded ZIP archive.', 'error');
         return;
       }
 
+      setProcessingFilesState({
+        isProcessing: true,
+        currentFileName: `${extractedFiles.length} extracted files from ZIP`,
+        processedCount: 0,
+        totalCount: extractedFiles.length,
+        progressPercent: 40,
+        statusText: `Extracted ${extractedFiles.length} file(s). Now validating forms...`
+      });
+
       await handleProcessMultipleFiles(extractedFiles);
     } catch (e: any) {
+      setProcessingFilesState(null);
       triggerToast(`Failed to extract ZIP archive: ${e.message}`, 'error');
     }
   };
@@ -2881,6 +2995,112 @@ startxref
     return `${latest.month} ${latest.year} Forms were uploaded on ${latest.uploadedAt}`;
   };
 
+  const renderUploadingAnimationOverlay = () => {
+    const isProcessingFiles = processingFilesState?.isProcessing;
+    const isB2Uploading = b2UploadStatus === 'zipping' || b2UploadStatus === 'uploading';
+    const isTemplateUploading = templateUploading?.isUploading;
+    const isVesselUploading = uploadProgress > 0;
+
+    if (!isProcessingFiles && !isB2Uploading && !isTemplateUploading && !isVesselUploading) {
+      return null;
+    }
+
+    let title = 'Uploading & Processing File(s)...';
+    let subtitle = 'Validating Safety Management System document structure';
+    let percent = 0;
+    let fileName = '';
+    let stepBadge = 'Processing';
+    let modeLabel = mode === 'reporting' ? 'SMS Reporting' : 'SMS Management';
+
+    if (isProcessingFiles && processingFilesState) {
+      title = processingFilesState.totalCount > 1 
+        ? `Uploading & Processing ${processingFilesState.totalCount} Files`
+        : `Uploading & Validating File`;
+      subtitle = processingFilesState.statusText;
+      percent = processingFilesState.progressPercent;
+      fileName = processingFilesState.currentFileName;
+      stepBadge = processingFilesState.targetFormCode ? `Form ${processingFilesState.targetFormCode}` : `Batch Upload (${processingFilesState.processedCount}/${processingFilesState.totalCount})`;
+    } else if (isB2Uploading) {
+      title = b2UploadStatus === 'zipping' ? 'Compiling Report ZIP Archive...' : 'Transmitting Package to Cloud Server';
+      subtitle = b2UploadStatus === 'zipping' ? 'Packaging validated checklists & reports for secure upload' : 'Uploading compiled vessel package to Backblaze B2 S3 storage';
+      percent = b2UploadProgress;
+      fileName = compiledZipName || `SMS_Report_${reportingMonth}_${reportingYear}.zip`;
+      stepBadge = b2UploadStatus === 'zipping' ? 'Step 1/2: Archiving' : 'Step 2/2: Cloud Upload';
+    } else if (isTemplateUploading && templateUploading) {
+      title = 'Uploading Form Template...';
+      subtitle = 'Reading and attaching document template file to SMS Management';
+      percent = templateUploading.progress;
+      fileName = templateUploading.fileName;
+      stepBadge = 'Management Template';
+    } else if (isVesselUploading) {
+      title = 'Uploading Vessel Report File...';
+      subtitle = 'Transmitting vessel submission file to server';
+      percent = uploadProgress;
+      fileName = selectedUploadFile?.name || 'Vessel Report File';
+      stepBadge = 'Vessel Submission';
+    }
+
+    return (
+      <div className="fixed bottom-6 right-6 z-[9999] max-w-md w-full px-4 animate-in slide-in-from-bottom-5 duration-300">
+        <div className="bg-slate-900/95 backdrop-blur-xl border border-slate-700/80 text-white rounded-2xl p-4 shadow-2xl shadow-blue-900/40 overflow-hidden relative">
+          {/* Animated top shimmer bar */}
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-sky-400 animate-pulse" />
+
+          <div className="flex items-start gap-3.5">
+            {/* Animated Icon Container */}
+            <div className="relative shrink-0 mt-0.5">
+              <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/40 flex items-center justify-center relative overflow-hidden">
+                <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+                <div className="absolute inset-0 bg-blue-500/10 animate-ping rounded-xl opacity-20" />
+              </div>
+              <span className="absolute -bottom-1 -right-1 flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-sky-500"></span>
+              </span>
+            </div>
+
+            {/* Content Details */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="text-[10px] font-extrabold uppercase tracking-widest text-blue-400 bg-blue-950/80 px-2 py-0.5 rounded-md border border-blue-800/60">
+                  {modeLabel} • {stepBadge}
+                </span>
+                <span className="text-xs font-black text-blue-300 tabular-nums">
+                  {percent}%
+                </span>
+              </div>
+
+              <h4 className="text-xs font-bold text-white truncate leading-tight">
+                {title}
+              </h4>
+              
+              <p className="text-[11px] text-slate-300 truncate mt-0.5 font-medium">
+                {subtitle}
+              </p>
+
+              {fileName && (
+                <div className="mt-2 flex items-center gap-1.5 px-2.5 py-1 bg-slate-800/90 rounded-lg border border-slate-700/60 text-[10px] font-mono text-slate-300 truncate">
+                  <FileText className="w-3 h-3 text-sky-400 shrink-0" />
+                  <span className="truncate">{fileName}</span>
+                </div>
+              )}
+
+              {/* Progress Bar with Shimmer */}
+              <div className="mt-2.5 w-full bg-slate-800 rounded-full h-2 overflow-hidden border border-slate-700/50 relative">
+                <div 
+                  className="bg-gradient-to-r from-blue-500 via-indigo-500 to-sky-400 h-full rounded-full transition-all duration-300 ease-out relative"
+                  style={{ width: `${Math.max(5, percent)}%` }}
+                >
+                  <div className="absolute inset-0 bg-white/20 animate-pulse" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="max-w-7xl mx-auto space-y-6 text-slate-700 animate-in fade-in duration-300">
       
@@ -3404,14 +3624,15 @@ startxref
 
                                     <div className="relative shrink-0">
                                       <span className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-blue-100 inline-block cursor-pointer">
-                                        Upload File
+                                        {form.isHira ? 'Upload File(s)' : 'Upload File'}
                                       </span>
                                       <input
                                         type="file"
                                         accept=".docx,.doc,.xlsx,.xls,.pdf"
+                                        multiple={form.isHira}
                                         onChange={(e) => {
-                                          if (e.target.files && e.target.files[0]) {
-                                            handleProcessMultipleFiles([e.target.files[0]], form.id);
+                                          if (e.target.files && e.target.files.length > 0) {
+                                            handleProcessMultipleFiles(e.target.files, form.id);
                                           }
                                         }}
                                         className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
@@ -3422,30 +3643,44 @@ startxref
                               ) : fileState.matched ? (
                                 <div className="space-y-2">
                                   {fileState.files && fileState.files.length > 0 ? (
-                                    fileState.files.map((fileEntry, fileIdx) => (
-                                      <div key={fileIdx} className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 p-2 bg-white rounded-xl border border-slate-200/60 shadow-xs">
-                                        <div className="space-y-0.5">
-                                          <div className="flex items-center gap-2 text-xs">
-                                            <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                                            <span className="font-extrabold text-slate-700">{fileEntry.file.name}</span>
-                                            <span className="text-[10px] text-slate-400 font-bold">({(fileEntry.file.size / 1024).toFixed(1)} KB)</span>
-                                          </div>
-                                          <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider flex items-center gap-1">
-                                            ✓ Form Code, description, and form date matched database successfully.
-                                          </p>
-                                        </div>
-
-                                        <div className="flex items-center gap-2 shrink-0">
-                                          <button
-                                            onClick={() => handleRemoveReportingFile(form.id, fileIdx)}
-                                            className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-red-500 rounded-lg transition-all border border-transparent hover:border-slate-200 cursor-pointer"
-                                            title="Remove Uploaded File"
-                                          >
-                                            <Trash2 className="w-4 h-4" />
-                                          </button>
-                                        </div>
+                                    <div className="space-y-2">
+                                      <div className="flex items-center justify-between text-[11px] font-extrabold text-slate-500 uppercase tracking-wider px-1">
+                                        <span>Uploaded Files ({fileState.files.length})</span>
+                                        {fileState.files.length > 5 && (
+                                          <span className="text-[10px] text-blue-600 font-bold bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100 flex items-center gap-1">
+                                            <span>Showing top 5</span>
+                                            <span>•</span>
+                                            <span className="italic">Scroll to view all {fileState.files.length} ↓</span>
+                                          </span>
+                                        )}
                                       </div>
-                                    ))
+                                      <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
+                                        {fileState.files.map((fileEntry, fileIdx) => (
+                                          <div key={fileIdx} className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 p-2 bg-white rounded-xl border border-slate-200/60 shadow-xs">
+                                            <div className="space-y-0.5">
+                                              <div className="flex items-center gap-2 text-xs">
+                                                <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                                                <span className="font-extrabold text-slate-700">{fileEntry.file.name}</span>
+                                                <span className="text-[10px] text-slate-400 font-bold">({(fileEntry.file.size / 1024).toFixed(1)} KB)</span>
+                                              </div>
+                                              <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider flex items-center gap-1">
+                                                ✓ Form Code, description, and form date matched database successfully.
+                                              </p>
+                                            </div>
+
+                                            <div className="flex items-center gap-2 shrink-0">
+                                              <button
+                                                onClick={() => handleRemoveReportingFile(form.id, fileIdx)}
+                                                className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-red-500 rounded-lg transition-all border border-transparent hover:border-slate-200 cursor-pointer"
+                                                title="Remove Uploaded File"
+                                              >
+                                                <Trash2 className="w-4 h-4" />
+                                              </button>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
                                   ) : (
                                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                                       <div className="space-y-1">
@@ -4275,18 +4510,36 @@ startxref
                         </div>
                       )}
 
-                      <div className="relative">
-                        <span className="w-full py-2 px-3 border border-dashed border-slate-300 hover:border-purple-400 bg-slate-50 hover:bg-purple-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs">
-                          <Plus className="w-3.5 h-3.5 text-purple-500" /> Upload Template File(s)
-                        </span>
-                        <input
-                          type="file"
-                          multiple
-                          accept=".docx,.doc,.xlsx,.xls,.pdf"
-                          onChange={handleTemplateFilesChange}
-                          className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-                        />
-                      </div>
+                      {templateUploading?.isUploading ? (
+                        <div className="p-2.5 bg-purple-50 rounded-xl border border-purple-200 space-y-1.5 animate-pulse">
+                          <div className="flex items-center justify-between text-xs font-bold text-purple-900">
+                            <span className="flex items-center gap-1.5 truncate">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-600 shrink-0" />
+                              <span className="truncate">{templateUploading.fileName}</span>
+                            </span>
+                            <span className="text-[10px] font-extrabold text-purple-700 tabular-nums">{templateUploading.progress}%</span>
+                          </div>
+                          <div className="w-full bg-purple-200 rounded-full h-1.5 overflow-hidden">
+                            <div 
+                              className="bg-purple-600 h-full rounded-full transition-all duration-200"
+                              style={{ width: `${templateUploading.progress}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <span className="w-full py-2 px-3 border border-dashed border-slate-300 hover:border-purple-400 bg-slate-50 hover:bg-purple-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs">
+                            <Plus className="w-3.5 h-3.5 text-purple-500" /> Upload Template File(s)
+                          </span>
+                          <input
+                            type="file"
+                            multiple
+                            accept=".docx,.doc,.xlsx,.xls,.pdf"
+                            onChange={handleTemplateFilesChange}
+                            className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                          />
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="space-y-1">
@@ -4312,6 +4565,22 @@ startxref
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
+                        </div>
+                      ) : templateUploading?.isUploading ? (
+                        <div className="p-2.5 bg-blue-50 rounded-xl border border-blue-200 space-y-1.5 animate-pulse">
+                          <div className="flex items-center justify-between text-xs font-bold text-blue-900">
+                            <span className="flex items-center gap-1.5 truncate">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                              <span className="truncate">{templateUploading.fileName}</span>
+                            </span>
+                            <span className="text-[10px] font-extrabold text-blue-700 tabular-nums">{templateUploading.progress}%</span>
+                          </div>
+                          <div className="w-full bg-blue-200 rounded-full h-1.5 overflow-hidden">
+                            <div 
+                              className="bg-blue-600 h-full rounded-full transition-all duration-200"
+                              style={{ width: `${templateUploading.progress}%` }}
+                            />
+                          </div>
                         </div>
                       ) : (
                         <div className="relative">
@@ -4380,6 +4649,9 @@ startxref
           </div>
         </div>
       )}
+
+      {/* Global Uploading & Processing Animation Overlay */}
+      {renderUploadingAnimationOverlay()}
 
     </div>
   );
