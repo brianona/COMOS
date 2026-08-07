@@ -2976,18 +2976,12 @@ async function startServer() {
     const tFileSize = typeof template_file_size === 'number' ? template_file_size : null;
 
     try {
-      if (formCode && typeof formCode === 'string') {
-        const trimmedCode = formCode.trim();
-        const [dupRows]: any = await pool.execute(
-          'SELECT id FROM sms_forms WHERE LOWER(TRIM(formCode)) = LOWER(?) AND id != ? AND deleted_at IS NULL',
-          [trimmedCode, id || '']
-        );
-        if (dupRows && dupRows.length > 0) {
-          return res.status(400).json({ error: `Form Code "${trimmedCode}" already exists. Form codes must be unique.` });
-        }
-      }
+      const activeId = id && String(id).trim() ? String(id).trim() : ('f_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
 
-      const [exists]: any = await pool.execute('SELECT id, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files FROM sms_forms WHERE id = ?', [id]);
+      let [exists]: any = await pool.execute(
+        'SELECT id, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files FROM sms_forms WHERE id = ?',
+        [activeId]
+      );
       
       let finalTFileName = tFileName;
       let finalTFileData: Buffer | null = null;
@@ -3011,13 +3005,13 @@ async function startServer() {
           } else if (typeof template_file_data === 'string' && template_file_data.startsWith('B2_KEY:')) {
             fileBuf = Buffer.from(template_file_data);
           } else {
-            fileBuf = Buffer.from(template_file_data, 'base64');
+            fileBuf = Buffer.from(String(template_file_data), 'base64');
           }
 
           if (fileBuf.length > 7 && fileBuf.toString('utf8', 0, 7) === 'B2_KEY:') {
             finalTFileData = fileBuf;
           } else {
-            finalTFileData = await handleFileUpload(tFileName || `template_${id}`, mime, fileBuf, 'sms_templates');
+            finalTFileData = await handleFileUpload(tFileName || `template_${activeId}`, mime, fileBuf, 'sms_templates');
           }
           finalTFileMime = mime;
         } else {
@@ -3026,7 +3020,7 @@ async function startServer() {
           finalTFileMime = null;
           finalTFileSize = null;
         }
-      } else if (exists.length > 0) {
+      } else if (exists && exists.length > 0) {
         finalTFileName = exists[0].template_file_name;
         finalTFileData = exists[0].template_file_data;
         finalTFileMime = exists[0].template_file_mimetype;
@@ -3063,8 +3057,12 @@ async function startServer() {
                 if (fileBuf.length > 7 && fileBuf.toString('utf8', 0, 7) === 'B2_KEY:') {
                   fileDataStr = fileBuf.toString('utf8');
                 } else {
-                  const uploadedBuf = await handleFileUpload(`${tf.name}_${idx}_${id}`, mime, fileBuf, 'sms_templates');
-                  fileDataStr = uploadedBuf.toString('utf8');
+                  const uploadedBuf = await handleFileUpload(`${tf.name}_${idx}_${activeId}`, mime, fileBuf, 'sms_templates');
+                  if (uploadedBuf.length > 7 && uploadedBuf.toString('utf8', 0, 7) === 'B2_KEY:') {
+                    fileDataStr = uploadedBuf.toString('utf8');
+                  } else {
+                    fileDataStr = tf.data;
+                  }
                 }
               }
             }
@@ -3079,24 +3077,25 @@ async function startServer() {
         } else {
           finalTemplateFilesVal = null;
         }
-      } else if (exists.length > 0) {
+      } else if (exists && exists.length > 0) {
         finalTemplateFilesVal = exists[0].template_files || null;
       }
 
-      if (exists.length > 0) {
+      if (exists && exists.length > 0) {
         await pool.execute(
           'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, template_file_name = ?, template_file_data = ?, template_file_mimetype = ?, template_file_size = ?, template_files = ?, deleted_at = NULL WHERE id = ?',
-          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal, id]
+          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal, activeId]
         );
       } else {
         await pool.execute(
           'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [id, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal]
+          [activeId, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal]
         );
       }
-      res.json({ success: true });
+      res.json({ success: true, id: activeId });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      console.error('Error in POST /api/sms/forms:', e);
+      res.status(500).json({ error: e.message || 'Failed to save form.' });
     }
   });
 

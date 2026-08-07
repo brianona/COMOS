@@ -2586,7 +2586,7 @@ startxref
 
     if (token && savedForm) {
       try {
-        await fetch('/api/sms/forms', {
+        const response = await fetch('/api/sms/forms', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -2594,8 +2594,26 @@ startxref
           },
           body: JSON.stringify(savedForm)
         });
-      } catch (err) {
+        
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          console.error('Failed to save SMS form to MySQL:', errData);
+          triggerToast(errData.error || 'Failed to save form to server.', 'error');
+          return;
+        } else {
+          const resData = await response.json().catch(() => ({}));
+          if (resData.id && savedForm.id !== resData.id) {
+            const originalId = savedForm.id;
+            savedForm.id = resData.id;
+            updatedForms = forms.map(f => f.id === originalId ? { ...f, id: resData.id } : f);
+            setForms(updatedForms);
+            safeSaveFormsToLocalStorage(updatedForms);
+          }
+        }
+      } catch (err: any) {
         console.error('Failed to save SMS form to MySQL:', err);
+        triggerToast('Network error while saving form.', 'error');
+        return;
       }
     }
 
