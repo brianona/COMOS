@@ -1915,6 +1915,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [files, setFiles] = useState<FileData[]>([]);
   const [newNote, setNewNote] = useState('');
   const [search, setSearch] = useState('');
+  const [certVesselFilter, setCertVesselFilter] = useState('');
   const [newExpDate, setNewExpDate] = useState('');
   const [selectedVessel, setSelectedVessel] = useState<Vessel | null>(null);
   const [vesselCertSearch, setVesselCertSearch] = useState('');
@@ -2668,6 +2669,16 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
 
   const filteredCerts = certs.filter(c => {
+    if (certVesselFilter) {
+      if (certVesselFilter === 'OTHER') {
+        if (c.vessel_id || c.vessel_name) return false;
+      } else {
+        const selVessel = vessels.find(v => String(v.id) === certVesselFilter);
+        const match = (c.vessel_id && String(c.vessel_id) === certVesselFilter) ||
+                      (selVessel && c.vessel_name && c.vessel_name.toLowerCase() === selVessel.name.toLowerCase());
+        if (!match) return false;
+      }
+    }
     const s = (search || '').toLowerCase();
     return (c.name || '').toLowerCase().includes(s) || 
            (c.vessel_name || '').toLowerCase().includes(s) ||
@@ -3656,6 +3667,17 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                     <p className="text-[10px] font-black uppercase text-slate-400 mt-0.5">Fully searchable global compliance registry</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={certVesselFilter}
+                      onChange={(e) => setCertVesselFilter(e.target.value)}
+                      className="px-3 py-2 bg-blue-50/50 border border-blue-100/50 rounded-lg text-xs font-bold uppercase text-slate-700 focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                    >
+                      <option value="">All Vessels</option>
+                      {vessels.map(v => (
+                        <option key={v.id} value={String(v.id)}>{v.name}</option>
+                      ))}
+                      <option value="OTHER">Other / Shore Office</option>
+                    </select>
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
                       <input 
@@ -11171,6 +11193,7 @@ const AdminPanel = ({
   const [vesselSortField, setVesselSortField] = useState<'name' | 'team' | 'owner'>('name');
   const [vesselSortOrder, setVesselSortOrder] = useState<'asc' | 'desc'>('asc');
   const [certSearch, setCertSearch] = useState('');
+  const [adminCertVesselFilter, setAdminCertVesselFilter] = useState('');
   const [certSortField, setCertSortField] = useState<'name' | 'vessel' | 'expiration_date'>('expiration_date');
   const [certSortOrder, setCertSortOrder] = useState<'asc' | 'desc'>('asc');
   const [systemTime, setSystemTime] = useState<{ time: string, timezone: string } | null>(null);
@@ -12601,6 +12624,17 @@ const AdminPanel = ({
               <div className="flex items-center justify-between mb-6">
                 <h2 className="font-bold flex items-center gap-2 text-blue-900"><FileText className="w-5 h-5" /> Certificate/Service Report List</h2>
                 <div className="flex items-center gap-2">
+                  <select
+                    value={adminCertVesselFilter}
+                    onChange={(e) => setAdminCertVesselFilter(e.target.value)}
+                    className="px-2 py-1.5 bg-blue-50/50 border-none rounded-lg text-[10px] font-bold uppercase tracking-wider text-slate-600 focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                  >
+                    <option value="">All Vessels</option>
+                    {vessels.map(v => (
+                      <option key={v.id} value={String(v.id)}>{v.name}</option>
+                    ))}
+                    <option value="OTHER">Other / Shore Office</option>
+                  </select>
                   <div className="relative w-32">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-3 h-3" />
                     <input 
@@ -12633,6 +12667,19 @@ const AdminPanel = ({
                 {[...certs]
                   .filter(c => {
                     if (isVessel) return c.vessel_id === user.vessel_id;
+                    return true;
+                  })
+                  .filter(c => {
+                    if (adminCertVesselFilter) {
+                      if (adminCertVesselFilter === 'OTHER') {
+                        if (c.vessel_id || c.vessel_name) return false;
+                      } else {
+                        const selVessel = vessels.find(v => String(v.id) === adminCertVesselFilter);
+                        const match = (c.vessel_id && String(c.vessel_id) === adminCertVesselFilter) ||
+                                      (selVessel && c.vessel_name && c.vessel_name.toLowerCase() === selVessel.name.toLowerCase());
+                        if (!match) return false;
+                      }
+                    }
                     return true;
                   })
                   .filter(c => {

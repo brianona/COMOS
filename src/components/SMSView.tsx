@@ -50,8 +50,8 @@ const CATEGORY_ICONS: Record<string, React.ComponentType<any>> = {
   '1. Monthly': Calendar,
   '2. Voyage': Compass,
   '3. Quarterly': Layers,
-  '4. Semi Annual': CalendarCheck,
-  '4A. Annually': CalendarDays,
+  '4A. Semi Annual': CalendarCheck,
+  '4B. Annually': CalendarDays,
   '5. Occasional': ClipboardList,
   '6. Letter Form': Send,
   '7. Company Records (Office)': Building2,
@@ -161,13 +161,13 @@ const INITIAL_FORMS: SMSForm[] = [
   { id: 'f_11', category: '3. Quarterly', formCode: 'COMI-SM-3-1', description: 'Enclosed Space Entry & Rescue Drill Report', formDate: '10 January 2026', scope: 'All Vessels' },
   { id: 'f_12', category: '3. Quarterly', formCode: 'COMI-SM-3-2', description: 'Lifeboat Launching & Emergency Steering Gear Review', formDate: '28 February 2026', scope: 'All Vessels' },
 
-  // 4. Semi Annual
-  { id: 'f_13', category: '4. Semi Annual', formCode: 'COMI-SM-4-1', description: 'Safety Committee Meeting & Officer Review Minutes', formDate: '05 March 2026', scope: 'All Vessels' },
-  { id: 'f_14', category: '4. Semi Annual', formCode: 'COMI-SM-4-2', description: 'Onboard Safety Training & Drills Assessment Log', formDate: '18 April 2026', scope: 'All Vessels' },
+  // 4A. Semi Annual
+  { id: 'f_13', category: '4A. Semi Annual', formCode: 'COMI-SM-4-1', description: 'Safety Committee Meeting & Officer Review Minutes', formDate: '05 March 2026', scope: 'All Vessels' },
+  { id: 'f_14', category: '4A. Semi Annual', formCode: 'COMI-SM-4-2', description: 'Onboard Safety Training & Drills Assessment Log', formDate: '18 April 2026', scope: 'All Vessels' },
 
-  // 4A. Annually
-  { id: 'f_15', category: '4A. Annually', formCode: 'COMI-SM-4A-1', description: 'Master\'s Review and Evaluation of Safety Management System (SMS)', formDate: '14 May 2026', scope: 'All Vessels' },
-  { id: 'f_16', category: '4A. Annually', formCode: 'COMI-SM-4A-2', description: 'Annual Fire-Fighting & Safety Appliance Certificate Verification', formDate: '10 June 2026', scope: 'All Vessels' },
+  // 4B. Annually
+  { id: 'f_15', category: '4B. Annually', formCode: 'COMI-SM-4A-1', description: 'Master\'s Review and Evaluation of Safety Management System (SMS)', formDate: '14 May 2026', scope: 'All Vessels' },
+  { id: 'f_16', category: '4B. Annually', formCode: 'COMI-SM-4A-2', description: 'Annual Fire-Fighting & Safety Appliance Certificate Verification', formDate: '10 June 2026', scope: 'All Vessels' },
 
   // 5. Occasional
   { id: 'f_17', category: '5. Occasional', formCode: 'COMI-SM-5-1', description: 'Hot Work Authorization Permit', formDate: '28 November 2025', scope: 'All Vessels' },
@@ -262,7 +262,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [isAccordion1Open, setIsAccordion1Open] = useState(false);
   const [isAccordion2Open, setIsAccordion2Open] = useState(false);
   const [isAccordion3Open, setIsAccordion3Open] = useState(false);
-  const [isAccordion4Open, setIsAccordion4Open] = useState(false);
+  const [isAccordion4Open, setIsAccordion4Open] = useState(true);
 
   // Form Modals states
   const [showFormModal, setShowFormModal] = useState(false);
@@ -3204,6 +3204,246 @@ startxref
       {/* Accordions sections list */}
       <div className="space-y-4">
         
+        {/* Accordion 4: Manage Forms and Checklists Details */}
+        {mode === 'management' && (
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden">
+            <button 
+              onClick={() => setIsAccordion4Open(!isAccordion4Open)}
+              className="w-full p-4 flex items-center justify-between font-bold text-xs text-blue-900 bg-blue-50/20 hover:bg-blue-50/40 border-b border-slate-100 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-2 h-2 rounded-full bg-blue-600" />
+                <span className="text-xs font-extrabold tracking-tight">Manage Forms and Checklists Details</span>
+              </div>
+              {isAccordion4Open ? <ChevronUp className="w-4 h-4 text-blue-900" /> : <ChevronDown className="w-4 h-4 text-blue-900" />}
+            </button>
+
+            {isAccordion4Open && (
+              <div className="p-6 space-y-4 bg-white animate-in slide-in-from-top-2 duration-200">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider">Current Section Selected</span>
+                    <p className="text-xs font-black text-slate-800 uppercase tracking-wide">
+                      Section: {selectedCategory}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    {/* Search bar for forms */}
+                    <div className="relative w-48 sm:w-64">
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        placeholder="Search section forms..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-[11px] focus:outline-none focus:border-blue-500 font-semibold"
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => handleOpenFormModal()}
+                      className="px-3.5 py-1.5 bg-[#7cfc00] text-slate-800 hover:bg-[#6edc00] text-[11px] font-extrabold rounded-lg flex items-center gap-1 transition-all cursor-pointer border border-[#6edc00]/40"
+                    >
+                      <Plus className="w-3.5 h-3.5 stroke-[2.5]" /> Add file
+                    </button>
+                  </div>
+                </div>
+
+                {/* Forms Table */}
+                <div className="overflow-x-auto rounded-xl border border-slate-100 shadow-2xs">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-800 border-b border-slate-700 text-[10px] font-black text-white uppercase tracking-wider">
+                        <th className="px-3 py-3.5 w-[4%] text-center">#</th>
+                        <th className="px-3 py-3.5 w-[8%] text-center">Order</th>
+                        <th className="px-4 py-3.5 w-[14%]">Form Code</th>
+                        <th className="px-4 py-3.5 w-[10%]">Type</th>
+                        <th className="px-4 py-3.5 w-[28%]">Description</th>
+                        <th className="px-4 py-3.5 w-[12%]">Form Date</th>
+                        <th className="px-4 py-3.5 w-[16%]">Scope &amp; Limits</th>
+                        <th className="px-4 py-3.5 w-[8%] text-center">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs font-semibold">
+                      {(() => {
+                        const categoryForms = forms.filter(f => f.category === selectedCategory);
+                        const filteredForms = categoryForms.filter(f =>
+                          f.formCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          f.description.toLowerCase().includes(searchQuery.toLowerCase())
+                        );
+
+                        if (categoryForms.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={8} className="text-center p-12 text-slate-400 italic">
+                                No forms defined under section {selectedCategory} yet.
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        if (filteredForms.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={8} className="text-center p-8 text-slate-400 italic">
+                                No forms match search query "{searchQuery}".
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return filteredForms.map((f) => {
+                          const categoryIdx = categoryForms.findIndex(item => item.id === f.id);
+                          const isFirst = categoryIdx === 0;
+                          const isLast = categoryIdx === categoryForms.length - 1;
+
+                          return (
+                            <tr key={f.id} className="hover:bg-slate-50/40 transition-colors">
+                              <td className="px-3 py-3 text-center text-slate-400 font-extrabold text-[11px]">
+                                {categoryIdx + 1}
+                              </td>
+                              <td className="px-2 py-3 text-center">
+                                <div className="flex items-center justify-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleReorderForm(f.id, 'up')}
+                                    disabled={isFirst}
+                                    className="p-1 rounded-md bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 disabled:opacity-20 disabled:hover:bg-slate-100 disabled:hover:text-slate-600 transition-all cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                                    title="Move Form Up"
+                                  >
+                                    <ArrowUp className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleReorderForm(f.id, 'down')}
+                                    disabled={isLast}
+                                    className="p-1 rounded-md bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 disabled:opacity-20 disabled:hover:bg-slate-100 disabled:hover:text-slate-600 transition-all cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                                    title="Move Form Down"
+                                  >
+                                    <ArrowDown className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 font-mono font-black text-slate-700">
+                                {f.formCode}
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`px-2 py-0.5 text-[9px] font-extrabold uppercase rounded-md border inline-block ${
+                                  f.type === 'Checklist' 
+                                    ? 'bg-purple-50 text-purple-700 border-purple-200' 
+                                    : 'bg-blue-50 text-blue-700 border-blue-200'
+                                }`}>
+                                  {f.type || 'Form'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-slate-600 font-bold leading-normal">
+                                {f.description}
+                              </td>
+                              <td className="px-4 py-3 text-slate-500 font-medium">
+                                {f.formDate || '—'}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex flex-col gap-1 items-start">
+                                  <div className="flex flex-wrap gap-1 items-center">
+                                    <span className="px-2 py-0.5 bg-slate-800 text-white font-extrabold text-[9px] rounded-md tracking-wider inline-flex items-center gap-1">
+                                      🌐 {f.scope}
+                                    </span>
+                                    {f.vesselType && f.vesselType !== 'All Vessels' && (
+                                      <span className="px-2 py-0.5 bg-slate-100 text-slate-700 font-bold text-[9px] rounded-md border border-slate-200">
+                                        🚢 {f.vesselType}
+                                      </span>
+                                    )}
+                                    {f.isHira && (
+                                      <span className="px-2 py-0.5 bg-purple-100 text-purple-700 font-extrabold text-[9px] rounded-md border border-purple-200">
+                                        ⚡ Multiple File Form
+                                      </span>
+                                    )}
+
+                                  </div>
+                                  <div className="flex flex-wrap gap-1 items-center">
+                                    {f.allowedFileTypes && f.allowedFileTypes.length > 0 ? (
+                                      <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 font-extrabold text-[9px] rounded-md border border-indigo-100">
+                                        📁 {f.allowedFileTypes.join(', ')}
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 bg-slate-100 text-slate-500 font-medium text-[9px] rounded-md">
+                                        📁 All file types
+                                      </span>
+                                    )}
+                                    {f.removeFilenameRestriction ? (
+                                      <span className="px-2 py-0.5 bg-amber-50 text-amber-700 font-bold text-[9px] rounded-md border border-amber-200">
+                                        🔓 No Filename Limit
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 bg-slate-50 text-slate-400 font-medium text-[9px] rounded-md border border-slate-200">
+                                        🔒 Prefix Check
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex flex-col items-center justify-center gap-2">
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      onClick={() => handleOpenFormModal(f)}
+                                      className="text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" /> Edit
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteForm(f.id, f.formCode)}
+                                      className="text-red-500 hover:text-red-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" /> Delete
+                                    </button>
+                                  </div>
+
+                                  {f.isHira && f.template_files && f.template_files.length > 0 ? (
+                                    <div className="relative inline-block text-left">
+                                      <select
+                                        onChange={(e) => {
+                                          const idx = parseInt(e.target.value, 10);
+                                          if (!isNaN(idx)) {
+                                            handleDownloadFormTemplate(f, idx);
+                                          }
+                                          e.target.value = "";
+                                        }}
+                                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-[10px] font-extrabold uppercase tracking-wide rounded-md py-1 px-1.5 focus:outline-none cursor-pointer max-w-full whitespace-normal break-words"
+                                      >
+                                        <option value="" disabled selected>Download template...</option>
+                                        {f.template_files.map((tf, index) => (
+                                          <option key={index} value={index} title={tf.name} className="py-1">
+                                            {tf.name.length > 25 ? tf.name.slice(0, 25) + '...' : tf.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  ) : f.template_file_name ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDownloadFormTemplate(f)}
+                                      className="text-emerald-600 hover:text-emerald-800 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                      title={`Download template: ${f.template_file_name}`}
+                                    >
+                                      <Download className="w-3.5 h-3.5" /> Template
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Accordion 1: Set Monthly Submission Period */}
         {mode === 'management' && (
           <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden">
@@ -3618,12 +3858,12 @@ startxref
                                             }
                                             e.target.value = "";
                                           }}
-                                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-emerald-100 focus:outline-none cursor-pointer"
+                                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-emerald-100 focus:outline-none cursor-pointer max-w-full whitespace-normal break-words"
                                         >
                                           <option value="" disabled selected className="text-slate-800 bg-white">Download template...</option>
                                           {form.template_files.map((tf, index) => (
-                                            <option key={index} value={index} className="text-slate-800 bg-white font-semibold">
-                                              {tf.name.length > 20 ? tf.name.slice(0, 20) + '...' : tf.name} ({typeof tf.size === 'number' ? (tf.size / 1024).toFixed(1) : '0.0'} KB)
+                                            <option key={index} value={index} title={tf.name} className="text-slate-800 bg-white font-semibold py-1">
+                                              {tf.name.length > 25 ? tf.name.slice(0, 25) + '...' : tf.name}
                                             </option>
                                           ))}
                                         </select>
@@ -4038,246 +4278,6 @@ startxref
           </div>
         )}
 
-        {/* Accordion 4: Manage Forms and Checklists Details */}
-        {mode === 'management' && (
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden">
-            <button 
-              onClick={() => setIsAccordion4Open(!isAccordion4Open)}
-              className="w-full p-4 flex items-center justify-between font-bold text-xs text-blue-900 bg-blue-50/20 hover:bg-blue-50/40 border-b border-slate-100 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full bg-blue-600" />
-                <span className="text-xs font-extrabold tracking-tight">Manage Forms and Checklists Details</span>
-              </div>
-              {isAccordion4Open ? <ChevronUp className="w-4 h-4 text-blue-900" /> : <ChevronDown className="w-4 h-4 text-blue-900" />}
-            </button>
-
-            {isAccordion4Open && (
-              <div className="p-6 space-y-4 bg-white animate-in slide-in-from-top-2 duration-200">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-                  <div className="space-y-0.5">
-                    <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wider">Current Section Selected</span>
-                    <p className="text-xs font-black text-slate-800 uppercase tracking-wide">
-                      Section: {selectedCategory}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    {/* Search bar for forms */}
-                    <div className="relative w-48 sm:w-64">
-                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        placeholder="Search section forms..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-[11px] focus:outline-none focus:border-blue-500 font-semibold"
-                      />
-                    </div>
-
-                    <button
-                      onClick={() => handleOpenFormModal()}
-                      className="px-3.5 py-1.5 bg-[#7cfc00] text-slate-800 hover:bg-[#6edc00] text-[11px] font-extrabold rounded-lg flex items-center gap-1 transition-all cursor-pointer border border-[#6edc00]/40"
-                    >
-                      <Plus className="w-3.5 h-3.5 stroke-[2.5]" /> Add file
-                    </button>
-                  </div>
-                </div>
-
-                {/* Forms Table */}
-                <div className="overflow-x-auto rounded-xl border border-slate-100 shadow-2xs">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-slate-800 border-b border-slate-700 text-[10px] font-black text-white uppercase tracking-wider">
-                        <th className="px-3 py-3.5 w-[4%] text-center">#</th>
-                        <th className="px-3 py-3.5 w-[8%] text-center">Order</th>
-                        <th className="px-4 py-3.5 w-[14%]">Form Code</th>
-                        <th className="px-4 py-3.5 w-[10%]">Type</th>
-                        <th className="px-4 py-3.5 w-[28%]">Description</th>
-                        <th className="px-4 py-3.5 w-[12%]">Form Date</th>
-                        <th className="px-4 py-3.5 w-[16%]">Scope &amp; Limits</th>
-                        <th className="px-4 py-3.5 w-[8%] text-center">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-xs font-semibold">
-                      {(() => {
-                        const categoryForms = forms.filter(f => f.category === selectedCategory);
-                        const filteredForms = categoryForms.filter(f =>
-                          f.formCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          f.description.toLowerCase().includes(searchQuery.toLowerCase())
-                        );
-
-                        if (categoryForms.length === 0) {
-                          return (
-                            <tr>
-                              <td colSpan={8} className="text-center p-12 text-slate-400 italic">
-                                No forms defined under section {selectedCategory} yet.
-                              </td>
-                            </tr>
-                          );
-                        }
-
-                        if (filteredForms.length === 0) {
-                          return (
-                            <tr>
-                              <td colSpan={8} className="text-center p-8 text-slate-400 italic">
-                                No forms match search query "{searchQuery}".
-                              </td>
-                            </tr>
-                          );
-                        }
-
-                        return filteredForms.map((f) => {
-                          const categoryIdx = categoryForms.findIndex(item => item.id === f.id);
-                          const isFirst = categoryIdx === 0;
-                          const isLast = categoryIdx === categoryForms.length - 1;
-
-                          return (
-                            <tr key={f.id} className="hover:bg-slate-50/40 transition-colors">
-                              <td className="px-3 py-3 text-center text-slate-400 font-extrabold text-[11px]">
-                                {categoryIdx + 1}
-                              </td>
-                              <td className="px-2 py-3 text-center">
-                                <div className="flex items-center justify-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleReorderForm(f.id, 'up')}
-                                    disabled={isFirst}
-                                    className="p-1 rounded-md bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 disabled:opacity-20 disabled:hover:bg-slate-100 disabled:hover:text-slate-600 transition-all cursor-pointer disabled:cursor-not-allowed shadow-2xs"
-                                    title="Move Form Up"
-                                  >
-                                    <ArrowUp className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleReorderForm(f.id, 'down')}
-                                    disabled={isLast}
-                                    className="p-1 rounded-md bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 disabled:opacity-20 disabled:hover:bg-slate-100 disabled:hover:text-slate-600 transition-all cursor-pointer disabled:cursor-not-allowed shadow-2xs"
-                                    title="Move Form Down"
-                                  >
-                                    <ArrowDown className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 font-mono font-black text-slate-700">
-                                {f.formCode}
-                              </td>
-                              <td className="px-4 py-3">
-                                <span className={`px-2 py-0.5 text-[9px] font-extrabold uppercase rounded-md border inline-block ${
-                                  f.type === 'Checklist' 
-                                    ? 'bg-purple-50 text-purple-700 border-purple-200' 
-                                    : 'bg-blue-50 text-blue-700 border-blue-200'
-                                }`}>
-                                  {f.type || 'Form'}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-slate-600 font-bold leading-normal">
-                                {f.description}
-                              </td>
-                              <td className="px-4 py-3 text-slate-500 font-medium">
-                                {f.formDate || '—'}
-                              </td>
-                              <td className="px-4 py-3">
-                                <div className="flex flex-col gap-1 items-start">
-                                  <div className="flex flex-wrap gap-1 items-center">
-                                    <span className="px-2 py-0.5 bg-slate-800 text-white font-extrabold text-[9px] rounded-md tracking-wider inline-flex items-center gap-1">
-                                      🌐 {f.scope}
-                                    </span>
-                                    {f.vesselType && f.vesselType !== 'All Vessels' && (
-                                      <span className="px-2 py-0.5 bg-slate-100 text-slate-700 font-bold text-[9px] rounded-md border border-slate-200">
-                                        🚢 {f.vesselType}
-                                      </span>
-                                    )}
-                                    {f.isHira && (
-                                      <span className="px-2 py-0.5 bg-purple-100 text-purple-700 font-extrabold text-[9px] rounded-md border border-purple-200">
-                                        ⚡ Multiple File Form
-                                      </span>
-                                    )}
-
-                                  </div>
-                                  <div className="flex flex-wrap gap-1 items-center">
-                                    {f.allowedFileTypes && f.allowedFileTypes.length > 0 ? (
-                                      <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 font-extrabold text-[9px] rounded-md border border-indigo-100">
-                                        📁 {f.allowedFileTypes.join(', ')}
-                                      </span>
-                                    ) : (
-                                      <span className="px-2 py-0.5 bg-slate-100 text-slate-500 font-medium text-[9px] rounded-md">
-                                        📁 All file types
-                                      </span>
-                                    )}
-                                    {f.removeFilenameRestriction ? (
-                                      <span className="px-2 py-0.5 bg-amber-50 text-amber-700 font-bold text-[9px] rounded-md border border-amber-200">
-                                        🔓 No Filename Limit
-                                      </span>
-                                    ) : (
-                                      <span className="px-2 py-0.5 bg-slate-50 text-slate-400 font-medium text-[9px] rounded-md border border-slate-200">
-                                        🔒 Prefix Check
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3">
-                                <div className="flex flex-col items-center justify-center gap-2">
-                                  <div className="flex items-center gap-3">
-                                    <button
-                                      onClick={() => handleOpenFormModal(f)}
-                                      className="text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                    >
-                                      <Edit3 className="w-3.5 h-3.5" /> Edit
-                                    </button>
-                                    <button
-                                      onClick={() => handleDeleteForm(f.id, f.formCode)}
-                                      className="text-red-500 hover:text-red-700 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" /> Delete
-                                    </button>
-                                  </div>
-
-                                  {f.isHira && f.template_files && f.template_files.length > 0 ? (
-                                    <div className="relative inline-block text-left">
-                                      <select
-                                        onChange={(e) => {
-                                          const idx = parseInt(e.target.value, 10);
-                                          if (!isNaN(idx)) {
-                                            handleDownloadFormTemplate(f, idx);
-                                          }
-                                          e.target.value = "";
-                                        }}
-                                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-[10px] font-extrabold uppercase tracking-wide rounded-md py-1 px-1.5 focus:outline-none cursor-pointer"
-                                      >
-                                        <option value="" disabled selected>Download template...</option>
-                                        {f.template_files.map((tf, index) => (
-                                          <option key={index} value={index}>
-                                            {tf.name.length > 20 ? tf.name.slice(0, 20) + '...' : tf.name} ({typeof tf.size === 'number' ? (tf.size / 1024).toFixed(1) : '0.0'} KB)
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </div>
-                                  ) : f.template_file_name ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDownloadFormTemplate(f)}
-                                      className="text-emerald-600 hover:text-emerald-800 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                      title={`Download template: ${f.template_file_name}`}
-                                    >
-                                      <Download className="w-3.5 h-3.5" /> Template
-                                    </button>
-                                  ) : null}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        });
-                      })()}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
       </div>
 
       {/* Add / Edit Form Modal */}
@@ -4501,14 +4501,11 @@ startxref
                       {formTemplateFilesInput.length > 0 && (
                         <div className="max-h-24 overflow-y-auto space-y-1 p-1 bg-slate-50 rounded-xl border border-slate-100 mb-1.5">
                           {formTemplateFilesInput.map((tf, index) => (
-                            <div key={index} className="flex items-center justify-between p-1 bg-white rounded-lg border border-slate-200 shadow-3xs">
-                              <div className="flex items-center gap-1.5 overflow-hidden">
+                            <div key={index} className="flex items-center justify-between p-1 bg-white rounded-lg border border-slate-200 shadow-3xs gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
                                 <FileText className="w-3.5 h-3.5 text-purple-600 shrink-0" />
-                                <div className="truncate text-left">
-                                  <p className="text-[10px] font-extrabold text-slate-800 truncate leading-tight">{tf.name}</p>
-                                  {tf.size ? (
-                                    <p className="text-[8px] text-slate-400 font-bold">{(tf.size / 1024).toFixed(1)} KB</p>
-                                  ) : null}
+                                <div className="text-left min-w-0 flex-1">
+                                  <p className="text-[10px] font-extrabold text-slate-800 break-words whitespace-normal leading-tight">{tf.name}</p>
                                 </div>
                               </div>
                               <button
