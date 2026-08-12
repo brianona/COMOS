@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import JSZip from 'jszip';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -42,6 +42,7 @@ import {
   FileSpreadsheet,
   ArrowUp,
   ArrowDown,
+  Clock,
   File as FileIcon
 } from 'lucide-react';
 
@@ -72,6 +73,7 @@ export interface SMSForm {
   allowedFileTypes?: string[];
   sort_order?: number;
   isHira?: boolean;
+  isAcknowledgementRequired?: boolean;
   template_file_name?: string;
   template_file_data?: string;
   template_file_mimetype?: string;
@@ -129,20 +131,26 @@ export interface VesselUpload {
   uploadedAt: string; // ISO string or human-readable format
   fileSize: string;
   category?: string;
+  isAcknowledged?: boolean;
+  ackFileName?: string;
+  ackFileSize?: string;
+  ackUploadedAt?: string;
+  ackUploadedBy?: string;
 }
 
 interface SMSViewProps {
   vessels: any[];
   currentUser: any;
   token?: string;
-  mode?: 'management' | 'reporting';
+  mode?: 'management' | 'reporting' | 'acknowledgement';
   flags?: any[];
+  onPendingAckCountChange?: (count: number) => void;
 }
 
 // Initial seed data for forms under categories
 const INITIAL_FORMS: SMSForm[] = [
   // 1. Monthly
-  { id: 'f_1', category: '1. Monthly', formCode: 'COMI-SM-1-1', description: 'ME & DG Jacket Cooling Fresh Water & BOILER Water condition Report', formDate: '28 November 2025', scope: 'All Vessels', vesselType: 'All Types' },
+  { id: 'f_1', category: '1. Monthly', formCode: 'COMI-SM-1-1', description: 'ME & DG Jacket Cooling Fresh Water & BOILER Water condition Report', formDate: '28 November 2025', scope: 'All Vessels', vesselType: 'All Types', isAcknowledgementRequired: true },
   { id: 'f_2', category: '1. Monthly', formCode: 'COMI-SM-1-2', description: 'Check List For Certificates & Documents', formDate: '22 May 2026', scope: 'All Vessels', vesselType: 'All Types' },
   { id: 'f_3', category: '1. Monthly', formCode: 'COMI-SM-1-3', description: 'Deck Part Monthly Maintenance Report', formDate: '28 November 2025', scope: 'All Vessels', vesselType: 'Bulk Carrier' },
   { id: 'f_4', category: '1. Monthly', formCode: 'COMI-SM-1-3A', description: 'Deck Part Monthly Maintenance Report for Container (for 1952 T.E.U)', formDate: '28 November 2025', scope: 'All Vessels', vesselType: 'Container' },
@@ -158,15 +166,15 @@ const INITIAL_FORMS: SMSForm[] = [
   { id: 'f_10', category: '2. Voyage', formCode: 'COMI-SM-2-3', description: 'Pilot Boarding & Watch handover Guidelines', formDate: '15 March 2026', scope: 'All Vessels' },
 
   // 3. Quarterly
-  { id: 'f_11', category: '3. Quarterly', formCode: 'COMI-SM-3-1', description: 'Enclosed Space Entry & Rescue Drill Report', formDate: '10 January 2026', scope: 'All Vessels' },
+  { id: 'f_11', category: '3. Quarterly', formCode: 'COMI-SM-3-1', description: 'Enclosed Space Entry & Rescue Drill Report', formDate: '10 January 2026', scope: 'All Vessels', isAcknowledgementRequired: true },
   { id: 'f_12', category: '3. Quarterly', formCode: 'COMI-SM-3-2', description: 'Lifeboat Launching & Emergency Steering Gear Review', formDate: '28 February 2026', scope: 'All Vessels' },
 
   // 4A. Semi Annual
-  { id: 'f_13', category: '4A. Semi Annual', formCode: 'COMI-SM-4-1', description: 'Safety Committee Meeting & Officer Review Minutes', formDate: '05 March 2026', scope: 'All Vessels' },
+  { id: 'f_13', category: '4A. Semi Annual', formCode: 'COMI-SM-4-1', description: 'Safety Committee Meeting & Officer Review Minutes', formDate: '05 March 2026', scope: 'All Vessels', isAcknowledgementRequired: true },
   { id: 'f_14', category: '4A. Semi Annual', formCode: 'COMI-SM-4-2', description: 'Onboard Safety Training & Drills Assessment Log', formDate: '18 April 2026', scope: 'All Vessels' },
 
   // 4B. Annually
-  { id: 'f_15', category: '4B. Annually', formCode: 'COMI-SM-4A-1', description: 'Master\'s Review and Evaluation of Safety Management System (SMS)', formDate: '14 May 2026', scope: 'All Vessels' },
+  { id: 'f_15', category: '4B. Annually', formCode: 'COMI-SM-4A-1', description: 'Master\'s Review and Evaluation of Safety Management System (SMS)', formDate: '14 May 2026', scope: 'All Vessels', isAcknowledgementRequired: true },
   { id: 'f_16', category: '4B. Annually', formCode: 'COMI-SM-4A-2', description: 'Annual Fire-Fighting & Safety Appliance Certificate Verification', formDate: '10 June 2026', scope: 'All Vessels' },
 
   // 5. Occasional
@@ -215,29 +223,52 @@ const INITIAL_SUBMISSIONS: VesselSubmissionPeriod[] = [
 ];
 
 const INITIAL_UPLOADS: VesselUpload[] = [
-  { id: 'up_1', vesselId: 'v3', vesselName: 'CD HUELVA', month: 'June', year: '2026', fileName: 'CD_HUELVA_June_2026_SMS_Package.zip', uploadedAt: 'July 5, 2026 at 07:17 PM', fileSize: '14.2 MB', category: '1. Monthly' },
-  { id: 'up_2', vesselId: 'v6', vesselName: 'CNC CHEETAH', month: 'June', year: '2026', fileName: 'CNC_CHEETAH_June_2026_Forms.pdf', uploadedAt: 'July 1, 2026 at 09:15 PM', fileSize: '8.4 MB', category: '1. Monthly' },
-  { id: 'up_3', vesselId: 'v8', vesselName: 'CNC NEPTUNE', month: 'June', year: '2026', fileName: 'CNC_NEPTUNE_SMS_June26.zip', uploadedAt: 'July 3, 2026 at 03:12 PM', fileSize: '18.1 MB', category: '1. Monthly' },
-  { id: 'up_4', vesselId: 'v9', vesselName: 'CNC PUMA', month: 'May', year: '2026', fileName: 'CNC_PUMA_May_Submission.pdf', uploadedAt: 'July 5, 2026 at 02:51 PM', fileSize: '12.5 MB', category: '1. Monthly' },
+  { id: 'up_1', vesselId: 'v3', vesselName: 'CD HUELVA', month: 'June', year: '2026', fileName: 'COMI-SM-1-1_CD_HUELVA_June_2026_WaterReport.pdf', uploadedAt: 'July 5, 2026 at 07:17 PM', fileSize: '14.2 MB', category: '1. Monthly', isAcknowledged: true, ackFileName: 'COMI-SM-1-1_CD_HUELVA_Signed_ACK.pdf' },
+  { id: 'up_2', vesselId: 'v6', vesselName: 'CNC CHEETAH', month: 'June', year: '2026', fileName: 'COMI-SM-1-1_CNC_CHEETAH_June_2026_Forms.pdf', uploadedAt: 'July 1, 2026 at 09:15 PM', fileSize: '8.4 MB', category: '1. Monthly', isAcknowledged: false },
+  { id: 'up_3', vesselId: 'v8', vesselName: 'CNC NEPTUNE', month: 'June', year: '2026', fileName: 'COMI-SM-3-1_CNC_NEPTUNE_EnclosedSpace_Drill.pdf', uploadedAt: 'July 3, 2026 at 03:12 PM', fileSize: '18.1 MB', category: '3. Quarterly', isAcknowledged: false },
+  { id: 'up_4', vesselId: 'v9', vesselName: 'CNC PUMA', month: 'May', year: '2026', fileName: 'COMI-SM-4-1_CNC_PUMA_Safety_Committee.pdf', uploadedAt: 'July 5, 2026 at 02:51 PM', fileSize: '12.5 MB', category: '4A. Semi Annual', isAcknowledged: false },
   { id: 'up_5', vesselId: 'v12', vesselName: 'HANDY MERCHANT', month: 'April', year: '2026', fileName: 'HandyMerchant_SMS_April_2026.zip', uploadedAt: 'May 4, 2026 at 02:11 PM', fileSize: '15.9 MB', category: '1. Monthly' },
   { id: 'up_6', vesselId: 'v13', vesselName: 'LIGNUM NETWORK', month: 'June', year: '2026', fileName: 'LignumNet_June2026_SafetyForms.zip', uploadedAt: 'July 4, 2026 at 10:28 AM', fileSize: '22.0 MB', category: '1. Monthly' },
 ];
 
-export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode = 'management', flags = [] }) => {
+export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode = 'management', flags = [], onPendingAckCountChange }) => {
   // Use either external vessels list or standard seed list
-  const vesselsList = externalVessels && externalVessels.length > 0 
-    ? externalVessels.map((v, idx) => ({ 
-        id: v.id || `v_${idx}`, 
-        name: v.name, 
-        flag: v.flag,
-        vessel_type: v.type || v.vessel_type || v.vesselType || 'Bulk Carrier'
-      }))
-    : INITIAL_SUBMISSIONS.map(s => ({ 
-        id: s.vesselId, 
-        name: s.vesselName, 
-        flag: null,
-        vessel_type: (s.vesselName.includes('CHEETAH') || s.vesselName.includes('MARS') || s.vesselName.includes('NEPTUNE') || s.vesselName.includes('CD ')) ? 'Container' : 'Bulk Carrier'
-      }));
+  const vesselsList = useMemo(() => {
+    return externalVessels && externalVessels.length > 0 
+      ? externalVessels.map((v, idx) => ({ 
+          id: v.id || `v_${idx}`, 
+          name: v.name, 
+          flag: v.flag,
+          vessel_type: v.type || v.vessel_type || v.vesselType || 'Bulk Carrier',
+          team_id: v.team_id,
+          team_name: v.team_name
+        }))
+      : INITIAL_SUBMISSIONS.map(s => ({ 
+          id: s.vesselId, 
+          name: s.vesselName, 
+          flag: null,
+          vessel_type: (s.vesselName.includes('CHEETAH') || s.vesselName.includes('MARS') || s.vesselName.includes('NEPTUNE') || s.vesselName.includes('CD ')) ? 'Container' : 'Bulk Carrier',
+          team_id: 1,
+          team_name: 'Team 1'
+        }));
+  }, [externalVessels]);
+
+  const isVesselUser = currentUser?.role === 'vessel';
+  const isAdmin = currentUser?.role === 'admin';
+  const userTeamIds: number[] = useMemo(() => {
+    return Array.isArray(currentUser?.team_ids) ? currentUser.team_ids.map(Number) : [];
+  }, [currentUser?.team_ids]);
+
+  // Vessels under the user's assigned team(s)
+  const teamVesselsList = useMemo(() => {
+    if (isVesselUser && currentUser?.vessel_id) {
+      return vesselsList.filter(v => String(v.id) === String(currentUser.vessel_id));
+    }
+    if (!isAdmin && userTeamIds.length > 0) {
+      return vesselsList.filter(v => v.team_id != null && userTeamIds.includes(Number(v.team_id)));
+    }
+    return vesselsList;
+  }, [vesselsList, isVesselUser, isAdmin, currentUser?.vessel_id, userTeamIds]);
 
   // Main Category/Tab Selection State
   const [selectedCategory, setSelectedCategory] = useState<string>('1. Monthly');
@@ -258,6 +289,12 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [selectedFilterYear, setSelectedFilterYear] = useState('2026');
   const [filteredUploads, setFilteredUploads] = useState<VesselUpload[]>([]);
 
+  // Acknowledgement mode states
+  const [ackFilterVesselId, setAckFilterVesselId] = useState<string>('All');
+  const [ackFilterStatus, setAckFilterStatus] = useState<'All' | 'Done' | 'Pending'>('All');
+  const [ackFilterSearch, setAckFilterSearch] = useState<string>('');
+  const [uploadingAckId, setUploadingAckId] = useState<string | null>(null);
+
   // Accordion Expand/Collapse States
   const [isAccordion1Open, setIsAccordion1Open] = useState(false);
   const [isAccordion2Open, setIsAccordion2Open] = useState(false);
@@ -275,6 +312,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [formRemoveFilenameRestrictionInput, setFormRemoveFilenameRestrictionInput] = useState(false);
   const [formAllowedFileTypesInput, setFormAllowedFileTypesInput] = useState<string[]>([]);
   const [formIsHiraInput, setFormIsHiraInput] = useState(false);
+  const [formIsAcknowledgementRequiredInput, setFormIsAcknowledgementRequiredInput] = useState(false);
   const [formTypeInput, setFormTypeInput] = useState<'Form' | 'Checklist'>('Form');
   const [selectedFlags, setSelectedFlags] = useState<string[]>([]);
   const [formTemplateFileInput, setFormTemplateFileInput] = useState<{
@@ -934,33 +972,46 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
 
   const [hasLoadedFilter, setHasLoadedFilter] = useState(false);
 
-  // Helper to determine if a file matches a category
-  const doesFileMatchCategory = (fileName: string, category: string, allForms: SMSForm[]): boolean => {
-    const cleanFileName = fileName.trim().toUpperCase();
-    const categoryForms = allForms.filter(f => f.category === category);
-    
-    // If the file starts with any form code in this category, or if a form in this category removes filename restriction, it's a match!
-    const hasMatchingCode = categoryForms.some(f => {
-      if (f.removeFilenameRestriction) return true;
-      const cleanCode = f.formCode.trim().toUpperCase();
-      if (!cleanFileName.startsWith(cleanCode)) return false;
-      if (cleanFileName.length > cleanCode.length) {
-        const nextChar = cleanFileName[cleanCode.length];
-        if (/^[A-Z0-9]$/.test(nextChar)) return false;
-      }
-      return true;
-    });
-    
-    if (hasMatchingCode) return true;
-    
-    // Default general packages to "1. Monthly"
-    if (cleanFileName.endsWith('.ZIP') || cleanFileName.includes('PACKAGE') || cleanFileName.includes('SUBMISSION')) {
-      if (category === '1. Monthly') {
-        return true;
+  // Helper to get category for an upload item
+  const getCategoryForUpload = (up: VesselUpload): string | null => {
+    if (up.category) return up.category;
+
+    const fName = (up.fileName || '').toLowerCase();
+
+    // Check known category names & slugs
+    const categories = Object.keys(CATEGORY_ICONS);
+    for (const cat of categories) {
+      const catLower = cat.toLowerCase();
+      const catSlug = cat.replace(/[\s\.]+/g, '_').toLowerCase();
+      const catWords = cat.replace(/^[\d\w]+\.\s*/, '').toLowerCase();
+
+      if (fName.includes(catSlug) || fName.includes(catLower) || (catWords && catWords.length >= 4 && fName.includes(catWords))) {
+        return cat;
       }
     }
-    
-    return false;
+
+    // Check if fileName contains any formCode
+    const cleanFileName = (up.fileName || '').trim().toUpperCase();
+    for (const f of forms) {
+      const cleanCode = (f.formCode || '').trim().toUpperCase();
+      if (!cleanCode) continue;
+      if (cleanFileName.includes(cleanCode)) {
+        return f.category;
+      }
+      const normFile = cleanFileName.replace(/[^A-Z0-9]/g, '');
+      const normCode = cleanCode.replace(/[^A-Z0-9]/g, '');
+      if (normCode && normCode.length >= 4 && normFile.includes(normCode)) {
+        return f.category;
+      }
+    }
+
+    return null;
+  };
+
+  // Helper to determine if a file matches a category strictly
+  const doesFileMatchCategory = (up: VesselUpload, category: string): boolean => {
+    const uploadCategory = up.category || getCategoryForUpload(up) || '1. Monthly';
+    return uploadCategory === category;
   };
 
   // Sync filteredUploads when uploads list or filters change
@@ -973,9 +1024,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
       const matchVessel = !selectedFilterVesselId || String(up.vesselId) === String(selectedFilterVesselId);
       const matchMonth = selectedFilterMonth === 'All' || up.month === selectedFilterMonth;
       const matchYear = !selectedFilterYear || up.year === selectedFilterYear;
-      const matchCategory = up.category 
-        ? up.category === selectedCategory 
-        : doesFileMatchCategory(up.fileName, selectedCategory, forms);
+      const matchCategory = doesFileMatchCategory(up, selectedCategory);
       return matchVessel && matchMonth && matchYear && matchCategory;
     });
     setFilteredUploads(loaded);
@@ -1005,9 +1054,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
       const matchVessel = String(up.vesselId) === String(selectedFilterVesselId);
       const matchMonth = selectedFilterMonth === 'All' || up.month === selectedFilterMonth;
       const matchYear = !selectedFilterYear || up.year === selectedFilterYear;
-      const matchCategory = up.category 
-        ? up.category === selectedCategory 
-        : doesFileMatchCategory(up.fileName, selectedCategory, forms);
+      const matchCategory = doesFileMatchCategory(up, selectedCategory);
       return matchVessel && matchMonth && matchYear && matchCategory;
     });
     setFilteredUploads(loaded);
@@ -1929,11 +1976,19 @@ startxref
         });
       }
 
+      // Eagerly read and cache file arrayBuffer while browser handle permissions are fresh
+      let eagerBuffer: ArrayBuffer | undefined;
+      try {
+        eagerBuffer = await safeReadFileAsArrayBuffer(file);
+      } catch (readErr) {
+        console.warn(`Eager read warning for ${file.name}:`, readErr);
+      }
+
       if (candidateForms.length > 0) {
         let bestCandidate: { form: SMSForm; validation: { matched: boolean; reason?: string; content?: string; arrayBuffer?: ArrayBuffer }; score: number } | null = null;
 
         for (const candidate of candidateForms) {
-          const validation = await validateFileAgainstForm(file, candidate);
+          const validation = await validateFileAgainstForm(file, candidate, eagerBuffer);
           if (validation.matched) {
             let score = 100;
             const cleanCandidateCode = candidate.formCode.trim().toUpperCase();
@@ -1958,7 +2013,7 @@ startxref
 
         if (bestCandidate) {
           const targetForm = bestCandidate.form;
-          let buf: ArrayBuffer | undefined = bestCandidate.validation.arrayBuffer;
+          let buf: ArrayBuffer | undefined = bestCandidate.validation.arrayBuffer || eagerBuffer;
           if (!buf) {
             try {
               buf = await safeReadFileAsArrayBuffer(file);
@@ -1985,8 +2040,8 @@ startxref
         } else {
           // Candidate forms existed by formCode, but none passed strict description/content validation
           const firstCandidate = candidateForms[0];
-          const validation = await validateFileAgainstForm(file, firstCandidate);
-          let buf: ArrayBuffer | undefined = validation.arrayBuffer;
+          const validation = await validateFileAgainstForm(file, firstCandidate, eagerBuffer);
+          let buf: ArrayBuffer | undefined = validation.arrayBuffer || eagerBuffer;
           if (!buf) {
             try {
               buf = await safeReadFileAsArrayBuffer(file);
@@ -2123,10 +2178,21 @@ startxref
 
     try {
       const zip = new JSZip();
+      let addedCount = 0;
       for (const entry of matchedEntries) {
-        const buf = await safeReadFileAsArrayBuffer(entry.file, entry.arrayBuffer);
-        entry.arrayBuffer = buf;
-        zip.file(entry.file.name, buf);
+        try {
+          const buf = await safeReadFileAsArrayBuffer(entry.file, entry.arrayBuffer);
+          entry.arrayBuffer = buf;
+          zip.file(entry.file.name, buf);
+          addedCount++;
+        } catch (err) {
+          console.warn(`Could not read file ${entry.file.name} for ZIP download:`, err);
+        }
+      }
+
+      if (addedCount === 0) {
+        triggerToast('Could not read any uploaded files from browser memory. Please re-select your forms.', 'error');
+        return;
       }
 
       const targetVessel = vesselsList.find(v => String(v.id) === String(reportingVesselId));
@@ -2137,12 +2203,12 @@ startxref
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${vName}_${reportingMonth}_${reportingYear}_${cName}_Partial_Package.zip`;
+      a.download = `${vName}_${reportingMonth}_${reportingYear}_${cName}_Package.zip`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      triggerToast('Downloaded compiled ZIP with mismatching files excluded successfully.', 'success');
+      triggerToast(`Downloaded compiled ZIP with ${addedCount} form file(s) successfully.`, 'success');
     } catch (e: any) {
       triggerToast(`Failed to compile ZIP: ${e.message}`, 'error');
     }
@@ -2193,31 +2259,47 @@ startxref
     try {
       // 1. Zip all matched files using in-memory ArrayBuffers
       const zip = new JSZip();
+      const failedFileNames: string[] = [];
+      let successCount = 0;
 
       for (let i = 0; i < matchedEntries.length; i++) {
         const entry = matchedEntries[i];
         const file = entry.file;
-        let data: ArrayBuffer;
+        let data: ArrayBuffer | undefined = entry.arrayBuffer;
 
-        try {
-          data = await safeReadFileAsArrayBuffer(file, entry.arrayBuffer);
-          entry.arrayBuffer = data; // Cache buffer on entry for future retries
-        } catch (readErr: any) {
-          console.error(`Error reading ${file.name}:`, readErr);
-          throw new Error(`File access permission error: Could not read local file "${file.name}". The browser permission to read this file expired or was restricted by your operating system. Please re-select this form.`);
+        if (!data || data.byteLength === 0) {
+          try {
+            data = await safeReadFileAsArrayBuffer(file, entry.arrayBuffer);
+            entry.arrayBuffer = data; // Cache buffer on entry for future retries
+          } catch (readErr: any) {
+            console.error(`Error reading ${file.name}:`, readErr);
+            failedFileNames.push(file.name);
+          }
         }
 
-        zip.file(file.name, data);
+        if (data && data.byteLength > 0) {
+          zip.file(file.name, data);
+          successCount++;
+        }
         setB2UploadProgress(Math.floor(15 + (i / Math.max(1, matchedEntries.length)) * 25));
       }
 
-      const blob = await zip.generateAsync({ type: 'blob' });
       const vNameClean = targetVessel.name.replace(/\s+/g, '_');
       const catClean = selectedCategory.replace(/[\s\.]+/g, '_');
       const filename = `${vNameClean}_${reportingMonth}_${reportingYear}_${catClean}_Package.zip`;
 
+      const blob = await zip.generateAsync({ type: 'blob' });
       setCompiledZipBlob(blob);
       setCompiledZipName(filename);
+
+      if (failedFileNames.length > 0) {
+        setB2UploadProgress(0);
+        setB2UploadStatus('error');
+        setB2UploadError(`File access permission error: Could not read local file "${failedFileNames.join('", "')}". The browser permission to read this file expired or was restricted by your operating system. Please re-select this form or click "Download Uploaded Forms (ZIP)" to save available reports.`);
+        triggerToast('File access permission error occurred. You can download your uploaded forms to ZIP.', 'error');
+        return;
+      }
+
       setB2UploadProgress(40);
 
       // 2. Simulate Uploading
@@ -2253,6 +2335,7 @@ startxref
         formData.append('vessel_name', targetVessel.name);
         formData.append('month', reportingMonth);
         formData.append('year', reportingYear);
+        formData.append('category', selectedCategory);
         formData.append('file_size', (blob.size / (1024 * 1024)).toFixed(2) + ' MB');
 
         const response = await fetch('/api/sms/upload', {
@@ -2290,6 +2373,7 @@ startxref
           month: reportingMonth,
           year: reportingYear,
           fileName: filename,
+          category: selectedCategory,
           uploadedAt: formattedDate,
           fileSize: (blob.size / (1024 * 1024)).toFixed(2) + ' MB'
         };
@@ -2390,6 +2474,7 @@ startxref
             month: uploadingMonth,
             year: uploadingYear,
             fileName: selectedUploadFile.name,
+            category: selectedCategory,
             uploadedAt: formattedDate,
             fileSize: (selectedUploadFile.size / (1024 * 1024)).toFixed(1) + ' MB'
           };
@@ -2417,6 +2502,7 @@ startxref
       formData.append('vessel_name', targetVessel.name);
       formData.append('month', uploadingMonth);
       formData.append('year', uploadingYear);
+      formData.append('category', selectedCategory);
       formData.append('file_size', (selectedUploadFile.size / (1024 * 1024)).toFixed(1) + ' MB');
 
       setUploadProgress(45);
@@ -2468,6 +2554,7 @@ startxref
       setFormRemoveFilenameRestrictionInput(Boolean(form.removeFilenameRestriction));
       setFormAllowedFileTypesInput(form.allowedFileTypes || []);
       setFormIsHiraInput(Boolean(form.isHira));
+      setFormIsAcknowledgementRequiredInput(Boolean(form.isAcknowledgementRequired));
       setFormTypeInput(form.type || 'Form');
 
       if (form.template_file_name) {
@@ -2515,6 +2602,7 @@ startxref
       setFormRemoveFilenameRestrictionInput(false);
       setFormAllowedFileTypesInput([]);
       setFormIsHiraInput(false);
+      setFormIsAcknowledgementRequiredInput(false);
       setFormTypeInput('Form');
       setSelectedFlags([]);
       setFormTemplateFileInput(null);
@@ -2546,6 +2634,7 @@ startxref
         removeFilenameRestriction: formRemoveFilenameRestrictionInput,
         allowedFileTypes: formAllowedFileTypesInput,
         isHira: formIsHiraInput,
+        isAcknowledgementRequired: formIsAcknowledgementRequiredInput,
         template_file_name: formTemplateFileInput?.name,
         template_file_data: formTemplateFileInput?.data,
         template_file_mimetype: formTemplateFileInput?.mimetype,
@@ -2572,6 +2661,7 @@ startxref
         removeFilenameRestriction: formRemoveFilenameRestrictionInput,
         allowedFileTypes: formAllowedFileTypesInput,
         isHira: formIsHiraInput,
+        isAcknowledgementRequired: formIsAcknowledgementRequiredInput,
         sort_order: maxOrder + 1,
         template_file_name: formTemplateFileInput?.name,
         template_file_data: formTemplateFileInput?.data,
@@ -3013,6 +3103,414 @@ startxref
     return `${latest.month} ${latest.year} Forms were uploaded on ${latest.uploadedAt}`;
   };
 
+  const getMatchedFormForUpload = (up: VesselUpload) => {
+    if (!up) return null;
+    const cleanFileName = (up.fileName || '').trim().toUpperCase();
+
+    // Sort forms by formCode length descending
+    const sortedForms = [...forms].sort((a, b) => (b.formCode?.length || 0) - (a.formCode?.length || 0));
+
+    for (const f of sortedForms) {
+      const cleanCode = (f.formCode || '').trim().toUpperCase();
+      if (!cleanCode) continue;
+      if (cleanFileName.startsWith(cleanCode)) {
+        if (cleanFileName.length > cleanCode.length) {
+          const nextChar = cleanFileName[cleanCode.length];
+          if (/^[A-Z0-9]$/.test(nextChar)) {
+            continue;
+          }
+        }
+        return f;
+      }
+      if (cleanFileName.includes(cleanCode)) {
+        return f;
+      }
+      const normFile = cleanFileName.replace(/[^A-Z0-9]/g, '');
+      const normCode = cleanCode.replace(/[^A-Z0-9]/g, '');
+      if (normCode && normCode.length >= 4 && normFile.includes(normCode)) {
+        return f;
+      }
+    }
+
+    const cat = up.category || getCategoryForUpload(up);
+    if (cat) {
+      const categoryForms = forms.filter(f => f.category === cat);
+      const ackForm = categoryForms.find(f => f.isAcknowledgementRequired);
+      if (ackForm) return ackForm;
+      if (categoryForms.length > 0) return categoryForms[0];
+    }
+
+    return null;
+  };
+
+  const handleUploadAcknowledgementFile = async (uploadId: string, file: File) => {
+    setUploadingAckId(uploadId);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`/api/sms/upload-acknowledgement/${uploadId}`, {
+        method: 'POST',
+        headers,
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to upload acknowledgement file');
+      }
+
+      const data = await res.json();
+      triggerToast(`Uploaded acknowledgement file: ${file.name}`, 'success');
+
+      // Update local state
+      const updated = uploads.map(u => {
+        if (u.id === uploadId) {
+          return {
+            ...u,
+            isAcknowledged: true,
+            ackFileName: data.ackFileName || file.name,
+            ackFileSize: data.ackFileSize || `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+            ackUploadedAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+            ackUploadedBy: currentUser?.username || 'Office Staff'
+          };
+        }
+        return u;
+      });
+      setUploads(updated);
+    } catch (err: any) {
+      triggerToast(err.message || 'Error uploading acknowledgement file', 'error');
+    } finally {
+      setUploadingAckId(null);
+    }
+  };
+
+  const handleDownloadAcknowledgementFile = async (uploadId: string, fallbackFileName?: string) => {
+    try {
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const res = await fetch(`/api/sms/download-acknowledgement/${uploadId}`, {
+        headers
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to download acknowledgement file');
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fallbackFileName || 'Acknowledgement_Report.pdf';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: any) {
+      triggerToast(err.message || 'Error downloading acknowledgement file', 'error');
+    }
+  };
+
+  // Calculate total pending acknowledgement count for non-vessel roles
+  const pendingAckCount = useMemo(() => {
+    if (currentUser?.role === 'vessel') return 0;
+
+    return uploads.filter(up => {
+      if (!isAdmin && userTeamIds.length > 0) {
+        const isFromTeam = teamVesselsList.some(v => 
+          String(v.id) === String(up.vesselId) || 
+          (v.name && up.vesselName && v.name.toUpperCase() === up.vesselName.toUpperCase())
+        );
+        if (!isFromTeam) return false;
+      }
+
+      const matchedForm = getMatchedFormForUpload(up);
+      const ackForms = forms.filter(f => f.isAcknowledgementRequired);
+      const cleanFile = (up.fileName || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+      let requiresAck = false;
+
+      if (matchedForm && matchedForm.isAcknowledgementRequired) {
+        requiresAck = true;
+      } else if (ackForms.some(f => {
+        const cleanCode = (f.formCode || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+        return cleanCode && cleanCode.length >= 4 && cleanFile.includes(cleanCode);
+      })) {
+        requiresAck = true;
+      } else {
+        const cat = up.category || getCategoryForUpload(up);
+        if (cat && forms.filter(f => f.category === cat).some(f => f.isAcknowledgementRequired)) {
+          requiresAck = true;
+        }
+      }
+
+      if (!requiresAck) return false;
+
+      const isAcknowledged = Boolean(up.isAcknowledged || up.ackFileName);
+      return !isAcknowledged;
+    }).length;
+  }, [uploads, forms, teamVesselsList, isAdmin, userTeamIds, currentUser?.role]);
+
+  useEffect(() => {
+    if (onPendingAckCountChange) {
+      onPendingAckCountChange(pendingAckCount);
+    }
+  }, [pendingAckCount, onPendingAckCountChange]);
+
+  const renderAcknowledgementView = () => {
+    const isVesselUser = currentUser?.role === 'vessel';
+
+    const uploadsRequiringAck = uploads.filter(up => {
+      if (isVesselUser && currentUser?.vessel_id) {
+        if (String(up.vesselId) !== String(currentUser.vessel_id)) {
+          return false;
+        }
+      } else if (!isAdmin && userTeamIds.length > 0) {
+        // Only show files sent by vessels under user's team
+        const isFromTeam = teamVesselsList.some(v => 
+          String(v.id) === String(up.vesselId) || 
+          (v.name && up.vesselName && v.name.toUpperCase() === up.vesselName.toUpperCase())
+        );
+        if (!isFromTeam) {
+          return false;
+        }
+      }
+
+      if (!isVesselUser && ackFilterVesselId !== 'All') {
+        const matchesVesselId = String(up.vesselId) === String(ackFilterVesselId);
+        const selVessel = teamVesselsList.find(v => String(v.id) === String(ackFilterVesselId));
+        const matchesVesselName = selVessel && up.vesselName && selVessel.name.toUpperCase() === up.vesselName.toUpperCase();
+        if (!matchesVesselId && !matchesVesselName) {
+          return false;
+        }
+      }
+
+      if (ackFilterSearch.trim()) {
+        const q = ackFilterSearch.toLowerCase();
+        const matchedForm = getMatchedFormForUpload(up);
+        const derivedCat = getCategoryForUpload(up);
+        const matchesName = up.vesselName.toLowerCase().includes(q);
+        const matchesFile = up.fileName.toLowerCase().includes(q);
+        const matchesCat = derivedCat?.toLowerCase().includes(q);
+        const matchesCode = matchedForm?.formCode?.toLowerCase().includes(q);
+        const matchesDesc = matchedForm?.description?.toLowerCase().includes(q);
+        if (!matchesName && !matchesFile && !matchesCat && !matchesCode && !matchesDesc) {
+          return false;
+        }
+      }
+
+      // Check if this upload requires acknowledgement
+      const matchedForm = getMatchedFormForUpload(up);
+      const ackForms = forms.filter(f => f.isAcknowledgementRequired);
+      const cleanFile = (up.fileName || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+      let requiresAck = false;
+
+      if (matchedForm && matchedForm.isAcknowledgementRequired) {
+        requiresAck = true;
+      } else if (ackForms.some(f => {
+        const cleanCode = (f.formCode || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+        return cleanCode && cleanCode.length >= 4 && cleanFile.includes(cleanCode);
+      })) {
+        requiresAck = true;
+      } else {
+        const cat = up.category || getCategoryForUpload(up);
+        if (cat && forms.filter(f => f.category === cat).some(f => f.isAcknowledgementRequired)) {
+          requiresAck = true;
+        }
+      }
+
+      if (!requiresAck) return false;
+
+      // Filter by Acknowledgement Status (Done / Pending / All)
+      const isAcknowledged = Boolean(up.isAcknowledged || up.ackFileName);
+      if (ackFilterStatus === 'Done' && !isAcknowledged) {
+        return false;
+      }
+      if (ackFilterStatus === 'Pending' && isAcknowledged) {
+        return false;
+      }
+
+      return true;
+    });
+
+    return (
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden p-6 space-y-5 animate-in fade-in duration-300">
+        {/* Header Controls */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-end gap-4 pb-4 border-b border-slate-100">
+          <div className="flex flex-wrap items-center gap-3">
+            {!isVesselUser && (
+              <div className="flex items-center gap-2">
+                <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Filter Vessel:</label>
+                <select
+                  value={ackFilterVesselId}
+                  onChange={(e) => setAckFilterVesselId(e.target.value)}
+                  className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs font-bold bg-white text-slate-800 focus:outline-none focus:border-amber-500 shadow-2xs"
+                >
+                  <option value="All">All Vessels ({teamVesselsList.length})</option>
+                  {teamVesselsList.map(v => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Status Filter Dropdown */}
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Status:</label>
+              <select
+                value={ackFilterStatus}
+                onChange={(e) => setAckFilterStatus(e.target.value as 'All' | 'Done' | 'Pending')}
+                className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs font-bold bg-white text-slate-800 focus:outline-none focus:border-amber-500 shadow-2xs cursor-pointer"
+              >
+                <option value="All">All Statuses</option>
+                <option value="Done">Done</option>
+                <option value="Pending">Pending</option>
+              </select>
+            </div>
+
+            <div className="relative w-48 sm:w-60">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search form code, description..."
+                value={ackFilterSearch}
+                onChange={(e) => setAckFilterSearch(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:border-amber-500 bg-white shadow-2xs"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Table View */}
+        <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-2xs">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-800 text-white text-[10px] font-black uppercase tracking-wider border-b border-slate-700">
+                {!isVesselUser && <th className="px-4 py-3.5 w-[16%]">Vessel Name</th>}
+                <th className="px-4 py-3.5 w-[14%]">Form Code</th>
+                <th className="px-4 py-3.5 w-[32%]">{isVesselUser ? 'Description' : 'Form Description'}</th>
+                <th className="px-4 py-3.5 w-[14%]">Report Type</th>
+                <th className="px-4 py-3.5 w-[14%]">{isVesselUser ? 'Upload Date' : 'Vessel Upload Date'}</th>
+                <th className="px-4 py-3.5 w-[18%] text-center">Acknowledgement Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 text-xs font-semibold">
+              {(() => {
+                if (uploadsRequiringAck.length === 0) {
+                  return (
+                    <tr>
+                      <td colSpan={isVesselUser ? 5 : 6} className="text-center py-12 text-slate-400 italic">
+                        No uploaded reports requiring acknowledgement found.
+                      </td>
+                    </tr>
+                  );
+                }
+
+                return uploadsRequiringAck.map((up) => {
+                  const matchedForm = getMatchedFormForUpload(up);
+                  const formCode = matchedForm?.formCode || 'COMI-SM-1-1';
+                  const formDesc = matchedForm?.description || up.fileName || 'Water Condition / Safety Report';
+                  const reportType = up.category || matchedForm?.category || '1. Monthly';
+                  const isAcknowledged = Boolean(up.isAcknowledged || up.ackFileName);
+
+                  return (
+                    <tr key={up.id} className="hover:bg-slate-50/60 transition-colors">
+                      {!isVesselUser && (
+                        <td className="px-4 py-3.5 font-bold text-slate-800">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-slate-100 text-slate-800 rounded-lg text-xs border border-slate-200">
+                            🚢 {up.vesselName}
+                          </span>
+                        </td>
+                      )}
+                      <td className="px-4 py-3.5 font-mono font-black text-blue-900">
+                        {formCode}
+                      </td>
+                      <td className="px-4 py-3.5 text-slate-700 font-bold leading-relaxed">
+                        <div>
+                          <p className="break-words whitespace-normal">{formDesc}</p>
+                          <p className="text-[10px] text-slate-400 font-normal truncate mt-0.5">
+                            File: {up.fileName}
+                          </p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <span className="px-2.5 py-1 bg-blue-50 text-blue-700 text-[10px] font-extrabold rounded-lg border border-blue-200">
+                          {reportType}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-slate-500 font-medium">
+                        {up.uploadedAt}
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          {isAcknowledged ? (
+                            <>
+                              <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 text-[11px] font-black rounded-lg border border-emerald-300 inline-flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Done
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadAcknowledgementFile(up.id, up.ackFileName)}
+                                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg border border-blue-200 text-xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Download Acknowledged Form"
+                              >
+                                <Download className="w-3.5 h-3.5" /> Download
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <span className="px-2.5 py-1 bg-amber-100 text-amber-800 text-[11px] font-black rounded-lg border border-amber-300 inline-flex items-center gap-1">
+                                <Clock className="w-3.5 h-3.5 text-amber-600" /> Pending
+                              </span>
+                              {!isVesselUser && (
+                                <div className="relative">
+                                  <button
+                                    type="button"
+                                    disabled={uploadingAckId === up.id}
+                                    className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1 transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                                  >
+                                    {uploadingAckId === up.id ? (
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    ) : (
+                                      <Upload className="w-3.5 h-3.5" />
+                                    )}
+                                    Upload
+                                  </button>
+                                  <input
+                                    type="file"
+                                    accept=".pdf,.docx,.doc,.xlsx,.xls,.zip"
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        handleUploadAcknowledgementFile(up.id, file);
+                                      }
+                                    }}
+                                    className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                                  />
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                });
+              })()}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
   const renderUploadingAnimationOverlay = () => {
     const isProcessingFiles = processingFilesState?.isProcessing;
     const isB2Uploading = b2UploadStatus === 'zipping' || b2UploadStatus === 'uploading';
@@ -3147,59 +3645,62 @@ startxref
         <div className="absolute right-0 top-0 translate-x-12 -translate-y-12 w-32 h-32 bg-blue-500/5 rounded-full blur-2xl pointer-events-none" />
         
         <div className="space-y-1.5 relative z-10">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-[10px] font-black uppercase tracking-wider mb-1 border border-blue-100/50">
-            {mode === 'reporting' ? 'SMS Reporting' : 'SMS Management'}
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-700 rounded-full text-[10px] font-black uppercase tracking-wider mb-1 border border-amber-200/50">
+            {mode === 'reporting' ? 'SMS Reporting' : mode === 'acknowledgement' ? 'Report Acknowledgement' : 'SMS Management'}
           </div>
           <h2 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-            {mode === 'reporting' ? 'Safety Management System (SMS) - Reporting' : 'Safety Management System (SMS) - Management'}
+            {mode === 'reporting' ? 'Safety Management System (SMS) - Reporting' : mode === 'acknowledgement' ? 'Safety Management System (SMS) - Report Acknowledgement' : 'Safety Management System (SMS) - Management'}
           </h2>
           <p className="text-xs text-slate-500 max-w-2xl leading-relaxed">
             {mode === 'reporting' 
               ? 'Submit finished safety checklists and forms, upload vessel report packages, download submitted vessel archives, and monitor previous submissions.' 
+              : mode === 'acknowledgement'
+              ? 'Review uploaded vessel report packages requiring acknowledgement, upload official signed acknowledgement documents, and download processed records.'
               : 'Manage official vessel-level forms and checklist structures, monitor active submission deadlines, download submitted vessel archives, and administer structural compliance records.'}
           </p>
         </div>
       </div>
 
-      {/* Grid of 10 Safety Manual Category cards - Only visible in Management Mode */}
-      {/* Grid of 10 Safety Manual Category cards - Visible in both modes */}
-      <div className="bg-slate-50/50 p-4 rounded-3xl border border-slate-100/80 space-y-3">
-        <div className="flex items-center justify-between px-1">
-          <span className="px-3 py-1 bg-blue-100/70 text-blue-700 rounded-full text-[10px] font-extrabold uppercase tracking-widest">
-            Safety Management Manual
-          </span>
-          <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide">
-            Select Category to {mode === 'reporting' ? 'Report Files' : 'Manage Forms'}
-          </span>
+      {/* Grid of 10 Safety Manual Category cards - Visible in management & reporting modes */}
+      {mode !== 'acknowledgement' && (
+        <div className="bg-slate-50/50 p-4 rounded-3xl border border-slate-100/80 space-y-3">
+          <div className="flex items-center justify-between px-1">
+            <span className="px-3 py-1 bg-blue-100/70 text-blue-700 rounded-full text-[10px] font-extrabold uppercase tracking-widest">
+              Safety Management Manual
+            </span>
+            <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide">
+              Select Category to {mode === 'reporting' ? 'Report Files' : 'Manage Forms'}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-2.5">
+            {Object.keys(CATEGORY_ICONS).map((catName) => {
+              const IconComponent = CATEGORY_ICONS[catName];
+              const isActive = selectedCategory === catName;
+              
+              return (
+                <button
+                  key={catName}
+                  onClick={() => setSelectedCategory(catName)}
+                  className={`p-3 rounded-2xl border flex flex-col items-center justify-center text-center gap-2 transition-all duration-200 cursor-pointer min-h-[90px] ${
+                    isActive 
+                      ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-500/10' 
+                      : 'border-slate-200/60 bg-white hover:border-slate-300 text-slate-500 hover:text-slate-800 hover:shadow-xs'
+                  }`}
+                >
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                    isActive ? 'bg-blue-100/85 text-blue-700' : 'bg-slate-100 text-slate-400'
+                  }`}>
+                    {IconComponent && <IconComponent className="w-4 h-4 stroke-[2.2]" />}
+                  </div>
+                  <span className="text-[10px] font-black tracking-tight leading-tight">
+                    {catName}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-2.5">
-          {Object.keys(CATEGORY_ICONS).map((catName) => {
-            const IconComponent = CATEGORY_ICONS[catName];
-            const isActive = selectedCategory === catName;
-            
-            return (
-              <button
-                key={catName}
-                onClick={() => setSelectedCategory(catName)}
-                className={`p-3 rounded-2xl border flex flex-col items-center justify-center text-center gap-2 transition-all duration-200 cursor-pointer min-h-[90px] ${
-                  isActive 
-                    ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-500/10' 
-                    : 'border-slate-200/60 bg-white hover:border-slate-300 text-slate-500 hover:text-slate-800 hover:shadow-xs'
-                }`}
-              >
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                  isActive ? 'bg-blue-100/85 text-blue-700' : 'bg-slate-100 text-slate-400'
-                }`}>
-                  {IconComponent && <IconComponent className="w-4 h-4 stroke-[2.2]" />}
-                </div>
-                <span className="text-[10px] font-black tracking-tight leading-tight">
-                  {catName}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      )}
 
       {/* Accordions sections list */}
       <div className="space-y-4">
@@ -3357,6 +3858,11 @@ startxref
                                     {f.isHira && (
                                       <span className="px-2 py-0.5 bg-purple-100 text-purple-700 font-extrabold text-[9px] rounded-md border border-purple-200">
                                         ⚡ Multiple File Form
+                                      </span>
+                                    )}
+                                    {f.isAcknowledgementRequired && (
+                                      <span className="px-2 py-0.5 bg-amber-100 text-amber-800 font-extrabold text-[9px] rounded-md border border-amber-300">
+                                        📋 Ack Required
                                       </span>
                                     )}
 
@@ -4245,10 +4751,7 @@ startxref
                           {b2UploadError}
                         </p>
                         <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
-                          {compiledZipBlob 
-                            ? 'Your upload package was compiled and preserved in browser memory. Download the ZIP to preserve your matched reports.'
-                            : 'If a local browser file handle permission error occurred, click "Try Upload Again" or re-select the affected files to refresh access.'
-                          }
+                          If browser permissions expired or a file read error occurred, click below to download your uploaded forms directly as a ZIP archive:
                         </p>
                         <div className="space-y-2">
                           {compiledZipBlob && (
@@ -4257,9 +4760,16 @@ startxref
                               onClick={handleDownloadCompiledZipAfterFailure}
                               className="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-black uppercase tracking-wider rounded-lg transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
                             >
-                              <Download className="w-3.5 h-3.5" /> Download Preserved ZIP
+                              <Download className="w-3.5 h-3.5" /> Download Preserved ZIP Package
                             </button>
                           )}
+                          <button
+                            type="button"
+                            onClick={handleDownloadPartialZip}
+                            className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase tracking-wider rounded-lg transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" /> Download Uploaded Forms (ZIP)
+                          </button>
                           <button
                             type="button"
                             onClick={() => setB2UploadStatus('idle')}
@@ -4277,6 +4787,9 @@ startxref
             {renderSubmittedFilesAccordion()}
           </div>
         )}
+
+        {/* REPORT ACKNOWLEDGEMENT WORKSPACE */}
+        {mode === 'acknowledgement' && renderAcknowledgementView()}
 
       </div>
 
@@ -4638,6 +5151,19 @@ startxref
                       />
                       <label htmlFor="removeFilenameRestriction" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
                         Remove filename restriction
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        id="isAcknowledgementRequired"
+                        checked={formIsAcknowledgementRequiredInput}
+                        onChange={(e) => setFormIsAcknowledgementRequiredInput(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                      />
+                      <label htmlFor="isAcknowledgementRequired" className="text-xs font-bold text-amber-900 cursor-pointer select-none">
+                        Acknowledgement Required
                       </label>
                     </div>
                   </div>

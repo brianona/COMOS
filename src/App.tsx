@@ -1096,7 +1096,7 @@ const ChangePasswordModal: React.FC<{
 
 
 const SidebarContent = ({ 
-  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, isCertificatesOpen, setIsCertificatesOpen, onLogout, setIsChangePasswordOpen 
+  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, isCertificatesOpen, setIsCertificatesOpen, onLogout, setIsChangePasswordOpen, pendingAckCount
 }: { 
   view: string, 
   setView: (v: any) => void, 
@@ -1125,7 +1125,8 @@ const SidebarContent = ({
   isCertificatesOpen: boolean,
   setIsCertificatesOpen: (v: boolean) => void,
   onLogout: () => void,
-  setIsChangePasswordOpen: (v: boolean) => void
+  setIsChangePasswordOpen: (v: boolean) => void,
+  pendingAckCount?: number
 }) => {
   const [isSmsReportingOpen, setIsSmsReportingOpen] = React.useState(false);
   // Beautiful interactive helper styling functions
@@ -1245,7 +1246,7 @@ const SidebarContent = ({
           <button 
             onClick={() => setIsSmsReportingOpen(!isSmsReportingOpen)}
             className={getCategoryToggleClass(
-              view === 'sms' || view === 'sms_reporting',
+              view === 'sms' || view === 'sms_reporting' || view === 'sms_acknowledgement',
               isSmsReportingOpen
             )}
           >
@@ -1280,6 +1281,20 @@ const SidebarContent = ({
                     <FileText className="w-3.5 h-3.5 shrink-0" /> SMS Reporting
                   </button>
                 )}
+                <button 
+                  onClick={() => { setView('sms_acknowledgement'); setIsSidebarOpen(false); }}
+                  className={cn(getSubItemClass(view === 'sms_acknowledgement'), "justify-between")}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <CheckSquare className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">Report Acknowledgement</span>
+                  </div>
+                  {user.role !== 'vessel' && (pendingAckCount ?? 0) > 0 && (
+                    <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-amber-500 text-white rounded-full leading-none shadow-2xs shrink-0">
+                      {pendingAckCount}
+                    </span>
+                  )}
+                </button>
               </motion.div>
             )}
           </AnimatePresence>
@@ -1771,7 +1786,7 @@ const CAT7_CERTS = [
   "7.24 Mooring Management Plan"
 ];
 
-type ViewType = 'dashboard' | 'vessels' | 'vessel_details' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about' | 'sms' | 'sms_reporting';
+type ViewType = 'dashboard' | 'vessels' | 'vessel_details' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about' | 'sms' | 'sms_reporting' | 'sms_acknowledgement';
 
 const getViewTitle = (v: ViewType): string => {
   switch (v) {
@@ -1806,6 +1821,7 @@ const getViewTitle = (v: ViewType): string => {
     case 'audit_navigational': return 'Navigational Audits';
     case 'sms': return 'SMS Manuals & Procedures';
     case 'sms_reporting': return 'SMS Incidents & Reporting';
+    case 'sms_acknowledgement': return 'Report Acknowledgement';
     case 'admin': return 'Admin Settings';
     case 'admin_vessel_list': return 'Admin Vessel List';
     case 'admin_cert_list': return 'Admin Certificates';
@@ -1928,6 +1944,97 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isEditingRoute, setIsEditingRoute] = useState(false);
+  const [pendingAckCount, setPendingAckCount] = useState<number>(0);
+
+  useEffect(() => {
+    if (!token || user?.role === 'vessel') return;
+
+    let isMounted = true;
+    const fetchPendingAck = async () => {
+      try {
+        const [uploadsRes, formsRes] = await Promise.all([
+          fetch('/api/sms/uploads', { headers: { 'Authorization': `Bearer ${token}` } }),
+          fetch('/api/sms/forms', { headers: { 'Authorization': `Bearer ${token}` } })
+        ]);
+
+        if (!uploadsRes.ok || !formsRes.ok) return;
+
+        const uploadsData = await uploadsRes.json();
+        const formsData = await formsRes.json();
+
+        if (!isMounted) return;
+
+        const isAdmin = user?.role === 'admin';
+        const userTeamIds = Array.isArray(user?.team_ids) ? user.team_ids.map(Number) : [];
+
+        const teamVessels = (!isAdmin && userTeamIds.length > 0)
+          ? vessels.filter((v: any) => v.team_id != null && userTeamIds.includes(Number(v.team_id)))
+          : vessels;
+
+        const sortedForms = [...formsData].sort((a: any, b: any) => (b.formCode?.length || 0) - (a.formCode?.length || 0));
+
+        const getMatchedForm = (up: any) => {
+          const cleanFileName = (up.fileName || '').trim().toUpperCase();
+          for (const f of sortedForms) {
+            const cleanCode = (f.formCode || '').trim().toUpperCase();
+            if (!cleanCode) continue;
+            if (cleanFileName.startsWith(cleanCode)) {
+              if (cleanFileName.length > cleanCode.length) {
+                const nextChar = cleanFileName[cleanCode.length];
+                if (/^[A-Z0-9]$/.test(nextChar)) continue;
+              }
+              return f;
+            }
+            if (cleanFileName.includes(cleanCode)) return f;
+            const normFile = cleanFileName.replace(/[^A-Z0-9]/g, '');
+            const normCode = cleanCode.replace(/[^A-Z0-9]/g, '');
+            if (normCode && normCode.length >= 4 && normFile.includes(normCode)) return f;
+          }
+          return null;
+        };
+
+        const count = uploadsData.filter((up: any) => {
+          if (!isAdmin && userTeamIds.length > 0) {
+            const isFromTeam = teamVessels.some((v: any) =>
+              String(v.id) === String(up.vesselId) ||
+              (v.name && up.vesselName && v.name.toUpperCase() === up.vesselName.toUpperCase())
+            );
+            if (!isFromTeam) return false;
+          }
+
+          const matchedForm = getMatchedForm(up);
+          const ackForms = formsData.filter((f: any) => f.isAcknowledgementRequired);
+          const cleanFile = (up.fileName || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+          let requiresAck = false;
+
+          if (matchedForm && matchedForm.isAcknowledgementRequired) {
+            requiresAck = true;
+          } else if (ackForms.some((f: any) => {
+            const cleanCode = (f.formCode || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+            return cleanCode && cleanCode.length >= 4 && cleanFile.includes(cleanCode);
+          })) {
+            requiresAck = true;
+          } else {
+            const cat = up.category;
+            if (cat && formsData.filter((f: any) => f.category === cat).some((f: any) => f.isAcknowledgementRequired)) {
+              requiresAck = true;
+            }
+          }
+
+          if (!requiresAck) return false;
+
+          const isAcknowledged = Boolean(up.isAcknowledged || up.ackFileName);
+          return !isAcknowledged;
+        }).length;
+
+        setPendingAckCount(count);
+      } catch (e) {
+        console.error('Error fetching pending acknowledgement count:', e);
+      }
+    };
+
+    fetchPendingAck();
+  }, [token, user?.role, user?.team_ids, vessels]);
   
   const [editingVessel, setEditingVessel] = useState<Vessel | null>(null);
   const [editingVesselPhoto, setEditingVesselPhoto] = useState<File | null>(null);
@@ -2893,6 +3000,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           setIsCertificatesOpen={setIsCertificatesOpen}
           onLogout={onLogout}
           setIsChangePasswordOpen={setIsChangePasswordOpen}
+          pendingAckCount={pendingAckCount}
         />
       </aside>
 
@@ -2957,6 +3065,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   setIsCertificatesOpen={setIsCertificatesOpen}
                   onLogout={onLogout}
                   setIsChangePasswordOpen={setIsChangePasswordOpen}
+                  pendingAckCount={pendingAckCount}
                 />
               </div>
             </motion.aside>
@@ -5502,13 +5611,19 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
 
           {view === 'sms' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <SMSView vessels={vessels} currentUser={user} token={token} mode="management" flags={flags} />
+              <SMSView vessels={vessels} currentUser={user} token={token} mode="management" flags={flags} onPendingAckCountChange={setPendingAckCount} />
             </div>
           )}
 
           {view === 'sms_reporting' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <SMSView vessels={vessels} currentUser={user} token={token} mode="reporting" flags={flags} />
+              <SMSView vessels={vessels} currentUser={user} token={token} mode="reporting" flags={flags} onPendingAckCountChange={setPendingAckCount} />
+            </div>
+          )}
+
+          {view === 'sms_acknowledgement' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <SMSView vessels={vessels} currentUser={user} token={token} mode="acknowledgement" flags={flags} onPendingAckCountChange={setPendingAckCount} />
             </div>
           )}
 

@@ -1383,6 +1383,36 @@ async function startServer() {
       if (!smsColNames.includes('template_files')) {
         await pool.query("ALTER TABLE sms_forms ADD COLUMN template_files LONGTEXT NULL");
       }
+      if (!smsColNames.includes('isAcknowledgementRequired')) {
+        await pool.query("ALTER TABLE sms_forms ADD COLUMN isAcknowledgementRequired TINYINT(1) DEFAULT 0");
+      }
+
+      const [uploadCols]: any = await pool.query('SHOW COLUMNS FROM sms_uploads');
+      const uploadColNames = uploadCols.map((c: any) => c.Field);
+      if (!uploadColNames.includes('is_acknowledged')) {
+        await pool.query("ALTER TABLE sms_uploads ADD COLUMN is_acknowledged TINYINT(1) DEFAULT 0");
+      }
+      if (!uploadColNames.includes('ack_file_name')) {
+        await pool.query("ALTER TABLE sms_uploads ADD COLUMN ack_file_name VARCHAR(255) NULL");
+      }
+      if (!uploadColNames.includes('ack_file_data')) {
+        await pool.query("ALTER TABLE sms_uploads ADD COLUMN ack_file_data LONGBLOB NULL");
+      }
+      if (!uploadColNames.includes('ack_file_mimetype')) {
+        await pool.query("ALTER TABLE sms_uploads ADD COLUMN ack_file_mimetype VARCHAR(255) NULL");
+      }
+      if (!uploadColNames.includes('ack_file_size')) {
+        await pool.query("ALTER TABLE sms_uploads ADD COLUMN ack_file_size VARCHAR(50) NULL");
+      }
+      if (!uploadColNames.includes('ack_uploaded_at')) {
+        await pool.query("ALTER TABLE sms_uploads ADD COLUMN ack_uploaded_at DATETIME NULL");
+      }
+      if (!uploadColNames.includes('ack_uploaded_by')) {
+        await pool.query("ALTER TABLE sms_uploads ADD COLUMN ack_uploaded_by VARCHAR(255) NULL");
+      }
+      if (!uploadColNames.includes('category')) {
+        await pool.query("ALTER TABLE sms_uploads ADD COLUMN category VARCHAR(255) NULL");
+      }
     } catch (e: any) {
       console.error('Error migrating sms_forms columns:', e.message);
     }
@@ -2820,24 +2850,75 @@ async function startServer() {
   app.get('/api/sms/uploads', authenticate, async (req, res) => {
     try {
       const [rows]: any = await pool.query(
-        'SELECT id, vessel_id as vesselId, vessel_name as vesselName, month, year, file_name as fileName, file_size as fileSize, uploaded_at as uploadedAt FROM sms_uploads WHERE deleted_at IS NULL ORDER BY uploaded_at DESC'
+        'SELECT id, vessel_id as vesselId, vessel_name as vesselName, month, year, file_name as fileName, file_size as fileSize, category, uploaded_at as uploadedAt, is_acknowledged as isAcknowledged, ack_file_name as ackFileName, ack_file_size as ackFileSize, ack_uploaded_at as ackUploadedAt, ack_uploaded_by as ackUploadedBy FROM sms_uploads WHERE deleted_at IS NULL ORDER BY uploaded_at DESC'
       );
-      res.json(rows);
+      const mapped = rows.map((r: any) => ({
+        ...r,
+        isAcknowledged: Boolean(r.isAcknowledged)
+      }));
+      res.json(mapped);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/upload-acknowledgement/:id', authenticate, upload.single('file'), async (req: any, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    const { id } = req.params;
+    try {
+      const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'sms_acknowledgements');
+      const fileSizeStr = req.file.size > 1024 * 1024 
+        ? `${(req.file.size / (1024 * 1024)).toFixed(1)} MB` 
+        : `${(req.file.size / 1024).toFixed(0)} KB`;
+
+      await pool.execute(
+        `UPDATE sms_uploads SET is_acknowledged = 1, ack_file_name = ?, ack_file_data = ?, ack_file_mimetype = ?, ack_file_size = ?, ack_uploaded_at = CURRENT_TIMESTAMP, ack_uploaded_by = ? WHERE id = ?`,
+        [req.file.originalname, uploadData, req.file.mimetype, fileSizeStr, req.user?.username || 'Office User', id]
+      );
+
+      if (req.user) {
+        await logAudit(req.user.id, req.user.username, 'UPLOAD_SMS_ACKNOWLEDGEMENT', `Uploaded SMS acknowledgement file: ${req.file.originalname} for upload ID ${id}`);
+      }
+
+      res.json({
+        success: true,
+        ackFileName: req.file.originalname,
+        ackFileSize: fileSizeStr
+      });
+    } catch (err: any) {
+      console.error('Error uploading SMS acknowledgement:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/sms/download-acknowledgement/:id', authenticate, async (req, res) => {
+    try {
+      const [rows]: any = await pool.execute('SELECT ack_file_name, ack_file_mimetype, ack_file_data FROM sms_uploads WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
+      if (rows.length === 0 || !rows[0].ack_file_data) {
+        return res.status(404).json({ error: 'Acknowledged file not found' });
+      }
+      const row = rows[0];
+      const retrievedBuffer = await handleFileRetrieve(row.ack_file_data);
+      res.setHeader('Content-Type', row.ack_file_mimetype || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.ack_file_name || 'Acknowledged_Report.pdf')}"`);
+      res.send(retrievedBuffer);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
   app.post('/api/sms/upload', authenticate, upload.single('file'), async (req: any, res) => {
-    const { vessel_id, vessel_name, month, year, file_size } = req.body;
+    const { vessel_id, vessel_name, month, year, file_size, category } = req.body;
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
     try {
       const uploadedBuffer = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'sms_uploads');
       const [result]: any = await pool.execute(
-        'INSERT INTO sms_uploads (vessel_id, vessel_name, month, year, file_name, file_size, file_data, file_mimetype) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [vessel_id, vessel_name, month, year, req.file.originalname, file_size, uploadedBuffer, req.file.mimetype]
+        'INSERT INTO sms_uploads (vessel_id, vessel_name, month, year, file_name, file_size, file_data, file_mimetype, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [vessel_id, vessel_name, month, year, req.file.originalname, file_size, uploadedBuffer, req.file.mimetype, category || null]
       );
       res.json({
         success: true,
@@ -2848,6 +2929,7 @@ async function startServer() {
           month,
           year,
           fileName: req.file.originalname,
+          category: category || null,
           uploadedAt: new Date().toISOString(),
           fileSize: file_size
         }
@@ -2891,6 +2973,7 @@ async function startServer() {
         ...r,
         removeFilenameRestriction: Boolean(r.removeFilenameRestriction),
         isHira: Boolean(r.isHira),
+        isAcknowledgementRequired: Boolean(r.isAcknowledgementRequired),
         allowedFileTypes: typeof r.allowedFileTypes === 'string' ? JSON.parse(r.allowedFileTypes) : r.allowedFileTypes,
         template_file_data: r.template_file_data ? (Buffer.isBuffer(r.template_file_data) ? r.template_file_data.toString('utf-8') : String(r.template_file_data)) : undefined,
         template_files: typeof r.template_files === 'string' ? (() => { try { return JSON.parse(r.template_files); } catch(e) { return []; } })() : (r.template_files || [])
@@ -2967,10 +3050,11 @@ async function startServer() {
   });
 
   app.post('/api/sms/forms', authenticate, async (req, res) => {
-    const { id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files } = req.body;
+    const { id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, isAcknowledgementRequired, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files } = req.body;
     const allowedTypesVal = Array.isArray(allowedFileTypes) ? JSON.stringify(allowedFileTypes) : (allowedFileTypes || null);
     const orderVal = typeof sort_order === 'number' ? sort_order : 0;
     const isHiraVal = isHira ? 1 : 0;
+    const isAckReqVal = isAcknowledgementRequired ? 1 : 0;
     const tFileName = template_file_name || null;
     const tFileMime = template_file_mimetype || null;
     const tFileSize = typeof template_file_size === 'number' ? template_file_size : null;
@@ -3083,13 +3167,13 @@ async function startServer() {
 
       if (exists && exists.length > 0) {
         await pool.execute(
-          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, template_file_name = ?, template_file_data = ?, template_file_mimetype = ?, template_file_size = ?, template_files = ?, deleted_at = NULL WHERE id = ?',
-          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal, activeId]
+          'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, isAcknowledgementRequired = ?, template_file_name = ?, template_file_data = ?, template_file_mimetype = ?, template_file_size = ?, template_files = ?, deleted_at = NULL WHERE id = ?',
+          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, isAckReqVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal, activeId]
         );
       } else {
         await pool.execute(
-          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [activeId, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal]
+          'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, isAcknowledgementRequired, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [activeId, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, isAckReqVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal]
         );
       }
       res.json({ success: true, id: activeId });
