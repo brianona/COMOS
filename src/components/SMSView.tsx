@@ -46,18 +46,65 @@ import {
   File as FileIcon
 } from 'lucide-react';
 
-// Icons mapping for categories
+// Main SMS Category names
+export const MAIN_CATEGORIES = [
+  '1. Monthly',
+  '2. Voyage',
+  '3. Quarterly',
+  '4A. Semi Annual',
+  '4B. Annually',
+  '5. Occasional',
+  '6. Letter Form',
+  '7. Company Records (Office)',
+  '8. Safety and Security Forms',
+  '9. Free Form',
+];
+
+// Icons mapping for categories (including legacy & alternative aliases)
 const CATEGORY_ICONS: Record<string, React.ComponentType<any>> = {
   '1. Monthly': Calendar,
   '2. Voyage': Compass,
   '3. Quarterly': Layers,
   '4A. Semi Annual': CalendarCheck,
+  '4.A Semi Annual': CalendarCheck,
+  '4. Semi Annual': CalendarCheck,
   '4B. Annually': CalendarDays,
+  '4B. Anually': CalendarDays,
+  '4A. Annually': CalendarDays,
   '5. Occasional': ClipboardList,
   '6. Letter Form': Send,
   '7. Company Records (Office)': Building2,
   '8. Safety and Security Forms': ShieldCheck,
   '9. Free Form': PenTool,
+};
+
+// Normalize any category string variation into standard section names
+export const normalizeCategory = (cat?: string): string => {
+  if (!cat) return '1. Monthly';
+  const trimmed = cat.trim();
+  const lower = trimmed.toLowerCase();
+
+  if (lower.includes('monthly') || lower.startsWith('1')) return '1. Monthly';
+  if (lower.includes('voyage') || lower.startsWith('2')) return '2. Voyage';
+  if (lower.includes('quarterly') || lower.startsWith('3')) return '3. Quarterly';
+
+  // Semi Annual matches 4. Semi Annual, 4A. Semi Annual, 4.A Semi Annual, 4A Semi Annual
+  if (lower.includes('semi') || lower.includes('4a') || lower.includes('4.a') || lower.startsWith('4. semi')) {
+    return '4A. Semi Annual';
+  }
+
+  // Annually matches 4A. Annually, 4B. Annually, 4B. Anually, 4b, etc.
+  if (lower.includes('annual') || lower.includes('anual') || lower.includes('4b')) {
+    return '4B. Annually';
+  }
+
+  if (lower.includes('occasional') || lower.startsWith('5')) return '5. Occasional';
+  if (lower.includes('letter') || lower.startsWith('6')) return '6. Letter Form';
+  if (lower.includes('company') || lower.includes('office') || lower.startsWith('7')) return '7. Company Records (Office)';
+  if (lower.includes('security') || lower.startsWith('8')) return '8. Safety and Security Forms';
+  if (lower.includes('free') || lower.startsWith('9')) return '9. Free Form';
+
+  return trimmed;
 };
 
 export interface SMSForm {
@@ -559,7 +606,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   // Helper to filter forms based on active category, selected vessel scope, and vessel type
   const getVesselActiveCategoryForms = () => {
     const targetVessel = vesselsList.find(v => String(v.id) === String(reportingVesselId));
-    const catForms = forms.filter(f => f.category === selectedCategory);
+    const catForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
     if (!targetVessel) return catForms;
     return catForms.filter(f => isVesselInFormScope(targetVessel, f));
   };
@@ -606,6 +653,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
         const parsed = JSON.parse(savedForms);
         const mapped = parsed.map((f: any, idx: number) => ({
           ...f,
+          category: normalizeCategory(f.category),
           removeFilenameRestriction: Boolean(f.removeFilenameRestriction),
           allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes),
           sort_order: typeof f.sort_order === 'number' ? f.sort_order : idx,
@@ -615,7 +663,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
         mapped.sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
         setForms(mapped);
       } else {
-        const seeded = INITIAL_FORMS.map((f, idx) => ({ ...f, sort_order: f.sort_order ?? idx }));
+        const seeded = INITIAL_FORMS.map((f, idx) => ({ ...f, category: normalizeCategory(f.category), sort_order: f.sort_order ?? idx }));
         setForms(seeded);
         safeSaveFormsToLocalStorage(seeded);
       }
@@ -631,6 +679,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
         if (data && data.length > 0) {
           const mapped = data.map((f: any, idx: number) => ({
             ...f,
+            category: normalizeCategory(f.category),
             removeFilenameRestriction: Boolean(f.removeFilenameRestriction),
             allowedFileTypes: parseAllowedFileTypes(f.allowedFileTypes),
             sort_order: typeof f.sort_order === 'number' ? f.sort_order : idx,
@@ -974,19 +1023,19 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
 
   // Helper to get category for an upload item
   const getCategoryForUpload = (up: VesselUpload): string | null => {
-    if (up.category) return up.category;
+    if (up.category) return normalizeCategory(up.category);
 
     const fName = (up.fileName || '').toLowerCase();
 
     // Check known category names & slugs
-    const categories = Object.keys(CATEGORY_ICONS);
+    const categories = MAIN_CATEGORIES;
     for (const cat of categories) {
       const catLower = cat.toLowerCase();
       const catSlug = cat.replace(/[\s\.]+/g, '_').toLowerCase();
       const catWords = cat.replace(/^[\d\w]+\.\s*/, '').toLowerCase();
 
       if (fName.includes(catSlug) || fName.includes(catLower) || (catWords && catWords.length >= 4 && fName.includes(catWords))) {
-        return cat;
+        return normalizeCategory(cat);
       }
     }
 
@@ -996,12 +1045,12 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
       const cleanCode = (f.formCode || '').trim().toUpperCase();
       if (!cleanCode) continue;
       if (cleanFileName.includes(cleanCode)) {
-        return f.category;
+        return normalizeCategory(f.category);
       }
       const normFile = cleanFileName.replace(/[^A-Z0-9]/g, '');
       const normCode = cleanCode.replace(/[^A-Z0-9]/g, '');
       if (normCode && normCode.length >= 4 && normFile.includes(normCode)) {
-        return f.category;
+        return normalizeCategory(f.category);
       }
     }
 
@@ -1011,7 +1060,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   // Helper to determine if a file matches a category strictly
   const doesFileMatchCategory = (up: VesselUpload, category: string): boolean => {
     const uploadCategory = up.category || getCategoryForUpload(up) || '1. Monthly';
-    return uploadCategory === category;
+    return normalizeCategory(uploadCategory) === normalizeCategory(category);
   };
 
   // Sync filteredUploads when uploads list or filters change
@@ -2646,12 +2695,12 @@ startxref
       safeSaveFormsToLocalStorage(updatedForms);
     } else {
       // Create mode
-      const categoryForms = forms.filter(f => f.category === selectedCategory);
+      const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
       const maxOrder = categoryForms.reduce((max, f) => Math.max(max, f.sort_order ?? 0), -1);
 
       savedForm = {
         id: 'f_' + Date.now(),
-        category: selectedCategory,
+        category: normalizeCategory(selectedCategory),
         formCode: formCodeInput,
         description: formDescriptionInput,
         formDate: formDateInput,
@@ -2717,7 +2766,7 @@ startxref
   };
 
   const handleReorderForm = async (formId: string, direction: 'up' | 'down') => {
-    const categoryForms = forms.filter(f => f.category === selectedCategory);
+    const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
     const currentIndex = categoryForms.findIndex(f => f.id === formId);
     if (currentIndex === -1) return;
 
@@ -2735,7 +2784,7 @@ startxref
 
     let catIdx = 0;
     const updatedForms = forms.map(f => {
-      if (f.category === selectedCategory) {
+      if (normalizeCategory(f.category) === normalizeCategory(selectedCategory)) {
         return updatedCategoryForms[catIdx++];
       }
       return f;
@@ -3134,7 +3183,7 @@ startxref
 
     const cat = up.category || getCategoryForUpload(up);
     if (cat) {
-      const categoryForms = forms.filter(f => f.category === cat);
+      const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(cat));
       const ackForm = categoryForms.find(f => f.isAcknowledgementRequired);
       if (ackForm) return ackForm;
       if (categoryForms.length > 0) return categoryForms[0];
@@ -3246,7 +3295,7 @@ startxref
         requiresAck = true;
       } else {
         const cat = up.category || getCategoryForUpload(up);
-        if (cat && forms.filter(f => f.category === cat).some(f => f.isAcknowledgementRequired)) {
+        if (cat && forms.filter(f => normalizeCategory(f.category) === normalizeCategory(cat)).some(f => f.isAcknowledgementRequired)) {
           requiresAck = true;
         }
       }
@@ -3673,9 +3722,9 @@ startxref
             </span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-2.5">
-            {Object.keys(CATEGORY_ICONS).map((catName) => {
+            {MAIN_CATEGORIES.map((catName) => {
               const IconComponent = CATEGORY_ICONS[catName];
-              const isActive = selectedCategory === catName;
+              const isActive = normalizeCategory(selectedCategory) === normalizeCategory(catName);
               
               return (
                 <button

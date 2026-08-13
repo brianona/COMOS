@@ -1447,10 +1447,10 @@ async function startServer() {
           { id: 'f_10', category: '2. Voyage', formCode: 'COMI-SM-2-3', description: 'Pilot Boarding & Watch handover Guidelines', formDate: '15 March 2026', scope: 'All Vessels', type: 'Form' },
           { id: 'f_11', category: '3. Quarterly', formCode: 'COMI-SM-3-1', description: 'Enclosed Space Entry & Rescue Drill Report', formDate: '10 January 2026', scope: 'All Vessels', type: 'Form' },
           { id: 'f_12', category: '3. Quarterly', formCode: 'COMI-SM-3-2', description: 'Lifeboat Launching & Emergency Steering Gear Review', formDate: '28 February 2026', scope: 'All Vessels', type: 'Form' },
-          { id: 'f_13', category: '4. Semi Annual', formCode: 'COMI-SM-4-1', description: 'Safety Committee Meeting & Officer Review Minutes', formDate: '05 March 2026', scope: 'All Vessels', type: 'Form' },
-          { id: 'f_14', category: '4. Semi Annual', formCode: 'COMI-SM-4-2', description: 'Onboard Safety Training & Drills Assessment Log', formDate: '18 April 2026', scope: 'All Vessels', type: 'Form' },
-          { id: 'f_15', category: '4A. Annually', formCode: 'COMI-SM-4A-1', description: "Master's Review and Evaluation of Safety Management System (SMS)", formDate: '14 May 2026', scope: 'All Vessels', type: 'Form' },
-          { id: 'f_16', category: '4A. Annually', formCode: 'COMI-SM-4A-2', description: 'Annual Fire-Fighting & Safety Appliance Certificate Verification', formDate: '10 June 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_13', category: '4A. Semi Annual', formCode: 'COMI-SM-4-1', description: 'Safety Committee Meeting & Officer Review Minutes', formDate: '05 March 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_14', category: '4A. Semi Annual', formCode: 'COMI-SM-4-2', description: 'Onboard Safety Training & Drills Assessment Log', formDate: '18 April 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_15', category: '4B. Annually', formCode: 'COMI-SM-4A-1', description: "Master's Review and Evaluation of Safety Management System (SMS)", formDate: '14 May 2026', scope: 'All Vessels', type: 'Form' },
+          { id: 'f_16', category: '4B. Annually', formCode: 'COMI-SM-4A-2', description: 'Annual Fire-Fighting & Safety Appliance Certificate Verification', formDate: '10 June 2026', scope: 'All Vessels', type: 'Form' },
           { id: 'f_17', category: '5. Occasional', formCode: 'COMI-SM-5-1', description: 'Hot Work Authorization Permit', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
           { id: 'f_18', category: '5. Occasional', formCode: 'COMI-SM-5-2', description: 'Enclosed Space Entry Permit', formDate: '28 November 2025', scope: 'All Vessels', type: 'Form' },
           { id: 'f_19', category: '5. Occasional', formCode: 'COMI-SM-5-3', description: 'Working At Height / Overboard Permit', formDate: '12 January 2026', scope: 'All Vessels', type: 'Form' },
@@ -1481,6 +1481,16 @@ async function startServer() {
           'INSERT IGNORE INTO sms_forms (id, category, formCode, description, formDate, scope, type) VALUES (?, ?, ?, ?, ?, ?, ?)',
           ['f_malta_engine', '1. Monthly', 'COMI-SM-1-8-ENGINE-MALTA', 'Malta Flag State Engine Log & Auxiliary Equipment Checklist', '28 November 2025', 'All Malta Vessels', 'Form']
         );
+      }
+
+      // Automatically update existing records with legacy or alternative section labels
+      try {
+        await pool.query("UPDATE sms_forms SET category = '4A. Semi Annual' WHERE category IN ('4. Semi Annual', '4.A Semi Annual', '4A Semi Annual')");
+        await pool.query("UPDATE sms_forms SET category = '4B. Annually' WHERE category IN ('4A. Annually', '4B. Anually', '4B Annually')");
+        await pool.query("UPDATE sms_uploads SET category = '4A. Semi Annual' WHERE category IN ('4. Semi Annual', '4.A Semi Annual', '4A Semi Annual')");
+        await pool.query("UPDATE sms_uploads SET category = '4B. Annually' WHERE category IN ('4A. Annually', '4B. Anually', '4B Annually')");
+      } catch (e: any) {
+        console.warn('Note on updating SMS form categories in database:', e.message);
       }
     } catch (err: any) {
       console.error('Failed to seed initial SMS forms:', err.message);
