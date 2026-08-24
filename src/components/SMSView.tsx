@@ -42,9 +42,15 @@ import {
   FileSpreadsheet,
   ArrowUp,
   ArrowDown,
+  ChevronsUp,
+  ChevronsDown,
+  CheckSquare,
+  Square,
+  MoveVertical,
   Clock,
   File as FileIcon
 } from 'lucide-react';
+import { SMSFormModal } from './SMSFormModal';
 
 // Main SMS Category names
 export const MAIN_CATEGORIES = [
@@ -325,6 +331,12 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [submissionPeriods, setSubmissionPeriods] = useState<VesselSubmissionPeriod[]>([]);
   const [uploads, setUploads] = useState<VesselUpload[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedFormIds, setSelectedFormIds] = useState<string[]>([]);
+
+  // Clear multi-select when active category changes
+  useEffect(() => {
+    setSelectedFormIds([]);
+  }, [selectedCategory]);
 
   // Dropdown/Form selection states
   const [selectedPeriodVesselId, setSelectedPeriodVesselId] = useState('');
@@ -351,159 +363,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   // Form Modals states
   const [showFormModal, setShowFormModal] = useState(false);
   const [editingForm, setEditingForm] = useState<SMSForm | null>(null);
-  const [formCodeInput, setFormCodeInput] = useState('');
-  const [formDescriptionInput, setFormDescriptionInput] = useState('');
-  const [formDateInput, setFormDateInput] = useState('');
-  const [formScopeInput, setFormScopeInput] = useState('All Vessels');
-  const [formVesselTypeInput, setFormVesselTypeInput] = useState('All Vessels');
-  const [formRemoveFilenameRestrictionInput, setFormRemoveFilenameRestrictionInput] = useState(false);
-  const [formAllowedFileTypesInput, setFormAllowedFileTypesInput] = useState<string[]>([]);
-  const [formIsHiraInput, setFormIsHiraInput] = useState(false);
-  const [formIsAcknowledgementRequiredInput, setFormIsAcknowledgementRequiredInput] = useState(false);
-  const [formTypeInput, setFormTypeInput] = useState<'Form' | 'Checklist'>('Form');
-  const [selectedFlags, setSelectedFlags] = useState<string[]>([]);
-  const [formTemplateFileInput, setFormTemplateFileInput] = useState<{
-    name: string;
-    data?: string;
-    mimetype?: string;
-    size?: number;
-  } | null>(null);
-  const [formTemplateFilesInput, setFormTemplateFilesInput] = useState<{
-    name: string;
-    data?: string;
-    mimetype?: string;
-    size?: number;
-  }[]>([]);
-
-  const handleTemplateFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setTemplateUploading({
-      isUploading: true,
-      fileName: file.name,
-      progress: 30
-    });
-
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const base64Data = evt.target?.result as string;
-      setTemplateUploading({
-        isUploading: true,
-        fileName: file.name,
-        progress: 85
-      });
-
-      setTimeout(() => {
-        setFormTemplateFileInput({
-          name: file.name,
-          data: base64Data,
-          mimetype: file.type || 'application/octet-stream',
-          size: file.size
-        });
-        setTemplateUploading(null);
-        triggerToast(`Attached form template file: ${file.name}`, 'success');
-      }, 300);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleTemplateFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    setTemplateUploading({
-      isUploading: true,
-      fileName: `${files.length} template file(s)`,
-      progress: 20
-    });
-    
-    const newFilesList = [...formTemplateFilesInput];
-    let loadedCount = 0;
-    
-    (Array.from(files) as File[]).forEach((file: File) => {
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        const base64Data = evt.target?.result as string;
-        newFilesList.push({
-          name: file.name,
-          data: base64Data,
-          mimetype: file.type || 'application/octet-stream',
-          size: file.size
-        });
-        loadedCount++;
-        const pct = Math.round((loadedCount / files.length) * 100);
-        setTemplateUploading({
-          isUploading: true,
-          fileName: file.name,
-          progress: Math.min(95, pct)
-        });
-
-        if (loadedCount === files.length) {
-          setTimeout(() => {
-            setFormTemplateFilesInput(newFilesList);
-            setTemplateUploading(null);
-            triggerToast(`Attached ${files.length} template file(s)`, 'success');
-          }, 300);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  useEffect(() => {
-    if (formIsHiraInput) {
-      if (formTemplateFileInput && formTemplateFilesInput.length === 0) {
-        setFormTemplateFilesInput([formTemplateFileInput]);
-      }
-    } else {
-      if (formTemplateFilesInput.length > 0 && !formTemplateFileInput) {
-        setFormTemplateFileInput(formTemplateFilesInput[0]);
-      }
-    }
-  }, [formIsHiraInput]);
-
-  const getFlagsFormatted = (arr: string[]) => {
-    if (arr.length === 0) return '';
-    if (arr.length === 1) return arr[0];
-    if (arr.length === 2) return `${arr[0]} and ${arr[1]}`;
-    const initial = arr.slice(0, -1).join(', ');
-    return `${initial}, and ${arr[arr.length - 1]}`;
-  };
-
-  const handleFlagCheckboxChange = (flagName: string, checked: boolean) => {
-    let nextFlags: string[];
-    if (checked) {
-      if (!selectedFlags.includes(flagName)) {
-        nextFlags = [...selectedFlags, flagName];
-      } else {
-        nextFlags = selectedFlags;
-      }
-    } else {
-      nextFlags = selectedFlags.filter(f => f !== flagName);
-    }
-    
-    setSelectedFlags(nextFlags);
-
-    // Calculate default scope option
-    let defaultScope = 'All Vessels';
-    if (nextFlags.length === 1) {
-      defaultScope = `All ${nextFlags[0]} Vessels`;
-    } else if (nextFlags.length > 1) {
-      defaultScope = `All ${getFlagsFormatted(nextFlags)} flags`;
-    }
-
-    // Check if the currently selected vessel name is still in the filtered list
-    const isCurrentVesselStillValid = vesselsList.some(v => 
-      v.name === formScopeInput && 
-      (nextFlags.length === 0 || nextFlags.includes(v.flag || ''))
-    );
-
-    const isGroupOption = formScopeInput.startsWith('All ');
-    if (isGroupOption || !isCurrentVesselStillValid) {
-      setFormScopeInput(defaultScope);
-    }
-  };
+  const [quickTemplateUploadingId, setQuickTemplateUploadingId] = useState<string | null>(null);
 
   // File Upload states
   const [dragActive, setDragActive] = useState(false);
@@ -2593,135 +2453,37 @@ startxref
 
   // Manage forms: Create or Update Form
   const handleOpenFormModal = (form?: SMSForm) => {
-    if (form) {
-      setEditingForm(form);
-      setFormCodeInput(form.formCode);
-      setFormDescriptionInput(form.description);
-      setFormDateInput(form.formDate || '');
-      setFormScopeInput(form.scope);
-      setFormVesselTypeInput(form.vesselType || 'All Vessels');
-      setFormRemoveFilenameRestrictionInput(Boolean(form.removeFilenameRestriction));
-      setFormAllowedFileTypesInput(form.allowedFileTypes || []);
-      setFormIsHiraInput(Boolean(form.isHira));
-      setFormIsAcknowledgementRequiredInput(Boolean(form.isAcknowledgementRequired));
-      setFormTypeInput(form.type || 'Form');
-
-      if (form.template_file_name) {
-        setFormTemplateFileInput({
-          name: form.template_file_name,
-          data: form.template_file_data,
-          mimetype: form.template_file_mimetype,
-          size: form.template_file_size
-        });
-      } else {
-        setFormTemplateFileInput(null);
-      }
-
-      if (form.template_files) {
-        setFormTemplateFilesInput(form.template_files);
-      } else {
-        setFormTemplateFilesInput([]);
-      }
-
-      // Determine flags from scope
-      let initialSelectedFlags: string[] = [];
-      if (form.scope && form.scope !== 'All Vessels') {
-        const matchedFlags = flags
-          .map((f: any) => f.name)
-          .filter((flagName: string) => form.scope.includes(flagName));
-        
-        if (matchedFlags.length > 0) {
-          initialSelectedFlags = matchedFlags;
-        } else {
-          // Specific vessel scope
-          const matchedVessel = vesselsList.find(v => v.name === form.scope);
-          if (matchedVessel && matchedVessel.flag) {
-            initialSelectedFlags = [matchedVessel.flag];
-          }
-        }
-      }
-      setSelectedFlags(initialSelectedFlags);
-    } else {
-      setEditingForm(null);
-      setFormCodeInput('');
-      setFormDescriptionInput('');
-      setFormDateInput('');
-      setFormScopeInput('All Vessels');
-      setFormVesselTypeInput('All Vessels');
-      setFormRemoveFilenameRestrictionInput(false);
-      setFormAllowedFileTypesInput([]);
-      setFormIsHiraInput(false);
-      setFormIsAcknowledgementRequiredInput(false);
-      setFormTypeInput('Form');
-      setSelectedFlags([]);
-      setFormTemplateFileInput(null);
-      setFormTemplateFilesInput([]);
-    }
+    setEditingForm(form || null);
     setShowFormModal(true);
   };
 
-  const handleSaveFormSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formCodeInput || !formDescriptionInput) {
-      triggerToast('Form Code and Description are required.', 'error');
-      return;
-    }
-
+  const handleSaveFormModal = async (formData: Partial<SMSForm>, editingId?: string) => {
     let updatedForms: SMSForm[] = [];
     let savedForm: SMSForm | null = null;
 
-    if (editingForm) {
-      // Edit mode
+    if (editingId) {
+      const existing = forms.find(f => f.id === editingId);
+      if (!existing) return;
       savedForm = {
-        ...editingForm,
-        formCode: formCodeInput,
-        description: formDescriptionInput,
-        formDate: formDateInput,
-        scope: formScopeInput,
-        vesselType: formVesselTypeInput,
-        type: formTypeInput,
-        removeFilenameRestriction: formRemoveFilenameRestrictionInput,
-        allowedFileTypes: formAllowedFileTypesInput,
-        isHira: formIsHiraInput,
-        isAcknowledgementRequired: formIsAcknowledgementRequiredInput,
-        template_file_name: formTemplateFileInput?.name,
-        template_file_data: formTemplateFileInput?.data,
-        template_file_mimetype: formTemplateFileInput?.mimetype,
-        template_file_size: formTemplateFileInput?.size,
-        template_files: formIsHiraInput ? formTemplateFilesInput : undefined
-      };
-      updatedForms = forms.map(f => f.id === editingForm.id ? savedForm! : f);
-      setForms(updatedForms);
-      safeSaveFormsToLocalStorage(updatedForms);
+        ...existing,
+        ...formData,
+      } as SMSForm;
+      updatedForms = forms.map(f => f.id === editingId ? savedForm! : f);
     } else {
-      // Create mode
       const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
       const maxOrder = categoryForms.reduce((max, f) => Math.max(max, f.sort_order ?? 0), -1);
 
       savedForm = {
         id: 'f_' + Date.now(),
         category: normalizeCategory(selectedCategory),
-        formCode: formCodeInput,
-        description: formDescriptionInput,
-        formDate: formDateInput,
-        scope: formScopeInput,
-        vesselType: formVesselTypeInput,
-        type: formTypeInput,
-        removeFilenameRestriction: formRemoveFilenameRestrictionInput,
-        allowedFileTypes: formAllowedFileTypesInput,
-        isHira: formIsHiraInput,
-        isAcknowledgementRequired: formIsAcknowledgementRequiredInput,
         sort_order: maxOrder + 1,
-        template_file_name: formTemplateFileInput?.name,
-        template_file_data: formTemplateFileInput?.data,
-        template_file_mimetype: formTemplateFileInput?.mimetype,
-        template_file_size: formTemplateFileInput?.size,
-        template_files: formIsHiraInput ? formTemplateFilesInput : undefined
-      };
+        ...formData,
+      } as SMSForm;
       updatedForms = [...forms, savedForm];
-      setForms(updatedForms);
-      safeSaveFormsToLocalStorage(updatedForms);
     }
+
+    setForms(updatedForms);
+    safeSaveFormsToLocalStorage(updatedForms);
 
     if (token && savedForm) {
       try {
@@ -2733,7 +2495,7 @@ startxref
           },
           body: JSON.stringify(savedForm)
         });
-        
+
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
           console.error('Failed to save SMS form to MySQL:', errData);
@@ -2757,15 +2519,264 @@ startxref
     }
 
     triggerToast(
-      editingForm
-        ? `${formTypeInput === 'Checklist' ? 'Checklist' : 'Form'} ${formCodeInput} updated successfully.`
-        : `${formTypeInput === 'Checklist' ? 'Checklist' : 'Form'} ${formCodeInput} added to section ${selectedCategory}.`,
+      editingId
+        ? `${savedForm.type === 'Checklist' ? 'Checklist' : 'Form'} ${savedForm.formCode} updated successfully.`
+        : `${savedForm.type === 'Checklist' ? 'Checklist' : 'Form'} ${savedForm.formCode} added to section ${selectedCategory}.`,
       'success'
     );
-    setShowFormModal(false);
+  };
+
+  const handleQuickTemplateUpload = async (form: SMSForm, file: File) => {
+    setQuickTemplateUploadingId(form.id);
+    try {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        const base64Data = e.target?.result as string;
+        const updatedForm: SMSForm = {
+          ...form,
+          template_file_name: file.name,
+          template_file_data: base64Data,
+          template_file_mimetype: file.type || 'application/octet-stream',
+          template_file_size: file.size,
+        };
+
+        const updatedForms = forms.map(item => item.id === form.id ? updatedForm : item);
+        setForms(updatedForms);
+        safeSaveFormsToLocalStorage(updatedForms);
+
+        if (token) {
+          try {
+            await fetch('/api/sms/forms', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+              },
+              body: JSON.stringify(updatedForm)
+            });
+          } catch (err) {
+            console.error('Quick template save error:', err);
+          }
+        }
+        triggerToast(`Attached template ${file.name} to ${form.formCode}`, 'success');
+        setQuickTemplateUploadingId(null);
+      };
+      reader.onerror = () => {
+        triggerToast('Failed to read template file.', 'error');
+        setQuickTemplateUploadingId(null);
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('Quick template upload error:', err);
+      triggerToast('Failed to upload template.', 'error');
+      setQuickTemplateUploadingId(null);
+    }
+  };
+
+  const handleToggleSelectForm = (formId: string) => {
+    setSelectedFormIds(prev =>
+      prev.includes(formId) ? prev.filter(id => id !== formId) : [...prev, formId]
+    );
+  };
+
+  const handleSelectAllVisibleForms = (visibleForms: SMSForm[]) => {
+    const visibleIds = visibleForms.map(f => f.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every(id => selectedFormIds.includes(id));
+    if (allSelected) {
+      setSelectedFormIds(prev => prev.filter(id => !visibleIds.includes(id)));
+    } else {
+      setSelectedFormIds(prev => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  const handleClearFormSelection = () => {
+    setSelectedFormIds([]);
+  };
+
+  const canMoveSelectionUp = (categoryForms: SMSForm[], selectedIds: string[]): boolean => {
+    if (!selectedIds || selectedIds.length === 0) return false;
+    const selectedSet = new Set(selectedIds);
+    for (let i = 0; i < categoryForms.length; i++) {
+      if (selectedSet.has(categoryForms[i].id)) {
+        if (i > 0 && !selectedSet.has(categoryForms[i - 1].id)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const canMoveSelectionDown = (categoryForms: SMSForm[], selectedIds: string[]): boolean => {
+    if (!selectedIds || selectedIds.length === 0) return false;
+    const selectedSet = new Set(selectedIds);
+    for (let i = categoryForms.length - 1; i >= 0; i--) {
+      if (selectedSet.has(categoryForms[i].id)) {
+        if (i < categoryForms.length - 1 && !selectedSet.has(categoryForms[i + 1].id)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  const handleReorderMultipleForms = async (direction: 'up' | 'down') => {
+    const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
+    const selectedSet = new Set(selectedFormIds.filter(id => categoryForms.some(f => f.id === id)));
+    if (selectedSet.size === 0) return;
+
+    const updatedCategoryForms = [...categoryForms];
+    let didMove = false;
+
+    if (direction === 'up') {
+      for (let i = 0; i < updatedCategoryForms.length; i++) {
+        if (selectedSet.has(updatedCategoryForms[i].id)) {
+          if (i > 0 && !selectedSet.has(updatedCategoryForms[i - 1].id)) {
+            didMove = true;
+            const temp = updatedCategoryForms[i];
+            updatedCategoryForms[i] = updatedCategoryForms[i - 1];
+            updatedCategoryForms[i - 1] = temp;
+          }
+        }
+      }
+    } else {
+      for (let i = updatedCategoryForms.length - 1; i >= 0; i--) {
+        if (selectedSet.has(updatedCategoryForms[i].id)) {
+          if (i < updatedCategoryForms.length - 1 && !selectedSet.has(updatedCategoryForms[i + 1].id)) {
+            didMove = true;
+            const temp = updatedCategoryForms[i];
+            updatedCategoryForms[i] = updatedCategoryForms[i + 1];
+            updatedCategoryForms[i + 1] = temp;
+          }
+        }
+      }
+    }
+
+    if (!didMove) return;
+
+    updatedCategoryForms.forEach((f, idx) => {
+      f.sort_order = idx;
+    });
+
+    let catIdx = 0;
+    const updatedForms = forms.map(f => {
+      if (normalizeCategory(f.category) === normalizeCategory(selectedCategory)) {
+        return updatedCategoryForms[catIdx++];
+      }
+      return f;
+    });
+
+    setForms(updatedForms);
+    safeSaveFormsToLocalStorage(updatedForms);
+
+    if (token) {
+      try {
+        await fetch('/api/sms/forms/reorder', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updatedCategoryForms.map((f, idx) => ({ id: f.id, sort_order: idx })))
+        });
+      } catch (err) {
+        console.error('Failed to sync reordered forms to server:', err);
+      }
+    }
+
+    triggerToast(`Moved ${selectedSet.size} selected file(s) ${direction} in ${selectedCategory}`, 'success');
+  };
+
+  const handleMoveSelectedToTop = async () => {
+    const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
+    const selectedSet = new Set(selectedFormIds.filter(id => categoryForms.some(f => f.id === id)));
+    if (selectedSet.size === 0) return;
+
+    const selectedItems = categoryForms.filter(f => selectedSet.has(f.id));
+    const unselectedItems = categoryForms.filter(f => !selectedSet.has(f.id));
+    const updatedCategoryForms = [...selectedItems, ...unselectedItems];
+
+    updatedCategoryForms.forEach((f, idx) => {
+      f.sort_order = idx;
+    });
+
+    let catIdx = 0;
+    const updatedForms = forms.map(f => {
+      if (normalizeCategory(f.category) === normalizeCategory(selectedCategory)) {
+        return updatedCategoryForms[catIdx++];
+      }
+      return f;
+    });
+
+    setForms(updatedForms);
+    safeSaveFormsToLocalStorage(updatedForms);
+
+    if (token) {
+      try {
+        await fetch('/api/sms/forms/reorder', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updatedCategoryForms.map((f, idx) => ({ id: f.id, sort_order: idx })))
+        });
+      } catch (err) {
+        console.error('Failed to sync reordered forms to server:', err);
+      }
+    }
+
+    triggerToast(`Moved ${selectedSet.size} file(s) to top of ${selectedCategory}`, 'success');
+  };
+
+  const handleMoveSelectedToBottom = async () => {
+    const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
+    const selectedSet = new Set(selectedFormIds.filter(id => categoryForms.some(f => f.id === id)));
+    if (selectedSet.size === 0) return;
+
+    const selectedItems = categoryForms.filter(f => selectedSet.has(f.id));
+    const unselectedItems = categoryForms.filter(f => !selectedSet.has(f.id));
+    const updatedCategoryForms = [...unselectedItems, ...selectedItems];
+
+    updatedCategoryForms.forEach((f, idx) => {
+      f.sort_order = idx;
+    });
+
+    let catIdx = 0;
+    const updatedForms = forms.map(f => {
+      if (normalizeCategory(f.category) === normalizeCategory(selectedCategory)) {
+        return updatedCategoryForms[catIdx++];
+      }
+      return f;
+    });
+
+    setForms(updatedForms);
+    safeSaveFormsToLocalStorage(updatedForms);
+
+    if (token) {
+      try {
+        await fetch('/api/sms/forms/reorder', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updatedCategoryForms.map((f, idx) => ({ id: f.id, sort_order: idx })))
+        });
+      } catch (err) {
+        console.error('Failed to sync reordered forms to server:', err);
+      }
+    }
+
+    triggerToast(`Moved ${selectedSet.size} file(s) to bottom of ${selectedCategory}`, 'success');
   };
 
   const handleReorderForm = async (formId: string, direction: 'up' | 'down') => {
+    // If the clicked form is part of multiple selected forms, move the whole selection!
+    if (selectedFormIds.length > 1 && selectedFormIds.includes(formId)) {
+      await handleReorderMultipleForms(direction);
+      return;
+    }
+
     const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
     const currentIndex = categoryForms.findIndex(f => f.id === formId);
     if (currentIndex === -1) return;
@@ -3192,11 +3203,64 @@ startxref
     return null;
   };
 
-  const handleUploadAcknowledgementFile = async (uploadId: string, file: File) => {
+  const handleUploadAcknowledgementFile = async (
+    uploadId: string,
+    fileOrFiles: File | File[],
+    matchedForm?: SMSForm | null,
+    up?: VesselUpload
+  ) => {
+    const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+    if (files.length === 0) return;
+
     setUploadingAckId(uploadId);
     try {
+      let fileToUpload: File;
+
+      if (files.length === 1) {
+        fileToUpload = files[0];
+      } else {
+        triggerToast(`Archiving ${files.length} acknowledgement files into ZIP package...`, 'info');
+        const zip = new JSZip();
+        files.forEach((f) => {
+          zip.file(f.name, f);
+        });
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const formCode = matchedForm?.formCode || 'COMI-SM-1-1';
+        const vNameClean = (up?.vesselName || 'Vessel').replace(/\s+/g, '_');
+        const zipFileName = `${formCode}_${vNameClean}_Signed_ACK_Package.zip`;
+        fileToUpload = new File([blob], zipFileName, { type: 'application/zip' });
+      }
+
+      if (!token || String(uploadId).startsWith('up_')) {
+        // Offline / Local state fallback
+        const fileSizeStr = fileToUpload.size > 1024 * 1024
+          ? `${(fileToUpload.size / (1024 * 1024)).toFixed(1)} MB`
+          : `${(fileToUpload.size / 1024).toFixed(0)} KB`;
+
+        const updated = uploads.map(u => {
+          if (u.id === uploadId) {
+            return {
+              ...u,
+              isAcknowledged: true,
+              ackFileName: fileToUpload.name,
+              ackFileSize: fileSizeStr,
+              ackUploadedAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+              ackUploadedBy: currentUser?.username || 'Office Staff'
+            };
+          }
+          return u;
+        });
+        setUploads(updated);
+        localStorage.setItem('comos_sms_uploads_list', JSON.stringify(updated));
+        const msg = files.length > 1
+          ? `Uploaded ${files.length} acknowledgement files as ${fileToUpload.name}`
+          : `Uploaded acknowledgement file: ${fileToUpload.name}`;
+        triggerToast(msg, 'success');
+        return;
+      }
+
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', fileToUpload);
 
       const headers: Record<string, string> = {};
       if (token) {
@@ -3211,11 +3275,14 @@ startxref
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to upload acknowledgement file');
+        throw new Error(err.error || 'Failed to upload acknowledgement file(s)');
       }
 
       const data = await res.json();
-      triggerToast(`Uploaded acknowledgement file: ${file.name}`, 'success');
+      const msg = files.length > 1
+        ? `Uploaded ${files.length} acknowledgement files as ${data.ackFileName || fileToUpload.name}`
+        : `Uploaded acknowledgement file: ${fileToUpload.name}`;
+      triggerToast(msg, 'success');
 
       // Update local state
       const updated = uploads.map(u => {
@@ -3223,8 +3290,8 @@ startxref
           return {
             ...u,
             isAcknowledged: true,
-            ackFileName: data.ackFileName || file.name,
-            ackFileSize: data.ackFileSize || `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+            ackFileName: data.ackFileName || fileToUpload.name,
+            ackFileSize: data.ackFileSize || `${(fileToUpload.size / (1024 * 1024)).toFixed(1)} MB`,
             ackUploadedAt: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
             ackUploadedBy: currentUser?.username || 'Office Staff'
           };
@@ -3233,7 +3300,7 @@ startxref
       });
       setUploads(updated);
     } catch (err: any) {
-      triggerToast(err.message || 'Error uploading acknowledgement file', 'error');
+      triggerToast(err.message || 'Error uploading acknowledgement file(s)', 'error');
     } finally {
       setUploadingAckId(null);
     }
@@ -3265,6 +3332,105 @@ startxref
       document.body.removeChild(a);
     } catch (err: any) {
       triggerToast(err.message || 'Error downloading acknowledgement file', 'error');
+    }
+  };
+
+  const handleDownloadReportDocument = async (up: VesselUpload) => {
+    const isZip = (up.fileName || '').toLowerCase().endsWith('.zip');
+    const matchedForm = getMatchedFormForUpload(up);
+    const formCode = matchedForm?.formCode || 'COMI-SM-1-1';
+
+    if (!isZip) {
+      // Direct single file download
+      await handleDownloadFile(up.id, up.fileName);
+      return;
+    }
+
+    // It's a ZIP archive package, extract only the report file
+    triggerToast(`Extracting report document for ${formCode}...`, 'success');
+
+    try {
+      if (!token || String(up.id).startsWith('up_')) {
+        // Simulated file extraction
+        const ext = 'pdf';
+        const targetFileName = `${formCode}_${up.vesselName.replace(/\s+/g, '_')}_${up.month}_${up.year}_Report.${ext}`;
+        const blob = new Blob([`%PDF-1.4\n% Official Vessel Safety Report for ${formCode} - ${up.vesselName} (${up.month} ${up.year})`], { type: 'application/pdf' });
+        
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = targetFileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        triggerToast(`Downloaded ${targetFileName} successfully!`, 'success');
+        return;
+      }
+
+      // Real ZIP extraction from backend
+      const response = await fetch(`/api/sms/download/${up.id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        throw new Error('Failed to retrieve report package');
+      }
+      const blob = await response.blob();
+
+      // Check if response is zip or single file
+      if (!blob.type.includes('zip') && !up.fileName.toLowerCase().endsWith('.zip')) {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = up.fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        return;
+      }
+
+      const zip = await JSZip.loadAsync(blob);
+      const entries = Object.values(zip.files).filter(e => !e.dir);
+
+      if (entries.length === 0) {
+        throw new Error('No files found inside the report ZIP package');
+      }
+
+      // Find best matching entry matching form code or document format
+      let targetEntry = entries.find(e => {
+        const name = (e.name.split('/').pop() || e.name).toUpperCase();
+        return formCode && name.includes(formCode.toUpperCase());
+      });
+
+      if (!targetEntry) {
+        targetEntry = entries.find(e => {
+          const lower = e.name.toLowerCase();
+          return lower.endsWith('.pdf') || lower.endsWith('.docx') || lower.endsWith('.xlsx') || lower.endsWith('.doc') || lower.endsWith('.xls');
+        });
+      }
+
+      if (!targetEntry) {
+        targetEntry = entries[0];
+      }
+
+      const extractedFileName = targetEntry.name.split('/').pop() || targetEntry.name;
+      const fileBlob = await targetEntry.async('blob');
+
+      const url = window.URL.createObjectURL(fileBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = extractedFileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+
+      triggerToast(`Extracted and downloaded ${extractedFileName}`, 'success');
+    } catch (err: any) {
+      console.error('Error downloading report document:', err);
+      // Fallback to standard download if zip parsing fails
+      await handleDownloadFile(up.id, up.fileName);
     }
   };
 
@@ -3442,12 +3608,13 @@ startxref
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-slate-800 text-white text-[10px] font-black uppercase tracking-wider border-b border-slate-700">
-                {!isVesselUser && <th className="px-4 py-3.5 w-[16%]">Vessel Name</th>}
-                <th className="px-4 py-3.5 w-[14%]">Form Code</th>
-                <th className="px-4 py-3.5 w-[32%]">{isVesselUser ? 'Description' : 'Form Description'}</th>
-                <th className="px-4 py-3.5 w-[14%]">Report Type</th>
-                <th className="px-4 py-3.5 w-[14%]">{isVesselUser ? 'Upload Date' : 'Vessel Upload Date'}</th>
-                <th className="px-4 py-3.5 w-[18%] text-center">Acknowledgement Status</th>
+                {!isVesselUser && <th className="px-4 py-3.5 w-[14%]">Vessel Name</th>}
+                <th className="px-4 py-3.5 w-[12%]">Form Code</th>
+                <th className="px-4 py-3.5 w-[26%]">{isVesselUser ? 'Description' : 'Form Description'}</th>
+                <th className="px-4 py-3.5 w-[12%]">Report Type</th>
+                <th className="px-4 py-3.5 w-[12%]">{isVesselUser ? 'Upload Date' : 'Vessel Upload Date'}</th>
+                <th className="px-4 py-3.5 w-[12%] text-center">Acknowledgement Status</th>
+                <th className="px-4 py-3.5 w-[12%] text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs font-semibold">
@@ -3455,12 +3622,14 @@ startxref
                 if (uploadsRequiringAck.length === 0) {
                   return (
                     <tr>
-                      <td colSpan={isVesselUser ? 5 : 6} className="text-center py-12 text-slate-400 italic">
+                      <td colSpan={isVesselUser ? 6 : 7} className="text-center py-12 text-slate-400 italic">
                         No uploaded reports requiring acknowledgement found.
                       </td>
                     </tr>
                   );
                 }
+
+                const canDeleteAck = currentUser?.role === 'admin' || currentUser?.role === 'management' || currentUser?.role === 'team_pic';
 
                 return uploadsRequiringAck.map((up) => {
                   const matchedForm = getMatchedFormForUpload(up);
@@ -3468,6 +3637,7 @@ startxref
                   const formDesc = matchedForm?.description || up.fileName || 'Water Condition / Safety Report';
                   const reportType = up.category || matchedForm?.category || '1. Monthly';
                   const isAcknowledged = Boolean(up.isAcknowledged || up.ackFileName);
+                  const allowsMultiple = Boolean(matchedForm?.isHira);
 
                   return (
                     <tr key={up.id} className="hover:bg-slate-50/60 transition-colors">
@@ -3479,7 +3649,14 @@ startxref
                         </td>
                       )}
                       <td className="px-4 py-3.5 font-mono font-black text-blue-900">
-                        {formCode}
+                        <div className="flex flex-col gap-1 items-start">
+                          <span>{formCode}</span>
+                          {allowsMultiple && (
+                            <span className="px-1.5 py-0.5 bg-purple-100 text-purple-700 text-[9px] font-extrabold rounded border border-purple-200 inline-block">
+                              ⚡ Multiple Files
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3.5 text-slate-700 font-bold leading-relaxed">
                         <div>
@@ -3498,54 +3675,85 @@ startxref
                         {up.uploadedAt}
                       </td>
                       <td className="px-4 py-3.5 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          {isAcknowledged ? (
-                            <>
-                              <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 text-[11px] font-black rounded-lg border border-emerald-300 inline-flex items-center gap-1">
-                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Done
-                              </span>
+                        {isAcknowledged ? (
+                          <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 text-[11px] font-black rounded-lg border border-emerald-300 inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> Done
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-1 bg-amber-100 text-amber-800 text-[11px] font-black rounded-lg border border-amber-300 inline-flex items-center gap-1">
+                            <Clock className="w-3.5 h-3.5 text-amber-600" /> Pending
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                          {/* Download Button(s) */}
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadReportDocument(up)}
+                            className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-200 text-xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Download Single Vessel Report Document"
+                          >
+                            <Download className="w-3.5 h-3.5 text-blue-600" /> Report
+                          </button>
+
+                          {isAcknowledged && (
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadAcknowledgementFile(up.id, up.ackFileName)}
+                              className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg border border-blue-200 text-xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Download Signed Acknowledgement Document"
+                            >
+                              <Download className="w-3.5 h-3.5 text-emerald-600" /> Ack
+                            </button>
+                          )}
+
+                          {/* Upload Acknowledgement Button */}
+                          {!isVesselUser && (
+                            <div className="relative inline-block">
                               <button
                                 type="button"
-                                onClick={() => handleDownloadAcknowledgementFile(up.id, up.ackFileName)}
-                                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg border border-blue-200 text-xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
-                                title="Download Acknowledged Form"
+                                disabled={uploadingAckId === up.id}
+                                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1 transition-all shadow-xs cursor-pointer disabled:opacity-50"
+                                title={
+                                  allowsMultiple
+                                    ? (isAcknowledged ? "Re-upload Acknowledgement File(s)" : "Upload Signed Acknowledgement File(s)")
+                                    : (isAcknowledged ? "Re-upload Acknowledgement Form" : "Upload Signed Acknowledgement Form")
+                                }
                               >
-                                <Download className="w-3.5 h-3.5" /> Download
+                                {uploadingAckId === up.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Upload className="w-3.5 h-3.5" />
+                                )}
+                                {allowsMultiple ? "Upload File(s)" : "Upload"}
                               </button>
-                            </>
-                          ) : (
-                            <>
-                              <span className="px-2.5 py-1 bg-amber-100 text-amber-800 text-[11px] font-black rounded-lg border border-amber-300 inline-flex items-center gap-1">
-                                <Clock className="w-3.5 h-3.5 text-amber-600" /> Pending
-                              </span>
-                              {!isVesselUser && (
-                                <div className="relative">
-                                  <button
-                                    type="button"
-                                    disabled={uploadingAckId === up.id}
-                                    className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1 transition-all shadow-xs cursor-pointer disabled:opacity-50"
-                                  >
-                                    {uploadingAckId === up.id ? (
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    ) : (
-                                      <Upload className="w-3.5 h-3.5" />
-                                    )}
-                                    Upload
-                                  </button>
-                                  <input
-                                    type="file"
-                                    accept=".pdf,.docx,.doc,.xlsx,.xls,.zip"
-                                    onChange={(e) => {
-                                      const file = e.target.files?.[0];
-                                      if (file) {
-                                        handleUploadAcknowledgementFile(up.id, file);
-                                      }
-                                    }}
-                                    className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-                                  />
-                                </div>
-                              )}
-                            </>
+                              <input
+                                type="file"
+                                accept=".pdf,.docx,.doc,.xlsx,.xls,.zip"
+                                multiple={allowsMultiple}
+                                onChange={(e) => {
+                                  if (e.target.files && e.target.files.length > 0) {
+                                    const filesArray = Array.from(e.target.files) as File[];
+                                    handleUploadAcknowledgementFile(up.id, filesArray, matchedForm, up);
+                                  }
+                                }}
+                                className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
+                              />
+                            </div>
+                          )}
+
+                          {/* Delete Button - accessible only by admin and management roles */}
+                          {canDeleteAck && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteUpload(up.id, up.fileName)}
+                              className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg border border-rose-200 text-xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Delete Report Entry"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Delete</span>
+                            </button>
                           )}
                         </div>
                       </td>
@@ -3800,12 +4008,121 @@ startxref
                   </div>
                 </div>
 
+                {/* Multi-file selection & reordering toolbar */}
+                {selectedFormIds.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white rounded-xl shadow-lg border border-blue-700/60 animate-in slide-in-from-top-2 duration-200">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-blue-600/30 border border-blue-400/40 flex items-center justify-center font-bold text-xs text-blue-300 shadow-inner">
+                        <CheckSquare className="w-4 h-4 text-blue-400" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-black tracking-wide flex items-center gap-2">
+                          <span>{selectedFormIds.length} file{selectedFormIds.length > 1 ? 's' : ''} selected</span>
+                          <span className="text-[10px] text-blue-200 font-bold bg-blue-900/90 px-2 py-0.5 rounded-md border border-blue-700/60">
+                            {selectedCategory}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-300 font-medium">
+                          Shift selected files together up/down, or jump them to the top or bottom of this section.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleReorderMultipleForms('up')}
+                        disabled={!canMoveSelectionUp(forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory)), selectedFormIds)}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-all shadow-xs cursor-pointer disabled:cursor-not-allowed border border-blue-400/40"
+                        title="Move Selected Files Up (Shift 1 position up)"
+                      >
+                        <ArrowUp className="w-3.5 h-3.5 stroke-[2.5]" />
+                        <span>Move Up</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleReorderMultipleForms('down')}
+                        disabled={!canMoveSelectionDown(forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory)), selectedFormIds)}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition-all shadow-xs cursor-pointer disabled:cursor-not-allowed border border-blue-400/40"
+                        title="Move Selected Files Down (Shift 1 position down)"
+                      >
+                        <ArrowDown className="w-3.5 h-3.5 stroke-[2.5]" />
+                        <span>Move Down</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleMoveSelectedToTop}
+                        disabled={!canMoveSelectionUp(forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory)), selectedFormIds)}
+                        className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-slate-200 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition-all cursor-pointer disabled:cursor-not-allowed border border-slate-700 shadow-2xs"
+                        title="Move all selected files to the top of section"
+                      >
+                        <ChevronsUp className="w-3.5 h-3.5" />
+                        <span>To Top</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleMoveSelectedToBottom}
+                        disabled={!canMoveSelectionDown(forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory)), selectedFormIds)}
+                        className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:hover:bg-slate-800 text-slate-200 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition-all cursor-pointer disabled:cursor-not-allowed border border-slate-700 shadow-2xs"
+                        title="Move all selected files to the bottom of section"
+                      >
+                        <ChevronsDown className="w-3.5 h-3.5" />
+                        <span>To Bottom</span>
+                      </button>
+
+                      <div className="h-5 w-px bg-slate-700 mx-1" />
+
+                      <button
+                        type="button"
+                        onClick={handleClearFormSelection}
+                        className="px-2.5 py-1.5 bg-slate-800/80 hover:bg-rose-900/60 text-slate-300 hover:text-rose-200 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition-all cursor-pointer border border-slate-700"
+                        title="Deselect all files"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>Deselect</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Forms Table */}
                 <div className="overflow-x-auto rounded-xl border border-slate-100 shadow-2xs">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-800 border-b border-slate-700 text-[10px] font-black text-white uppercase tracking-wider">
-                        <th className="px-3 py-3.5 w-[4%] text-center">#</th>
+                        <th className="px-3 py-3.5 w-[5%] text-center">
+                          {(() => {
+                            const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
+                            const filteredForms = categoryForms.filter(f =>
+                              f.formCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                              f.description.toLowerCase().includes(searchQuery.toLowerCase())
+                            );
+                            const hasVisibleForms = filteredForms.length > 0;
+                            const isAllSelected = hasVisibleForms && filteredForms.every(f => selectedFormIds.includes(f.id));
+                            const isSomeSelected = hasVisibleForms && filteredForms.some(f => selectedFormIds.includes(f.id));
+
+                            return (
+                              <div className="flex items-center justify-center gap-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked={isAllSelected}
+                                  ref={(el) => {
+                                    if (el) {
+                                      el.indeterminate = isSomeSelected && !isAllSelected;
+                                    }
+                                  }}
+                                  onChange={() => handleSelectAllVisibleForms(filteredForms)}
+                                  className="w-3.5 h-3.5 rounded text-blue-500 focus:ring-blue-400 border-slate-500 cursor-pointer accent-blue-600"
+                                  title={isAllSelected ? "Deselect all visible files" : "Select all visible files"}
+                                />
+                                <span>#</span>
+                              </div>
+                            );
+                          })()}
+                        </th>
                         <th className="px-3 py-3.5 w-[8%] text-center">Order</th>
                         <th className="px-4 py-3.5 w-[14%]">Form Code</th>
                         <th className="px-4 py-3.5 w-[10%]">Type</th>
@@ -3817,7 +4134,7 @@ startxref
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs font-semibold">
                       {(() => {
-                        const categoryForms = forms.filter(f => f.category === selectedCategory);
+                        const categoryForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
                         const filteredForms = categoryForms.filter(f =>
                           f.formCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           f.description.toLowerCase().includes(searchQuery.toLowerCase())
@@ -3847,29 +4164,48 @@ startxref
                           const categoryIdx = categoryForms.findIndex(item => item.id === f.id);
                           const isFirst = categoryIdx === 0;
                           const isLast = categoryIdx === categoryForms.length - 1;
+                          const isSelected = selectedFormIds.includes(f.id);
 
                           return (
-                            <tr key={f.id} className="hover:bg-slate-50/40 transition-colors">
-                              <td className="px-3 py-3 text-center text-slate-400 font-extrabold text-[11px]">
-                                {categoryIdx + 1}
+                            <tr 
+                              key={f.id} 
+                              className={`transition-colors ${
+                                isSelected 
+                                  ? 'bg-blue-50/80 hover:bg-blue-100/70 border-l-4 border-l-blue-600' 
+                                  : 'hover:bg-slate-50/40'
+                              }`}
+                            >
+                              <td className="px-3 py-3 text-center font-extrabold text-[11px]">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => handleToggleSelectForm(f.id)}
+                                    className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer accent-blue-600"
+                                    title={`Select ${f.formCode}`}
+                                  />
+                                  <span className={isSelected ? 'text-blue-700 font-black' : 'text-slate-400'}>
+                                    {categoryIdx + 1}
+                                  </span>
+                                </div>
                               </td>
                               <td className="px-2 py-3 text-center">
                                 <div className="flex items-center justify-center gap-1">
                                   <button
                                     type="button"
                                     onClick={() => handleReorderForm(f.id, 'up')}
-                                    disabled={isFirst}
+                                    disabled={isSelected && selectedFormIds.length > 1 ? !canMoveSelectionUp(categoryForms, selectedFormIds) : isFirst}
                                     className="p-1 rounded-md bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 disabled:opacity-20 disabled:hover:bg-slate-100 disabled:hover:text-slate-600 transition-all cursor-pointer disabled:cursor-not-allowed shadow-2xs"
-                                    title="Move Form Up"
+                                    title={isSelected && selectedFormIds.length > 1 ? `Move ${selectedFormIds.length} Selected Files Up` : "Move Form Up"}
                                   >
                                     <ArrowUp className="w-3.5 h-3.5" />
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => handleReorderForm(f.id, 'down')}
-                                    disabled={isLast}
+                                    disabled={isSelected && selectedFormIds.length > 1 ? !canMoveSelectionDown(categoryForms, selectedFormIds) : isLast}
                                     className="p-1 rounded-md bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 disabled:opacity-20 disabled:hover:bg-slate-100 disabled:hover:text-slate-600 transition-all cursor-pointer disabled:cursor-not-allowed shadow-2xs"
-                                    title="Move Form Down"
+                                    title={isSelected && selectedFormIds.length > 1 ? `Move ${selectedFormIds.length} Selected Files Down` : "Move Form Down"}
                                   >
                                     <ArrowDown className="w-3.5 h-3.5" />
                                   </button>
@@ -3955,8 +4291,13 @@ startxref
                                     </button>
                                   </div>
 
-                                  {f.isHira && f.template_files && f.template_files.length > 0 ? (
-                                    <div className="relative inline-block text-left">
+                                  {/* Fast Inline Template Handler */}
+                                  {quickTemplateUploadingId === f.id ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 animate-pulse bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+                                      <Loader2 className="w-3 h-3 animate-spin" /> Uploading...
+                                    </span>
+                                  ) : f.isHira && f.template_files && f.template_files.length > 0 ? (
+                                    <div className="flex items-center gap-1.5">
                                       <select
                                         onChange={(e) => {
                                           const idx = parseInt(e.target.value, 10);
@@ -3965,9 +4306,9 @@ startxref
                                           }
                                           e.target.value = "";
                                         }}
-                                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-[10px] font-extrabold uppercase tracking-wide rounded-md py-1 px-1.5 focus:outline-none cursor-pointer max-w-full whitespace-normal break-words"
+                                        className="bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-[10px] font-extrabold uppercase tracking-wide rounded-md py-1 px-1.5 focus:outline-none cursor-pointer max-w-[140px] truncate"
                                       >
-                                        <option value="" disabled selected>Download template...</option>
+                                        <option value="" disabled selected>Download ({f.template_files.length})</option>
                                         {f.template_files.map((tf, index) => (
                                           <option key={index} value={index} title={tf.name} className="py-1">
                                             {tf.name.length > 25 ? tf.name.slice(0, 25) + '...' : tf.name}
@@ -3976,15 +4317,52 @@ startxref
                                       </select>
                                     </div>
                                   ) : f.template_file_name ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDownloadFormTemplate(f)}
-                                      className="text-emerald-600 hover:text-emerald-800 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
-                                      title={`Download template: ${f.template_file_name}`}
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDownloadFormTemplate(f)}
+                                        className="text-emerald-600 hover:text-emerald-800 hover:underline flex items-center gap-1 text-[11px] font-bold cursor-pointer"
+                                        title={`Download template: ${f.template_file_name}`}
+                                      >
+                                        <Download className="w-3.5 h-3.5" /> Template
+                                      </button>
+                                      <label
+                                        className="text-[10px] text-slate-400 hover:text-blue-600 font-semibold cursor-pointer underline hover:no-underline"
+                                        title="Replace template file"
+                                      >
+                                        Replace
+                                        <input
+                                          type="file"
+                                          accept=".docx,.doc,.xlsx,.xls,.pdf"
+                                          onChange={(e) => {
+                                            if (e.target.files && e.target.files[0]) {
+                                              handleQuickTemplateUpload(f, e.target.files[0]);
+                                              e.target.value = '';
+                                            }
+                                          }}
+                                          className="hidden"
+                                        />
+                                      </label>
+                                    </div>
+                                  ) : (
+                                    <label
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500 hover:text-blue-600 bg-slate-50 hover:bg-blue-50/80 px-2 py-0.5 rounded-md border border-dashed border-slate-300 hover:border-blue-400 cursor-pointer transition-colors"
+                                      title="Quick attach template file (.docx, .xlsx, .pdf)"
                                     >
-                                      <Download className="w-3.5 h-3.5" /> Template
-                                    </button>
-                                  ) : null}
+                                      <Upload className="w-3 h-3 text-blue-500" /> + Attach Template
+                                      <input
+                                        type="file"
+                                        accept=".docx,.doc,.xlsx,.xls,.pdf"
+                                        onChange={(e) => {
+                                          if (e.target.files && e.target.files[0]) {
+                                            handleQuickTemplateUpload(f, e.target.files[0]);
+                                            e.target.value = '';
+                                          }
+                                        }}
+                                        className="hidden"
+                                      />
+                                    </label>
+                                  )}
                                 </div>
                               </td>
                             </tr>
@@ -4844,400 +5222,15 @@ startxref
 
       {/* Add / Edit Form Modal */}
       {showFormModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[150] p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
-            {/* Modal Header */}
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-5 py-3.5 flex justify-between items-center shrink-0">
-              <div>
-                <h3 className="text-sm font-black tracking-tight uppercase">
-                  {editingForm ? 'Edit Form Definition' : 'Add New Form Definition'}
-                </h3>
-                <p className="text-[10px] text-blue-100/80 font-bold mt-0.5">
-                  Category: {selectedCategory}
-                </p>
-              </div>
-              <button 
-                onClick={() => setShowFormModal(false)}
-                className="p-1.5 bg-white/10 hover:bg-white/20 text-white/80 hover:text-white rounded-lg transition-all cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Modal Body / Form */}
-            <form onSubmit={handleSaveFormSubmit} className="flex flex-col flex-1 overflow-hidden">
-              <div className="p-4 space-y-3 text-xs font-semibold overflow-y-auto max-h-[calc(90vh-110px)]">
-                {/* Row 1: Code, Type, Date */}
-                <div className="grid grid-cols-12 gap-3 items-start">
-                  <div className="col-span-5 space-y-1">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Form Code</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. COMI-SM-1-6"
-                      value={formCodeInput}
-                      onChange={(e) => setFormCodeInput(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 font-bold"
-                    />
-                  </div>
-
-                  <div className="col-span-3 space-y-1">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Type</label>
-                    <div className="flex items-center gap-3 py-1">
-                      <label className="flex items-center gap-1.5 cursor-pointer font-bold text-slate-700 text-xs select-none">
-                        <input
-                          type="radio"
-                          name="formType"
-                          value="Form"
-                          checked={formTypeInput === 'Form'}
-                          onChange={() => setFormTypeInput('Form')}
-                          className="w-3.5 h-3.5 text-blue-600 border-slate-300 focus:ring-blue-500"
-                        />
-                        Form
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer font-bold text-slate-700 text-xs select-none">
-                        <input
-                          type="radio"
-                          name="formType"
-                          value="Checklist"
-                          checked={formTypeInput === 'Checklist'}
-                          onChange={() => setFormTypeInput('Checklist')}
-                          className="w-3.5 h-3.5 text-blue-600 border-slate-300 focus:ring-blue-500"
-                        />
-                        Checklist
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="col-span-4 space-y-1">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Form Date</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. 28 November 2025"
-                      value={formDateInput}
-                      onChange={(e) => setFormDateInput(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 font-semibold"
-                    />
-                  </div>
-                </div>
-
-                {/* Row 2: Description */}
-                <div className="space-y-1">
-                  <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Description</label>
-                  <textarea
-                    required
-                    rows={2}
-                    placeholder="Describe the purpose, checklist, or report target..."
-                    value={formDescriptionInput}
-                    onChange={(e) => setFormDescriptionInput(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-slate-200 rounded-xl focus:outline-none focus:border-blue-500 bg-white text-slate-800 leading-relaxed font-semibold text-xs"
-                  />
-                </div>
-
-                {/* Row 3: Vessel Scope & Vessel Type */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel Scope</label>
-                    <select
-                      value={formScopeInput}
-                      onChange={(e) => setFormScopeInput(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
-                    >
-                      {selectedFlags.length === 0 || selectedFlags.length === flags.length ? (
-                        <option value="All Vessels">All Vessels</option>
-                      ) : selectedFlags.length === 1 ? (
-                        <option value={`All ${selectedFlags[0]} Vessels`}>All {selectedFlags[0]} Vessels</option>
-                      ) : (
-                        <option value={`All ${getFlagsFormatted(selectedFlags)} flags`}>
-                          All {getFlagsFormatted(selectedFlags)} flags
-                        </option>
-                      )}
-
-                      {vesselsList
-                        .filter(v => selectedFlags.length === 0 || selectedFlags.includes(v.flag || ''))
-                        .map(v => (
-                          <option key={v.id} value={v.name}>{v.name}</option>
-                        ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel Type</label>
-                    <select
-                      value={formVesselTypeInput}
-                      onChange={(e) => setFormVesselTypeInput(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl bg-white focus:outline-none focus:border-blue-500 font-bold text-slate-800"
-                    >
-                      <option value="All Types">All Types</option>
-                      <option value="Bulk Carrier">Bulk Carrier</option>
-                      <option value="Container">Container</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Row 4: Flags Scope & File Type Limit */}
-                <div className="grid grid-cols-2 gap-3">
-                  {/* Flags Scope */}
-                  <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Flags Scope</label>
-                    <div className="grid grid-cols-2 gap-1 pt-0.5">
-                      {flags.map((f: any) => {
-                        const isChecked = selectedFlags.includes(f.name);
-                        return (
-                          <label key={f.id} className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1.5 rounded hover:bg-slate-100 transition-colors text-slate-700 font-bold text-[11px] select-none">
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={(e) => handleFlagCheckboxChange(f.name, e.target.checked)}
-                              className="w-3.5 h-3.5 rounded text-blue-600 border-slate-300 focus:ring-blue-500 cursor-pointer"
-                            />
-                            {f.name}
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* File Type Limit */}
-                  <div className="space-y-1 bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">File Type Limit</label>
-                    <div className="flex flex-wrap gap-2.5 items-center pt-1">
-                      <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-bold text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={formAllowedFileTypesInput.includes('Word')}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'Word']);
-                            } else {
-                              setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'Word'));
-                            }
-                          }}
-                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                        Word
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-bold text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={formAllowedFileTypesInput.includes('Excel')}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'Excel']);
-                            } else {
-                              setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'Excel'));
-                            }
-                          }}
-                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                        Excel
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs font-bold text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={formAllowedFileTypesInput.includes('PDF')}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setFormAllowedFileTypesInput([...formAllowedFileTypesInput, 'PDF']);
-                            } else {
-                              setFormAllowedFileTypesInput(formAllowedFileTypesInput.filter(t => t !== 'PDF'));
-                            }
-                          }}
-                          className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                        />
-                        PDF
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Row 5: Form Template File & Form Options */}
-                <div className="grid grid-cols-2 gap-3 items-start">
-                  {/* Form Template File Upload */}
-                  {formIsHiraInput ? (
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                        Form Templates / Blank Files ({formTemplateFilesInput.length})
-                      </label>
-                      
-                      {formTemplateFilesInput.length > 0 && (
-                        <div className="max-h-24 overflow-y-auto space-y-1 p-1 bg-slate-50 rounded-xl border border-slate-100 mb-1.5">
-                          {formTemplateFilesInput.map((tf, index) => (
-                            <div key={index} className="flex items-center justify-between p-1 bg-white rounded-lg border border-slate-200 shadow-3xs gap-2">
-                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                                <FileText className="w-3.5 h-3.5 text-purple-600 shrink-0" />
-                                <div className="text-left min-w-0 flex-1">
-                                  <p className="text-[10px] font-extrabold text-slate-800 break-words whitespace-normal leading-tight">{tf.name}</p>
-                                </div>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const updated = [...formTemplateFilesInput];
-                                  updated.splice(index, 1);
-                                  setFormTemplateFilesInput(updated);
-                                }}
-                                className="p-0.5 hover:bg-slate-100 text-slate-400 hover:text-red-500 rounded-md transition-all cursor-pointer shrink-0"
-                                title="Remove File"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {templateUploading?.isUploading ? (
-                        <div className="p-2.5 bg-purple-50 rounded-xl border border-purple-200 space-y-1.5 animate-pulse">
-                          <div className="flex items-center justify-between text-xs font-bold text-purple-900">
-                            <span className="flex items-center gap-1.5 truncate">
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-600 shrink-0" />
-                              <span className="truncate">{templateUploading.fileName}</span>
-                            </span>
-                            <span className="text-[10px] font-extrabold text-purple-700 tabular-nums">{templateUploading.progress}%</span>
-                          </div>
-                          <div className="w-full bg-purple-200 rounded-full h-1.5 overflow-hidden">
-                            <div 
-                              className="bg-purple-600 h-full rounded-full transition-all duration-200"
-                              style={{ width: `${templateUploading.progress}%` }}
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="relative">
-                          <span className="w-full py-2 px-3 border border-dashed border-slate-300 hover:border-purple-400 bg-slate-50 hover:bg-purple-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs">
-                            <Plus className="w-3.5 h-3.5 text-purple-500" /> Upload Template File(s)
-                          </span>
-                          <input
-                            type="file"
-                            multiple
-                            accept=".docx,.doc,.xlsx,.xls,.pdf"
-                            onChange={handleTemplateFilesChange}
-                            className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-1">
-                      <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                        Form Template / Blank File
-                      </label>
-                      {formTemplateFileInput ? (
-                        <div className="flex items-center justify-between p-2 bg-slate-50 rounded-xl border border-slate-200">
-                          <div className="flex items-center gap-2 overflow-hidden">
-                            <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                            <div className="truncate">
-                              <p className="text-xs font-extrabold text-slate-800 truncate">{formTemplateFileInput.name}</p>
-                              {formTemplateFileInput.size ? (
-                                <p className="text-[10px] text-slate-400 font-bold">{(formTemplateFileInput.size / 1024).toFixed(1)} KB</p>
-                              ) : null}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setFormTemplateFileInput(null)}
-                            className="p-1 hover:bg-slate-200 text-slate-400 hover:text-red-500 rounded-lg transition-all cursor-pointer shrink-0"
-                            title="Remove Template File"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ) : templateUploading?.isUploading ? (
-                        <div className="p-2.5 bg-blue-50 rounded-xl border border-blue-200 space-y-1.5 animate-pulse">
-                          <div className="flex items-center justify-between text-xs font-bold text-blue-900">
-                            <span className="flex items-center gap-1.5 truncate">
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
-                              <span className="truncate">{templateUploading.fileName}</span>
-                            </span>
-                            <span className="text-[10px] font-extrabold text-blue-700 tabular-nums">{templateUploading.progress}%</span>
-                          </div>
-                          <div className="w-full bg-blue-200 rounded-full h-1.5 overflow-hidden">
-                            <div 
-                              className="bg-blue-600 h-full rounded-full transition-all duration-200"
-                              style={{ width: `${templateUploading.progress}%` }}
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="relative">
-                          <span className="w-full py-2 px-3 border border-dashed border-slate-300 hover:border-blue-400 bg-slate-50 hover:bg-blue-50/40 text-slate-600 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs">
-                            <Upload className="w-3.5 h-3.5 text-blue-500" /> Upload Blank Form / Template
-                          </span>
-                          <input
-                            type="file"
-                            accept=".docx,.doc,.xlsx,.xls,.pdf"
-                            onChange={handleTemplateFileChange}
-                            className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Form Option Checkboxes */}
-                  <div className="bg-slate-50/70 p-2.5 rounded-xl border border-slate-100 space-y-1.5">
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="checkbox"
-                        id="isHira"
-                        checked={formIsHiraInput}
-                        onChange={(e) => setFormIsHiraInput(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <label htmlFor="isHira" className="text-xs font-bold text-slate-800 cursor-pointer select-none">
-                        Multiple Files
-                      </label>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="checkbox"
-                        id="removeFilenameRestriction"
-                        checked={formRemoveFilenameRestrictionInput}
-                        onChange={(e) => setFormRemoveFilenameRestrictionInput(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                      />
-                      <label htmlFor="removeFilenameRestriction" className="text-xs font-bold text-slate-700 cursor-pointer select-none">
-                        Remove filename restriction
-                      </label>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="checkbox"
-                        id="isAcknowledgementRequired"
-                        checked={formIsAcknowledgementRequiredInput}
-                        onChange={(e) => setFormIsAcknowledgementRequiredInput(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 cursor-pointer"
-                      />
-                      <label htmlFor="isAcknowledgementRequired" className="text-xs font-bold text-amber-900 cursor-pointer select-none">
-                        Acknowledgement Required
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Footer */}
-              <div className="flex gap-2 justify-end px-5 py-3 bg-slate-50/80 border-t border-slate-100 shrink-0 mt-auto">
-                <button
-                  type="button"
-                  onClick={() => setShowFormModal(false)}
-                  className="px-4 py-1.5 border border-slate-200 text-slate-600 rounded-xl hover:bg-slate-100 transition-colors text-xs font-bold cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all text-xs font-bold shadow-md shadow-blue-100 cursor-pointer"
-                >
-                  Save Definition
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <SMSFormModal
+          isOpen={showFormModal}
+          editingForm={editingForm}
+          selectedCategory={selectedCategory}
+          flags={flags}
+          vesselsList={vesselsList}
+          onClose={() => setShowFormModal(false)}
+          onSave={handleSaveFormModal}
+        />
       )}
 
       {/* Global Uploading & Processing Animation Overlay */}

@@ -1,0 +1,1242 @@
+{
+  "nodes": [
+    {
+      "id": "mod_server",
+      "name": "server.ts",
+      "label": "Express Backend Server",
+      "type": "module",
+      "file": "server.ts",
+      "loc": 8200,
+      "description": "Main backend Express server handling authentication, MySQL connection pool, S3/B2 file storage, and REST APIs.",
+      "moduleGroup": "Core Backend",
+      "inDegree": 0,
+      "outDegree": 1,
+      "dependencies": [
+        "table_audit_logs"
+      ],
+      "dependents": [],
+      "centrality": 0.06,
+      "complexity": 100
+    },
+    {
+      "id": "mod_app",
+      "name": "App.tsx",
+      "label": "Main React Application",
+      "type": "module",
+      "file": "src/App.tsx",
+      "loc": 14590,
+      "description": "Top-level client state container, navigation orchestrator, dashboard layout, and routing logic.",
+      "moduleGroup": "Core Frontend",
+      "inDegree": 1,
+      "outDegree": 17,
+      "dependencies": [
+        "comp_sms_orders",
+        "comp_sms_view",
+        "comp_crew_audits",
+        "comp_trouble_report",
+        "comp_spare_parts",
+        "comp_bunker_bdn",
+        "comp_bunker_fuel",
+        "comp_lube_analysis",
+        "comp_lube_ldr",
+        "comp_about_view",
+        "comp_graphify",
+        "route_sms_sidebar_status",
+        "route_vessels",
+        "route_certificates",
+        "route_auth",
+        "type_vessel",
+        "type_user"
+      ],
+      "dependents": [
+        "mod_main"
+      ],
+      "centrality": 1,
+      "complexity": 100
+    },
+    {
+      "id": "mod_main",
+      "name": "main.tsx",
+      "label": "Client Entry Point",
+      "type": "module",
+      "file": "src/main.tsx",
+      "loc": 30,
+      "description": "React 18+ DOM bootstrap, global CSS loading, and strict mode mounting.",
+      "moduleGroup": "Core Frontend",
+      "inDegree": 0,
+      "outDegree": 1,
+      "dependencies": [
+        "mod_app"
+      ],
+      "dependents": [],
+      "centrality": 0.06,
+      "complexity": 5
+    },
+    {
+      "id": "comp_sms_orders",
+      "name": "SMSOrderList.tsx",
+      "label": "SMS Order List View",
+      "type": "component",
+      "file": "src/components/SMSOrderList.tsx",
+      "loc": 2680,
+      "description": "Interactive SMS order dispatch, checklist tracking, batch packaging, vessel uploads, and real-time sidebar status indicators.",
+      "moduleGroup": "SMS Management",
+      "inDegree": 1,
+      "outDegree": 5,
+      "dependencies": [
+        "comp_pdf_viewer",
+        "route_sms_orders",
+        "route_sms_upload",
+        "route_sms_checked",
+        "type_sms_order"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.33,
+      "complexity": 100
+    },
+    {
+      "id": "comp_sms_view",
+      "name": "SMSView.tsx",
+      "label": "SMS Manuals & Procedures",
+      "type": "component",
+      "file": "src/components/SMSView.tsx",
+      "loc": 1850,
+      "description": "SMS procedures, incident reporting, circular distribution, and acknowledgment tracking.",
+      "moduleGroup": "SMS Management",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.06,
+      "complexity": 66
+    },
+    {
+      "id": "comp_crew_audits",
+      "name": "CrewAndAudits.tsx",
+      "label": "Crew & Audits Hub",
+      "type": "component",
+      "file": "src/components/CrewAndAudits.tsx",
+      "loc": 4800,
+      "description": "Crew matrix, compliance monitoring, employment registry, internal/external audits, VIR, and navigational inspection reports.",
+      "moduleGroup": "Crew & Audits",
+      "inDegree": 1,
+      "outDegree": 2,
+      "dependencies": [
+        "route_crews",
+        "route_audits"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.17,
+      "complexity": 100
+    },
+    {
+      "id": "comp_trouble_report",
+      "name": "TroubleReport.tsx",
+      "label": "Trouble & Defects View",
+      "type": "component",
+      "file": "src/components/TroubleReport.tsx",
+      "loc": 1420,
+      "description": "Engine/deck trouble reporting, technical defect logs (1.6 & 5.2), root cause analysis, and corrective actions.",
+      "moduleGroup": "Technical & Defects",
+      "inDegree": 1,
+      "outDegree": 2,
+      "dependencies": [
+        "comp_image_viewer",
+        "route_defects"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.17,
+      "complexity": 59
+    },
+    {
+      "id": "comp_spare_parts",
+      "name": "SparePartsRequisition.tsx",
+      "label": "Spare Parts Requisition",
+      "type": "component",
+      "file": "src/components/SparePartsRequisition.tsx",
+      "loc": 2950,
+      "description": "Vessel spare parts requests, PIC quotations, logistics tracking, delivery notes, and inventory status.",
+      "moduleGroup": "Procurement & Spares",
+      "inDegree": 1,
+      "outDegree": 2,
+      "dependencies": [
+        "comp_pdf_viewer",
+        "route_spares"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.17,
+      "complexity": 100
+    },
+    {
+      "id": "comp_bunker_bdn",
+      "name": "BunkerBDN.tsx",
+      "label": "Bunker BDN Logs",
+      "type": "component",
+      "file": "src/components/BunkerBDN.tsx",
+      "loc": 980,
+      "description": "Bunker delivery notes, fuel grade specifications, quantity logs, and supplier tracking.",
+      "moduleGroup": "Bunker & Fuel",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "route_bunkers"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.11,
+      "complexity": 41
+    },
+    {
+      "id": "comp_bunker_fuel",
+      "name": "BunkerFuelAnalysis.tsx",
+      "label": "Fuel Lab Analysis",
+      "type": "component",
+      "file": "src/components/BunkerFuelAnalysis.tsx",
+      "loc": 1100,
+      "description": "Lab testing results, flashpoint, viscosity, sulfur content, and compliance thresholds.",
+      "moduleGroup": "Bunker & Fuel",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "route_bunkers"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.11,
+      "complexity": 45
+    },
+    {
+      "id": "comp_lube_analysis",
+      "name": "LubeOilAnalysis.tsx",
+      "label": "Lube Oil Analysis",
+      "type": "component",
+      "file": "src/components/LubeOilAnalysis.tsx",
+      "loc": 1250,
+      "description": "Main Engine & Auxiliary Engine lube oil laboratory analysis, iron/wear metrics, and alert triggers.",
+      "moduleGroup": "Lube Oil",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "route_lube"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.11,
+      "complexity": 50
+    },
+    {
+      "id": "comp_lube_ldr",
+      "name": "LubeOilLDR.tsx",
+      "label": "Lube Oil LDR Logs",
+      "type": "component",
+      "file": "src/components/LubeOilLDR.tsx",
+      "loc": 860,
+      "description": "Daily lube oil consumption logs, cylinder feed rates, and stock monitoring.",
+      "moduleGroup": "Lube Oil",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "route_lube"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.11,
+      "complexity": 37
+    },
+    {
+      "id": "comp_pdf_viewer",
+      "name": "PDFViewer.tsx",
+      "label": "Secure PDF Document Viewer",
+      "type": "component",
+      "file": "src/components/PDFViewer.tsx",
+      "loc": 420,
+      "description": "Embedded inline PDF renderer with zoom, multi-page navigation, and secure file streaming.",
+      "moduleGroup": "Utilities",
+      "inDegree": 2,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "comp_sms_orders",
+        "comp_spare_parts"
+      ],
+      "centrality": 0.11,
+      "complexity": 22
+    },
+    {
+      "id": "comp_image_viewer",
+      "name": "ImageViewer.tsx",
+      "label": "High-Res Image Viewer",
+      "type": "component",
+      "file": "src/components/ImageViewer.tsx",
+      "loc": 310,
+      "description": "Lightbox modal with pan, rotate, zoom, and image inspection tools.",
+      "moduleGroup": "Utilities",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "comp_trouble_report"
+      ],
+      "centrality": 0.06,
+      "complexity": 14
+    },
+    {
+      "id": "comp_about_view",
+      "name": "AboutView.tsx",
+      "label": "About COMOS Portal",
+      "type": "component",
+      "file": "src/components/AboutView.tsx",
+      "loc": 240,
+      "description": "System metadata, release notes, vessel fleet summary, and developer information.",
+      "moduleGroup": "Information",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.06,
+      "complexity": 12
+    },
+    {
+      "id": "comp_graphify",
+      "name": "GraphifyVisualizer.tsx",
+      "label": "Graphify Architecture Explorer",
+      "type": "component",
+      "file": "src/components/GraphifyVisualizer.tsx",
+      "loc": 1200,
+      "description": "Interactive force-directed codebase knowledge graph, dependency visualizer, and blast radius impact simulator.",
+      "moduleGroup": "Architecture",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "route_graphify"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.11,
+      "complexity": 48
+    },
+    {
+      "id": "route_sms_orders",
+      "name": "/api/sms/orders",
+      "label": "SMS Orders API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Fetch, create, edit, and delete SMS fleet orders with form requirements.",
+      "moduleGroup": "SMS API",
+      "inDegree": 1,
+      "outDegree": 4,
+      "dependencies": [
+        "table_sms_orders",
+        "table_sms_order_items",
+        "table_sms_order_vessels",
+        "table_sms_order_templates"
+      ],
+      "dependents": [
+        "comp_sms_orders"
+      ],
+      "centrality": 0.28,
+      "complexity": 22
+    },
+    {
+      "id": "route_sms_sidebar_status",
+      "name": "/api/sms/orders/sidebar-status",
+      "label": "SMS Sidebar Status API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Calculates urgent deadline proximity and unchecked upload alerts for sidebar notification badges.",
+      "moduleGroup": "SMS API",
+      "inDegree": 1,
+      "outDegree": 2,
+      "dependencies": [
+        "table_sms_orders",
+        "table_sms_order_uploads"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.17,
+      "complexity": 14
+    },
+    {
+      "id": "route_sms_upload",
+      "name": "/api/sms/orders/upload",
+      "label": "SMS Order Upload API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Multi-part file upload handler with B2/S3 sync and automated completion re-evaluation.",
+      "moduleGroup": "SMS API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_sms_order_uploads"
+      ],
+      "dependents": [
+        "comp_sms_orders"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_sms_checked",
+      "name": "/api/sms/orders/:id/mark-checked",
+      "label": "Mark Checked API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Marks vessel uploads as verified by office/management personnel.",
+      "moduleGroup": "SMS API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_sms_order_uploads"
+      ],
+      "dependents": [
+        "comp_sms_orders"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_vessels",
+      "name": "/api/vessels",
+      "label": "Vessel Fleet API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Fleet registry, IMO numbers, vessel specs, and team assignments.",
+      "moduleGroup": "Fleet API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_vessels"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_certificates",
+      "name": "/api/certificates",
+      "label": "Certificates API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Statutory vessel certificates, expiration tracking, survey dates, and alert calculations.",
+      "moduleGroup": "Certificates API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_certificates"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_auth",
+      "name": "/api/auth/login",
+      "label": "Authentication API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "JWT authentication, bcrypt password validation, and user role provisioning.",
+      "moduleGroup": "Auth API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_users"
+      ],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_crews",
+      "name": "/api/crews",
+      "label": "Crew Registry API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Onboard and ashore crew members, rank matrices, and contract dates.",
+      "moduleGroup": "Crew API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_crew_members"
+      ],
+      "dependents": [
+        "comp_crew_audits"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_audits",
+      "name": "/api/audits",
+      "label": "Audits & Inspections API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Internal, external, VIR, and navigational audit findings and corrective actions.",
+      "moduleGroup": "Audits API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_audits"
+      ],
+      "dependents": [
+        "comp_crew_audits"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_defects",
+      "name": "/api/defects",
+      "label": "Technical Defects API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Machinery breakdown tickets, root cause records, and spare allocations.",
+      "moduleGroup": "Defects API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_trouble_reports"
+      ],
+      "dependents": [
+        "comp_trouble_report"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_spares",
+      "name": "/api/spares",
+      "label": "Spare Parts & Requisitions API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Spare part procurement workflow, quotation approvals, and logistics notes.",
+      "moduleGroup": "Spares API",
+      "inDegree": 1,
+      "outDegree": 1,
+      "dependencies": [
+        "table_spare_requisitions"
+      ],
+      "dependents": [
+        "comp_spare_parts"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_bunkers",
+      "name": "/api/bunkers",
+      "label": "Bunker & Fuel API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Bunker delivery logs, lab test analyses, and sulfur content verifications.",
+      "moduleGroup": "Bunker API",
+      "inDegree": 2,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "comp_bunker_bdn",
+        "comp_bunker_fuel"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_lube",
+      "name": "/api/lube",
+      "label": "Lube Oil & LDR API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Lube oil laboratory test data, consumption logs, and cylinder wear trends.",
+      "moduleGroup": "Lube API",
+      "inDegree": 2,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "comp_lube_analysis",
+        "comp_lube_ldr"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "route_graphify",
+      "name": "/api/graphify/graph",
+      "label": "Graphify Engine API",
+      "type": "route",
+      "file": "server.ts",
+      "description": "Serves the live project knowledge graph, dependency AST nodes, and impact calculations.",
+      "moduleGroup": "Graphify API",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "comp_graphify"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_sms_orders",
+      "name": "sms_orders",
+      "label": "SMS Orders Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Stores dispatch orders, deadline dates, instructions, and creator information.",
+      "moduleGroup": "Database",
+      "inDegree": 2,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_sms_orders",
+        "route_sms_sidebar_status"
+      ],
+      "centrality": 0.11,
+      "complexity": 10
+    },
+    {
+      "id": "table_sms_order_uploads",
+      "name": "sms_order_uploads",
+      "label": "SMS Order Uploads Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Tracks all vessel uploaded documents, file metadata, B2 paths, and checked status.",
+      "moduleGroup": "Database",
+      "inDegree": 3,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_sms_upload",
+        "route_sms_sidebar_status",
+        "route_sms_checked"
+      ],
+      "centrality": 0.17,
+      "complexity": 14
+    },
+    {
+      "id": "table_sms_order_items",
+      "name": "sms_order_items",
+      "label": "SMS Order Items Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Required checklist forms, allowed file extensions, and template associations.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_sms_orders"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_sms_order_vessels",
+      "name": "sms_order_vessels",
+      "label": "SMS Order Vessels Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Assigned vessels per order and completion timestamps.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_sms_orders"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_sms_order_templates",
+      "name": "sms_order_templates",
+      "label": "SMS Order Templates Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Reusable order configurations and preset checklist combinations.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_sms_orders"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_vessels",
+      "name": "vessels",
+      "label": "Vessels Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Vessel master records, flags, build years, gross tonnage, and fleet groups.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_vessels"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_certificates",
+      "name": "certificates",
+      "label": "Certificates Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Class and statutory certificates with expiration dates and file references.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_certificates"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_users",
+      "name": "users",
+      "label": "Users Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "User credentials, roles (admin, user, team_pic, vessel), and permissions.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_auth"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_crew_members",
+      "name": "crew_members",
+      "label": "Crew Members Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Crew profiles, nationalities, ranks, embarkation/disembarkation dates.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_crews"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_audits",
+      "name": "audits",
+      "label": "Audits Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Audit reports, findings, closing dates, and auditor details.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_audits"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_trouble_reports",
+      "name": "trouble_reports",
+      "label": "Trouble Reports Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Machinery issues, critical alerts, photos, and resolution plans.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_defects"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_spare_requisitions",
+      "name": "spare_requisitions",
+      "label": "Spare Requisitions Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Part requisition orders, part numbers, quantities, and delivery status.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "route_spares"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "table_audit_logs",
+      "name": "audit_logs",
+      "label": "System Audit Logs Table",
+      "type": "table",
+      "file": "MySQL Schema",
+      "description": "Security audit trail of user actions, file deletions, and status modifications.",
+      "moduleGroup": "Database",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "mod_server"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "type_vessel",
+      "name": "Vessel",
+      "label": "Vessel Interface",
+      "type": "type",
+      "file": "src/App.tsx",
+      "description": "TypeScript interface defining vessel attributes and team associations.",
+      "moduleGroup": "Types",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "type_sms_order",
+      "name": "SMSOrder",
+      "label": "SMSOrder Interface",
+      "type": "type",
+      "file": "src/components/SMSOrderList.tsx",
+      "description": "TypeScript interface modeling SMS orders, checklist items, and vessel uploads.",
+      "moduleGroup": "Types",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "comp_sms_orders"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    },
+    {
+      "id": "type_user",
+      "name": "User",
+      "label": "User Interface",
+      "type": "type",
+      "file": "src/App.tsx",
+      "description": "TypeScript interface for authenticated user session and RBAC roles.",
+      "moduleGroup": "Types",
+      "inDegree": 1,
+      "outDegree": 0,
+      "dependencies": [],
+      "dependents": [
+        "mod_app"
+      ],
+      "centrality": 0.06,
+      "complexity": 6
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "mod_app",
+      "target": "comp_sms_orders",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e2",
+      "source": "mod_app",
+      "target": "comp_sms_view",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e3",
+      "source": "mod_app",
+      "target": "comp_crew_audits",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e4",
+      "source": "mod_app",
+      "target": "comp_trouble_report",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e5",
+      "source": "mod_app",
+      "target": "comp_spare_parts",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e6",
+      "source": "mod_app",
+      "target": "comp_bunker_bdn",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e7",
+      "source": "mod_app",
+      "target": "comp_bunker_fuel",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e8",
+      "source": "mod_app",
+      "target": "comp_lube_analysis",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e9",
+      "source": "mod_app",
+      "target": "comp_lube_ldr",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e10",
+      "source": "mod_app",
+      "target": "comp_about_view",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e11",
+      "source": "mod_app",
+      "target": "comp_graphify",
+      "type": "renders",
+      "label": "mounts view"
+    },
+    {
+      "id": "e12",
+      "source": "mod_main",
+      "target": "mod_app",
+      "type": "imports",
+      "label": "boots React"
+    },
+    {
+      "id": "e13",
+      "source": "comp_sms_orders",
+      "target": "comp_pdf_viewer",
+      "type": "renders",
+      "label": "displays PDF"
+    },
+    {
+      "id": "e14",
+      "source": "comp_spare_parts",
+      "target": "comp_pdf_viewer",
+      "type": "renders",
+      "label": "displays PDF"
+    },
+    {
+      "id": "e15",
+      "source": "comp_trouble_report",
+      "target": "comp_image_viewer",
+      "type": "renders",
+      "label": "previews photo"
+    },
+    {
+      "id": "e16",
+      "source": "comp_sms_orders",
+      "target": "route_sms_orders",
+      "type": "calls_api",
+      "label": "GET / POST / DELETE"
+    },
+    {
+      "id": "e17",
+      "source": "comp_sms_orders",
+      "target": "route_sms_upload",
+      "type": "calls_api",
+      "label": "POST file"
+    },
+    {
+      "id": "e18",
+      "source": "comp_sms_orders",
+      "target": "route_sms_checked",
+      "type": "calls_api",
+      "label": "POST check"
+    },
+    {
+      "id": "e19",
+      "source": "mod_app",
+      "target": "route_sms_sidebar_status",
+      "type": "calls_api",
+      "label": "polls notification status"
+    },
+    {
+      "id": "e20",
+      "source": "mod_app",
+      "target": "route_vessels",
+      "type": "calls_api",
+      "label": "loads fleet"
+    },
+    {
+      "id": "e21",
+      "source": "mod_app",
+      "target": "route_certificates",
+      "type": "calls_api",
+      "label": "loads certs"
+    },
+    {
+      "id": "e22",
+      "source": "mod_app",
+      "target": "route_auth",
+      "type": "calls_api",
+      "label": "authenticates"
+    },
+    {
+      "id": "e23",
+      "source": "comp_crew_audits",
+      "target": "route_crews",
+      "type": "calls_api",
+      "label": "manages crew"
+    },
+    {
+      "id": "e24",
+      "source": "comp_crew_audits",
+      "target": "route_audits",
+      "type": "calls_api",
+      "label": "manages audits"
+    },
+    {
+      "id": "e25",
+      "source": "comp_trouble_report",
+      "target": "route_defects",
+      "type": "calls_api",
+      "label": "submits report"
+    },
+    {
+      "id": "e26",
+      "source": "comp_spare_parts",
+      "target": "route_spares",
+      "type": "calls_api",
+      "label": "submits requisition"
+    },
+    {
+      "id": "e27",
+      "source": "comp_bunker_bdn",
+      "target": "route_bunkers",
+      "type": "calls_api",
+      "label": "logs BDN"
+    },
+    {
+      "id": "e28",
+      "source": "comp_bunker_fuel",
+      "target": "route_bunkers",
+      "type": "calls_api",
+      "label": "fetches lab data"
+    },
+    {
+      "id": "e29",
+      "source": "comp_lube_analysis",
+      "target": "route_lube",
+      "type": "calls_api",
+      "label": "fetches test results"
+    },
+    {
+      "id": "e30",
+      "source": "comp_lube_ldr",
+      "target": "route_lube",
+      "type": "calls_api",
+      "label": "logs daily usage"
+    },
+    {
+      "id": "e31",
+      "source": "comp_graphify",
+      "target": "route_graphify",
+      "type": "calls_api",
+      "label": "queries live graph"
+    },
+    {
+      "id": "e32",
+      "source": "route_sms_orders",
+      "target": "table_sms_orders",
+      "type": "queries_table",
+      "label": "SELECT / INSERT / UPDATE"
+    },
+    {
+      "id": "e33",
+      "source": "route_sms_orders",
+      "target": "table_sms_order_items",
+      "type": "queries_table",
+      "label": "JOIN requirements"
+    },
+    {
+      "id": "e34",
+      "source": "route_sms_orders",
+      "target": "table_sms_order_vessels",
+      "type": "queries_table",
+      "label": "JOIN status"
+    },
+    {
+      "id": "e35",
+      "source": "route_sms_orders",
+      "target": "table_sms_order_templates",
+      "type": "queries_table",
+      "label": "CRUD templates"
+    },
+    {
+      "id": "e36",
+      "source": "route_sms_upload",
+      "target": "table_sms_order_uploads",
+      "type": "queries_table",
+      "label": "INSERT upload"
+    },
+    {
+      "id": "e37",
+      "source": "route_sms_sidebar_status",
+      "target": "table_sms_orders",
+      "type": "queries_table",
+      "label": "evaluates deadlines"
+    },
+    {
+      "id": "e38",
+      "source": "route_sms_sidebar_status",
+      "target": "table_sms_order_uploads",
+      "type": "queries_table",
+      "label": "evaluates unchecked"
+    },
+    {
+      "id": "e39",
+      "source": "route_sms_checked",
+      "target": "table_sms_order_uploads",
+      "type": "queries_table",
+      "label": "UPDATE checked_at"
+    },
+    {
+      "id": "e40",
+      "source": "route_vessels",
+      "target": "table_vessels",
+      "type": "queries_table",
+      "label": "SELECT vessels"
+    },
+    {
+      "id": "e41",
+      "source": "route_certificates",
+      "target": "table_certificates",
+      "type": "queries_table",
+      "label": "SELECT certs"
+    },
+    {
+      "id": "e42",
+      "source": "route_auth",
+      "target": "table_users",
+      "type": "queries_table",
+      "label": "SELECT / verify"
+    },
+    {
+      "id": "e43",
+      "source": "route_crews",
+      "target": "table_crew_members",
+      "type": "queries_table",
+      "label": "CRUD crew"
+    },
+    {
+      "id": "e44",
+      "source": "route_audits",
+      "target": "table_audits",
+      "type": "queries_table",
+      "label": "CRUD audits"
+    },
+    {
+      "id": "e45",
+      "source": "route_defects",
+      "target": "table_trouble_reports",
+      "type": "queries_table",
+      "label": "CRUD defects"
+    },
+    {
+      "id": "e46",
+      "source": "route_spares",
+      "target": "table_spare_requisitions",
+      "type": "queries_table",
+      "label": "CRUD requisitions"
+    },
+    {
+      "id": "e47",
+      "source": "mod_server",
+      "target": "table_audit_logs",
+      "type": "queries_table",
+      "label": "INSERT logAudit"
+    },
+    {
+      "id": "e48",
+      "source": "comp_sms_orders",
+      "target": "type_sms_order",
+      "type": "uses_type",
+      "label": "implements"
+    },
+    {
+      "id": "e49",
+      "source": "mod_app",
+      "target": "type_vessel",
+      "type": "uses_type",
+      "label": "implements"
+    },
+    {
+      "id": "e50",
+      "source": "mod_app",
+      "target": "type_user",
+      "type": "uses_type",
+      "label": "implements"
+    }
+  ],
+  "stats": {
+    "totalNodes": 46,
+    "totalEdges": 50,
+    "componentsCount": 13,
+    "routesCount": 14,
+    "tablesCount": 13,
+    "modulesCount": 3,
+    "typesCount": 3,
+    "totalLoc": 42880,
+    "lastScannedAt": "2026-08-14T07:09:18.079Z",
+    "density": 0.0242
+  },
+  "version": "1.0.0"
+}

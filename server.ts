@@ -22,10 +22,16 @@ const asyncLocalStorage = new AsyncLocalStorage<{ req?: any }>();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const __dirname = path.resolve();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'vessel-cert-secret-key';
 
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import JSZip from 'jszip';
+import WordExtractor from 'word-extractor';
+import mammoth from 'mammoth';
+import { GraphifyEngine } from './src/services/graphifyScanner';
+
+const graphifyEngine = new GraphifyEngine();
 
 let globalPool: mysql.Pool | null = null;
 
@@ -1552,6 +1558,161 @@ async function startServer() {
       console.error('Failed to seed initial SMS uploads:', err.message);
     }
 
+    // Create tables for SMS Order Lists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_orders (
+        id VARCHAR(100) PRIMARY KEY,
+        label VARCHAR(255) NOT NULL,
+        deadline_date VARCHAR(50) NOT NULL,
+        instructions TEXT NULL,
+        created_by_id VARCHAR(100) NOT NULL,
+        created_by_name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        deleted_at DATETIME NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_order_vessels (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        order_id VARCHAR(100) NOT NULL,
+        vessel_id VARCHAR(100) NOT NULL,
+        vessel_name VARCHAR(255) NOT NULL,
+        status VARCHAR(50) DEFAULT 'Pending',
+        completed_at DATETIME NULL,
+        deleted_at DATETIME NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_order_items (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        order_id VARCHAR(100) NOT NULL,
+        form_id VARCHAR(100) NOT NULL,
+        form_code VARCHAR(255) NOT NULL,
+        category VARCHAR(255) NOT NULL,
+        description TEXT NOT NULL,
+        form_date VARCHAR(255) NULL,
+        type VARCHAR(50) DEFAULT 'Form',
+        is_hira TINYINT(1) DEFAULT 0,
+        remove_filename_restriction TINYINT(1) DEFAULT 0,
+        allowed_file_types VARCHAR(255) NULL,
+        template_file_name VARCHAR(255) NULL,
+        template_files LONGTEXT NULL,
+        sort_order INT DEFAULT 0,
+        deleted_at DATETIME NULL
+      )
+    `);
+
+    try {
+      await pool.query('ALTER TABLE sms_order_items ADD COLUMN form_date VARCHAR(255) NULL');
+    } catch (e) {
+      // Column might already exist
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_order_uploads (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        order_id VARCHAR(100) NOT NULL,
+        vessel_id VARCHAR(100) NOT NULL,
+        vessel_name VARCHAR(255) NOT NULL,
+        form_id VARCHAR(100) NOT NULL,
+        form_code VARCHAR(255) NOT NULL,
+        file_name VARCHAR(255) NOT NULL,
+        file_size VARCHAR(50) NOT NULL,
+        file_mimetype VARCHAR(255) NOT NULL,
+        file_data LONGBLOB NOT NULL,
+        b2_folder_path VARCHAR(255) NULL,
+        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        uploaded_by VARCHAR(255) NOT NULL,
+        checked_at DATETIME NULL,
+        checked_by VARCHAR(255) NULL,
+        deleted_at DATETIME NULL
+      )
+    `);
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN checked_at DATETIME NULL');
+    } catch (e) {
+      // Column might already exist
+    }
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN checked_by VARCHAR(255) NULL');
+    } catch (e) {
+      // Column might already exist
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_order_upload_reads (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id VARCHAR(100) NOT NULL,
+        upload_id INT NOT NULL,
+        read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_user_upload (user_id, upload_id)
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sms_order_templates (
+        id VARCHAR(100) PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        description TEXT NULL,
+        item_form_ids TEXT NOT NULL,
+        created_by VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        deleted_at DATETIME NULL
+      )
+    `);
+
+    // Seed default SMS orders and templates if missing
+    try {
+      const [orderRows]: any = await pool.query('SELECT COUNT(*) as count FROM sms_orders');
+      if (orderRows[0].count === 0) {
+        console.log('Seeding initial SMS orders...');
+        const initialOrderId1 = 'ord_sample_1';
+        await pool.execute(
+          `INSERT INTO sms_orders (id, label, deadline_date, instructions, created_by_id, created_by_name) VALUES (?, ?, ?, ?, ?, ?)`,
+          [initialOrderId1, 'Annual Safety & Environmental Audit 2026', '2026-09-15', 'Please ensure all monthly cooling water tests, equipment checklists, and enclosed space drill records are scanned and uploaded with complete officer signatures prior to deadline.', '1', 'Superintendent (PIC)']
+        );
+
+        const vList = [
+          { vesselId: 'v3', vesselName: 'CD HUELVA' },
+          { vesselId: 'v6', vesselName: 'CNC CHEETAH' },
+          { vesselId: 'v8', vesselName: 'CNC NEPTUNE' }
+        ];
+        for (const v of vList) {
+          await pool.execute(
+            `INSERT INTO sms_order_vessels (order_id, vessel_id, vessel_name, status) VALUES (?, ?, ?, ?)`,
+            [initialOrderId1, v.vesselId, v.vesselName, 'Pending']
+          );
+        }
+
+        const fList = [
+          { formId: 'f_1', formCode: 'COMI-SM-1-1', category: '1. Monthly', description: 'ME & DG Jacket Cooling Fresh Water & BOILER Water condition Report', type: 'Form', isHira: 0 },
+          { formId: 'f_2', formCode: 'COMI-SM-1-2', category: '1. Monthly', description: 'Check List For Certificates & Documents', type: 'Form', isHira: 0 },
+          { formId: 'f_11', formCode: 'COMI-SM-3-1', category: '3. Quarterly', description: 'Enclosed Space Entry & Rescue Drill Report', type: 'Form', isHira: 0 },
+          { formId: 'f_hira', formCode: 'COMI-SM-5-HIRA', category: '5. Occasional', description: 'Hazard Identification & Risk Assessment (HIRA) Form', type: 'Form', isHira: 1 }
+        ];
+        let sIdx = 1;
+        for (const f of fList) {
+          await pool.execute(
+            `INSERT INTO sms_order_items (order_id, form_id, form_code, category, description, type, is_hira, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [initialOrderId1, f.formId, f.formCode, f.category, f.description, f.type, f.isHira, sIdx++]
+          );
+        }
+
+        // Seed initial saved template
+        await pool.execute(
+          `INSERT INTO sms_order_templates (id, title, description, item_form_ids, created_by) VALUES (?, ?, ?, ?, ?)`,
+          ['tpl_standard_audit', 'Standard Pre-Audit & Risk Assessment Pack', 'Standard 4-form pack for routine annual and quarterly audits.', JSON.stringify(['f_1', 'f_2', 'f_11', 'f_hira']), 'Management']
+        );
+      }
+    } catch (e: any) {
+      console.error('Error seeding initial SMS orders:', e.message);
+    }
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS flags (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -2997,8 +3158,8 @@ async function startServer() {
   app.get('/api/sms/forms/:id/download-template', authenticate, async (req, res) => {
     try {
       const [rows]: any = await pool.execute(
-        'SELECT template_file_name, template_file_data, template_file_mimetype, template_files FROM sms_forms WHERE id = ? AND deleted_at IS NULL',
-        [req.params.id]
+        'SELECT template_file_name, template_file_data, template_file_mimetype, template_files FROM sms_forms WHERE (id = ? OR formCode = ?) AND deleted_at IS NULL',
+        [req.params.id, req.params.id]
       );
       if (!rows || rows.length === 0) {
         return res.status(404).json({ error: 'No template file found for this form.' });
@@ -3033,7 +3194,7 @@ async function startServer() {
       }
 
       if (!rawData) {
-        return res.status(404).json({ error: 'No template file found for this form.' });
+        return res.status(404).json({ error: 'No template file uploaded for this form.' });
       }
       const rawDataForBuffer = rawData;
       let buffer: Buffer;
@@ -3051,8 +3212,50 @@ async function startServer() {
         }
       }
 
+      const isInline = req.query.inline === 'true' || req.query.inline === '1' || req.path.endsWith('/view-template');
       res.setHeader('Content-Type', tMime || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(tName || 'form_template')}"`);
+      res.setHeader('Content-Disposition', `${isInline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(tName || 'form_template')}"`);
+      res.send(buffer);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/forms/:id/view-template', authenticate, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const [rows]: any = await pool.execute(
+        'SELECT template_file_name, template_file_data, template_file_mimetype, template_files FROM sms_forms WHERE id = ?',
+        [id]
+      );
+      if (rows.length === 0) {
+        return res.status(404).json({ error: 'Form template not found' });
+      }
+      const form = rows[0];
+      let rawDataForBuffer = form.template_file_data;
+      let tName = form.template_file_name;
+      let tMime = form.template_file_mimetype;
+
+      if (!rawDataForBuffer && form.template_files) {
+        try {
+          const parsed = typeof form.template_files === 'string' ? JSON.parse(form.template_files) : form.template_files;
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            rawDataForBuffer = parsed[0].data || parsed[0].content || parsed[0].file_data;
+            tName = parsed[0].name || parsed[0].fileName || tName;
+            tMime = parsed[0].type || parsed[0].mimetype || tMime;
+          }
+        } catch (err) {
+          console.error('Error parsing template_files array:', err);
+        }
+      }
+
+      if (!rawDataForBuffer) {
+        return res.status(404).json({ error: 'No template file uploaded for this form' });
+      }
+
+      const buffer = await handleFileRetrieve(rawDataForBuffer);
+      res.setHeader('Content-Type', tMime || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(tName || 'form_template')}"`);
       res.send(buffer);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -3265,6 +3468,1320 @@ async function startServer() {
       }
       res.json({ success: true });
     } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==================== SMS ORDER LIST ROUTES ====================
+  app.get('/api/sms/orders', authenticate, async (req: any, res) => {
+    try {
+      const isVessel = req.user.role === 'vessel';
+      let orderQuery = `
+        SELECT o.id, o.label, o.deadline_date, o.instructions, o.created_by_id, o.created_by_name, o.created_at, o.updated_at
+        FROM sms_orders o
+        WHERE o.deleted_at IS NULL
+      `;
+      let orderParams: any[] = [];
+      if (isVessel) {
+        orderQuery = `
+          SELECT DISTINCT o.id, o.label, o.deadline_date, o.instructions, o.created_by_id, o.created_by_name, o.created_at, o.updated_at
+          FROM sms_orders o
+          JOIN sms_order_vessels ov ON o.id = ov.order_id
+          WHERE o.deleted_at IS NULL AND ov.deleted_at IS NULL AND (ov.vessel_id = ? OR ov.vessel_id = ? OR ov.vessel_name = ?)
+        `;
+        orderParams = [String(req.user.vessel_id || ''), String(req.user.id || ''), req.user.username || ''];
+      }
+      orderQuery += ' ORDER BY o.created_at DESC';
+
+      const [orders]: any = await pool.query(orderQuery, orderParams);
+
+      const orderIds = orders.map((o: any) => o.id);
+      if (orderIds.length === 0) {
+        return res.json([]);
+      }
+
+      const placeholders = orderIds.map(() => '?').join(',');
+      const [vessels]: any = await pool.query(
+        `SELECT id, order_id, vessel_id, vessel_name, status, completed_at FROM sms_order_vessels WHERE order_id IN (${placeholders}) AND deleted_at IS NULL`,
+        orderIds
+      );
+
+      const [items]: any = await pool.query(
+        `SELECT id, order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order FROM sms_order_items WHERE order_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY sort_order ASC, id ASC`,
+        orderIds
+      );
+
+      const [uploads]: any = await pool.query(
+        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by FROM sms_order_uploads WHERE order_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
+        orderIds
+      );
+
+      // Read status per logged-on user
+      const currentUserId = String(req.user.id || req.user.username);
+      const userReadMap = new Map<number, string>();
+      if (!isVessel) {
+        try {
+          const [userReads]: any = await pool.query(
+            'SELECT upload_id, read_at FROM sms_order_upload_reads WHERE user_id = ?',
+            [currentUserId]
+          );
+          userReads.forEach((r: any) => userReadMap.set(r.upload_id, r.read_at));
+        } catch (e: any) {
+          console.warn('Note on fetching user upload reads:', e.message);
+        }
+      }
+
+      const result = orders.map((o: any) => {
+        const orderVessels = vessels.filter((v: any) => v.order_id === o.id);
+        const orderItems = items.filter((i: any) => i.order_id === o.id).map((it: any) => {
+          let parsedAllowed: string[] = [];
+          try {
+            if (it.allowed_file_types) {
+              parsedAllowed = Array.isArray(it.allowed_file_types) ? it.allowed_file_types : JSON.parse(it.allowed_file_types);
+            }
+          } catch {
+            parsedAllowed = [];
+          }
+          return {
+            ...it,
+            is_hira: Boolean(it.is_hira),
+            remove_filename_restriction: Boolean(it.remove_filename_restriction),
+            allowed_file_types: parsedAllowed
+          };
+        });
+        const orderUploads = uploads.filter((u: any) => u.order_id === o.id).map((u: any) => {
+          const isRead = isVessel ? true : userReadMap.has(u.id);
+          const readAt = isRead ? userReadMap.get(u.id) || u.checked_at || u.uploaded_at : null;
+          return {
+            ...u,
+            is_read: isRead,
+            read_at: readAt,
+            checked_at: readAt,
+            checked_by: isRead ? (req.user.username || 'You') : null
+          };
+        });
+
+        const totalItemsCount = orderItems.length;
+
+        const mappedVessels = orderVessels.map((v: any) => {
+          const vUploads = orderUploads.filter((u: any) => String(u.vessel_id) === String(v.vessel_id) || u.vessel_name === v.vessel_name);
+          const distinctFormsUploaded = new Set(vUploads.map((u: any) => u.form_id || u.form_code)).size;
+          const isCompleted = totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount;
+          return {
+            ...v,
+            submittedCount: distinctFormsUploaded,
+            totalRequiredCount: totalItemsCount,
+            totalFilesUploaded: vUploads.length,
+            status: isCompleted ? 'Completed' : (v.status || 'Pending')
+          };
+        });
+
+        const allCompleted = mappedVessels.length > 0 && mappedVessels.every((v: any) => v.status === 'Completed');
+        const anyCompleted = mappedVessels.some((v: any) => v.status === 'Completed' || v.submittedCount > 0);
+        
+        let overallStatus = 'Pending';
+        if (allCompleted) {
+          overallStatus = 'Completed';
+        } else if (o.deadline_date && new Date(o.deadline_date) < new Date(new Date().setHours(0, 0, 0, 0)) && !allCompleted) {
+          overallStatus = 'Overdue';
+        } else if (anyCompleted) {
+          overallStatus = 'In Progress';
+        }
+
+        let vesselProgress = null;
+        if (isVessel) {
+          const myVessel = mappedVessels.find((v: any) => String(v.vessel_id) === String(req.user.vessel_id) || v.vessel_name === req.user.username) || mappedVessels[0];
+          if (myVessel) {
+            vesselProgress = {
+              submittedCount: myVessel.submittedCount,
+              totalRequiredCount: totalItemsCount,
+              totalFilesUploaded: myVessel.totalFilesUploaded,
+              status: myVessel.status
+            };
+          }
+        }
+
+        return {
+          id: o.id,
+          label: o.label,
+          deadlineDate: o.deadline_date,
+          instructions: o.instructions,
+          createdById: o.created_by_id,
+          createdByName: o.created_by_name,
+          createdAt: o.created_at,
+          updatedAt: o.updated_at,
+          vessels: mappedVessels,
+          items: orderItems,
+          uploads: orderUploads,
+          totalItemsCount,
+          totalVesselsCount: mappedVessels.length,
+          overallStatus,
+          vesselProgress
+        };
+      });
+
+      res.json(result);
+    } catch (e: any) {
+      console.error('Error fetching SMS orders:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/orders/sidebar-status', authenticate, async (req: any, res) => {
+    try {
+      if (!pool) {
+        return res.json({
+          statusColor: 'normal',
+          urgentCount: 0,
+          uncheckedCount: 0,
+          hasUrgentDeadline: false,
+          hasUncheckedUploads: false
+        });
+      }
+
+      const isVessel = req.user.role === 'vessel';
+      const currentUserId = String(req.user.id || req.user.username);
+      const targetVesselId = req.user.vessel_id ? String(req.user.vessel_id) : '';
+      const targetVesselName = req.user.username || '';
+
+      const [orders]: any = await pool.execute(
+        'SELECT id, label, deadline_date FROM sms_orders WHERE deleted_at IS NULL'
+      );
+
+      if (orders.length === 0) {
+        return res.json({
+          statusColor: 'normal',
+          urgentCount: 0,
+          uncheckedCount: 0,
+          hasUrgentDeadline: false,
+          hasUncheckedUploads: false
+        });
+      }
+
+      const orderIds = orders.map((o: any) => o.id);
+      const placeholders = orderIds.map(() => '?').join(',');
+
+      const [vessels]: any = await pool.query(
+        `SELECT order_id, vessel_id, vessel_name, status FROM sms_order_vessels WHERE order_id IN (${placeholders}) AND deleted_at IS NULL`,
+        orderIds
+      );
+
+      const [items]: any = await pool.query(
+        `SELECT order_id, form_id FROM sms_order_items WHERE order_id IN (${placeholders}) AND deleted_at IS NULL`,
+        orderIds
+      );
+
+      const [uploads]: any = await pool.query(
+        `SELECT id, order_id, vessel_id, vessel_name, form_id, uploaded_by FROM sms_order_uploads WHERE order_id IN (${placeholders}) AND deleted_at IS NULL`,
+        orderIds
+      );
+
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+      let urgentCount = 0;
+      let uncheckedCount = 0;
+
+      for (const order of orders) {
+        const orderItems = items.filter((i: any) => i.order_id === order.id);
+        const totalItems = orderItems.length;
+        const orderVessels = vessels.filter((v: any) => v.order_id === order.id);
+
+        let isCompletedForUser = false;
+
+        if (isVessel) {
+          const myV = orderVessels.find((v: any) => String(v.vessel_id) === targetVesselId || v.vessel_name === targetVesselName);
+          if (!myV) continue;
+          const myUploads = uploads.filter((u: any) => (String(u.vessel_id) === targetVesselId || u.vessel_name === targetVesselName) && u.order_id === order.id);
+          const distinctForms = new Set(myUploads.map((u: any) => u.form_id)).size;
+          isCompletedForUser = totalItems > 0 && distinctForms >= totalItems;
+        } else {
+          const allDone = orderVessels.length > 0 && orderVessels.every((v: any) => {
+            const vUps = uploads.filter((u: any) => (String(u.vessel_id) === String(v.vessel_id) || u.vessel_name === v.vessel_name) && u.order_id === order.id);
+            const forms = new Set(vUps.map((u: any) => u.form_id)).size;
+            return totalItems > 0 && forms >= totalItems;
+          });
+          isCompletedForUser = allDone;
+        }
+
+        if (!isCompletedForUser && order.deadline_date) {
+          const parts = order.deadline_date.split('-');
+          if (parts.length === 3) {
+            const dDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+            const diffDays = Math.ceil((dDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+            // Deadline within 7 days or overdue
+            if (diffDays <= 7) {
+              urgentCount++;
+            }
+          }
+        }
+      }
+
+      // Unread/unchecked uploads for THIS specific logged-on office/management user
+      if (!isVessel && uploads.length > 0) {
+        try {
+          const [userReads]: any = await pool.query(
+            'SELECT upload_id FROM sms_order_upload_reads WHERE user_id = ?',
+            [currentUserId]
+          );
+          const userReadSet = new Set<number>(userReads.map((r: any) => r.upload_id));
+          const unreadUploads = uploads.filter((u: any) => !userReadSet.has(u.id));
+          uncheckedCount = unreadUploads.length;
+        } catch (e: any) {
+          console.warn('Note on checking unread count:', e.message);
+        }
+      }
+
+      let statusColor: 'red' | 'orange' | 'normal' = 'normal';
+      if (urgentCount > 0) {
+        statusColor = 'red';
+      } else if (uncheckedCount > 0) {
+        statusColor = 'orange';
+      }
+
+      res.json({
+        statusColor,
+        urgentCount,
+        uncheckedCount,
+        hasUrgentDeadline: urgentCount > 0,
+        hasUncheckedUploads: uncheckedCount > 0
+      });
+    } catch (e: any) {
+      console.error('Error fetching SMS order sidebar status:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Mark single upload read for the logged on user
+  const handleMarkUploadReadForUser = async (req: any, res: any) => {
+    if (req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Vessel users cannot mark orders as checked' });
+    }
+    const { uploadId } = req.params;
+    const currentUserId = String(req.user.id || req.user.username);
+    try {
+      await pool.execute(
+        'INSERT INTO sms_order_upload_reads (user_id, upload_id, read_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE read_at = CURRENT_TIMESTAMP',
+        [currentUserId, uploadId]
+      );
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Error marking SMS upload as read for user:', e);
+      res.status(500).json({ error: e.message });
+    }
+  };
+
+  app.post('/api/sms/orders/upload/:uploadId/check', authenticate, handleMarkUploadReadForUser);
+  app.post('/api/sms/orders/upload/:uploadId/mark-read', authenticate, handleMarkUploadReadForUser);
+
+  // Mark order uploads read for the logged on user
+  const handleMarkOrderReadForUser = async (req: any, res: any) => {
+    if (req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Vessel users cannot mark orders as checked' });
+    }
+    const { id: orderId } = req.params;
+    const vesselId = req.query.vessel_id || req.body?.vessel_id;
+    const currentUserId = String(req.user.id || req.user.username);
+    try {
+      let query = 'SELECT id FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL';
+      const params: any[] = [orderId];
+      if (vesselId) {
+        query += ' AND (vessel_id = ? OR vessel_name = ?)';
+        params.push(String(vesselId), String(vesselId));
+      }
+      const [ups]: any = await pool.query(query, params);
+      for (const u of ups) {
+        await pool.execute(
+          'INSERT INTO sms_order_upload_reads (user_id, upload_id, read_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE read_at = CURRENT_TIMESTAMP',
+          [currentUserId, u.id]
+        );
+      }
+      res.json({ success: true, count: ups.length });
+    } catch (e: any) {
+      console.error('Error marking SMS order uploads as read for user:', e);
+      res.status(500).json({ error: e.message });
+    }
+  };
+
+  app.post('/api/sms/orders/:id/mark-checked', authenticate, handleMarkOrderReadForUser);
+  app.post('/api/sms/orders/:id/mark-read', authenticate, handleMarkOrderReadForUser);
+
+  // Mark all order uploads read for the logged on user
+  const handleMarkAllOrdersReadForUser = async (req: any, res: any) => {
+    if (req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Vessel users cannot mark orders as checked' });
+    }
+    const currentUserId = String(req.user.id || req.user.username);
+    try {
+      const [ups]: any = await pool.query('SELECT id FROM sms_order_uploads WHERE deleted_at IS NULL');
+      for (const u of ups) {
+        await pool.execute(
+          'INSERT INTO sms_order_upload_reads (user_id, upload_id, read_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE read_at = CURRENT_TIMESTAMP',
+          [currentUserId, u.id]
+        );
+      }
+      res.json({ success: true, count: ups.length });
+    } catch (e: any) {
+      console.error('Error marking all SMS order uploads as read for user:', e);
+      res.status(500).json({ error: e.message });
+    }
+  };
+
+  app.post('/api/sms/orders/mark-all-checked', authenticate, handleMarkAllOrdersReadForUser);
+  app.post('/api/sms/orders/mark-all-read', authenticate, handleMarkAllOrdersReadForUser);
+
+  // ----------------------------------------------------
+  // GRAPHIFY KNOWLEDGE GRAPH & ARCHITECTURE API
+  // ----------------------------------------------------
+  app.get('/api/graphify/graph', authenticate, async (req: any, res) => {
+    try {
+      const graph = graphifyEngine.getGraph();
+      res.json(graph);
+    } catch (e: any) {
+      console.error('Error fetching Graphify graph:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/graphify/rescan', authenticate, async (req: any, res) => {
+    try {
+      // Recompute metrics
+      graphifyEngine.calculateMetrics();
+      const graph = graphifyEngine.getGraph();
+
+      // Persist to graphify.json & GRAPHIFY.md if possible
+      try {
+        const jsonPath = path.join(process.cwd(), 'graphify.json');
+        fs.writeFileSync(jsonPath, JSON.stringify(graph, null, 2), 'utf-8');
+        const mdPath = path.join(process.cwd(), 'GRAPHIFY.md');
+        fs.writeFileSync(mdPath, graphifyEngine.exportMarkdown(), 'utf-8');
+      } catch (err) {
+        console.warn('Could not write local graphify files:', err);
+      }
+
+      res.json({ success: true, graph, message: 'Codebase knowledge graph re-scanned and synchronized.' });
+    } catch (e: any) {
+      console.error('Error rescanning Graphify graph:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/graphify/impact', authenticate, async (req: any, res) => {
+    try {
+      const nodeId = String(req.query.nodeId || '');
+      if (!nodeId) {
+        return res.status(400).json({ error: 'nodeId query parameter is required' });
+      }
+      const impact = graphifyEngine.analyzeImpact(nodeId);
+      if (!impact) {
+        return res.status(404).json({ error: 'Node not found in Graphify knowledge base' });
+      }
+      res.json(impact);
+    } catch (e: any) {
+      console.error('Error calculating Graphify impact:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/graphify/markdown', authenticate, async (req: any, res) => {
+    try {
+      const md = graphifyEngine.exportMarkdown();
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.send(md);
+    } catch (e: any) {
+      console.error('Error generating Graphify markdown:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/orders/:id', authenticate, async (req: any, res) => {
+    try {
+      const { id } = req.params;
+      const [orderRows]: any = await pool.execute(
+        'SELECT * FROM sms_orders WHERE id = ? AND deleted_at IS NULL',
+        [id]
+      );
+      if (orderRows.length === 0) {
+        return res.status(404).json({ error: 'SMS Order not found' });
+      }
+      const o = orderRows[0];
+
+      const [vessels]: any = await pool.execute(
+        'SELECT id, order_id, vessel_id, vessel_name, status, completed_at FROM sms_order_vessels WHERE order_id = ? AND deleted_at IS NULL',
+        [id]
+      );
+
+      const [items]: any = await pool.execute(
+        'SELECT id, order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL ORDER BY sort_order ASC, id ASC',
+        [id]
+      );
+
+      const [uploads]: any = await pool.execute(
+        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
+        [id]
+      );
+
+      const orderItems = items.map((it: any) => {
+        let parsedAllowed: string[] = [];
+        try {
+          if (it.allowed_file_types) {
+            parsedAllowed = Array.isArray(it.allowed_file_types) ? it.allowed_file_types : JSON.parse(it.allowed_file_types);
+          }
+        } catch {
+          parsedAllowed = [];
+        }
+        return {
+          ...it,
+          is_hira: Boolean(it.is_hira),
+          remove_filename_restriction: Boolean(it.remove_filename_restriction),
+          allowed_file_types: parsedAllowed
+        };
+      });
+
+      const totalItemsCount = orderItems.length;
+
+      const mappedVessels = vessels.map((v: any) => {
+        const vUploads = uploads.filter((u: any) => String(u.vessel_id) === String(v.vessel_id) || u.vessel_name === v.vessel_name);
+        const distinctFormsUploaded = new Set(vUploads.map((u: any) => u.form_id || u.form_code)).size;
+        const isCompleted = totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount;
+        return {
+          ...v,
+          submittedCount: distinctFormsUploaded,
+          totalRequiredCount: totalItemsCount,
+          totalFilesUploaded: vUploads.length,
+          status: isCompleted ? 'Completed' : (v.status || 'Pending')
+        };
+      });
+
+      res.json({
+        id: o.id,
+        label: o.label,
+        deadlineDate: o.deadline_date,
+        instructions: o.instructions,
+        createdById: o.created_by_id,
+        createdByName: o.created_by_name,
+        createdAt: o.created_at,
+        updatedAt: o.updated_at,
+        vessels: mappedVessels,
+        items: orderItems,
+        uploads: uploads
+      });
+    } catch (e: any) {
+      console.error('Error fetching single SMS order:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/orders', authenticate, async (req: any, res) => {
+    if (req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Vessel users are not authorized to create or modify order lists' });
+    }
+    const { id, label, deadlineDate, instructions, vessels, items } = req.body;
+    if (!label || !deadlineDate) {
+      return res.status(400).json({ error: 'Label and Deadline Date are required' });
+    }
+    if (!vessels || !Array.isArray(vessels) || vessels.length === 0) {
+      return res.status(400).json({ error: 'Please select at least one target vessel' });
+    }
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Please select at least one form or checklist item' });
+    }
+
+    try {
+      const orderId = id || `ord_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const [existing]: any = await pool.execute('SELECT id FROM sms_orders WHERE id = ?', [orderId]);
+
+      if (existing.length > 0) {
+        await pool.execute(
+          'UPDATE sms_orders SET label = ?, deadline_date = ?, instructions = ?, updated_at = CURRENT_TIMESTAMP, deleted_at = NULL WHERE id = ?',
+          [label, deadlineDate, instructions || '', orderId]
+        );
+        await pool.execute('UPDATE sms_order_vessels SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [orderId]);
+        await pool.execute('UPDATE sms_order_items SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [orderId]);
+      } else {
+        await pool.execute(
+          'INSERT INTO sms_orders (id, label, deadline_date, instructions, created_by_id, created_by_name) VALUES (?, ?, ?, ?, ?, ?)',
+          [orderId, label, deadlineDate, instructions || '', String(req.user.id || '1'), req.user.username || 'Management']
+        );
+      }
+
+      for (const v of vessels) {
+        await pool.execute(
+          'INSERT INTO sms_order_vessels (order_id, vessel_id, vessel_name, status) VALUES (?, ?, ?, ?)',
+          [orderId, String(v.vessel_id || v.id), v.vessel_name || v.name, 'Pending']
+        );
+      }
+
+      let sortOrder = 1;
+      for (const item of items) {
+        const allowedTypesStr = Array.isArray(item.allowed_file_types || item.allowedFileTypes)
+          ? JSON.stringify(item.allowed_file_types || item.allowedFileTypes)
+          : null;
+        await pool.execute(
+          'INSERT INTO sms_order_items (order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            orderId,
+            item.form_id || item.id,
+            item.form_code || item.formCode,
+            item.category || '1. Monthly',
+            item.description || '',
+            item.form_date || item.formDate || null,
+            item.type || 'Form',
+            (item.is_hira || item.isHira) ? 1 : 0,
+            (item.remove_filename_restriction || item.removeFilenameRestriction) ? 1 : 0,
+            allowedTypesStr,
+            item.template_file_name || null,
+            sortOrder++
+          ]
+        );
+      }
+
+      await logAudit(
+        req.user.id,
+        req.user.username,
+        existing.length > 0 ? 'UPDATE_SMS_ORDER' : 'CREATE_SMS_ORDER',
+        `${existing.length > 0 ? 'Updated' : 'Created'} SMS Order: "${label}" (ID: ${orderId}) for ${vessels.length} vessel(s)`
+      );
+
+      res.json({ success: true, id: orderId });
+    } catch (e: any) {
+      console.error('Error saving SMS order:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/sms/orders/:id', authenticate, async (req: any, res) => {
+    if (req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Vessel users cannot delete order lists' });
+    }
+    const { id } = req.params;
+    try {
+      await pool.execute('UPDATE sms_orders SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+      await pool.execute('UPDATE sms_order_vessels SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [id]);
+      await pool.execute('UPDATE sms_order_items SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [id]);
+      await pool.execute('UPDATE sms_order_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [id]);
+
+      await logAudit(req.user.id, req.user.username, 'DELETE_SMS_ORDER', `Deleted SMS order list ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Error deleting SMS order:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/orders/:id/upload', authenticate, upload.array('files'), async (req: any, res) => {
+    const { id: orderId } = req.params;
+    const { vessel_id, vessel_name, form_id, form_code } = req.body;
+    const files = (req.files || []) as Express.Multer.File[];
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    try {
+      const [orderRows]: any = await pool.execute('SELECT * FROM sms_orders WHERE id = ? AND deleted_at IS NULL', [orderId]);
+      if (orderRows.length === 0) {
+        return res.status(404).json({ error: 'SMS Order not found' });
+      }
+      const order = orderRows[0];
+
+      // Check if multiple files is permitted for this item
+      let allowsMultiple = false;
+      if (form_id || form_code) {
+        const [itemRows]: any = await pool.execute(
+          'SELECT is_hira, form_code FROM sms_order_items WHERE order_id = ? AND (form_id = ? OR form_code = ?) AND deleted_at IS NULL LIMIT 1',
+          [orderId, form_id || '', form_code || '']
+        );
+        if (itemRows && itemRows.length > 0) {
+          allowsMultiple = Boolean(itemRows[0].is_hira);
+        }
+      }
+
+      if (!allowsMultiple && files.length > 1) {
+        return res.status(400).json({
+          error: `Multiple files are not allowed for form "${form_code || 'selected requirement'}" because Multiple Files is not enabled. Please upload only 1 file.`
+        });
+      }
+
+      const targetVesselId = String(vessel_id || req.user?.vessel_id || '');
+      const targetVesselName = vessel_name || req.user?.username || 'Vessel';
+
+      // If single file requirement, replace any existing active file for this requirement
+      if (!allowsMultiple && (form_id || form_code)) {
+        await pool.execute(
+          'UPDATE sms_order_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND (form_id = ? OR form_code = ?) AND deleted_at IS NULL',
+          [orderId, targetVesselId, targetVesselName, form_id || '', form_code || '']
+        );
+      }
+
+      const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const vNameClean = sanitize(targetVesselName);
+      const folderName = `${sanitize(order.label)}_${vNameClean}_${sanitize(order.deadline_date)}`;
+      const typeSlug = `sms_orders/${folderName}`;
+
+      const uploadedResults = [];
+
+      for (const file of files) {
+        const uploadData = await handleFileUpload(file.originalname, file.mimetype, file.buffer, typeSlug);
+        const fileSizeStr = file.size > 1024 * 1024 
+          ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
+          : `${(file.size / 1024).toFixed(0)} KB`;
+
+        const [insertResult]: any = await pool.execute(
+          `INSERT INTO sms_order_uploads (order_id, vessel_id, vessel_name, form_id, form_code, file_name, file_size, file_mimetype, file_data, b2_folder_path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            orderId,
+            targetVesselId,
+            targetVesselName,
+            form_id || '',
+            form_code || '',
+            file.originalname,
+            fileSizeStr,
+            file.mimetype,
+            uploadData,
+            folderName,
+            req.user?.username || 'Vessel User'
+          ]
+        );
+
+        uploadedResults.push({
+          id: insertResult.insertId,
+          fileName: file.originalname,
+          fileSize: fileSizeStr,
+          folderName
+        });
+      }
+
+      // Re-evaluate completion status for this vessel
+      const [totalItems]: any = await pool.execute(
+        'SELECT COUNT(DISTINCT form_id) as count FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL',
+        [orderId]
+      );
+      const [uploadedItems]: any = await pool.execute(
+        'SELECT COUNT(DISTINCT form_id) as count FROM sms_order_uploads WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND deleted_at IS NULL',
+        [orderId, targetVesselId, targetVesselName]
+      );
+
+      const requiredCount = totalItems[0]?.count || 0;
+      const doneCount = uploadedItems[0]?.count || 0;
+
+      if (requiredCount > 0 && doneCount >= requiredCount) {
+        await pool.execute(
+          'UPDATE sms_order_vessels SET status = "Completed", completed_at = CURRENT_TIMESTAMP WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?)',
+          [orderId, targetVesselId, targetVesselName]
+        );
+      }
+
+      await logAudit(
+        req.user.id,
+        req.user.username,
+        'UPLOAD_SMS_ORDER_FILE',
+        `Uploaded ${files.length} file(s) for Order "${order.label}" (${form_code || 'General'}) by ${vessel_name || 'Vessel'}`
+      );
+
+      res.json({
+        success: true,
+        uploadedCount: files.length,
+        results: uploadedResults,
+        isCompleted: requiredCount > 0 && doneCount >= requiredCount
+      });
+    } catch (e: any) {
+      console.error('Error uploading files for SMS Order:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/orders/without-order', authenticate, upload.array('files'), async (req: any, res) => {
+    const { vessel_id, vessel_name, label, instructions, category, form_code, form_id } = req.body;
+    const files = (req.files || []) as Express.Multer.File[];
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: 'No files selected for upload.' });
+    }
+
+    try {
+      const isVessel = req.user.role === 'vessel';
+      const targetVesselId = String(vessel_id || req.user?.vessel_id || (isVessel ? req.user?.id : 'v1'));
+      const targetVesselName = vessel_name || (isVessel ? req.user?.username : 'Vessel');
+
+      // Create an order ID
+      const orderId = `ord_direct_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const nowStr = new Date().toISOString().slice(0, 10);
+      const submissionLabel = label && label.trim() 
+        ? label.trim() 
+        : `Direct Submission - ${targetVesselName} (${new Date().toLocaleDateString('en-US', { month: 'short', year: 'numeric' })})`;
+      const submissionInstructions = instructions && instructions.trim()
+        ? instructions.trim()
+        : 'Submitted directly by vessel without a prior company order.';
+
+      // Insert Order
+      await pool.execute(
+        `INSERT INTO sms_orders (id, label, deadline_date, instructions, created_by_id, created_by_name) VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          orderId,
+          submissionLabel,
+          nowStr,
+          submissionInstructions,
+          String(req.user?.id || 'vessel'),
+          req.user?.username || targetVesselName
+        ]
+      );
+
+      // Insert Order Vessel (marked Completed immediately)
+      await pool.execute(
+        `INSERT INTO sms_order_vessels (order_id, vessel_id, vessel_name, status, completed_at) VALUES (?, ?, ?, 'Completed', CURRENT_TIMESTAMP)`,
+        [orderId, targetVesselId, targetVesselName]
+      );
+
+      // Load active forms from catalog for metadata matching
+      const [allForms]: any = await pool.query('SELECT id, formCode, category, description, type, isHira, removeFilenameRestriction, allowedFileTypes FROM sms_forms WHERE deleted_at IS NULL');
+      const formByCodeMap = new Map<string, any>();
+      const formByIdMap = new Map<string, any>();
+      allForms.forEach((f: any) => {
+        if (f.formCode) formByCodeMap.set(f.formCode.toLowerCase(), f);
+        if (f.id) formByIdMap.set(String(f.id), f);
+      });
+
+      const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const vNameClean = sanitize(targetVesselName);
+      const folderName = `${sanitize(submissionLabel)}_${vNameClean}_${sanitize(nowStr)}`;
+      const typeSlug = `sms_orders/${folderName}`;
+
+      const uploadedResults = [];
+      const createdItemFormIds = new Set<string>();
+
+      for (let idx = 0; idx < files.length; idx++) {
+        const file = files[idx];
+        let fileFormCode = form_code || '';
+        let fileFormId = form_id || '';
+        let fileCategory = category || 'General / Ad-hoc';
+        let fileDesc = 'Directly submitted document';
+        let fileType = 'Form';
+
+        // If not explicitly provided, try to match by filename prefix
+        if (!fileFormCode) {
+          const lowerName = file.originalname.toLowerCase();
+          for (const form of allForms) {
+            if (form.formCode && (lowerName.startsWith(form.formCode.toLowerCase()) || lowerName.includes(form.formCode.toLowerCase()))) {
+              fileFormCode = form.formCode;
+              fileFormId = String(form.id);
+              fileCategory = form.category || fileCategory;
+              fileDesc = form.description || fileDesc;
+              fileType = form.type || 'Form';
+              break;
+            }
+          }
+        } else {
+          const matched = formByCodeMap.get(fileFormCode.toLowerCase()) || formByIdMap.get(String(fileFormId));
+          if (matched) {
+            fileFormId = String(matched.id);
+            fileCategory = matched.category || fileCategory;
+            fileDesc = matched.description || fileDesc;
+            fileType = matched.type || 'Form';
+          }
+        }
+
+        if (!fileFormCode) {
+          fileFormCode = 'ADHOC-' + (idx + 1);
+          fileFormId = 'adhoc_' + (idx + 1);
+        }
+
+        // Insert item record if not already created for this order
+        const itemKey = `${fileFormId}_${fileFormCode}`;
+        if (!createdItemFormIds.has(itemKey)) {
+          createdItemFormIds.add(itemKey);
+          await pool.execute(
+            `INSERT INTO sms_order_items (order_id, form_id, form_code, category, description, type, is_hira, remove_filename_restriction, sort_order) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)`,
+            [orderId, fileFormId, fileFormCode, fileCategory, fileDesc, fileType, idx + 1]
+          );
+        }
+
+        const uploadData = await handleFileUpload(file.originalname, file.mimetype, file.buffer, typeSlug);
+        const fileSizeStr = file.size > 1024 * 1024 
+          ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` 
+          : `${(file.size / 1024).toFixed(0)} KB`;
+
+        const [insertResult]: any = await pool.execute(
+          `INSERT INTO sms_order_uploads (order_id, vessel_id, vessel_name, form_id, form_code, file_name, file_size, file_mimetype, file_data, b2_folder_path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            orderId,
+            targetVesselId,
+            targetVesselName,
+            fileFormId,
+            fileFormCode,
+            file.originalname,
+            fileSizeStr,
+            file.mimetype,
+            uploadData,
+            folderName,
+            req.user?.username || targetVesselName
+          ]
+        );
+
+        uploadedResults.push({
+          id: insertResult.insertId,
+          fileName: file.originalname,
+          fileSize: fileSizeStr,
+          formCode: fileFormCode,
+          folderName
+        });
+      }
+
+      await logAudit(
+        req.user.id,
+        req.user.username,
+        'UPLOAD_SMS_WITHOUT_ORDER',
+        `Direct upload of ${files.length} file(s) without order by ${targetVesselName} ("${submissionLabel}")`
+      );
+
+      res.json({
+        success: true,
+        orderId,
+        label: submissionLabel,
+        uploadedCount: files.length,
+        results: uploadedResults
+      });
+    } catch (e: any) {
+      console.error('Error in direct SMS upload without order:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/orders/download-upload/:uploadId', authenticate, async (req: any, res) => {
+    try {
+      const { uploadId } = req.params;
+      const [rows]: any = await pool.execute(
+        'SELECT file_name, file_mimetype, file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
+        [uploadId]
+      );
+      if (rows.length === 0 || !rows[0].file_data) {
+        return res.status(404).json({ error: 'Uploaded file not found' });
+      }
+      const row = rows[0];
+      const retrievedBuffer = await handleFileRetrieve(row.file_data);
+      res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.file_name)}"`);
+      res.send(retrievedBuffer);
+    } catch (e: any) {
+      console.error('Error downloading SMS order file:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/orders/view-upload/:uploadId', authenticate, async (req: any, res) => {
+    try {
+      const { uploadId } = req.params;
+      const [rows]: any = await pool.execute(
+        'SELECT file_name, file_mimetype, file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
+        [uploadId]
+      );
+      if (rows.length === 0 || !rows[0].file_data) {
+        return res.status(404).json({ error: 'Uploaded file not found' });
+      }
+      const row = rows[0];
+      const retrievedBuffer = await handleFileRetrieve(row.file_data);
+      res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(row.file_name)}"`);
+      res.send(retrievedBuffer);
+    } catch (e: any) {
+      console.error('Error viewing SMS order file:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/orders/:id/download-zip', authenticate, async (req: any, res) => {
+    try {
+      const { id: orderId } = req.params;
+      const vesselId = req.query.vessel_id;
+
+      const [orderRows]: any = await pool.execute('SELECT * FROM sms_orders WHERE id = ? AND deleted_at IS NULL', [orderId]);
+      if (orderRows.length === 0) {
+        return res.status(404).json({ error: 'Order not found' });
+      }
+      const order = orderRows[0];
+
+      let query = 'SELECT id, vessel_name, form_code, file_name, file_data FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL';
+      let params = [orderId];
+      if (vesselId) {
+        query += ' AND vessel_id = ?';
+        params.push(String(vesselId));
+      }
+
+      const [uploads]: any = await pool.execute(query, params);
+      if (uploads.length === 0) {
+        return res.status(404).json({ error: 'No files have been uploaded yet for this order.' });
+      }
+
+      const zip = new JSZip();
+      for (const up of uploads) {
+        try {
+          const fileBuf = await handleFileRetrieve(up.file_data);
+          const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+          const vFolder = sanitize(up.vessel_name || 'Vessel');
+          zip.folder(vFolder)?.file(up.file_name, fileBuf);
+        } catch (err: any) {
+          console.error(`Failed to pack file ${up.file_name} into ZIP:`, err.message);
+        }
+      }
+
+      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+      const safeLabel = String(order.label || 'SMS_Order').replace(/[^a-zA-Z0-9_-]/g, '_');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeLabel}_Uploads.zip"`);
+      res.send(zipBuffer);
+    } catch (e: any) {
+      console.error('Error generating ZIP for SMS order:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/orders/:id/download-templates-zip', authenticate, async (req: any, res) => {
+    try {
+      const { id: orderId } = req.params;
+
+      const [orderRows]: any = await pool.execute('SELECT * FROM sms_orders WHERE id = ? AND deleted_at IS NULL', [orderId]);
+      if (orderRows.length === 0) {
+        return res.status(404).json({ error: 'Order not found' });
+      }
+      const order = orderRows[0];
+
+      const [items]: any = await pool.execute(
+        'SELECT form_id, form_code, category, description, template_file_name FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL ORDER BY sort_order ASC, id ASC',
+        [orderId]
+      );
+
+      if (items.length === 0) {
+        return res.status(404).json({ error: 'No form items found for this order.' });
+      }
+
+      const zip = new JSZip();
+      let packedCount = 0;
+
+      for (const item of items) {
+        try {
+          const [fRows]: any = await pool.execute(
+            'SELECT formCode, description, template_file_name, template_file_data, template_files FROM sms_forms WHERE (id = ? OR formCode = ?) AND deleted_at IS NULL',
+            [item.form_id, item.form_code]
+          );
+
+          let hasCustomFile = false;
+          if (fRows && fRows.length > 0) {
+            const formObj = fRows[0];
+
+            if (formObj.template_files) {
+              let tFiles: any[] = [];
+              try {
+                tFiles = typeof formObj.template_files === 'string' ? JSON.parse(formObj.template_files) : (formObj.template_files || []);
+              } catch (e) {
+                tFiles = [];
+              }
+              for (const tf of tFiles) {
+                if (tf && tf.data) {
+                  let str = String(tf.data);
+                  let buf: Buffer;
+                  if (str.startsWith('B2_KEY:')) {
+                    buf = await handleFileRetrieve(Buffer.from(str));
+                  } else if (str.startsWith('data:')) {
+                    const base64Part = str.split(',')[1] || str;
+                    buf = Buffer.from(base64Part, 'base64');
+                  } else {
+                    buf = Buffer.from(str, 'base64');
+                  }
+                  const fName = tf.name || `${formObj.formCode}_Template`;
+                  zip.file(fName, buf);
+                  hasCustomFile = true;
+                  packedCount++;
+                }
+              }
+            }
+
+            if (!hasCustomFile && formObj.template_file_data) {
+              const fileBuf = await handleFileRetrieve(formObj.template_file_data);
+              const fName = formObj.template_file_name || `${formObj.formCode}_Template`;
+              zip.file(fName, fileBuf);
+              hasCustomFile = true;
+              packedCount++;
+            }
+          }
+
+          if (!hasCustomFile) {
+            const readme = `SMS FORM TEMPLATE / SPECIFICATION\n=================================\n\nOrder: ${order.label}\nForm Code: ${item.form_code}\nCategory: ${item.category || 'SMS Form'}\nDescription: ${item.description || 'Checklist / Form'}\n\nPlease complete your official vessel report adhering to this requirement.\n`;
+            zip.file(`${item.form_code}_Specification.txt`, Buffer.from(readme, 'utf-8'));
+            packedCount++;
+          }
+        } catch (itemErr: any) {
+          console.error(`Failed packing template for ${item.form_code}:`, itemErr.message);
+        }
+      }
+
+      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+      const safeLabel = String(order.label || 'SMS_Order').replace(/[^a-zA-Z0-9_-]/g, '_');
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeLabel}_Form_Templates.zip"`);
+      res.send(zipBuffer);
+    } catch (e: any) {
+      console.error('Error generating templates ZIP for SMS order:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/sms/orders/upload/:uploadId', authenticate, async (req: any, res) => {
+    try {
+      const { uploadId } = req.params;
+      const [rows]: any = await pool.execute('SELECT order_id, vessel_id, vessel_name, file_name FROM sms_order_uploads WHERE id = ?', [uploadId]);
+      if (rows.length === 0) {
+        return res.status(404).json({ error: 'Upload not found' });
+      }
+      const item = rows[0];
+
+      await pool.execute('UPDATE sms_order_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [uploadId]);
+
+      // Re-evaluate completion status
+      const [totalItems]: any = await pool.execute(
+        'SELECT COUNT(DISTINCT form_id) as count FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL',
+        [item.order_id]
+      );
+      const [uploadedItems]: any = await pool.execute(
+        'SELECT COUNT(DISTINCT form_id) as count FROM sms_order_uploads WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND deleted_at IS NULL',
+        [item.order_id, item.vessel_id, item.vessel_name]
+      );
+
+      const requiredCount = totalItems[0]?.count || 0;
+      const doneCount = uploadedItems[0]?.count || 0;
+
+      if (doneCount < requiredCount) {
+        await pool.execute(
+          'UPDATE sms_order_vessels SET status = "Pending", completed_at = NULL WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?)',
+          [item.order_id, item.vessel_id, item.vessel_name]
+        );
+      }
+
+      await logAudit(req.user.id, req.user.username, 'DELETE_SMS_ORDER_FILE', `Deleted uploaded file: ${item.file_name}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Error deleting SMS order file:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // SMS Order Templates
+  app.get('/api/sms/order-reports', authenticate, async (req: any, res) => {
+    try {
+      const isVessel = req.user.role === 'vessel';
+      const currentUserId = String(req.user.id || req.user.username);
+      const targetVesselId = req.user.vessel_id ? String(req.user.vessel_id) : '';
+      const targetVesselName = req.user.username || '';
+
+      let userReadSet = new Set<number>();
+      if (!isVessel) {
+        try {
+          const [userReads]: any = await pool.query(
+            'SELECT upload_id FROM sms_order_upload_reads WHERE user_id = ?',
+            [currentUserId]
+          );
+          userReadSet = new Set<number>(userReads.map((r: any) => r.upload_id));
+        } catch (e) {}
+      }
+
+      // Fetch all active orders
+      const [orders]: any = await pool.query('SELECT * FROM sms_orders WHERE deleted_at IS NULL');
+      const orderMap = new Map<string, any>();
+      orders.forEach((o: any) => orderMap.set(String(o.id), o));
+
+      // Fetch all active items
+      const [items]: any = await pool.query('SELECT * FROM sms_order_items WHERE deleted_at IS NULL');
+      const itemMap = new Map<string, any>();
+      items.forEach((it: any) => {
+        itemMap.set(`${it.order_id}_${it.form_id}`, it);
+        if (it.form_code) {
+          itemMap.set(`${it.order_id}_${it.form_code}`, it);
+        }
+      });
+
+      // Fetch all forms
+      const [forms]: any = await pool.query('SELECT id, formCode, description, category FROM sms_forms WHERE deleted_at IS NULL');
+      const formMap = new Map<string, any>();
+      forms.forEach((f: any) => {
+        formMap.set(String(f.id), f);
+        if (f.formCode) {
+          formMap.set(String(f.formCode), f);
+        }
+      });
+
+      // Fetch vessels
+      const [vessels]: any = await pool.query('SELECT v.id, v.name, v.flag, v.type, v.owner, v.team_id, t.name AS team_name FROM vessels v LEFT JOIN teams t ON v.team_id = t.id');
+      const vesselMap = new Map<string, any>();
+      vessels.forEach((v: any) => {
+        vesselMap.set(String(v.id), v);
+        if (v.name) {
+          vesselMap.set(v.name.toLowerCase().trim(), v);
+          const cleanName = v.name.toLowerCase().replace(/^m\/?v\.?\s+/i, '').trim();
+          vesselMap.set(cleanName, v);
+        }
+      });
+
+      // Fetch active uploads
+      let uploadQuery = 'SELECT * FROM sms_order_uploads WHERE deleted_at IS NULL';
+      const uploadParams: any[] = [];
+
+      if (isVessel) {
+        uploadQuery += ' AND (vessel_id = ? OR vessel_name = ? OR LOWER(vessel_name) = ?)';
+        uploadParams.push(targetVesselId, targetVesselName, targetVesselName.toLowerCase());
+      }
+
+      uploadQuery += ' ORDER BY uploaded_at DESC';
+
+      const [uploads]: any = await pool.execute(uploadQuery, uploadParams);
+
+      const mapped = uploads.map((u: any) => {
+        const order = orderMap.get(String(u.order_id)) || {};
+        const item = itemMap.get(`${u.order_id}_${u.form_id}`) || itemMap.get(`${u.order_id}_${u.form_code}`) || {};
+        const form = formMap.get(String(u.form_id)) || formMap.get(String(u.form_code)) || {};
+        
+        const cleanVesselName = (u.vessel_name || '').toLowerCase().replace(/^m\/?v\.?\s+/i, '').trim();
+        const vessel = vesselMap.get(String(u.vessel_id)) || vesselMap.get((u.vessel_name || '').toLowerCase().trim()) || vesselMap.get(cleanVesselName) || {};
+
+        const isRead = isVessel ? true : userReadSet.has(u.id);
+
+        return {
+          id: u.id,
+          orderId: u.order_id,
+          orderLabel: order.label || 'SMS Order',
+          orderDeadline: order.deadline_date || '',
+          orderInstructions: order.instructions || '',
+          vesselId: u.vessel_id || vessel.id || '',
+          vesselName: u.vessel_name || vessel.name || 'Vessel',
+          vesselFlag: vessel.flag || null,
+          vesselType: vessel.type || null,
+          vesselOwner: vessel.owner || null,
+          vesselTeamName: vessel.team_name || null,
+          formId: u.form_id || item.form_id || form.id || '',
+          formCode: u.form_code || item.form_code || form.formCode || '',
+          formDescription: item.description || form.description || u.form_code || u.file_name || 'Safety Report',
+          category: item.category || form.category || '1. Monthly',
+          type: item.type || 'Form',
+          isHira: Boolean(item.is_hira),
+          fileName: u.file_name,
+          fileSize: u.file_size,
+          fileMimetype: u.file_mimetype,
+          uploadedAt: u.uploaded_at,
+          uploadedBy: u.uploaded_by,
+          checkedAt: u.checked_at,
+          checkedBy: u.checked_by,
+          isRead
+        };
+      });
+
+      res.json(mapped);
+    } catch (e: any) {
+      console.error('Error fetching SMS order reports:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/order-reports/download-batch', authenticate, async (req: any, res) => {
+    try {
+      const { uploadIds } = req.body;
+      if (!uploadIds || !Array.isArray(uploadIds) || uploadIds.length === 0) {
+        return res.status(400).json({ error: 'No report upload IDs provided' });
+      }
+
+      const placeholders = uploadIds.map(() => '?').join(',');
+      const [uploads]: any = await pool.query(
+        `SELECT u.id, u.order_id, o.label as order_label, u.vessel_name, u.form_code, u.file_name, u.file_data, u.file_mimetype 
+         FROM sms_order_uploads u
+         LEFT JOIN sms_orders o ON u.order_id = o.id
+         WHERE u.id IN (${placeholders}) AND u.deleted_at IS NULL`,
+        uploadIds
+      );
+
+      if (uploads.length === 0) {
+        return res.status(404).json({ error: 'No files found for requested IDs' });
+      }
+
+      const zip = new JSZip();
+      const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+      for (const up of uploads) {
+        try {
+          const fileBuf = await handleFileRetrieve(up.file_data);
+          const orderFolder = sanitize(up.order_label || 'SMS_Order');
+          const vesselFolder = sanitize(up.vessel_name || 'Vessel');
+          zip.folder(`${orderFolder}/${vesselFolder}`)?.file(up.file_name, fileBuf);
+        } catch (err: any) {
+          console.error(`Failed to pack file ${up.file_name}:`, err.message);
+        }
+      }
+
+      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+      const timestamp = new Date().toISOString().slice(0, 10);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="SMS_Order_Reports_Batch_${timestamp}.zip"`);
+      res.send(zipBuffer);
+    } catch (e: any) {
+      console.error('Error generating batch ZIP for SMS reports:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/sms/order-templates', authenticate, async (req: any, res) => {
+    try {
+      const [rows]: any = await pool.query('SELECT * FROM sms_order_templates WHERE deleted_at IS NULL ORDER BY created_at DESC');
+      const mapped = rows.map((r: any) => ({
+        id: r.id,
+        title: r.title,
+        description: r.description,
+        itemFormIds: r.item_form_ids ? JSON.parse(r.item_form_ids) : [],
+        createdBy: r.created_by,
+        createdAt: r.created_at
+      }));
+      res.json(mapped);
+    } catch (e: any) {
+      console.error('Error fetching SMS order templates:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/sms/order-templates', authenticate, async (req: any, res) => {
+    if (req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Vessel users cannot manage order templates' });
+    }
+    const { id, title, description, itemFormIds } = req.body;
+    if (!title) {
+      return res.status(400).json({ error: 'Template title is required' });
+    }
+    try {
+      const tId = id || `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const formIdsStr = JSON.stringify(itemFormIds || []);
+      const [existing]: any = await pool.execute('SELECT id FROM sms_order_templates WHERE id = ?', [tId]);
+
+      if (existing.length > 0) {
+        await pool.execute(
+          'UPDATE sms_order_templates SET title = ?, description = ?, item_form_ids = ?, deleted_at = NULL WHERE id = ?',
+          [title, description || '', formIdsStr, tId]
+        );
+      } else {
+        await pool.execute(
+          'INSERT INTO sms_order_templates (id, title, description, item_form_ids, created_by) VALUES (?, ?, ?, ?, ?)',
+          [tId, title, description || '', formIdsStr, req.user?.username || 'Management']
+        );
+      }
+      res.json({ success: true, id: tId });
+    } catch (e: any) {
+      console.error('Error saving SMS order template:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/sms/order-templates/:id', authenticate, async (req: any, res) => {
+    if (req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Vessel users cannot delete order templates' });
+    }
+    try {
+      await pool.execute('UPDATE sms_order_templates SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Error deleting SMS order template:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -7266,6 +8783,125 @@ Generated by COMOS System
     } catch (e: any) {
       console.error('Failed to soft delete requisition attachment:', e);
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ==========================================
+  // LEGACY DOCUMENT (.doc / .xls / .ppt) PARSER ROUTE
+  // ==========================================
+  const wordExtractorInstance = new WordExtractor();
+
+  app.post('/api/document/parse-doc', multer({ limits: { fileSize: 50 * 1024 * 1024 } }).single('file'), async (req: express.Request, res: express.Response) => {
+    try {
+      let fileBuffer: Buffer | null = null;
+      if (req.file && req.file.buffer) {
+        fileBuffer = req.file.buffer;
+      } else if (req.body && req.body.base64) {
+        const rawBase64 = req.body.base64.replace(/^data:[^;]+;base64,/, '');
+        fileBuffer = Buffer.from(rawBase64, 'base64');
+      }
+
+      if (!fileBuffer || fileBuffer.length === 0) {
+        return res.status(400).json({ error: 'No file buffer or base64 provided' });
+      }
+
+      try {
+        const extracted = await wordExtractorInstance.extract(fileBuffer);
+        const body = extracted.getBody() || '';
+        const headers = extracted.getHeaders() || '';
+        const footers = extracted.getFooters() || '';
+        const annotations = extracted.getAnnotations() || '';
+
+        // Extract clean paragraphs
+        const rawParagraphs = body
+          .split(/\r?\n/)
+          .map((line: string) => line.trim())
+          .filter((line: string) => line.length > 0);
+
+        return res.json({
+          success: true,
+          body,
+          headers,
+          footers,
+          annotations,
+          paragraphs: rawParagraphs,
+          wordCount: body.trim() ? body.trim().split(/\s+/).length : 0,
+          charCount: body.length
+        });
+      } catch (extractorErr: any) {
+        console.warn('WordExtractor primary parsing error, attempting binary fallback:', extractorErr.message);
+
+        // Binary fallback text extractor for Word 97-2004 CFBF / raw binary streams
+        const strAscii = fileBuffer.toString('latin1');
+        // Filter readable text runs
+        const matches = strAscii.match(/[\x20-\x7E\t\r\n]{4,}/g) || [];
+        const filteredText = matches
+          .map(m => m.trim())
+          .filter(m => m.length > 3 && !m.startsWith('Root Entry') && !m.startsWith('WordDocument') && !m.startsWith('CompObj'))
+          .join('\n\n');
+
+        const paragraphs = filteredText
+          .split(/\r?\n+/)
+          .map(p => p.trim())
+          .filter(p => p.length > 0);
+
+        return res.json({
+          success: true,
+          body: filteredText,
+          headers: '',
+          footers: '',
+          annotations: '',
+          paragraphs,
+          wordCount: filteredText.trim() ? filteredText.trim().split(/\s+/).length : 0,
+          charCount: filteredText.length,
+          fallback: true
+        });
+      }
+    } catch (err: any) {
+      console.error('Error parsing legacy .doc file:', err);
+      res.status(500).json({ error: err.message || 'Failed to parse legacy document' });
+    }
+  });
+
+  // Server-side DOCX Parser using Mammoth
+  app.post('/api/document/parse-docx', multer({ limits: { fileSize: 50 * 1024 * 1024 } }).single('file'), async (req: express.Request, res: express.Response) => {
+    try {
+      let fileBuffer: Buffer | null = null;
+      if (req.file && req.file.buffer) {
+        fileBuffer = req.file.buffer;
+      } else if (req.body && req.body.base64) {
+        const rawBase64 = req.body.base64.replace(/^data:[^;]+;base64,/, '');
+        fileBuffer = Buffer.from(rawBase64, 'base64');
+      }
+
+      if (!fileBuffer || fileBuffer.length === 0) {
+        return res.status(400).json({ error: 'No DOCX file buffer or base64 provided' });
+      }
+
+      const result = await mammoth.convertToHtml(
+        { buffer: fileBuffer },
+        {
+          convertImage: mammoth.images.dataUri,
+          includeDefaultStyleMap: true
+        }
+      );
+
+      const rawTextResult = await mammoth.extractRawText({ buffer: fileBuffer });
+      const text = rawTextResult.value || '';
+      const paragraphs = text.split(/\r?\n+/).map(p => p.trim()).filter(p => p.length > 0);
+
+      return res.json({
+        success: true,
+        html: result.value,
+        text,
+        paragraphs,
+        wordCount: text.trim() ? text.trim().split(/\s+/).length : 0,
+        charCount: text.length,
+        messages: result.messages
+      });
+    } catch (err: any) {
+      console.error('Error parsing DOCX file with Mammoth:', err);
+      res.status(500).json({ error: err.message || 'Failed to parse DOCX document' });
     }
   });
 

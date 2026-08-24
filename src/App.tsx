@@ -19,6 +19,7 @@ import {
   Check,
   CheckCircle2,
   CheckSquare,
+  ListChecks,
   Clock,
   Trash2,
   File,
@@ -67,6 +68,7 @@ import {
   Camera,
   Image,
   Fuel,
+  Network,
   Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -84,6 +86,9 @@ import { LubeOilLDRView } from './components/LubeOilLDR';
 import { BunkerFuelAnalysisView } from './components/BunkerFuelAnalysis';
 import { LubeOilAnalysisView } from './components/LubeOilAnalysis';
 import { SMSView } from './components/SMSView';
+import { SMSOrderListView } from './components/SMSOrderList';
+import { SMSFindReportView } from './components/SMSFindReportView';
+import { GraphifyVisualizer } from './components/GraphifyVisualizer';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -1096,7 +1101,7 @@ const ChangePasswordModal: React.FC<{
 
 
 const SidebarContent = ({ 
-  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, isCertificatesOpen, setIsCertificatesOpen, onLogout, setIsChangePasswordOpen, pendingAckCount
+  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, isCertificatesOpen, setIsCertificatesOpen, onLogout, setIsChangePasswordOpen, pendingAckCount, smsSidebarStatus
 }: { 
   view: string, 
   setView: (v: any) => void, 
@@ -1126,7 +1131,14 @@ const SidebarContent = ({
   setIsCertificatesOpen: (v: boolean) => void,
   onLogout: () => void,
   setIsChangePasswordOpen: (v: boolean) => void,
-  pendingAckCount?: number
+  pendingAckCount?: number,
+  smsSidebarStatus?: {
+    statusColor: 'red' | 'orange' | 'normal';
+    urgentCount: number;
+    uncheckedCount: number;
+    hasUrgentDeadline?: boolean;
+    hasUncheckedUploads?: boolean;
+  }
 }) => {
   const [isSmsReportingOpen, setIsSmsReportingOpen] = React.useState(false);
   // Beautiful interactive helper styling functions
@@ -1152,6 +1164,26 @@ const SidebarContent = ({
       ? "bg-blue-50/50 text-blue-700 font-black border-l-2 border-blue-600 pl-[34px]" 
       : "text-slate-500 hover:bg-slate-50/40 hover:text-blue-600 hover:pl-[38px]"
   );
+
+  const getOrderListItemClass = (active: boolean) => {
+    if (smsSidebarStatus?.statusColor === 'red') {
+      return cn(
+        "w-full flex items-center justify-between pl-9 pr-4 py-2.5 rounded-lg text-xs font-bold transition-all duration-200 text-left relative cursor-pointer",
+        active 
+          ? "bg-rose-50 text-rose-700 font-black border-l-2 border-rose-600 pl-[34px]" 
+          : "text-rose-600 font-bold bg-rose-50/50 hover:bg-rose-100/70 hover:text-rose-800 hover:pl-[38px]"
+      );
+    }
+    if (smsSidebarStatus?.statusColor === 'orange') {
+      return cn(
+        "w-full flex items-center justify-between pl-9 pr-4 py-2.5 rounded-lg text-xs font-bold transition-all duration-200 text-left relative cursor-pointer",
+        active 
+          ? "bg-amber-50 text-amber-800 font-black border-l-2 border-amber-500 pl-[34px]" 
+          : "text-amber-600 font-bold bg-amber-50/50 hover:bg-amber-100/70 hover:text-amber-800 hover:pl-[38px]"
+      );
+    }
+    return cn(getSubItemClass(active), "justify-between");
+  };
 
   return (
     <>
@@ -1246,14 +1278,22 @@ const SidebarContent = ({
           <button 
             onClick={() => setIsSmsReportingOpen(!isSmsReportingOpen)}
             className={getCategoryToggleClass(
-              view === 'sms' || view === 'sms_reporting' || view === 'sms_acknowledgement',
+              view === 'sms' || view === 'sms_reporting' || view === 'sms_acknowledgement' || (user.role !== 'vessel' && (view === 'sms_order_list' || view === 'sms_find_report')),
               isSmsReportingOpen
             )}
           >
             <div className="flex items-center gap-3">
               <FileText className="w-4 h-4" /> SMS
             </div>
-            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isSmsReportingOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+            <div className="flex items-center gap-1.5">
+              {!isSmsReportingOpen && user.role !== 'vessel' && smsSidebarStatus?.statusColor === 'red' && (
+                <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-pulse ring-2 ring-rose-200" title="Urgent deadline in SMS Order List" />
+              )}
+              {!isSmsReportingOpen && user.role !== 'vessel' && smsSidebarStatus?.statusColor === 'orange' && (
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-amber-200 animate-pulse" title="Unchecked vessel uploads in SMS Order List" />
+              )}
+              <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isSmsReportingOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+            </div>
           </button>
           
           <AnimatePresence>
@@ -1279,6 +1319,45 @@ const SidebarContent = ({
                     className={getSubItemClass(view === 'sms_reporting')}
                   >
                     <FileText className="w-3.5 h-3.5 shrink-0" /> SMS Reporting
+                  </button>
+                )}
+                {user.role !== 'vessel' && (
+                  <button 
+                    onClick={() => { setView('sms_order_list'); setIsSidebarOpen(false); }}
+                    className={getOrderListItemClass(view === 'sms_order_list')}
+                    title={
+                      smsSidebarStatus?.statusColor === 'red'
+                        ? `${smsSidebarStatus.urgentCount} order(s) deadline within 7 days or overdue!`
+                        : smsSidebarStatus?.statusColor === 'orange'
+                          ? `${smsSidebarStatus.uncheckedCount} uploaded file(s) waiting for management review.`
+                          : 'Order List'
+                    }
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <ListChecks className={cn("w-3.5 h-3.5 shrink-0", 
+                        smsSidebarStatus?.statusColor === 'red' ? "text-rose-600" :
+                        smsSidebarStatus?.statusColor === 'orange' ? "text-amber-600" : ""
+                      )} />
+                      <span className="truncate">Order List</span>
+                    </div>
+                    {smsSidebarStatus?.statusColor === 'red' && smsSidebarStatus.urgentCount > 0 && (
+                      <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-rose-600 text-white rounded-full leading-none shadow-2xs shrink-0 animate-pulse">
+                        {smsSidebarStatus.urgentCount}
+                      </span>
+                    )}
+                    {smsSidebarStatus?.statusColor === 'orange' && smsSidebarStatus.uncheckedCount > 0 && (
+                      <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-amber-500 text-white rounded-full leading-none shadow-2xs shrink-0">
+                        {smsSidebarStatus.uncheckedCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+                {user.role !== 'vessel' && (
+                  <button 
+                    onClick={() => { setView('sms_find_report'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'sms_find_report')}
+                  >
+                    <Search className="w-3.5 h-3.5 shrink-0" /> Find SMS Report
                   </button>
                 )}
                 <button 
@@ -1569,6 +1648,12 @@ const SidebarContent = ({
                   >
                     <Trash2 className="w-3.5 h-3.5 shrink-0" /> Recycle Bin
                   </button>
+                  <button 
+                    onClick={() => { setView('graphify'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'graphify')}
+                  >
+                    <Network className="w-3.5 h-3.5 shrink-0 text-blue-500" /> Graphify Architecture
+                  </button>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -1786,7 +1871,7 @@ const CAT7_CERTS = [
   "7.24 Mooring Management Plan"
 ];
 
-type ViewType = 'dashboard' | 'vessels' | 'vessel_details' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about' | 'sms' | 'sms_reporting' | 'sms_acknowledgement';
+type ViewType = 'dashboard' | 'vessels' | 'vessel_details' | 'routing' | 'admin' | 'slideshow' | 'departure' | 'arrival' | 'noon_to_noon' | 'fuel_consumption' | 'admin_vessel_list' | 'admin_cert_list' | 'admin_new_vessel' | 'admin_add_cert' | 'other_report' | 'admin_recycle_bin' | 'defects_5_2' | 'defects_1_6' | 'spare_requisition_ship' | 'spare_quotation_pic' | 'spare_logistic_pic' | 'spare_delivery_note_ship' | 'bunker_bdn' | 'bunker_fuel_analysis' | 'lube_oil_analysis' | 'lube_oil_requisition' | 'lube_oil_ldr' | 'store_requisition' | 'chemical_requisition' | 'store_chemical_requisition' | 'crew_list' | 'crew_compliance' | 'audit_list' | 'audit_internal' | 'audit_external' | 'audit_vir' | 'audit_navigational' | 'about' | 'sms' | 'sms_reporting' | 'sms_acknowledgement' | 'sms_order_list' | 'sms_find_report' | 'graphify';
 
 const getViewTitle = (v: ViewType): string => {
   switch (v) {
@@ -1822,6 +1907,9 @@ const getViewTitle = (v: ViewType): string => {
     case 'sms': return 'SMS Manuals & Procedures';
     case 'sms_reporting': return 'SMS Incidents & Reporting';
     case 'sms_acknowledgement': return 'Report Acknowledgement';
+    case 'sms_order_list': return 'SMS Order List';
+    case 'sms_find_report': return 'Find SMS Report';
+    case 'graphify': return 'Graphify Architecture';
     case 'admin': return 'Admin Settings';
     case 'admin_vessel_list': return 'Admin Vessel List';
     case 'admin_cert_list': return 'Admin Certificates';
@@ -1945,6 +2033,45 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isEditingRoute, setIsEditingRoute] = useState(false);
   const [pendingAckCount, setPendingAckCount] = useState<number>(0);
+  const [smsSidebarStatus, setSmsSidebarStatus] = useState<{
+    statusColor: 'red' | 'orange' | 'normal';
+    urgentCount: number;
+    uncheckedCount: number;
+    hasUrgentDeadline?: boolean;
+    hasUncheckedUploads?: boolean;
+  }>({
+    statusColor: 'normal',
+    urgentCount: 0,
+    uncheckedCount: 0
+  });
+
+  const fetchSmsSidebarStatus = useCallback(async () => {
+    if (!token || user?.role === 'vessel') return;
+    try {
+      const res = await fetch('/api/sms/orders/sidebar-status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setSmsSidebarStatus({
+          statusColor: data.statusColor || 'normal',
+          urgentCount: Number(data.urgentCount) || 0,
+          uncheckedCount: Number(data.uncheckedCount) || 0,
+          hasUrgentDeadline: Boolean(data.hasUrgentDeadline),
+          hasUncheckedUploads: Boolean(data.hasUncheckedUploads)
+        });
+      }
+    } catch (e) {
+      console.error('Error fetching SMS order sidebar status:', e);
+    }
+  }, [token, user?.role]);
+
+  useEffect(() => {
+    fetchSmsSidebarStatus();
+    const interval = setInterval(fetchSmsSidebarStatus, 25000);
+    return () => clearInterval(interval);
+  }, [fetchSmsSidebarStatus]);
 
   useEffect(() => {
     if (!token || user?.role === 'vessel') return;
@@ -1957,7 +2084,9 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           fetch('/api/sms/forms', { headers: { 'Authorization': `Bearer ${token}` } })
         ]);
 
-        if (!uploadsRes.ok || !formsRes.ok) return;
+        const uploadsType = uploadsRes.headers.get('content-type') || '';
+        const formsType = formsRes.headers.get('content-type') || '';
+        if (!uploadsRes.ok || !formsRes.ok || !uploadsType.includes('application/json') || !formsType.includes('application/json')) return;
 
         const uploadsData = await uploadsRes.json();
         const formsData = await formsRes.json();
@@ -3001,6 +3130,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
           onLogout={onLogout}
           setIsChangePasswordOpen={setIsChangePasswordOpen}
           pendingAckCount={pendingAckCount}
+          smsSidebarStatus={smsSidebarStatus}
         />
       </aside>
 
@@ -3066,6 +3196,7 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                   onLogout={onLogout}
                   setIsChangePasswordOpen={setIsChangePasswordOpen}
                   pendingAckCount={pendingAckCount}
+                  smsSidebarStatus={smsSidebarStatus}
                 />
               </div>
             </motion.aside>
@@ -5627,6 +5758,32 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
             </div>
           )}
 
+          {view === 'sms_order_list' && user.role !== 'vessel' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <SMSOrderListView 
+                vessels={vessels} 
+                currentUser={user} 
+                token={token} 
+                flags={flags} 
+                onStatusRefresh={fetchSmsSidebarStatus}
+              />
+            </div>
+          )}
+
+          {view === 'sms_find_report' && user.role !== 'vessel' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <SMSFindReportView 
+                vessels={vessels} 
+                currentUser={user} 
+                token={token} 
+                flags={flags}
+                onNavigateToOrder={(orderId) => {
+                  setView('sms_order_list');
+                }}
+              />
+            </div>
+          )}
+
           {view === 'crew_list' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
               <CrewListView vessels={vessels} token={token} currentUser={user} />
@@ -5729,6 +5886,15 @@ const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLog
                 vessels={vessels} 
                 currentUser={user} 
                 token={token}
+              />
+            </div>
+          )}
+
+          {view === 'graphify' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <GraphifyVisualizer 
+                token={token} 
+                currentUser={user} 
               />
             </div>
           )}
