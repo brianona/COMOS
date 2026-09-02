@@ -35,9 +35,14 @@ import {
   ShieldAlert,
   Laptop,
   AlertTriangle,
-  X
+  X,
+  Image as ImageIcon,
+  Upload,
+  RotateCcw,
+  Sparkles
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { Logo, LogoContainer, setCustomLogoUrl, getCustomLogoUrl } from './Logo';
 
 interface Vessel {
   id: number;
@@ -196,7 +201,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   setFlags
 }) => {
   // Active tab inside Admin Settings (when subView === 'admin')
-  const [activeTab, setActiveTab] = useState<'users' | 'flags' | 'storage' | 'notifications' | 'devices' | 'logs'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'flags' | 'branding' | 'storage' | 'notifications' | 'devices' | 'logs'>('users');
 
   // ==========================================
   // 1. Users State & Management
@@ -545,7 +550,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   useEffect(() => {
     if (subView === 'admin') {
-      if (activeTab === 'storage' || activeTab === 'notifications') {
+      if (activeTab === 'storage' || activeTab === 'notifications' || activeTab === 'branding') {
         fetchSettings();
       }
       if (activeTab === 'storage') {
@@ -553,6 +558,135 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }
     }
   }, [subView, activeTab, fetchSettings, fetchStorageStatus]);
+
+  // ==========================================
+  // Branding & System Logo Management
+  // ==========================================
+  const [logoPreview, setLogoPreview] = useState<string | null>(() => getCustomLogoUrl());
+  const [logoInputUrl, setLogoInputUrl] = useState<string>('');
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [isSavingLogo, setIsSavingLogo] = useState(false);
+  const [isResettingLogo, setIsResettingLogo] = useState(false);
+  const [isDraggingLogo, setIsDraggingLogo] = useState(false);
+
+  // Sync logo preview when settingsData changes
+  useEffect(() => {
+    if (settingsData.APP_LOGO) {
+      setLogoPreview(settingsData.APP_LOGO);
+      setCustomLogoUrl(settingsData.APP_LOGO);
+    }
+  }, [settingsData.APP_LOGO]);
+
+  const handleLogoFileSelect = (file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      notify('error', 'Please select a valid image file (PNG, JPG, SVG, WebP, etc.)');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      notify('error', 'Logo image file size must be under 5MB');
+      return;
+    }
+    setLogoFile(file);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result as string;
+      setLogoPreview(result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleApplyLogoUrl = () => {
+    if (!logoInputUrl.trim()) {
+      notify('error', 'Please enter a valid image URL');
+      return;
+    }
+    setLogoPreview(logoInputUrl.trim());
+    setLogoFile(null);
+    notify('info', 'Preview updated. Click "Save & Apply Changes" to persist.');
+  };
+
+  const handleSaveLogo = async () => {
+    setIsSavingLogo(true);
+    try {
+      let payloadValue = logoPreview || logoInputUrl || '';
+      let res: Response;
+      
+      if (logoFile) {
+        const formData = new FormData();
+        formData.append('logo', logoFile);
+        res = await fetch('/api/admin/logo', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`
+          },
+          body: formData
+        });
+      } else if (payloadValue && payloadValue.trim()) {
+        res = await fetch('/api/admin/logo', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ logo: payloadValue.trim() })
+        });
+      } else {
+        notify('error', 'Please upload a logo image file or provide an image URL');
+        setIsSavingLogo(false);
+        return;
+      }
+
+      if (res.ok) {
+        const data = await res.json();
+        const savedLogo = data.logo || payloadValue;
+        setCustomLogoUrl(savedLogo);
+        setSettingsData(prev => ({ ...prev, APP_LOGO: savedLogo }));
+        setLogoPreview(savedLogo);
+        setLogoFile(null);
+        notify('success', 'System branding logo updated successfully!');
+      } else {
+        const err = await res.json();
+        notify('error', err.error || 'Failed to update system logo');
+      }
+    } catch (err: any) {
+      notify('error', err.message || 'Error saving system logo');
+    } finally {
+      setIsSavingLogo(false);
+    }
+  };
+
+  const handleResetLogo = async () => {
+    if (!window.confirm('Are you sure you want to reset the system logo to the default COMOS logo?')) return;
+    setIsResettingLogo(true);
+    try {
+      const res = await fetch('/api/admin/logo', {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        setCustomLogoUrl(null);
+        setSettingsData(prev => {
+          const next = { ...prev };
+          delete next.APP_LOGO;
+          return next;
+        });
+        setLogoPreview(null);
+        setLogoInputUrl('');
+        setLogoFile(null);
+        notify('success', 'System logo reset to default COMOS logo');
+      } else {
+        const err = await res.json();
+        notify('error', err.error || 'Failed to reset logo');
+      }
+    } catch (err: any) {
+      notify('error', err.message || 'Error resetting logo');
+    } finally {
+      setIsResettingLogo(false);
+    }
+  };
 
   const handleSaveSystemSettings = async () => {
     setIsSavingSettings(true);
@@ -1372,6 +1506,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 onClick={() => {
                   if (activeTab === 'users') fetchUsers();
                   if (activeTab === 'flags') fetchFlags();
+                  if (activeTab === 'branding') fetchSettings();
                   if (activeTab === 'storage') { fetchSettings(); fetchStorageStatus(); }
                   if (activeTab === 'notifications') fetchSettings();
                   if (activeTab === 'devices') fetchDevices();
@@ -1412,6 +1547,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             >
               <Flag className="w-3.5 h-3.5" />
               <span>Flag States ({flagList.length || flagOptions.length || '•'})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('branding')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === 'branding'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200/80'
+              }`}
+            >
+              <ImageIcon className="w-3.5 h-3.5" />
+              <span>System Logo & Branding</span>
             </button>
 
             <button
@@ -1750,6 +1898,294 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* TAB: SYSTEM LOGO & BRANDING */}
+          {activeTab === 'branding' && (
+            <div className="space-y-6">
+              {/* Branding Overview Card */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+                  <div className="flex items-start gap-3">
+                    <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl border border-blue-100 shrink-0">
+                      <ImageIcon className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                        System Logo & Corporate Branding
+                        <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                          {settingsData.APP_LOGO ? 'Custom Logo Active' : 'Default COMOS Logo Active'}
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Customize the primary emblem and corporate branding across all system touchpoints, including the sidebar navigation, login portal, vessel authorization, and document headers.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {settingsData.APP_LOGO && (
+                      <button
+                        type="button"
+                        onClick={handleResetLogo}
+                        disabled={isResettingLogo || isSavingLogo}
+                        className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                        title="Revert to default COMOS maritime logo"
+                      >
+                        {isResettingLogo ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                        <span>Reset to Default</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-6">
+                  {/* Left Column: Upload & Configuration Controls */}
+                  <div className="lg:col-span-6 space-y-5">
+                    {/* File Upload Dropzone */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-700">
+                        Upload Logo File
+                      </label>
+                      <div
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          setIsDraggingLogo(true);
+                        }}
+                        onDragLeave={() => setIsDraggingLogo(false)}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          setIsDraggingLogo(false);
+                          if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                            handleLogoFileSelect(e.dataTransfer.files[0]);
+                          }
+                        }}
+                        className={`border-2 border-dashed rounded-2xl p-6 text-center transition-all cursor-pointer ${
+                          isDraggingLogo 
+                            ? 'border-blue-500 bg-blue-50/70 scale-[0.99]' 
+                            : 'border-slate-300 hover:border-blue-400 bg-slate-50/60 hover:bg-slate-50'
+                        }`}
+                        onClick={() => {
+                          const input = document.getElementById('admin-logo-file-input') as HTMLInputElement;
+                          if (input) input.click();
+                        }}
+                      >
+                        <input
+                          id="admin-logo-file-input"
+                          type="file"
+                          accept="image/png,image/jpeg,image/svg+xml,image/webp,image/gif"
+                          className="hidden"
+                          onChange={(e) => {
+                            if (e.target.files && e.target.files[0]) {
+                              handleLogoFileSelect(e.target.files[0]);
+                            }
+                          }}
+                        />
+
+                        <div className="w-12 h-12 rounded-full bg-blue-100/70 text-blue-600 flex items-center justify-center mx-auto mb-3">
+                          <Upload className="w-6 h-6" />
+                        </div>
+
+                        <p className="text-xs font-bold text-slate-800">
+                          Click to browse or drag and drop image file
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          PNG, SVG, JPG, WebP, or GIF (Max file size: 5 MB)
+                        </p>
+
+                        {logoFile && (
+                          <div className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 bg-blue-100 text-blue-800 rounded-lg text-xs font-semibold">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                            <span className="truncate max-w-[200px]">{logoFile.name}</span>
+                            <span className="text-[10px] text-blue-600 font-mono">({Math.round(logoFile.size / 1024)} KB)</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Divider with "OR" */}
+                    <div className="relative flex py-1 items-center">
+                      <div className="flex-grow border-t border-slate-200"></div>
+                      <span className="flex-shrink mx-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Or specify image URL</span>
+                      <div className="flex-grow border-t border-slate-200"></div>
+                    </div>
+
+                    {/* Image URL Input */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold text-slate-700">
+                        Direct Image URL
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={logoInputUrl}
+                          onChange={(e) => setLogoInputUrl(e.target.value)}
+                          placeholder="https://example.com/branding/company-logo.png"
+                          className="flex-1 px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleApplyLogoUrl}
+                          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer transition-colors shrink-0"
+                        >
+                          Load URL
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Guidelines and best practices */}
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs space-y-2">
+                      <div className="font-bold text-slate-800 flex items-center gap-1.5 text-[11px] uppercase tracking-wider">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                        Recommended Specifications
+                      </div>
+                      <ul className="list-disc list-inside space-y-1 text-slate-600 text-[11px]">
+                        <li><strong>Format:</strong> Transparent PNG or vector SVG delivers optimal contrast on dark navy and light backgrounds.</li>
+                        <li><strong>Dimensions:</strong> Square 512×512px or horizontal ratio up to 600×200px.</li>
+                        <li><strong>Instant Sync:</strong> Once saved, changes propagate in real-time to all connected users and vessels.</li>
+                      </ul>
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={handleSaveLogo}
+                        disabled={isSavingLogo || (!logoFile && !logoPreview && !logoInputUrl)}
+                        className="flex-1 py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isSavingLogo ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            <span>Saving System Logo...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-4 h-4" />
+                            <span>Save & Apply System Logo</span>
+                          </>
+                        )}
+                      </button>
+
+                      {(logoPreview || logoFile || logoInputUrl) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLogoPreview(settingsData.APP_LOGO || null);
+                            setLogoFile(null);
+                            setLogoInputUrl('');
+                          }}
+                          className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right Column: Live Multi-Environment Preview Studio */}
+                  <div className="lg:col-span-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <Eye className="w-3.5 h-3.5 text-blue-600" />
+                        Live Application Previews
+                      </h4>
+                      {logoPreview && logoPreview !== (settingsData.APP_LOGO || null) && (
+                        <span className="px-2 py-0.5 bg-amber-100 text-amber-800 border border-amber-200 rounded-full text-[10px] font-bold animate-pulse">
+                          Unsaved Preview
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Preview 1: Sidebar Navigation Header (Dark Maritime Slate) */}
+                    <div className="rounded-2xl p-4 bg-gradient-to-b from-slate-900 to-slate-950 text-white border border-slate-800 shadow-md">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2.5 flex items-center justify-between">
+                        <span>Sidebar Navigation (Dark Mode)</span>
+                        <span className="text-blue-400 text-[10px]">Actual UI context</span>
+                      </div>
+                      <div className="flex items-center gap-3 bg-slate-900/90 p-3 rounded-xl border border-slate-800/80">
+                        <div className="w-12 h-12 p-1.5 bg-white rounded-xl shadow-xs border border-blue-50 flex items-center justify-center overflow-hidden shrink-0">
+                          {logoPreview ? (
+                            <img
+                              src={logoPreview}
+                              alt="Logo Preview"
+                              className="w-full h-full object-contain max-h-full max-w-full"
+                              referrerPolicy="no-referrer"
+                              onError={(e) => {
+                                (e.target as HTMLElement).style.display = 'none';
+                              }}
+                            />
+                          ) : (
+                            <Logo className="w-full h-full" />
+                          )}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-sm font-black tracking-tight text-white">COMOS</span>
+                            <span className="px-1.5 py-0.5 text-[9px] font-extrabold bg-blue-500/30 text-blue-300 rounded border border-blue-400/30">v2.4</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 truncate max-w-[200px]">Clean Ocean Maritime Operations</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Preview 2: Top Bar / Light Mode Header */}
+                    <div className="rounded-2xl p-4 bg-slate-100/80 border border-slate-200">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2.5 flex items-center justify-between">
+                        <span>Top Navigation Bar (Light Mode)</span>
+                        <span className="text-slate-500 text-[10px]">Compact (xs/sm)</span>
+                      </div>
+                      <div className="flex items-center justify-between bg-white p-3 rounded-xl border border-slate-200 shadow-2xs">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 p-1 bg-white rounded-lg border border-slate-200 flex items-center justify-center overflow-hidden shrink-0">
+                            {logoPreview ? (
+                              <img
+                                src={logoPreview}
+                                alt="Logo Preview"
+                                className="w-full h-full object-contain max-h-full max-w-full"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <Logo className="w-full h-full" />
+                            )}
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold text-slate-800">COMOS Fleet Portal</p>
+                            <p className="text-[10px] text-slate-400">Master Operations Control</p>
+                          </div>
+                        </div>
+                        <div className="px-2 py-1 bg-slate-100 rounded-md text-[10px] font-mono text-slate-600">
+                          Active Vessel: M/V Ocean Pearl
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Preview 3: Authentication / Modal Splash View */}
+                    <div className="rounded-2xl p-5 bg-gradient-to-br from-blue-900 via-slate-900 to-indigo-950 text-white border border-slate-800 text-center">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-blue-300/80 mb-3">
+                        Login & Device Authorization Portal
+                      </div>
+                      <div className="inline-block p-2 bg-white rounded-2xl shadow-lg border border-blue-100 mb-2">
+                        <div className="w-16 h-16 flex items-center justify-center overflow-hidden">
+                          {logoPreview ? (
+                            <img
+                              src={logoPreview}
+                              alt="Logo Preview"
+                              className="w-full h-full object-contain max-h-full max-w-full"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <Logo className="w-full h-full" />
+                          )}
+                        </div>
+                      </div>
+                      <h5 className="text-xs font-bold text-white tracking-wide mt-1">CLEAN OCEAN MARITIME OPERATIONS SYSTEM</h5>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Secure Fleet Management & SMS Reporting</p>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           )}

@@ -1999,7 +1999,7 @@ async function startServer() {
       "default-src 'self'; " +
       "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; " +
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; " +
-      "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://unpkg.com; " +
+      "img-src 'self' data: blob: https: http: https://*.tile.openstreetmap.org https://unpkg.com; " +
       "font-src 'self' https://fonts.gstatic.com; " +
       "connect-src 'self' ws: wss: https:; " +
       "worker-src 'self' blob: https://unpkg.com; " +
@@ -2708,6 +2708,61 @@ async function startServer() {
       await logAudit((req as any).user.id, (req as any).user.username, 'UPDATE_SETTINGS', `Updated system settings`);
       res.json({ success: true });
     } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Admin Logo Management
+  app.post('/api/admin/logo', authenticate, isAdmin, upload.single('logo'), async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      let logoValue = '';
+      if (req.file) {
+        const mime = req.file.mimetype || 'image/png';
+        const base64 = req.file.buffer.toString('base64');
+        logoValue = `data:${mime};base64,${base64}`;
+      } else if (req.body?.logo) {
+        logoValue = String(req.body.logo).trim();
+      }
+
+      if (!logoValue) {
+        return res.status(400).json({ error: 'No logo file or image URL provided' });
+      }
+
+      await (pool as any).query(
+        'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+        ['APP_LOGO', logoValue, logoValue]
+      );
+
+      await logAudit((req as any).user.id, (req as any).user.username, 'UPDATE_LOGO', `Updated system branding logo`);
+      
+      try {
+        globalRealtimeEngine?.notifyChange?.({ domain: 'settings', action: 'update', table: 'settings' });
+      } catch (e) {}
+
+      res.json({ success: true, logo: logoValue });
+    } catch (e: any) {
+      console.error('Error saving system logo:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/admin/logo', authenticate, isAdmin, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      await (pool as any).query(
+        'DELETE FROM settings WHERE setting_key = "APP_LOGO"'
+      );
+
+      await logAudit((req as any).user.id, (req as any).user.username, 'RESET_LOGO', `Reset system logo to default COMOS logo`);
+      
+      try {
+        globalRealtimeEngine?.notifyChange?.({ domain: 'settings', action: 'update', table: 'settings' });
+      } catch (e) {}
+
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('Error resetting system logo:', e);
       res.status(500).json({ error: e.message });
     }
   });
