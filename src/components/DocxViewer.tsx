@@ -24,6 +24,8 @@ interface DocxViewerProps {
   blob?: Blob;
   arrayBuffer?: ArrayBuffer;
   title?: string;
+  fileName?: string;
+  defaultEngine?: 'mammoth' | 'layout';
   onDownload?: () => void;
 }
 
@@ -32,18 +34,22 @@ export const DocxViewer: React.FC<DocxViewerProps> = ({
   blob,
   arrayBuffer,
   title,
+  fileName,
+  defaultEngine = 'layout',
   onDownload
 }) => {
+  const displayTitle = title || fileName || 'Word Document (.docx)';
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
+  const [layoutRendering, setLayoutRendering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [zoom, setZoom] = useState(100);
   const [copied, setCopied] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [matchCount, setMatchCount] = useState<number | null>(null);
-  const [viewEngine, setViewEngine] = useState<'mammoth' | 'layout'>('mammoth');
+  const [viewEngine, setViewEngine] = useState<'mammoth' | 'layout'>(defaultEngine);
   const [mammothHtml, setMammothHtml] = useState<string>('');
   const [docBuffer, setDocBuffer] = useState<ArrayBuffer | null>(null);
 
@@ -150,9 +156,12 @@ export const DocxViewer: React.FC<DocxViewerProps> = ({
 
   // Render layout mode if selected
   useEffect(() => {
-    if (viewEngine !== 'layout' || !docBuffer || !containerRef.current) return;
+    if (viewEngine !== 'layout' || !docBuffer || !containerRef.current || loading) return;
 
+    let isCurrent = true;
+    setLayoutRendering(true);
     containerRef.current.innerHTML = '';
+
     renderAsync(docBuffer, containerRef.current, undefined, {
       className: 'docx-rendered-document',
       inWrapper: false,
@@ -166,10 +175,23 @@ export const DocxViewer: React.FC<DocxViewerProps> = ({
       renderEndnotes: true,
       experimental: true,
       trimXmlDeclaration: true
-    }).catch(err => {
-      console.error('Layout render error:', err);
-    });
-  }, [viewEngine, docBuffer]);
+    })
+      .then(() => {
+        if (isCurrent) setLayoutRendering(false);
+      })
+      .catch(err => {
+        console.error('Layout render error:', err);
+        if (isCurrent) {
+          setLayoutRendering(false);
+          // If layout render fails, fallback to mammoth
+          setViewEngine('mammoth');
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [viewEngine, docBuffer, loading]);
 
   // Handle Search in rendered DOM
   useEffect(() => {
@@ -283,12 +305,21 @@ export const DocxViewer: React.FC<DocxViewerProps> = ({
           <div className="w-6 h-6 rounded-md bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center shrink-0">
             <FileText className="w-3.5 h-3.5" />
           </div>
-          <span className="font-bold text-slate-200 truncate max-w-xs" title={title}>
-            {title || 'Word Document (.docx)'}
+          <span className="font-bold text-slate-200 truncate max-w-xs" title={displayTitle}>
+            {displayTitle}
           </span>
           <span className="px-2 py-0.5 bg-blue-500/15 text-blue-300 rounded text-[10px] font-bold tracking-wider uppercase border border-blue-500/20 hidden sm:inline flex items-center gap-1">
-            <Sparkles className="w-3 h-3 text-blue-400" />
-            Mammoth Engine
+            {viewEngine === 'layout' ? (
+              <>
+                <Layout className="w-3 h-3 text-blue-400" />
+                Layout Engine
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-3 h-3 text-blue-400" />
+                Mammoth Engine
+              </>
+            )}
           </span>
         </div>
 
@@ -326,25 +357,25 @@ export const DocxViewer: React.FC<DocxViewerProps> = ({
           <div className="hidden md:flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700">
             <button
               type="button"
-              onClick={() => setViewEngine('mammoth')}
-              className={`px-2 py-1 text-[11px] font-bold rounded flex items-center gap-1 transition-colors ${
-                viewEngine === 'mammoth' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
-              }`}
-              title="Mammoth HTML View"
-            >
-              <Sparkles className="w-3 h-3" />
-              <span>Mammoth</span>
-            </button>
-            <button
-              type="button"
               onClick={() => setViewEngine('layout')}
-              className={`px-2 py-1 text-[11px] font-bold rounded flex items-center gap-1 transition-colors ${
+              className={`px-2.5 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-colors ${
                 viewEngine === 'layout' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
               }`}
-              title="Paged Layout View"
+              title="Paged Layout View (Default)"
             >
               <Layout className="w-3 h-3" />
               <span>Layout</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewEngine('mammoth')}
+              className={`px-2.5 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-colors ${
+                viewEngine === 'mammoth' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="Mammoth Fast HTML View"
+            >
+              <Sparkles className="w-3 h-3" />
+              <span>Mammoth</span>
             </button>
           </div>
 
@@ -423,7 +454,9 @@ export const DocxViewer: React.FC<DocxViewerProps> = ({
         {loading ? (
           <div className="flex flex-col items-center justify-center py-20 gap-3">
             <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
-            <p className="text-sm font-medium text-slate-300">Rendering Word document with Mammoth...</p>
+            <p className="text-sm font-medium text-slate-300">
+              {viewEngine === 'layout' ? 'Rendering Word document layout...' : 'Rendering Word document with Mammoth...'}
+            </p>
           </div>
         ) : error ? (
           <div className="max-w-md w-full bg-slate-900 border border-rose-500/30 rounded-2xl p-6 text-center space-y-4 shadow-xl">

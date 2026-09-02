@@ -18,6 +18,7 @@ import {
   MessageSquare,
   Lock
 } from 'lucide-react';
+import { useRealtimeAutoRefresh } from '../services/realtimeSync';
 
 interface RequisitionItem {
   id: string;
@@ -437,6 +438,11 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
   useEffect(() => {
     fetchRequisitions();
   }, [token, storageKey]);
+
+  // Realtime updates for spare requisitions
+  useRealtimeAutoRefresh(['spare_requisitions'], () => {
+    fetchRequisitions();
+  }, 300, [token, storageKey]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterVessel, setFilterVessel] = useState(() => isVesselUser ? String(currentUser.vessel_id) : 'All');

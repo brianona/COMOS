@@ -48,9 +48,14 @@ import {
   Square,
   MoveVertical,
   Clock,
+  RotateCcw,
+  FolderArchive,
+  CloudDownload,
+  Package,
   File as FileIcon
 } from 'lucide-react';
 import { SMSFormModal } from './SMSFormModal';
+import { useRealtimeAutoRefresh } from '../services/realtimeSync';
 
 // Main SMS Category names
 export const MAIN_CATEGORIES = [
@@ -195,9 +200,10 @@ interface SMSViewProps {
   vessels: any[];
   currentUser: any;
   token?: string;
-  mode?: 'management' | 'reporting' | 'acknowledgement';
+  mode?: 'overview' | 'management' | 'reporting' | 'acknowledgement';
   flags?: any[];
   onPendingAckCountChange?: (count: number) => void;
+  onNavigateMode?: (mode: 'overview' | 'management' | 'reporting' | 'acknowledgement') => void;
 }
 
 // Initial seed data for forms under categories
@@ -284,7 +290,7 @@ const INITIAL_UPLOADS: VesselUpload[] = [
   { id: 'up_6', vesselId: 'v13', vesselName: 'LIGNUM NETWORK', month: 'June', year: '2026', fileName: 'LignumNet_June2026_SafetyForms.zip', uploadedAt: 'July 4, 2026 at 10:28 AM', fileSize: '22.0 MB', category: '1. Monthly' },
 ];
 
-export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode = 'management', flags = [], onPendingAckCountChange }) => {
+export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode = 'management', flags = [], onPendingAckCountChange, onNavigateMode }) => {
   // Use either external vessels list or standard seed list
   const vesselsList = useMemo(() => {
     return externalVessels && externalVessels.length > 0 
@@ -354,10 +360,13 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [ackFilterSearch, setAckFilterSearch] = useState<string>('');
   const [uploadingAckId, setUploadingAckId] = useState<string | null>(null);
 
+  // SMS Management active tab
+  const [managementTab, setManagementTab] = useState<'forms' | 'submitted_files'>('forms');
+
   // Accordion Expand/Collapse States
   const [isAccordion1Open, setIsAccordion1Open] = useState(false);
   const [isAccordion2Open, setIsAccordion2Open] = useState(false);
-  const [isAccordion3Open, setIsAccordion3Open] = useState(false);
+  const [isAccordion3Open, setIsAccordion3Open] = useState(true);
   const [isAccordion4Open, setIsAccordion4Open] = useState(true);
 
   // Form Modals states
@@ -389,6 +398,14 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     fileName: string;
     progress: number;
   } | null>(null);
+
+  // SMS Overview specific state variables (Read-only catalog mode)
+  const [overviewVesselId, setOverviewVesselId] = useState<string>('all');
+  const [overviewSearchQuery, setOverviewSearchQuery] = useState<string>('');
+  const [overviewTypeFilter, setOverviewTypeFilter] = useState<'all' | 'Checklist' | 'Form'>('all');
+  const [isDownloadingAllTemplates, setIsDownloadingAllTemplates] = useState<boolean>(false);
+  const [isDownloadingAllSectionsTemplates, setIsDownloadingAllSectionsTemplates] = useState<boolean>(false);
+  const [isDownloadingAllFiles, setIsDownloadingAllFiles] = useState<boolean>(false);
 
   // SMS Reporting specific state variables
   const [reportingVesselId, setReportingVesselId] = useState<string>('');
@@ -878,6 +895,18 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
     fetchSubmissionPeriods();
     fetchUploadsList();
   }, [token]);
+
+  // Realtime updates via long-polling
+  useRealtimeAutoRefresh(
+    ['sms_forms', 'sms_periods', 'sms_uploads', 'sms_orders'],
+    () => {
+      fetchSMSForms();
+      fetchSubmissionPeriods();
+      fetchUploadsList();
+    },
+    350,
+    [token]
+  );
 
   const [hasLoadedFilter, setHasLoadedFilter] = useState(false);
 
@@ -2937,23 +2966,28 @@ startxref
             </div>
 
             {/* Download All Row */}
-            <div className="flex justify-between items-center pt-2 border-t border-slate-100">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-2 border-t border-slate-100">
               <div className="text-xs text-slate-400 font-bold">
                 Active Category: <span className="text-blue-600 font-extrabold">{selectedCategory}</span>
+                <span className="text-slate-300 mx-2">•</span>
+                <span>Total Fleet Uploads: <strong className="text-slate-700">{uploads.length}</strong></span>
               </div>
-              <button
-                type="button"
-                onClick={handleDownloadAllFiltered}
-                disabled={filteredUploads.length === 0}
-                className={`px-4 py-1.5 border rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  filteredUploads.length > 0 
-                    ? 'border-sky-200 bg-white hover:bg-sky-50 text-sky-600' 
-                    : 'border-slate-100 bg-slate-50 text-slate-400 cursor-not-allowed opacity-60'
-                }`}
-              >
-                <Download className="w-3.5 h-3.5" />
-                Download All
-              </button>
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={handleDownloadAllFiltered}
+                  disabled={filteredUploads.length === 0}
+                  className={`px-3 py-1.5 border rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                    filteredUploads.length > 0 
+                      ? 'border-sky-200 bg-white hover:bg-sky-50 text-sky-600' 
+                      : 'border-slate-100 bg-slate-50 text-slate-400 cursor-not-allowed opacity-60'
+                  }`}
+                  title="Download loaded files for this filter"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download Filtered ({filteredUploads.length})
+                </button>
+              </div>
             </div>
 
             {/* Filtered Files Results Table/Area */}
@@ -3479,6 +3513,809 @@ startxref
     }
   }, [pendingAckCount, onPendingAckCountChange]);
 
+  // Helper to extract or generate standard template file entries for any form
+  const getFormTemplateFileEntries = async (form: SMSForm): Promise<Array<{ filename: string; data: Blob | string; isBase64?: boolean }>> => {
+    const entries: Array<{ filename: string; data: Blob | string; isBase64?: boolean }> = [];
+    
+    // 1. Multiple template files attached to the form
+    if (form.template_files && Array.isArray(form.template_files) && form.template_files.length > 0) {
+      for (const tf of form.template_files) {
+        const rawFileName = tf.name || `${form.formCode}_Template.docx`;
+        if (tf.data && tf.data.startsWith('data:')) {
+          const base64Data = tf.data.split(',')[1];
+          entries.push({ filename: rawFileName, data: base64Data, isBase64: true });
+        } else if (token) {
+          try {
+            const res = await fetch(`/api/sms/forms/${form.id}/download-template?filename=${encodeURIComponent(tf.name)}`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+              const blob = await res.blob();
+              entries.push({ filename: rawFileName, data: blob });
+            }
+          } catch (e) {
+            console.error(`Failed to fetch template ${tf.name} for ${form.formCode}:`, e);
+          }
+        }
+      }
+    }
+    
+    // 2. Single template file attached
+    if (entries.length === 0 && form.template_file_name) {
+      const rawFileName = form.template_file_name;
+      if (form.template_file_data && form.template_file_data.startsWith('data:')) {
+        const base64Data = form.template_file_data.split(',')[1];
+        entries.push({ filename: rawFileName, data: base64Data, isBase64: true });
+      } else if (token) {
+        try {
+          const res = await fetch(`/api/sms/forms/${form.id}/download-template`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const blob = await res.blob();
+            entries.push({ filename: rawFileName, data: blob });
+          }
+        } catch (e) {
+          console.error(`Failed to fetch template for ${form.formCode}:`, e);
+        }
+      }
+    }
+    
+    // 3. Fallback: Dynamically generate standardized .docx blank form template if no uploaded file exists
+    if (entries.length === 0) {
+      try {
+        const docxBlob = await generateDocxBlob(form, 'All Vessels');
+        const cleanDesc = (form.description || 'Template').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 45);
+        entries.push({ filename: `${form.formCode}_${cleanDesc}.docx`, data: docxBlob });
+      } catch (e) {
+        console.error(`Failed to generate standard template for ${form.formCode}:`, e);
+      }
+    }
+    
+    return entries;
+  };
+
+  // Download all available templates in the selected category as a single ZIP archive
+  const handleDownloadAllCategoryTemplates = async () => {
+    const catForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
+
+    if (catForms.length === 0) {
+      triggerToast(`No forms found in category "${selectedCategory}".`, 'info');
+      return;
+    }
+
+    setIsDownloadingAllTemplates(true);
+    triggerToast(`Packaging templates for "${selectedCategory}"...`, 'info');
+
+    // 1. Try blazing fast server-side ZIP assembly
+    if (token) {
+      try {
+        const res = await fetch(`/api/sms/templates/download-all-zip?category=${encodeURIComponent(selectedCategory)}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          const cleanCatName = selectedCategory.replace(/[^a-zA-Z0-9_-]/g, '_');
+          a.download = `SMS_Templates_${cleanCatName}.zip`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          triggerToast(`Templates for "${selectedCategory}" downloaded successfully!`, 'success');
+          setIsDownloadingAllTemplates(false);
+          return;
+        }
+      } catch (e) {
+        console.warn('Server-side category template zip failed, falling back to client-side packaging:', e);
+      }
+    }
+
+    // 2. Client-side fallback with parallel chunking
+    try {
+      const zip = new JSZip();
+      let addedCount = 0;
+      const usedNames = new Set<string>();
+
+      const BATCH_SIZE = 10;
+      for (let i = 0; i < catForms.length; i += BATCH_SIZE) {
+        const batch = catForms.slice(i, i + BATCH_SIZE);
+        const entriesArray = await Promise.all(batch.map(f => getFormTemplateFileEntries(f)));
+        for (const entries of entriesArray) {
+          for (const entry of entries) {
+            let nameCandidate = entry.filename.replace(/[\/\\?%*:|"<>]/g, '_');
+            if (usedNames.has(nameCandidate)) {
+              const lastDot = nameCandidate.lastIndexOf('.');
+              const base = lastDot !== -1 ? nameCandidate.substring(0, lastDot) : nameCandidate;
+              const ext = lastDot !== -1 ? nameCandidate.substring(lastDot) : '';
+              let counter = 1;
+              while (usedNames.has(`${base}_${counter}${ext}`)) {
+                counter++;
+              }
+              nameCandidate = `${base}_${counter}${ext}`;
+            }
+            usedNames.add(nameCandidate);
+
+            if (entry.isBase64) {
+              zip.file(nameCandidate, entry.data as string, { base64: true });
+            } else {
+              zip.file(nameCandidate, entry.data as Blob);
+            }
+            addedCount++;
+          }
+        }
+      }
+
+      if (addedCount === 0) {
+        triggerToast('Could not retrieve or generate template files for packaging.', 'error');
+        return;
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 3 } });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      const cleanCatName = selectedCategory.replace(/[^a-zA-Z0-9_-]/g, '_');
+      a.download = `SMS_Templates_${cleanCatName}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      triggerToast(`Downloaded ${addedCount} template(s) for ${selectedCategory}!`, 'success');
+    } catch (err: any) {
+      console.error('Failed to create template zip:', err);
+      triggerToast(`Failed to generate template ZIP archive: ${err.message || err}`, 'error');
+    } finally {
+      setIsDownloadingAllTemplates(false);
+    }
+  };
+
+  // Download all SMS templates across all 9 sections in a unified structured ZIP
+  const handleDownloadAllSectionsTemplates = async () => {
+    if (forms.length === 0) {
+      triggerToast('No SMS forms loaded to download templates.', 'info');
+      return;
+    }
+
+    setIsDownloadingAllSectionsTemplates(true);
+    triggerToast('Generating Master Catalog ZIP of all SMS templates...', 'info');
+
+    // 1. Try blazing fast server-side ZIP assembly
+    if (token) {
+      try {
+        const res = await fetch('/api/sms/templates/download-all-zip', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `SMS_All_Templates_Master_Catalog_${new Date().getFullYear()}.zip`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          triggerToast('Master Catalog of all SMS templates downloaded successfully!', 'success');
+          setIsDownloadingAllSectionsTemplates(false);
+          return;
+        }
+      } catch (e) {
+        console.warn('Server-side master template zip failed, falling back to client-side packaging:', e);
+      }
+    }
+
+    // 2. Client-side fallback with parallel chunking
+    try {
+      const zip = new JSZip();
+      let totalCount = 0;
+
+      for (const catName of MAIN_CATEGORIES) {
+        const catForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(catName));
+        if (catForms.length === 0) continue;
+
+        const safeFolderName = catName.replace(/[\/\\?%*:|"<>]/g, '_');
+        const catFolder = zip.folder(safeFolderName) || zip;
+        const usedNames = new Set<string>();
+
+        const BATCH_SIZE = 10;
+        for (let i = 0; i < catForms.length; i += BATCH_SIZE) {
+          const batch = catForms.slice(i, i + BATCH_SIZE);
+          const entriesArray = await Promise.all(batch.map(f => getFormTemplateFileEntries(f)));
+          for (const entries of entriesArray) {
+            for (const entry of entries) {
+              let nameCandidate = entry.filename.replace(/[\/\\?%*:|"<>]/g, '_');
+              if (usedNames.has(nameCandidate)) {
+                const lastDot = nameCandidate.lastIndexOf('.');
+                const base = lastDot !== -1 ? nameCandidate.substring(0, lastDot) : nameCandidate;
+                const ext = lastDot !== -1 ? nameCandidate.substring(lastDot) : '';
+                let counter = 1;
+                while (usedNames.has(`${base}_${counter}${ext}`)) {
+                  counter++;
+                }
+                nameCandidate = `${base}_${counter}${ext}`;
+              }
+              usedNames.add(nameCandidate);
+
+              if (entry.isBase64) {
+                catFolder.file(nameCandidate, entry.data as string, { base64: true });
+              } else {
+                catFolder.file(nameCandidate, entry.data as Blob);
+              }
+              totalCount++;
+            }
+          }
+        }
+      }
+
+      if (totalCount === 0) {
+        triggerToast('Could not assemble templates for packaging.', 'error');
+        return;
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 3 } });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SMS_All_Templates_Master_Catalog_${new Date().getFullYear()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      triggerToast(`Successfully downloaded ${totalCount} templates across all sections!`, 'success');
+    } catch (err: any) {
+      console.error('Failed to create master templates zip:', err);
+      triggerToast(`Failed to generate master templates ZIP: ${err.message || err}`, 'error');
+    } finally {
+      setIsDownloadingAllSectionsTemplates(false);
+    }
+  };
+
+  // Download all uploaded SMS submissions / files across all sections
+  const handleDownloadAllSMSFilesAllSections = async () => {
+    if (uploads.length === 0) {
+      triggerToast('No uploaded SMS files or submissions available to download.', 'info');
+      return;
+    }
+
+    setIsDownloadingAllFiles(true);
+    triggerToast(`Packaging all ${uploads.length} uploaded files across all sections...`, 'info');
+
+    // 1. Try blazing fast server-side ZIP assembly
+    if (token) {
+      try {
+        const res = await fetch('/api/sms/uploads/download-all-zip', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `SMS_All_Submissions_All_Sections_${new Date().getFullYear()}.zip`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          triggerToast('All SMS submissions packaged and downloaded successfully!', 'success');
+          setIsDownloadingAllFiles(false);
+          return;
+        }
+      } catch (e) {
+        console.warn('Server-side bulk uploads zip failed, falling back to client-side packaging:', e);
+      }
+    }
+
+    // 2. Client-side fallback
+    try {
+      const zip = new JSZip();
+      let addedCount = 0;
+
+      for (const up of uploads) {
+        const cat = getCategoryForUpload(up) || up.category || '1. Monthly';
+        const safeCatName = normalizeCategory(cat).replace(/[\/\\?%*:|"<>]/g, '_');
+        const safeVesselName = (up.vesselName || 'Vessel').replace(/[\/\\?%*:|"<>]/g, '_');
+        const folderPath = `${safeCatName}/${safeVesselName}/${up.month}_${up.year}`;
+        const targetFolder = zip.folder(folderPath) || zip;
+
+        if (!token || String(up.id).startsWith('up_')) {
+          // Simulated file fallback
+          targetFolder.file(up.fileName, `Simulated backup content of ${up.fileName} for ${up.vesselName} uploaded on ${up.uploadedAt}.`);
+          addedCount++;
+        } else {
+          try {
+            const res = await fetch(`/api/sms/download/${up.id}`, {
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+              const blob = await res.blob();
+              targetFolder.file(up.fileName, blob);
+              addedCount++;
+            } else {
+              targetFolder.file(up.fileName, `Error: Failed to retrieve file content from server (Status ${res.status})`);
+              addedCount++;
+            }
+          } catch (e: any) {
+            targetFolder.file(up.fileName, `Error: Network failure retrieving file content: ${e.message || e}`);
+            addedCount++;
+          }
+        }
+      }
+
+      if (addedCount === 0) {
+        triggerToast('Could not package any files.', 'error');
+        return;
+      }
+
+      const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 3 } });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SMS_All_Submissions_All_Sections_${new Date().getFullYear()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      triggerToast(`Successfully packaged and downloaded all ${addedCount} SMS file(s) across all sections!`, 'success');
+    } catch (err: any) {
+      console.error('Failed to create all SMS files zip:', err);
+      triggerToast(`Failed to generate ZIP of all files: ${err.message || err}`, 'error');
+    } finally {
+      setIsDownloadingAllFiles(false);
+    }
+  };
+
+  const renderOverviewWorkspace = () => {
+    const activeOverviewForms = forms.filter(f => normalizeCategory(f.category) === normalizeCategory(selectedCategory));
+    
+    // Filter by vessel, type, search
+    const filteredOverviewForms = activeOverviewForms.filter(f => {
+      if (overviewVesselId && overviewVesselId !== 'all') {
+        const targetVessel = vesselsList.find(v => String(v.id) === String(overviewVesselId));
+        if (targetVessel && !isVesselInFormScope(targetVessel, f)) {
+          return false;
+        }
+      }
+
+      if (overviewTypeFilter !== 'all') {
+        const formType = (f.type || 'Form').toLowerCase();
+        if (overviewTypeFilter.toLowerCase() !== formType) {
+          return false;
+        }
+      }
+
+      if (overviewSearchQuery.trim()) {
+        const q = overviewSearchQuery.toLowerCase();
+        const matchCode = (f.formCode || '').toLowerCase().includes(q);
+        const matchDesc = (f.description || '').toLowerCase().includes(q);
+        const matchScope = (f.scope || '').toLowerCase().includes(q);
+        const matchDate = (f.formDate || '').toLowerCase().includes(q);
+        const matchVesselType = (f.vesselType || '').toLowerCase().includes(q);
+        if (!matchCode && !matchDesc && !matchScope && !matchDate && !matchVesselType) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    const totalInCat = activeOverviewForms.length;
+    const checklistsCount = activeOverviewForms.filter(f => (f.type || '').toLowerCase() === 'checklist').length;
+    const standardFormsCount = totalInCat - checklistsCount;
+    const templatesCount = totalInCat;
+    const uploadedTemplatesCount = activeOverviewForms.filter(f => 
+      Boolean(f.template_file_name || (f.template_files && f.template_files.length > 0))
+    ).length;
+
+    const selectedVesselObj = overviewVesselId !== 'all' ? vesselsList.find(v => String(v.id) === String(overviewVesselId)) : null;
+
+    return (
+      <div className="space-y-6 animate-in fade-in duration-300">
+        {/* Top Control Bar (Styled like SMS Reporting Terminal, but read-only / catalog focused) */}
+        <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-xl border border-slate-800 space-y-4">
+          <div className="flex flex-col lg:flex-row gap-6 items-start lg:items-center justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse" />
+                <h3 className="text-sm font-black uppercase tracking-wider text-slate-100">SMS Manual &amp; Standard Forms</h3>
+              </div>
+              <p className="text-xs text-slate-400 max-w-xl">
+                Safety Management System master catalog. Browse approved checklists, review vessel applicability and scope compliance, and download standardized templates.
+              </p>
+            </div>
+
+            {/* Quick Action Downloads for All Sections */}
+            <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+              <button
+                type="button"
+                onClick={handleDownloadAllSectionsTemplates}
+                disabled={forms.length === 0 || isDownloadingAllSectionsTemplates}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-md shadow-emerald-900/30 flex items-center justify-center gap-2 cursor-pointer"
+                title="Download all SMS form templates across all 9 sections in a single structured ZIP"
+              >
+                {isDownloadingAllSectionsTemplates ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Compiling Master Templates...</span>
+                  </>
+                ) : (
+                  <>
+                    <FolderArchive className="w-3.5 h-3.5" />
+                    <span>Download All Templates (All Sections)</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Filter Bar Controls */}
+          <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center gap-3 w-full">
+            {/* Filter by Vessel Scope */}
+            <div className="flex flex-col gap-1 shrink-0">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Filter by Vessel Scope</label>
+              <select
+                value={overviewVesselId}
+                onChange={(e) => setOverviewVesselId(e.target.value)}
+                className="bg-slate-800 text-xs font-bold text-white border border-slate-700 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer"
+              >
+                <option value="all">🌐 All Fleet (Universal Scopes)</option>
+                {vesselsList.map(v => (
+                  <option key={v.id} value={String(v.id)}>🚢 {v.name} ({v.type || 'Vessel'})</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Filter by Form Type */}
+            <div className="flex flex-col gap-1 shrink-0">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Form Type</label>
+              <select
+                value={overviewTypeFilter}
+                onChange={(e) => setOverviewTypeFilter(e.target.value as any)}
+                className="bg-slate-800 text-xs font-bold text-white border border-slate-700 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer"
+              >
+                <option value="all">All Types</option>
+                <option value="Checklist">Checklists</option>
+                <option value="Form">Standard Forms</option>
+              </select>
+            </div>
+
+            {/* Search Input */}
+            <div className="flex flex-col gap-1 shrink-0 min-w-[200px] flex-1 max-w-sm">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Search Forms</label>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={overviewSearchQuery}
+                  onChange={(e) => setOverviewSearchQuery(e.target.value)}
+                  placeholder="Code, title, keyword..."
+                  className="w-full bg-slate-800 text-xs font-bold text-white border border-slate-700 rounded-xl pl-8 pr-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50 placeholder:text-slate-500"
+                />
+              </div>
+            </div>
+
+            {(overviewVesselId !== 'all' || overviewTypeFilter !== 'all' || overviewSearchQuery) && (
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOverviewVesselId('all');
+                    setOverviewTypeFilter('all');
+                    setOverviewSearchQuery('');
+                  }}
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-bold rounded-xl border border-slate-700 transition-all cursor-pointer h-9 flex items-center gap-1.5"
+                  title="Reset Filters"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Main Grid: Left Side Forms List, Right Side Summary & Guidelines */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+          
+          {/* Left Column: Form Cards List (8 cols) */}
+          <div className="xl:col-span-8 space-y-4">
+            <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-3 border-b border-slate-100">
+                <div className="space-y-0.5">
+                  <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-2">
+                    <ClipboardList className="w-4 h-4 text-blue-600" />
+                    Compliance Catalog: {selectedCategory}
+                  </h4>
+                  <p className="text-[11px] text-slate-400 font-medium">
+                    {selectedVesselObj 
+                      ? `Displaying forms applicable to ${selectedVesselObj.name} (${selectedVesselObj.type || 'Vessel'})`
+                      : 'All approved standardized forms and checklists registered in this category.'
+                    }
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="px-3 py-1 bg-blue-50 text-blue-600 text-[10px] font-extrabold uppercase tracking-widest rounded-full">
+                    {filteredOverviewForms.length} {filteredOverviewForms.length === 1 ? 'Form' : 'Forms'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Form Rows */}
+              <div className="divide-y divide-slate-100 space-y-4 pt-1">
+                {filteredOverviewForms.length === 0 ? (
+                  <div className="text-center py-14 space-y-3">
+                    <div className="w-12 h-12 rounded-full bg-slate-50 flex items-center justify-center mx-auto text-slate-400">
+                      <FileText className="w-6 h-6" />
+                    </div>
+                    <p className="text-xs text-slate-400 font-semibold italic">
+                      No forms found matching the selected criteria for "{selectedCategory}".
+                    </p>
+                    {(overviewVesselId !== 'all' || overviewTypeFilter !== 'all' || overviewSearchQuery) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOverviewVesselId('all');
+                          setOverviewTypeFilter('all');
+                          setOverviewSearchQuery('');
+                        }}
+                        className="px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1.5"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Clear Active Filters
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  filteredOverviewForms.map((form) => {
+                    return (
+                      <div key={form.id} className="pt-4 first:pt-0 space-y-3">
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                          {/* Form Reference Details */}
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="px-2 py-0.5 bg-slate-800 text-white font-mono text-[10px] font-black rounded-md tracking-tight uppercase">
+                                {form.formCode}
+                              </span>
+                              <span className={`px-1.5 py-0.5 text-[9px] font-extrabold uppercase rounded border ${
+                                form.type === 'Checklist' 
+                                  ? 'bg-purple-50 text-purple-700 border-purple-200' 
+                                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}>
+                                {form.type || 'Form'}
+                              </span>
+                              <h5 className="text-xs font-black text-slate-700">{form.description}</h5>
+                            </div>
+                            
+                            <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">
+                              {form.formDate && (
+                                <>
+                                  <span>Form Date: {form.formDate}</span>
+                                  <span>•</span>
+                                </>
+                              )}
+                              <span>Scope: {form.scope}</span>
+                              {form.vesselType && form.vesselType !== 'All Vessels' && (
+                                <>
+                                  <span>•</span>
+                                  <span className="text-slate-600">Vessel Type: {form.vesselType}</span>
+                                </>
+                              )}
+                              <span>•</span>
+                              {form.allowedFileTypes && form.allowedFileTypes.length > 0 ? (
+                                <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded border border-indigo-100 font-extrabold">
+                                  📁 {form.allowedFileTypes.join(', ')}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 font-medium">📁 All File Types</span>
+                              )}
+                              {form.removeFilenameRestriction && (
+                                <span className="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded border border-amber-200 font-extrabold">
+                                  🔓 No Filename Limit
+                                </span>
+                              )}
+                              {form.isHira && (
+                                <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 rounded border border-purple-200 font-extrabold">
+                                  ⚡ Multiple Files
+                                </span>
+                              )}
+                              {form.isAcknowledgementRequired && (
+                                <span className="px-1.5 py-0.5 bg-rose-50 text-rose-700 rounded border border-rose-200 font-extrabold">
+                                  📋 Ack Required
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Template Download Action (No upload actions) */}
+                          <div className="shrink-0">
+                            {form.isHira && form.template_files && form.template_files.length > 0 ? (
+                              <div className="relative inline-block text-left">
+                                <select
+                                  onChange={(e) => {
+                                    const idx = parseInt(e.target.value, 10);
+                                    if (!isNaN(idx)) {
+                                      handleDownloadFormTemplate(form, idx);
+                                    }
+                                    e.target.value = "";
+                                  }}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-emerald-100 focus:outline-none cursor-pointer max-w-full whitespace-normal break-words"
+                                >
+                                  <option value="" disabled selected className="text-slate-800 bg-white">Download template ({form.template_files.length})...</option>
+                                  {form.template_files.map((tf, index) => (
+                                    <option key={index} value={index} title={tf.name} className="text-slate-800 bg-white font-semibold py-1">
+                                      {tf.name.length > 25 ? tf.name.slice(0, 25) + '...' : tf.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            ) : form.template_file_name ? (
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadFormTemplate(form)}
+                                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-extrabold uppercase tracking-wider rounded-lg transition-all shadow-xs shadow-emerald-100 flex items-center gap-1.5 cursor-pointer"
+                                title={`Download form template: ${form.template_file_name}`}
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                Download Form
+                              </button>
+                            ) : (
+                              <span className="px-2.5 py-1 bg-slate-50 text-slate-400 border border-slate-100 text-[10px] font-bold rounded-lg uppercase tracking-wider">
+                                Standard SMM Format
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Informational Guidance Box (No Upload inputs) */}
+                        <div className="p-3 rounded-2xl bg-slate-50/50 border border-slate-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                          <div className="flex items-center gap-2.5 text-xs text-slate-500">
+                            <Info className="w-4 h-4 text-blue-500 shrink-0" />
+                            <span className="font-medium text-[11px] leading-relaxed">
+                              Standard code <strong className="font-bold text-slate-700">{form.formCode}</strong> • Form Title: <em>"{form.description}"</em>
+                              {form.vesselType && form.vesselType !== 'All Vessels' && ` • Designated for ${form.vesselType} fleet`}
+                            </span>
+                          </div>
+
+                          {form.template_file_name && (
+                            <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50/80 px-2 py-0.5 rounded-md border border-emerald-100 shrink-0 flex items-center gap-1">
+                              <FileText className="w-3 h-3" />
+                              <span>{form.template_file_name}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Category Summary & Guidelines (4 cols) */}
+          <div className="xl:col-span-4 space-y-4">
+            <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 space-y-5 sticky top-6">
+              
+              {/* Category Summary */}
+              <div className="space-y-1">
+                <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                  <Layers className="w-4 h-4 text-blue-600" /> Category Summary
+                </h4>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                  {selectedCategory}
+                </p>
+              </div>
+
+              {/* Metric Breakdown */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Forms</span>
+                  <p className="text-lg font-black text-slate-800">{totalInCat}</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Checklists</span>
+                  <p className="text-lg font-black text-purple-700">{checklistsCount}</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Standard Forms</span>
+                  <p className="text-lg font-black text-blue-700">{standardFormsCount}</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Templates</span>
+                  <p className="text-lg font-black text-emerald-700">{templatesCount}</p>
+                </div>
+              </div>
+
+              {/* Download Buttons Section */}
+              <div className="pt-1 space-y-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadAllCategoryTemplates}
+                  disabled={templatesCount === 0 || isDownloadingAllTemplates}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-black uppercase tracking-wider rounded-xl transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer"
+                  title={`Download all templates in ${selectedCategory}`}
+                >
+                  {isDownloadingAllTemplates ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Compiling {selectedCategory}...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4" />
+                      <span>Download {selectedCategory} ({templatesCount})</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadAllSectionsTemplates}
+                  disabled={forms.length === 0 || isDownloadingAllSectionsTemplates}
+                  className="w-full py-2 bg-slate-800 hover:bg-slate-900 disabled:opacity-50 disabled:cursor-not-allowed text-slate-100 text-[11px] font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  title="Download all SMS templates across all 9 sections in a unified ZIP"
+                >
+                  {isDownloadingAllSectionsTemplates ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Compiling Master Templates...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FolderArchive className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Download All Templates (All Sections)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Quick Navigation Links */}
+              <div className="pt-2 border-t border-slate-100 space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Quick Navigation</label>
+                <div className="flex flex-col gap-1.5">
+                  {currentUser?.role !== 'vessel' && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigateMode ? onNavigateMode('reporting') : null}
+                      className="w-full py-2 bg-blue-50 hover:bg-blue-100/80 text-blue-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5" /> Go to SMS Reporting (Uploads)
+                    </button>
+                  )}
+                  {currentUser?.role !== 'vessel' && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigateMode ? onNavigateMode('management') : null}
+                      className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5" /> Go to SMS Management
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* SMM Compliance Guidelines */}
+              <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-100 space-y-2.5 text-xs text-slate-600">
+                <p className="font-extrabold text-slate-800 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600" /> SMM Standard Guidelines
+                </p>
+                <ul className="space-y-1.5 text-[11px] text-slate-500 list-disc list-inside">
+                  <li>Form headers must follow standard Fleet Revision codes.</li>
+                  <li>Monthly checklists are due before the 5th of each month.</li>
+                  <li>Permits (Hot Work, Enclosed Space) are valid for single operational shift only.</li>
+                </ul>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </div>
+    );
+  };
+
   const renderAcknowledgementView = () => {
     const isVesselUser = currentUser?.role === 'vessel';
 
@@ -3735,6 +4572,7 @@ startxref
                                 onChange={(e) => {
                                   if (e.target.files && e.target.files.length > 0) {
                                     const filesArray = Array.from(e.target.files) as File[];
+                                    e.target.value = '';
                                     handleUploadAcknowledgementFile(up.id, filesArray, matchedForm, up);
                                   }
                                 }}
@@ -3903,22 +4741,76 @@ startxref
         
         <div className="space-y-1.5 relative z-10">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-700 rounded-full text-[10px] font-black uppercase tracking-wider mb-1 border border-amber-200/50">
-            {mode === 'reporting' ? 'SMS Reporting' : mode === 'acknowledgement' ? 'Report Acknowledgement' : 'SMS Management'}
+            {mode === 'reporting' 
+              ? 'SMS Reporting' 
+              : mode === 'acknowledgement' 
+              ? 'Report Acknowledgement' 
+              : mode === 'overview'
+              ? 'SMS Catalog & Manuals'
+              : 'SMS Management'}
           </div>
           <h2 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-            {mode === 'reporting' ? 'Safety Management System (SMS) - Reporting' : mode === 'acknowledgement' ? 'Safety Management System (SMS) - Report Acknowledgement' : 'Safety Management System (SMS) - Management'}
+            {mode === 'reporting' 
+              ? 'Safety Management System (SMS) - Reporting' 
+              : mode === 'acknowledgement' 
+              ? 'Safety Management System (SMS) - Report Acknowledgement' 
+              : mode === 'overview'
+              ? 'Safety Management System (SMS)'
+              : 'Safety Management System (SMS) - Management'}
           </h2>
           <p className="text-xs text-slate-500 max-w-2xl leading-relaxed">
             {mode === 'reporting' 
               ? 'Submit finished safety checklists and forms, upload vessel report packages, download submitted vessel archives, and monitor previous submissions.' 
               : mode === 'acknowledgement'
               ? 'Review uploaded vessel report packages requiring acknowledgement, upload official signed acknowledgement documents, and download processed records.'
+              : mode === 'overview'
+              ? 'Fleet Safety Management Manual (SMM) master catalog. Browse approved standardized forms and checklists, review vessel scopes, and download standard form templates.'
               : 'Manage official vessel-level forms and checklist structures, monitor active submission deadlines, download submitted vessel archives, and administer structural compliance records.'}
           </p>
         </div>
       </div>
 
-      {/* Grid of 10 Safety Manual Category cards - Visible in management & reporting modes */}
+      {/* SMS Management Navigation Tabs */}
+      {mode === 'management' && (
+        <div className="flex items-center gap-2 bg-white p-1.5 rounded-2xl border border-slate-200/80 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => setManagementTab('forms')}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
+              managementTab === 'forms'
+                ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            <span>Forms & Checklists</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setManagementTab('submitted_files');
+              setIsAccordion3Open(true);
+            }}
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
+              managementTab === 'submitted_files'
+                ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+            }`}
+          >
+            <Archive className="w-4 h-4" />
+            <span>Submitted Files (Vessel Uploads)</span>
+            {uploads.length > 0 && (
+              <span className={`px-2 py-0.5 text-[10px] font-black rounded-full ${
+                managementTab === 'submitted_files' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-800'
+              }`}>
+                {uploads.length}
+              </span>
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* Grid of 10 Safety Manual Category cards - Visible in management, overview & reporting modes */}
       {mode !== 'acknowledgement' && (
         <div className="bg-slate-50/50 p-4 rounded-3xl border border-slate-100/80 space-y-3">
           <div className="flex items-center justify-between px-1">
@@ -3926,7 +4818,7 @@ startxref
               Safety Management Manual
             </span>
             <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide">
-              Select Category to {mode === 'reporting' ? 'Report Files' : 'Manage Forms'}
+              Select Category to {mode === 'reporting' ? 'Report Files' : mode === 'overview' ? 'Browse Forms & Templates' : managementTab === 'submitted_files' ? 'View Submitted Files' : 'Manage Forms'}
             </span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-2.5">
@@ -3959,11 +4851,14 @@ startxref
         </div>
       )}
 
-      {/* Accordions sections list */}
+      {/* Accordions / Tabs workspace list */}
       <div className="space-y-4">
         
-        {/* Accordion 4: Manage Forms and Checklists Details */}
-        {mode === 'management' && (
+        {/* SMS OVERVIEW / CATALOG WORKSPACE (Similar to SMS Reporting, but without submission & uploading features) */}
+        {mode === 'overview' && renderOverviewWorkspace()}
+
+        {/* Forms & Checklists Tab Content: Manage Forms and Checklists Details */}
+        {mode === 'management' && managementTab === 'forms' && (
           <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden">
             <button 
               onClick={() => setIsAccordion4Open(!isAccordion4Open)}
@@ -3986,9 +4881,9 @@ startxref
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
                     {/* Search bar for forms */}
-                    <div className="relative w-48 sm:w-64">
+                    <div className="relative w-40 sm:w-56">
                       <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
                       <input
                         type="text"
@@ -3998,6 +4893,36 @@ startxref
                         className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-[11px] focus:outline-none focus:border-blue-500 font-semibold"
                       />
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={handleDownloadAllCategoryTemplates}
+                      disabled={isDownloadingAllTemplates}
+                      className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-[11px] font-extrabold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
+                      title={`Download all templates for ${selectedCategory}`}
+                    >
+                      {isDownloadingAllTemplates ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Download className="w-3 h-3" />
+                      )}
+                      <span>Templates ({selectedCategory.split('.')[0]})</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleDownloadAllSectionsTemplates}
+                      disabled={isDownloadingAllSectionsTemplates}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-extrabold rounded-lg flex items-center gap-1.5 transition-all cursor-pointer shadow-xs"
+                      title="Download master ZIP of all templates across all sections"
+                    >
+                      {isDownloadingAllSectionsTemplates ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <FolderArchive className="w-3 h-3 text-emerald-400" />
+                      )}
+                      <span>All Templates (All Sections)</span>
+                    </button>
 
                     <button
                       onClick={() => handleOpenFormModal()}
@@ -4377,136 +5302,8 @@ startxref
           </div>
         )}
 
-        {/* Accordion 1: Set Monthly Submission Period */}
-        {mode === 'management' && (
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden">
-            <button 
-              onClick={() => setIsAccordion1Open(!isAccordion1Open)}
-              className="w-full p-4 flex items-center justify-between font-bold text-xs text-blue-900 bg-blue-50/20 hover:bg-blue-50/40 border-b border-slate-100 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full bg-blue-600" />
-                <span className="text-xs font-extrabold tracking-tight">Set Monthly Submission Period (per vessel)</span>
-              </div>
-              {isAccordion1Open ? <ChevronUp className="w-4 h-4 text-blue-900" /> : <ChevronDown className="w-4 h-4 text-blue-900" />}
-            </button>
-
-            {isAccordion1Open && (
-              <div className="p-6 space-y-4 bg-white animate-in slide-in-from-top-2 duration-200">
-                <p className="text-xs text-slate-500 font-semibold italic">
-                  Sets the submission month and year for the selected vessel only.
-                </p>
-                
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-                  {/* Vessel selection */}
-                  <div className="space-y-1.5">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Vessel</label>
-                    <select
-                      value={selectedPeriodVesselId}
-                      onChange={(e) => setSelectedPeriodVesselId(e.target.value)}
-                      className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/15 focus:border-blue-500 font-semibold"
-                    >
-                      <option value="">--Select Vessel--</option>
-                      {vesselsList.map(v => (
-                        <option key={v.id} value={String(v.id)}>
-                          {getVesselPeriodString(v.id, v.name)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Month Selection */}
-                  <div className="space-y-1.5">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Submission Month</label>
-                    <select
-                      value={selectedPeriodMonth}
-                      onChange={(e) => setSelectedPeriodMonth(e.target.value)}
-                      className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/15 focus:border-blue-500 font-semibold"
-                    >
-                      <option value="">--Month--</option>
-                      {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(m => (
-                        <option key={m} value={m}>{m}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Year Selection */}
-                  <div className="space-y-1.5">
-                    <label className="block text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Submission Year</label>
-                    <input
-                      type="number"
-                      value={selectedPeriodYear}
-                      onChange={(e) => setSelectedPeriodYear(e.target.value)}
-                      placeholder="2026"
-                      className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/15 focus:border-blue-500 font-bold bg-white text-slate-700"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-2 border-t border-slate-50">
-                  <button
-                    type="button"
-                    onClick={handleApplySubmissionPeriod}
-                    className="px-5 py-2.5 bg-[#1da1f2] hover:bg-[#1991db] text-white text-xs font-bold rounded-lg transition-all shadow-md shadow-blue-50 cursor-pointer"
-                  >
-                    Apply Submission Period
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Accordion 2: Last Uploads by Vessel */}
-        {mode === 'management' && (
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden">
-            <button 
-              onClick={() => setIsAccordion2Open(!isAccordion2Open)}
-              className="w-full p-4 flex items-center justify-between font-bold text-xs text-blue-900 bg-blue-50/20 hover:bg-blue-50/40 border-b border-slate-100 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-2 h-2 rounded-full bg-blue-600" />
-                <span className="text-xs font-extrabold tracking-tight">Last Uploads by Vessel</span>
-              </div>
-              {isAccordion2Open ? <ChevronUp className="w-4 h-4 text-blue-900" /> : <ChevronDown className="w-4 h-4 text-blue-900" />}
-            </button>
-
-            {isAccordion2Open && (
-              <div className="p-0 bg-white animate-in slide-in-from-top-2 duration-200">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
-                    <thead>
-                      <tr className="bg-slate-800 border-b border-slate-700 text-[10px] font-black text-white uppercase tracking-wider">
-                        <th className="px-6 py-4 w-1/3">Vessel</th>
-                        <th className="px-6 py-4 w-2/3">Last Uploaded</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {vesselsList.map((v) => {
-                        const uploadString = getVesselLastUploadString(v.id);
-                        const isNoUpload = uploadString === 'No uploads found';
-                        
-                        return (
-                          <tr key={v.id} className="hover:bg-slate-50/40 transition-colors">
-                            <td className="px-6 py-3.5 text-xs font-extrabold text-slate-400 uppercase tracking-wide">
-                              {v.name}
-                            </td>
-                            <td className={`px-6 py-3.5 text-xs font-bold ${isNoUpload ? 'text-slate-300 italic font-semibold' : 'text-slate-500'}`}>
-                              {uploadString}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Accordion 3: Submitted Files (Vessel Uploads) */}
-        {mode === 'management' && renderSubmittedFilesAccordion()}
+        {/* Submitted Files (Vessel Uploads) Tab Content */}
+        {mode === 'management' && managementTab === 'submitted_files' && renderSubmittedFilesAccordion()}
 
         {/* NEW REVOLUTIONARY SMS REPORTING WORKSPACE */}
         {mode === 'reporting' && (
@@ -4638,7 +5435,9 @@ startxref
                         accept=".docx,.doc,.xlsx,.xls,.pdf,.zip"
                         onChange={(e) => {
                           if (e.target.files && e.target.files.length > 0) {
-                            handleProcessMultipleFiles(e.target.files);
+                            const filesArray = Array.from(e.target.files) as File[];
+                            e.target.value = '';
+                            handleProcessMultipleFiles(filesArray);
                           }
                         }}
                         className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
@@ -4823,7 +5622,9 @@ startxref
                                         multiple={form.isHira}
                                         onChange={(e) => {
                                           if (e.target.files && e.target.files.length > 0) {
-                                            handleProcessMultipleFiles(e.target.files, form.id);
+                                            const filesArray = Array.from(e.target.files) as File[];
+                                            e.target.value = '';
+                                            handleProcessMultipleFiles(filesArray, form.id);
                                           }
                                         }}
                                         className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"
@@ -4910,7 +5711,9 @@ startxref
                                           multiple
                                           onChange={(e) => {
                                             if (e.target.files && e.target.files.length > 0) {
-                                              handleProcessMultipleFiles(e.target.files, form.id);
+                                              const filesArray = Array.from(e.target.files) as File[];
+                                              e.target.value = '';
+                                              handleProcessMultipleFiles(filesArray, form.id);
                                             }
                                           }}
                                           className="opacity-0 absolute inset-0 w-full h-full cursor-pointer"

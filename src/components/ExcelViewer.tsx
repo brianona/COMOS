@@ -18,15 +18,19 @@ import {
   ChevronLeft,
   ChevronRight,
   Filter,
-  Sparkles
+  Sparkles,
+  Columns3
 } from 'lucide-react';
-import { UniverSheetViewer } from './UniverSheetViewer';
+const UniverSheetViewer = React.lazy(() => 
+  import('./UniverSheetViewer').then(m => ({ default: m.UniverSheetViewer }))
+);
 
 interface ExcelViewerProps {
   url?: string;
   blob?: Blob;
   arrayBuffer?: ArrayBuffer;
   title?: string;
+  defaultEngine?: 'univer' | 'sheetjs' | 'grid' | 'document';
   onDownload?: () => void;
 }
 
@@ -35,6 +39,7 @@ export const ExcelViewer: React.FC<ExcelViewerProps> = ({
   blob,
   arrayBuffer,
   title,
+  defaultEngine = 'sheetjs',
   onDownload
 }) => {
   const [loading, setLoading] = useState(true);
@@ -46,8 +51,9 @@ export const ExcelViewer: React.FC<ExcelViewerProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [hideEmptyRows, setHideEmptyRows] = useState(false);
+  const [autoFitContent, setAutoFitContent] = useState(true);
   const [selectedCell, setSelectedCell] = useState<{ r: number; c: number; val: any } | null>(null);
-  const [excelViewMode, setExcelViewMode] = useState<'univer' | 'grid' | 'document'>('univer');
+  const [excelViewMode, setExcelViewMode] = useState<'univer' | 'sheetjs' | 'grid' | 'document'>(defaultEngine);
 
   useEffect(() => {
     let isCancelled = false;
@@ -227,6 +233,33 @@ export const ExcelViewer: React.FC<ExcelViewerProps> = ({
     };
   }, [workbook, activeSheetName]);
 
+  // Generate SheetJS HTML representation of current worksheet
+  const sheetJSHtml = useMemo(() => {
+    if (!workbook || !activeSheetName) return '';
+    const worksheet = workbook.Sheets[activeSheetName];
+    if (!worksheet) return '';
+    try {
+      return XLSX.utils.sheet_to_html(worksheet, {
+        id: 'sheetjs-table',
+        editable: false,
+        header: '',
+        footer: ''
+      });
+    } catch (err) {
+      console.error('Failed to generate SheetJS HTML:', err);
+      return '';
+    }
+  }, [workbook, activeSheetName]);
+
+  const processedSheetJSHtml = useMemo(() => {
+    if (!sheetJSHtml) return '';
+    if (!searchTerm.trim()) return sheetJSHtml;
+    const q = searchTerm.trim();
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(?![^<]*>)(${escaped})`, 'gi');
+    return sheetJSHtml.replace(regex, '<mark class="bg-amber-300 text-slate-900 font-bold px-0.5 rounded">$1</mark>');
+  }, [sheetJSHtml, searchTerm]);
+
   // Filter rows based on search term & hide empty toggle
   const filteredRows = useMemo(() => {
     let result = sheetData.rows;
@@ -352,6 +385,20 @@ export const ExcelViewer: React.FC<ExcelViewerProps> = ({
             <Filter className="w-3 h-3" />
             <span className="hidden md:inline">Hide Blanks</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => setAutoFitContent((f) => !f)}
+            className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0 ${
+              autoFitContent 
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-xs' 
+                : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'
+            }`}
+            title="Auto-resize all columns & rows to fit cell content cleanly"
+          >
+            <Columns3 className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="hidden md:inline">Auto-Fit Content</span>
+          </button>
         </div>
 
         {/* Right Controls */}
@@ -360,11 +407,22 @@ export const ExcelViewer: React.FC<ExcelViewerProps> = ({
           <div className="hidden sm:flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-700">
             <button
               type="button"
+              onClick={() => setExcelViewMode('sheetjs')}
+              className={`px-2.5 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-colors ${
+                excelViewMode === 'sheetjs' ? 'bg-teal-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="SheetJS Engine (Native HTML Spreadsheet Preview with Merged Cells)"
+            >
+              <FileSpreadsheet className="w-3 h-3 text-teal-300" />
+              <span>SheetJS</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setExcelViewMode('univer')}
               className={`px-2.5 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-colors ${
                 excelViewMode === 'univer' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
               }`}
-              title="Univer API Canvas Engine (Full Excel Spreadsheet)"
+              title="Univer Canvas Engine (Full Interactive Spreadsheet)"
             >
               <Sparkles className="w-3 h-3 text-emerald-300" />
               <span>Univer</span>
@@ -373,7 +431,7 @@ export const ExcelViewer: React.FC<ExcelViewerProps> = ({
               type="button"
               onClick={() => setExcelViewMode('grid')}
               className={`px-2.5 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-colors ${
-                excelViewMode === 'grid' ? 'bg-teal-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                excelViewMode === 'grid' ? 'bg-cyan-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
               }`}
               title="Fast Data Grid View"
             >
@@ -384,11 +442,11 @@ export const ExcelViewer: React.FC<ExcelViewerProps> = ({
               type="button"
               onClick={() => setExcelViewMode('document')}
               className={`px-2.5 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-colors ${
-                excelViewMode === 'document' ? 'bg-teal-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
+                excelViewMode === 'document' ? 'bg-amber-600 text-white shadow-xs' : 'text-slate-400 hover:text-slate-200'
               }`}
               title="Formatted Document Table View"
             >
-              <FileSpreadsheet className="w-3 h-3" />
+              <FileSpreadsheet className="w-3 h-3 text-amber-300" />
               <span>Document</span>
             </button>
           </div>
@@ -547,14 +605,65 @@ export const ExcelViewer: React.FC<ExcelViewerProps> = ({
           </div>
         ) : excelViewMode === 'univer' ? (
           <div className="w-full h-full flex-1 min-h-0 bg-slate-900 flex flex-col relative overflow-hidden">
-            <UniverSheetViewer
-              url={url}
-              blob={blob}
-              arrayBuffer={arrayBuffer}
-              title={title}
-              embedded={true}
-              onDownload={onDownload}
-            />
+            <React.Suspense fallback={
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-400">
+                <Loader2 className="w-8 h-8 animate-spin text-teal-400" />
+                <span className="text-xs font-semibold">Loading Univer Spreadsheet Editor...</span>
+              </div>
+            }>
+              <UniverSheetViewer
+                url={url}
+                blob={blob}
+                arrayBuffer={arrayBuffer}
+                title={title}
+                embedded={true}
+                autoFit={autoFitContent}
+                onDownload={onDownload}
+              />
+            </React.Suspense>
+          </div>
+        ) : excelViewMode === 'sheetjs' ? (
+          <div className="flex-1 overflow-auto bg-slate-900 p-4 sm:p-6 min-h-full flex flex-col items-center select-text">
+            <div 
+              className={`w-full max-w-7xl bg-white text-slate-900 shadow-2xl rounded-xl border border-slate-200 p-4 sm:p-8 transition-transform origin-top ${
+                autoFitContent ? 'sheetjs-autofit' : ''
+              }`}
+              style={{
+                transform: `scale(${zoom / 100})`,
+                transformOrigin: 'top center',
+                marginBottom: `${Math.max(0, (zoom - 100) * 10)}px`
+              }}
+            >
+              <div className="border-b border-slate-200 pb-3 mb-4 flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-teal-500/10 text-teal-700 border border-teal-500/20 flex items-center justify-center font-black text-xs">
+                    JS
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 leading-tight">
+                      {title || 'Spreadsheet'}
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium mt-0.5">
+                      Worksheet: <span className="font-bold text-teal-700">{activeSheetName}</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-1 bg-teal-50 text-teal-700 rounded-md text-xs font-bold border border-teal-200 flex items-center gap-1.5 shadow-2xs">
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    SheetJS HTML Engine
+                  </span>
+                  <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[11px] font-mono border border-slate-200">
+                    {sheetData.rows.length} rows • {sheetData.maxCols} cols
+                  </span>
+                </div>
+              </div>
+
+              <div 
+                className="sheetjs-rendered-container overflow-x-auto w-full"
+                dangerouslySetInnerHTML={{ __html: processedSheetJSHtml }}
+              />
+            </div>
           </div>
         ) : excelViewMode === 'document' ? (
           <div className="flex justify-center p-6 sm:p-10 bg-slate-900 min-h-full">

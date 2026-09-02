@@ -50,6 +50,7 @@ import { DocxViewer } from './DocxViewer';
 import { DocLegacyViewer } from './DocLegacyViewer';
 import { ExcelViewer } from './ExcelViewer';
 import { PptxViewer } from './PptxViewer';
+import { useRealtimeAutoRefresh } from '../services/realtimeSync';
 
 export interface SMSOrderReportItem {
   id: number | string;
@@ -164,14 +165,28 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
   }, [currentUser?.team_ids]);
 
   const accessibleVessels = useMemo(() => {
-    if (isVesselUser && currentUser?.vessel_id) {
-      return vessels.filter(v => String(v.id) === String(currentUser.vessel_id));
+    if (isVesselUser) {
+      const vId = currentUser?.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
+      const vIdClean = vId.replace(/^v/i, '').trim();
+      const uName = (currentUser?.username || '').toLowerCase().trim();
+      const vName = ((currentUser as any)?.vessel_name || '').toLowerCase().trim();
+
+      const matched = vessels.filter(v => 
+        (vId && String(v.id) === vId) || 
+        (vIdClean && String(v.id).replace(/^v/i, '').trim() === vIdClean) ||
+        (vName && v.name?.toLowerCase().trim() === vName) ||
+        v.name?.toLowerCase().trim() === uName ||
+        (vName && normalizeText(v.name) === normalizeText(vName)) ||
+        normalizeText(v.name) === normalizeText(uName)
+      );
+      if (matched.length > 0) return matched;
+      return [{ id: vId || 'vessel_user', name: vName || currentUser?.username || 'My Vessel', status: 'active', code: '' } as any];
     }
     if (!isAdminOrManagement && userTeamIds.length > 0) {
       return vessels.filter(v => v.team_id != null && userTeamIds.includes(Number(v.team_id)));
     }
     return vessels;
-  }, [vessels, isVesselUser, isAdminOrManagement, currentUser?.vessel_id, userTeamIds]);
+  }, [vessels, isVesselUser, isAdminOrManagement, currentUser?.vessel_id, currentUser?.username, userTeamIds]);
 
   // Helper text normalizer (strips MV/M.V./punctuation/spaces for resilient vessel and order matching)
   const normalizeText = (text: string) => {
@@ -354,6 +369,16 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
     fetchReports();
   }, [token]);
 
+  // Realtime updates via long-polling
+  useRealtimeAutoRefresh(
+    ['sms_orders', 'sms_uploads', 'sms_forms'],
+    () => {
+      fetchReports();
+    },
+    350,
+    [token]
+  );
+
   const handleRefresh = async () => {
     setRefreshing(true);
     await fetchReports();
@@ -500,10 +525,35 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
   const filteredReports = useMemo(() => {
     return reports.filter(r => {
       // Vessel User RBAC
-      if (isVesselUser && currentUser?.vessel_id) {
-        const vId = String(currentUser.vessel_id);
-        const vName = currentUser.username || '';
-        if (String(r.vesselId) !== vId && r.vesselName.toLowerCase() !== vName.toLowerCase()) {
+      if (isVesselUser) {
+        const vId = currentUser?.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
+        const vIdClean = vId.replace(/^v/i, '').trim();
+        const uName = (currentUser?.username || '').toLowerCase().trim();
+        const vName = ((currentUser as any)?.vessel_name || '').toLowerCase().trim();
+        
+        const matchedVessel = vessels.find(v => 
+          (vId && String(v.id) === vId) || 
+          (vIdClean && String(v.id).replace(/^v/i, '').trim() === vIdClean) ||
+          (vName && v.name?.toLowerCase().trim() === vName) ||
+          v.name?.toLowerCase().trim() === uName
+        );
+        const targetVesselName = (matchedVessel?.name || vName || uName).toLowerCase().trim();
+        const targetVesselId = matchedVessel ? String(matchedVessel.id).trim() : vId;
+        const targetVesselIdClean = targetVesselId.replace(/^v/i, '').trim();
+
+        const rVesselId = String(r.vesselId || '').trim();
+        const rVesselIdClean = rVesselId.replace(/^v/i, '').trim();
+        const rVesselName = (r.vesselName || '').toLowerCase().trim();
+
+        const idMatches = (vIdClean && rVesselIdClean && vIdClean === rVesselIdClean) || 
+                          (targetVesselIdClean && rVesselIdClean && targetVesselIdClean === rVesselIdClean);
+        const nameMatches = (targetVesselName && rVesselName && targetVesselName === rVesselName) ||
+                            (uName && rVesselName && uName === rVesselName) ||
+                            (vName && rVesselName && vName === rVesselName);
+        const normMatches = (targetVesselName && normalizeText(r.vesselName) === normalizeText(targetVesselName)) ||
+                            normalizeText(r.vesselName) === normalizeText(uName);
+
+        if (!idMatches && !nameMatches && !normMatches) {
           return false;
         }
       }
@@ -577,7 +627,7 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
       } else if (sortBy === 'vessel') {
         comparison = a.vesselName.localeCompare(b.vesselName);
       } else if (sortBy === 'form_code') {
-        comparison = a.formCode.localeCompare(b.formCode);
+        comparison = (a.formCode || '').localeCompare(b.formCode || '', undefined, { numeric: true, sensitivity: 'base' });
       } else if (sortBy === 'order') {
         comparison = a.orderLabel.localeCompare(b.orderLabel);
       } else if (sortBy === 'file_size') {

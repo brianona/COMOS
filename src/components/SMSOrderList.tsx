@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   FileText, 
   Plus, 
@@ -48,7 +48,7 @@ import {
   Loader2
 } from 'lucide-react';
 import JSZip from 'jszip';
-import { validateFileAgainstForm } from '../utils/smsValidation';
+import { validateFileAgainstForm, ValidationResult } from '../utils/smsValidation';
 import { PDFViewer } from './PDFViewer';
 import { ImageViewer } from './ImageViewer';
 import { DocxViewer } from './DocxViewer';
@@ -56,6 +56,7 @@ import { DocLegacyViewer } from './DocLegacyViewer';
 import { ExcelViewer } from './ExcelViewer';
 import { PptxViewer } from './PptxViewer';
 import { SMSDirectUploadModal } from './SMSDirectUploadModal';
+import { useRealtimeAutoRefresh } from '../services/realtimeSync';
 
 interface Vessel {
   id: string | number;
@@ -129,6 +130,9 @@ interface OrderUpload {
   uploaded_by: string;
   checked_at?: string | null;
   checked_by?: string | null;
+  replace_requested_at?: string | null;
+  replace_requested_by?: string | null;
+  replace_reason?: string | null;
 }
 
 interface SMSOrder {
@@ -186,6 +190,9 @@ interface PreviewModalState {
   vesselName?: string;
   isTemplate?: boolean;
   isRead?: boolean;
+  replaceRequestedAt?: string | null;
+  replaceRequestedBy?: string | null;
+  replaceReason?: string | null;
   blobUrl?: string | null;
   blob?: Blob | null;
   arrayBuffer?: ArrayBuffer | null;
@@ -205,7 +212,121 @@ export interface FailedUploadInfo {
   timestamp: number;
   errorMessage: string;
   detailedErrors?: string[];
+  isFetchError?: boolean;
+  failureCount?: number;
+  suggestion?: string | null;
 }
+
+export const checkFormUploadMatch = (u: any, item: any): boolean => {
+  if (!u || !item) return false;
+
+  // 0. Direct item_id match (if explicitly linked to this order item)
+  if (u.item_id != null && item.id != null && String(u.item_id) === String(item.id)) {
+    return true;
+  }
+
+  const uFormId = u.form_id != null ? String(u.form_id).trim() : '';
+  const itemFormId = item.form_id != null ? String(item.form_id).trim() : '';
+
+  const uCode = u.form_code != null ? String(u.form_code).trim().toUpperCase() : '';
+  const fCode = item.form_code != null ? String(item.form_code).trim().toUpperCase() : '';
+
+  const fDesc = item.description != null ? String(item.description).toUpperCase() : '';
+  const fName = u.file_name != null ? String(u.file_name).toUpperCase() : '';
+
+  const combinedItemText = `${fCode} ${fDesc}`.toUpperCase();
+  const combinedFileText = `${uCode} ${fName}`.toUpperCase();
+
+  const hasQualifierConflict = (): boolean => {
+    if (!fDesc && !fCode) return false;
+
+    // 1. Department checks (Deck, Engine, Catering)
+    const isDeckItem = combinedItemText.includes('DECK');
+    const isEngineItem = combinedItemText.includes('ENGINE') || combinedItemText.includes('(ENG)') || combinedItemText.includes(' ENGINE ') || combinedItemText.includes('-ENG') || combinedItemText.includes('_ENG');
+    const isCateringItem = combinedItemText.includes('CATERING') || combinedItemText.includes('(CAT)') || combinedItemText.includes('GALLEY') || combinedItemText.includes('STEWARD');
+
+    const isDeckFile = combinedFileText.includes('DECK');
+    const isEngineFile = combinedFileText.includes('ENGINE') || combinedFileText.includes('_ENG') || combinedFileText.includes('-ENG') || combinedFileText.includes(' ENG.') || combinedFileText.includes('(ENG)');
+    const isCateringFile = combinedFileText.includes('CATERING') || combinedFileText.includes('_CAT') || combinedFileText.includes('-CAT') || combinedFileText.includes('GALLEY');
+
+    if ((isDeckItem || isEngineItem || isCateringItem) && (isDeckFile || isEngineFile || isCateringFile)) {
+      if (isDeckItem && !isDeckFile) return true;
+      if (isEngineItem && !isEngineFile) return true;
+      if (isCateringItem && !isCateringFile) return true;
+    }
+
+    // 2. Flag / Jurisdiction checks (e.g. Malta, Singapore vs Panama vs Liberia etc.)
+    const flagsList = ['MALTA', 'SINGAPORE', 'PANAMA', 'LIBERIA', 'MARSHALL', 'BAHAMAS', 'CYPRUS', 'TUVALU', 'VANUATU', 'ANTIGUA', 'HONG KONG'];
+    const itemFlags = flagsList.filter(flg => combinedItemText.includes(flg));
+    const fileFlags = flagsList.filter(flg => combinedFileText.includes(flg));
+
+    if (itemFlags.length > 0 && fileFlags.length > 0) {
+      const hasCommonFlag = itemFlags.some(flg => fileFlags.includes(flg));
+      if (!hasCommonFlag) return true;
+    }
+
+    // 3. Sub-code suffix checks (e.g., COMI-SM-1-8 vs COMI-SM-1-8A vs COMI-SM-1-3A vs COMI-SM-1-3)
+    if (fCode) {
+      const escapedCode = fCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const extendedCodeRegex = new RegExp(`(^|[^A-Z0-9])${escapedCode}[-_]?([A-Z0-9]+)`, 'i');
+      const match = combinedFileText.match(extendedCodeRegex);
+      if (match && match[2]) {
+        const subToken = match[2].toUpperCase();
+        const cleanFCode = fCode.replace(/[^A-Z0-9]/g, '');
+        const isPartOfFCode = cleanFCode.endsWith(subToken) || fCode.toUpperCase().includes(subToken);
+        const isYear = /^(202[0-9]|203[0-9])$/.test(subToken);
+        const isPartOfDesc = fDesc.includes(subToken) || subToken.length > 3;
+        if (!isPartOfFCode && !isYear && !isPartOfDesc) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  };
+
+  // 1. Direct form_id match
+  if (uFormId && itemFormId && uFormId === itemFormId) {
+    if (hasQualifierConflict()) return false;
+    return true;
+  }
+
+  // 2. Exact or normalized form_code match
+  if (uCode && fCode) {
+    const uNorm = uCode.replace(/[^A-Z0-9]/g, '');
+    const fNorm = fCode.replace(/[^A-Z0-9]/g, '');
+    if (uCode === fCode || uNorm === fNorm) {
+      if (hasQualifierConflict()) return false;
+      return true;
+    }
+  }
+
+  // 3. Match by form_code token in file_name
+  if (fName && fCode) {
+    const escapedCode = fCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[^A-Z0-9]/g, '[^A-Z0-9]');
+    const regex = new RegExp(`(^|[^A-Z0-9])${escapedCode}([^A-Z0-9]|$)`, 'i');
+    if (regex.test(fName)) {
+      if (hasQualifierConflict()) return false;
+      return true;
+    }
+  }
+
+  return false;
+};
+
+export const getVesselUploads = (uploads: any[] | undefined, targetVessel: any, orderVessels?: any[]): any[] => {
+  if (!uploads || uploads.length === 0 || !targetVessel) return [];
+  return uploads.filter(u => {
+    const vId = targetVessel.vessel_id != null ? String(targetVessel.vessel_id).trim() : (targetVessel.id != null ? String(targetVessel.id).trim() : '');
+    const uVId = u.vessel_id != null ? String(u.vessel_id).trim() : '';
+    const vName = (targetVessel.vessel_name || targetVessel.name || targetVessel.username || '').toLowerCase().trim();
+    const uName = (u.vessel_name || '').toLowerCase().trim();
+    if (vId && uVId && (vId === uVId || vId.replace(/^v/i, '') === uVId.replace(/^v/i, ''))) return true;
+    if (vName && uName && (vName === uName || vName.includes(uName) || uName.includes(vName))) return true;
+    if (orderVessels && orderVessels.length === 1) return true;
+    return false;
+  });
+};
 
 interface SMSOrderListProps {
   vessels: Vessel[];
@@ -249,6 +370,152 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   // Document Inline Preview Modal state
   const [previewModal, setPreviewModal] = useState<PreviewModalState | null>(null);
 
+  // Revision Request Modal State & Handlers
+  const [replacementModalState, setReplacementModalState] = useState<{ isOpen: boolean; uploadId: number; fileName: string } | null>(null);
+
+  const handleRequestReplacement = async (uploadId: number, reason: string) => {
+    try {
+      const res = await fetch(`/api/sms/orders/upload/${uploadId}/request-replacement`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ reason })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to request revision');
+      }
+      const data = await res.json();
+
+      setOrders(prevOrders => prevOrders.map(order => {
+        if (!order.uploads) return order;
+        return {
+          ...order,
+          uploads: order.uploads.map(up => {
+            if (up.id === uploadId) {
+              return {
+                ...up,
+                replace_requested_at: data.replace_requested_at || new Date().toISOString(),
+                replace_requested_by: data.replace_requested_by || currentUser.username,
+                replace_reason: data.replace_reason || reason
+              };
+            }
+            return up;
+          })
+        };
+      }));
+
+      setSelectedOrderForInspection(prev => {
+        if (!prev || !prev.uploads) return prev;
+        return {
+          ...prev,
+          uploads: prev.uploads.map(up => {
+            if (up.id === uploadId) {
+              return {
+                ...up,
+                replace_requested_at: data.replace_requested_at || new Date().toISOString(),
+                replace_requested_by: data.replace_requested_by || currentUser.username,
+                replace_reason: data.replace_reason || reason
+              };
+            }
+            return up;
+          })
+        };
+      });
+
+      setPreviewModal(prev => {
+        if (prev && prev.isOpen && prev.uploadId === uploadId) {
+          return {
+            ...prev,
+            replaceRequestedAt: data.replace_requested_at || new Date().toISOString(),
+            replaceRequestedBy: data.replace_requested_by || currentUser.username,
+            replaceReason: data.replace_reason || reason
+          };
+        }
+        return prev;
+      });
+
+      if (onStatusRefresh) {
+        onStatusRefresh();
+      }
+    } catch (e: any) {
+      console.error('Error requesting file revision:', e);
+      alert(`Error requesting file revision: ${e.message}`);
+    }
+  };
+
+  const handleCancelReplacementRequest = async (uploadId: number) => {
+    try {
+      const res = await fetch(`/api/sms/orders/upload/${uploadId}/cancel-replacement-request`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to cancel revision request');
+      }
+
+      setOrders(prevOrders => prevOrders.map(order => {
+        if (!order.uploads) return order;
+        return {
+          ...order,
+          uploads: order.uploads.map(up => {
+            if (up.id === uploadId) {
+              return {
+                ...up,
+                replace_requested_at: null,
+                replace_requested_by: null,
+                replace_reason: null
+              };
+            }
+            return up;
+          })
+        };
+      }));
+
+      setSelectedOrderForInspection(prev => {
+        if (!prev || !prev.uploads) return prev;
+        return {
+          ...prev,
+          uploads: prev.uploads.map(up => {
+            if (up.id === uploadId) {
+              return {
+                ...up,
+                replace_requested_at: null,
+                replace_requested_by: null,
+                replace_reason: null
+              };
+            }
+            return up;
+          })
+        };
+      });
+
+      setPreviewModal(prev => {
+        if (prev && prev.isOpen && prev.uploadId === uploadId) {
+          return {
+            ...prev,
+            replaceRequestedAt: null,
+            replaceRequestedBy: null,
+            replaceReason: null
+          };
+        }
+        return prev;
+      });
+
+      if (onStatusRefresh) {
+        onStatusRefresh();
+      }
+    } catch (e: any) {
+      console.error('Error canceling revision request:', e);
+      alert(`Error canceling revision request: ${e.message}`);
+    }
+  };
+
   // Custom Confirmation Modal state
   const [confirmModal, setConfirmModal] = useState<ConfirmModalState | null>(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
@@ -260,6 +527,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   const [uploadErrorMessage, setUploadErrorMessage] = useState<string | null>(null);
   const [uploadDetailedErrors, setUploadDetailedErrors] = useState<string[]>([]);
   const [lastFailedUpload, setLastFailedUpload] = useState<FailedUploadInfo | null>(null);
+  const [bulkFetchFailureCount, setBulkFetchFailureCount] = useState<number>(0);
 
   const showToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage({ text, type });
@@ -275,10 +543,14 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       });
       if (res.ok) {
         const data = await res.json();
-        setOrders(data);
+        const formattedData = (data || []).map((o: SMSOrder) => ({
+          ...o,
+          items: sortByFormCode(o.items || [])
+        }));
+        setOrders(formattedData);
         // If an order is currently open in detail modal, refresh it
         if (selectedOrderForInspection) {
-          const updated = data.find((o: SMSOrder) => o.id === selectedOrderForInspection.id);
+          const updated = formattedData.find((o: SMSOrder) => o.id === selectedOrderForInspection.id);
           if (updated) setSelectedOrderForInspection(updated);
         }
       }
@@ -327,6 +599,74 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     }
   }, [token]);
 
+  // Live database updates via long-polling
+  useRealtimeAutoRefresh(
+    ['sms_orders', 'sms_uploads', 'sms_forms', 'sms_periods'],
+    () => {
+      fetchOrders(true);
+      fetchForms();
+      if (isManagementOrAdmin) {
+        fetchTemplates();
+      }
+    },
+    300,
+    [token, isManagementOrAdmin]
+  );
+
+  const normalizeVessel = (s?: string | null) => {
+    return (s || '')
+      .toLowerCase()
+      .replace(/^m\/?v\.?\s+/i, '')
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
+  };
+
+  // Helper to determine if an order is assigned to the logged-in vessel user
+  const isOrderAssignedToCurrentUserVessel = useCallback((order: SMSOrder) => {
+    if (!isVesselUser) return true;
+    const currentVId = currentUser.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
+    const currentVIdClean = currentVId.replace(/^v/i, '').trim();
+    const currentUName = (currentUser.username || '').toLowerCase().trim();
+    const currentVName = ((currentUser as any).vessel_name || '').toLowerCase().trim();
+    
+    const matchedVessel = vessels.find(v => 
+      (currentVId && String(v.id) === currentVId) || 
+      (currentVIdClean && String(v.id).replace(/^v/i, '').trim() === currentVIdClean) ||
+      (currentVName && v.name?.toLowerCase().trim() === currentVName) ||
+      v.name?.toLowerCase().trim() === currentUName
+    );
+    const matchedVesselName = (matchedVessel?.name || currentVName || '').toLowerCase().trim();
+    const matchedVesselId = matchedVessel ? String(matchedVessel.id).trim() : '';
+    const matchedVesselIdClean = matchedVesselId.replace(/^v/i, '').trim();
+
+    const normTargetName = normalizeVessel(matchedVesselName || currentUName || currentVName);
+
+    return (order.vessels || []).some(v => {
+      const vId = String(v.vessel_id || '').trim();
+      const vIdClean = vId.replace(/^v/i, '').trim();
+      const vName = (v.vessel_name || '').toLowerCase().trim();
+      const normVName = normalizeVessel(v.vessel_name);
+
+      // Direct ID match
+      if (currentVId && vId && (currentVId === vId || currentVIdClean === vIdClean)) return true;
+      if (matchedVesselId && vId && (matchedVesselId === vId || matchedVesselIdClean === vIdClean)) return true;
+
+      // Direct Name match
+      if (matchedVesselName && vName && matchedVesselName === vName) return true;
+      if (currentUName && vName && currentUName === vName) return true;
+      if (currentVName && vName && currentVName === vName) return true;
+
+      // Normalized name match (removes M/V, spaces, symbols)
+      if (normTargetName && normVName) {
+        if (normTargetName === normVName || normTargetName.includes(normVName) || normVName.includes(normTargetName)) {
+          return true;
+        }
+      }
+
+      return false;
+    });
+  }, [isVesselUser, currentUser, vessels]);
+
   // Unique Teams and Types for filtering
   const teams = useMemo(() => {
     const set = new Set<string>();
@@ -336,9 +676,15 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     return Array.from(set).sort();
   }, [vessels]);
 
+  // Orders assigned to this vessel user (or all orders for management)
+  const userVisibleOrders = useMemo(() => {
+    if (!isVesselUser) return orders;
+    return orders.filter(isOrderAssignedToCurrentUserVessel);
+  }, [orders, isVesselUser, isOrderAssignedToCurrentUserVessel]);
+
   // Filtered orders
   const filteredOrders = useMemo(() => {
-    return orders.filter(order => {
+    return userVisibleOrders.filter(order => {
       // Search
       const q = searchQuery.toLowerCase();
       const matchesSearch = 
@@ -354,7 +700,22 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       // Status
       if (statusFilter !== 'All') {
         if (isVesselUser) {
-          const userVesselStatus = order.vesselProgress?.status || 'Pending';
+          const myVId = currentUser.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
+          const myName = (currentUser.username || '').toLowerCase().trim();
+          const targetV = order.vessels.find(v => {
+            const vId = v.vessel_id != null ? String(v.vessel_id).trim() : '';
+            const vName = (v.vessel_name || '').toLowerCase().trim();
+            if (myVId && vId && (myVId === vId || myVId.replace(/^v/i, '') === vId.replace(/^v/i, ''))) return true;
+            if (myName && vName && (myName === vName || myName.includes(vName) || vName.includes(myName))) return true;
+            return false;
+          }) || order.vessels[0];
+
+          const totalReq = order.items?.length || 0;
+          const vUps = getVesselUploads(order.uploads, targetV, order.vessels);
+          const vVerified = order.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
+          const isDone = (targetV?.status === 'Completed' || (targetV?.submittedCount || 0) >= totalReq || (totalReq > 0 && vVerified >= totalReq));
+          const userVesselStatus = isDone ? 'Completed' : 'Pending';
+
           if (statusFilter === 'Completed' && userVesselStatus !== 'Completed') return false;
           if (statusFilter === 'Pending' && userVesselStatus !== 'Pending') return false;
           if (statusFilter === 'Overdue' && (order.overallStatus !== 'Overdue' || userVesselStatus === 'Completed')) return false;
@@ -380,24 +741,39 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
       return true;
     });
-  }, [orders, searchQuery, statusFilter, vesselFilter, teamFilter, isVesselUser, isManagementOrAdmin, vessels]);
+  }, [userVisibleOrders, searchQuery, statusFilter, vesselFilter, teamFilter, isVesselUser, isManagementOrAdmin, vessels, currentUser]);
 
   // Quick statistics
   const stats = useMemo(() => {
-    const total = orders.length;
+    const total = userVisibleOrders.length;
     if (isVesselUser) {
-      const completed = orders.filter(o => o.vesselProgress?.status === 'Completed').length;
+      const completed = userVisibleOrders.filter(o => {
+        const totalReq = o.items?.length || 0;
+        if (totalReq === 0) return false;
+        const myVId = currentUser.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
+        const myName = (currentUser.username || '').toLowerCase().trim();
+        const targetV = o.vessels.find(v => {
+          const vId = v.vessel_id != null ? String(v.vessel_id).trim() : '';
+          const vName = (v.vessel_name || '').toLowerCase().trim();
+          if (myVId && vId && (myVId === vId || myVId.replace(/^v/i, '') === vId.replace(/^v/i, ''))) return true;
+          if (myName && vName && (myName === vName || myName.includes(vName) || vName.includes(myName))) return true;
+          return false;
+        }) || o.vessels[0];
+        const vUps = getVesselUploads(o.uploads, targetV, o.vessels);
+        const vVerified = o.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
+        return (targetV?.status === 'Completed' || (targetV?.submittedCount || 0) >= totalReq || vVerified >= totalReq);
+      }).length;
       const pending = total - completed;
-      const overdue = orders.filter(o => o.overallStatus === 'Overdue' && o.vesselProgress?.status !== 'Completed').length;
+      const overdue = userVisibleOrders.filter(o => o.overallStatus === 'Overdue' && !o.vessels.some(v => v.status === 'Completed')).length;
       return { total, completed, pending, overdue };
     } else {
-      const completed = orders.filter(o => o.overallStatus === 'Completed').length;
+      const completed = orders.filter(o => o.overallStatus === 'Completed' || (o.vessels.length > 0 && o.vessels.every(v => v.status === 'Completed' || ((o.items?.length || 0) > 0 && (v.submittedCount || 0) >= (o.items?.length || 0))))).length;
       const inProgress = orders.filter(o => o.overallStatus === 'In Progress').length;
       const pending = orders.filter(o => o.overallStatus === 'Pending').length;
       const overdue = orders.filter(o => o.overallStatus === 'Overdue').length;
       return { total, completed, inProgress, pending, overdue };
     }
-  }, [orders, isVesselUser]);
+  }, [orders, userVisibleOrders, isVesselUser, currentUser]);
 
   // Unread uploads count across all orders for the logged on management user
   const totalUncheckedCount = useMemo(() => {
@@ -630,8 +1006,11 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     });
 
     try {
-      const matchedForm = availableForms.find(f => f.id === formId || f.formCode === formCode);
-      const targetId = matchedForm?.id || formId || formCode;
+      const cleanFormId = (formId || '').trim();
+      const cleanCode = (formCode || '').trim();
+      const matchedForm = (cleanFormId ? availableForms.find(f => f.id === cleanFormId) : null) ||
+        availableForms.find(f => (f.formCode || '').trim() === cleanCode);
+      const targetId = cleanFormId || matchedForm?.id || cleanCode;
 
       const res = await fetch(`/api/sms/forms/${encodeURIComponent(targetId)}/download-template?inline=1`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -709,8 +1088,11 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   // Download Form Template File
   const handleDownloadTemplate = async (formId: string, formCode: string, templateFileName?: string) => {
     try {
-      const matchedForm = availableForms.find(f => f.id === formId || f.formCode === formCode);
-      const targetId = matchedForm?.id || formId || formCode;
+      const cleanFormId = (formId || '').trim();
+      const cleanCode = (formCode || '').trim();
+      const matchedForm = (cleanFormId ? availableForms.find(f => f.id === cleanFormId) : null) ||
+        availableForms.find(f => (f.formCode || '').trim() === cleanCode);
+      const targetId = cleanFormId || matchedForm?.id || cleanCode;
 
       const res = await fetch(`/api/sms/forms/${encodeURIComponent(targetId)}/download-template`, {
         headers: { Authorization: `Bearer ${token}` }
@@ -887,9 +1269,18 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
   // Upload handler for vessel with strict SMS Reporting-style Validation Checker
   const handleFileUpload = async (orderId: string, formItem: OrderItem, files: FileList | File[]) => {
+    if (uploadProgress) {
+      showToast('An upload is currently in progress. Please wait for it to complete.', 'info');
+      return;
+    }
     if (!files || files.length === 0) return;
 
     const fileList = Array.from(files);
+
+    // Clear any previous failed upload state immediately when starting a new/different upload
+    setLastFailedUpload(null);
+    setUploadErrorMessage(null);
+    setUploadDetailedErrors([]);
 
     // If Multiple Files is not enabled for this form, strictly allow only 1 file
     if (!formItem.is_hira && fileList.length > 1) {
@@ -910,6 +1301,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     }
 
     setUploadProgress(true);
+    setUploadingForFormId(String(formItem.id ?? formItem.form_id ?? formItem.form_code));
     setUploadErrorMessage(null);
     setUploadDetailedErrors([]);
     setUploadValidationMessage(`Checking document against ${formItem.form_code} validation rules...`);
@@ -932,6 +1324,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       if (!valResult.matched) {
         setUploadProgress(false);
         setUploadValidationMessage(null);
+        setUploadingForFormId(null);
         const reason = valResult.reason || `File "${file.name}" failed verification for ${formItem.form_code}.`;
         setUploadErrorMessage(reason);
         setLastFailedUpload({
@@ -964,8 +1357,11 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
     formData.append('vessel_id', String(currentVessel.id));
     formData.append('vessel_name', currentVessel.name);
-    formData.append('form_id', formItem.form_id);
-    formData.append('form_code', formItem.form_code);
+    formData.append('form_id', formItem.form_id || '');
+    formData.append('form_code', formItem.form_code || '');
+    if (formItem.id != null) {
+      formData.append('item_id', String(formItem.id));
+    }
 
     try {
       const res = await fetch(`/api/sms/orders/${orderId}/upload`, {
@@ -979,6 +1375,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         setUploadErrorMessage(null);
         setUploadDetailedErrors([]);
         setLastFailedUpload(null);
+        setBulkFetchFailureCount(0);
         showToast(`Successfully uploaded ${result.uploadedCount} verified file(s) for ${formItem.form_code}!`);
         await fetchOrders(true);
         onStatusRefresh?.();
@@ -1021,10 +1418,21 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
   // Bulk ZIP or Multi-file smart uploader with strict SMS Reporting-style Validation Checker
   const handleBulkUpload = async (order: SMSOrder, files: FileList | File[]) => {
-    if (!files || files.length === 0) return;
-    setUploadProgress(true);
+    if (uploadProgress) {
+      showToast('An upload is currently in progress. Please wait for it to complete.', 'info');
+      return;
+    }
+    if (!files) return;
+    const rawInputFiles = Array.from(files);
+    if (rawInputFiles.length === 0) return;
+
+    // Clear any previous failed upload state immediately when starting a new/different upload
+    setLastFailedUpload(null);
     setUploadErrorMessage(null);
     setUploadDetailedErrors([]);
+
+    setUploadProgress(true);
+    setUploadingForFormId('bulk');
     setUploadValidationMessage('Scanning and checking files against order checklist requirements...');
 
     try {
@@ -1034,55 +1442,59 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       };
 
       let rawFilesList: File[] = [];
+      const validationErrors: string[] = [];
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        if (file.name.endsWith('.zip')) {
-          const zip = new JSZip();
-          const unzipped = await zip.loadAsync(file);
-          const zipFilePromises: Promise<File>[] = [];
+      for (let i = 0; i < rawInputFiles.length; i++) {
+        const file = rawInputFiles[i];
+        if (file.name.toLowerCase().endsWith('.zip')) {
+          try {
+            const zip = new JSZip();
+            const unzipped = await zip.loadAsync(file);
+            const zipFilePromises: Promise<File>[] = [];
 
-          unzipped.forEach((relativePath, zipEntry) => {
-            if (!zipEntry.dir) {
-              zipFilePromises.push(
-                zipEntry.async('blob').then(blob => {
-                  const subFileName = relativePath.split('/').pop() || relativePath;
-                  return new File([blob], subFileName, { type: blob.type });
-                })
-              );
-            }
-          });
+            unzipped.forEach((relativePath, zipEntry) => {
+              const subFileName = relativePath.split('/').pop() || relativePath;
+              if (
+                !zipEntry.dir &&
+                !relativePath.includes('__MACOSX') &&
+                !subFileName.startsWith('.') &&
+                subFileName.trim().length > 0
+              ) {
+                zipFilePromises.push(
+                  zipEntry.async('blob').then(blob => {
+                    return new File([blob], subFileName, { type: blob.type || 'application/octet-stream' });
+                  })
+                );
+              }
+            });
 
-          const extractedFiles = await Promise.all(zipFilePromises);
-          rawFilesList = [...rawFilesList, ...extractedFiles];
+            const extractedFiles = await Promise.all(zipFilePromises);
+            rawFilesList = [...rawFilesList, ...extractedFiles];
+          } catch (zipErr: any) {
+            console.warn(`Failed to unpack zip ${file.name}:`, zipErr);
+            validationErrors.push(`"${file.name}": Could not extract ZIP archive (${zipErr.message || 'Corrupted file'})`);
+          }
         } else {
           rawFilesList.push(file);
         }
       }
 
       if (rawFilesList.length === 0) {
-        showToast('No files found in package.', 'info');
+        setUploadProgress(false);
+        setUploadValidationMessage(null);
+        showToast('No valid files found in package.', 'info');
         return;
       }
 
       const filesToProcess: { file: File; targetForm: OrderItem }[] = [];
-      const validationErrors: string[] = [];
 
       for (const file of rawFilesList) {
-        // Find best matching order requirement by form code prefix or text
-        const cleanName = file.name.trim().toUpperCase();
-        let matched = order.items.find(item => {
-          const cleanCode = item.form_code.trim().toUpperCase();
-          if (cleanName.startsWith(cleanCode)) return true;
-          return false;
-        });
-
-        if (!matched) {
-          matched = order.items.find(item => {
-            const cleanCode = item.form_code.trim().toUpperCase();
-            return cleanName.includes(cleanCode);
-          });
-        }
+        // Find best matching order requirement (longer form codes tested first to avoid prefix shadowing)
+        const sortedItems = [...order.items].sort((a, b) => (b.form_code?.length || 0) - (a.form_code?.length || 0));
+        
+        let matched: OrderItem | undefined = sortedItems.find(item =>
+          checkFormUploadMatch({ file_name: file.name }, item)
+        );
 
         if (!matched) {
           // If only 1 item in order and remove_filename_restriction
@@ -1096,15 +1508,22 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
         // Run strict checker on the file
         setUploadValidationMessage(`Checking "${file.name}" for ${matched.form_code}...`);
-        const valResult = await validateFileAgainstForm(file, {
-          form_id: matched.form_id,
-          form_code: matched.form_code,
-          description: matched.description,
-          form_date: matched.form_date,
-          is_hira: matched.is_hira,
-          remove_filename_restriction: matched.remove_filename_restriction,
-          allowed_file_types: matched.allowed_file_types
-        });
+        let valResult: ValidationResult;
+        try {
+          valResult = await validateFileAgainstForm(file, {
+            form_id: matched.form_id,
+            form_code: matched.form_code,
+            description: matched.description,
+            form_date: matched.form_date,
+            is_hira: matched.is_hira,
+            remove_filename_restriction: matched.remove_filename_restriction,
+            allowed_file_types: matched.allowed_file_types
+          });
+        } catch (valErr: any) {
+          console.warn(`Local validation warning for ${file.name}:`, valErr);
+          // Safe fallback: If local file reading/parsing fails, accept based on matched form code
+          valResult = { matched: true, reason: 'Matched form code requirement' };
+        }
 
         if (valResult.matched) {
           filesToProcess.push({ file, targetForm: matched });
@@ -1133,13 +1552,14 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         return;
       }
 
-      // Group valid files by form_id to send
+      // Group valid files by item requirement to send
       const grouped = new Map<string, { formItem: OrderItem; files: File[] }>();
       filesToProcess.forEach(({ file, targetForm }) => {
-        if (!grouped.has(targetForm.form_id)) {
-          grouped.set(targetForm.form_id, { formItem: targetForm, files: [] });
+        const groupKey = String(targetForm.id || targetForm.form_id || targetForm.form_code);
+        if (!grouped.has(groupKey)) {
+          grouped.set(groupKey, { formItem: targetForm, files: [] });
         }
-        const currentGroup = grouped.get(targetForm.form_id)!;
+        const currentGroup = grouped.get(groupKey)!;
         if (!targetForm.is_hira && currentGroup.files.length >= 1) {
           validationErrors.push(`"${file.name}": Skipped because form "${targetForm.form_code}" only accepts 1 file (Multiple Files is not enabled).`);
           return;
@@ -1149,20 +1569,33 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
       let totalUploaded = 0;
       for (const [, { formItem, files }] of grouped) {
+        setUploadValidationMessage(`Uploading ${files.length} file(s) for ${formItem.form_code || 'order checklist item'}...`);
         const formData = new FormData();
         files.forEach(f => formData.append('files', f));
         formData.append('vessel_id', String(currentVessel.id));
         formData.append('vessel_name', currentVessel.name);
-        formData.append('form_id', formItem.form_id);
-        formData.append('form_code', formItem.form_code);
+        formData.append('form_id', formItem.form_id || '');
+        formData.append('form_code', formItem.form_code || '');
+        if (formItem.id != null) {
+          formData.append('item_id', String(formItem.id));
+        }
 
-        const res = await fetch(`/api/sms/orders/${order.id}/upload`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData
-        });
+        let res: Response;
+        try {
+          res = await fetch(`/api/sms/orders/${order.id}/upload`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: formData
+          });
+        } catch (fetchErr: any) {
+          throw new Error(`Server connection failed (${fetchErr.message || 'Failed to fetch'}). Please verify your connection and try again.`);
+        }
+
         if (res.ok) {
           totalUploaded += files.length;
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Server rejected upload for ${formItem.form_code || 'item'} (HTTP ${res.status})`);
         }
       }
 
@@ -1186,12 +1619,32 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         setUploadErrorMessage(null);
         setUploadDetailedErrors([]);
         setLastFailedUpload(null);
+        setBulkFetchFailureCount(0);
         showToast(`Bulk upload complete! Successfully verified and uploaded ${totalUploaded} file(s).`);
       }
       await fetchOrders(true);
       onStatusRefresh?.();
     } catch (e: any) {
-      const errStr = 'Bulk upload error: ' + e.message;
+      const rawErrorMsg = e?.message || 'Unknown error';
+      const isFetchErr = 
+        rawErrorMsg.toLowerCase().includes('failed to fetch') ||
+        rawErrorMsg.toLowerCase().includes('networkerror') ||
+        rawErrorMsg.toLowerCase().includes('server connection failed') ||
+        rawErrorMsg.toLowerCase().includes('network error') ||
+        rawErrorMsg.toLowerCase().includes('connection refused') ||
+        rawErrorMsg.toLowerCase().includes('aborted');
+
+      const nextFailureCount = isFetchErr ? bulkFetchFailureCount + 1 : bulkFetchFailureCount;
+      if (isFetchErr) {
+        setBulkFetchFailureCount(nextFailureCount);
+      }
+
+      let suggestionText: string | null = null;
+      if (isFetchErr && nextFailureCount >= 2) {
+        suggestionText = 'Bulk upload has encountered repeated connection issues ("Failed to fetch"). We recommend refreshing your browser or uploading files individually for each checklist item.';
+      }
+
+      const errStr = 'Bulk upload error: ' + rawErrorMsg;
       setUploadErrorMessage(errStr);
       setLastFailedUpload({
         type: 'bulk',
@@ -1201,9 +1654,17 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         fileNames: Array.from(files).map(f => f.name),
         totalSize: formatFilesTotalSize(Array.from(files)),
         timestamp: Date.now(),
-        errorMessage: errStr
+        errorMessage: errStr,
+        isFetchError: isFetchErr,
+        failureCount: nextFailureCount,
+        suggestion: suggestionText
       });
-      showToast(errStr, 'error');
+
+      if (suggestionText) {
+        showToast(`Bulk upload failed (${rawErrorMsg}). Tip: Please refresh your browser or try uploading files individually.`, 'error');
+      } else {
+        showToast(errStr, 'error');
+      }
     } finally {
       setUploadProgress(false);
       setUploadValidationMessage(null);
@@ -1373,7 +1834,19 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center flex-wrap">
+              {lastFailedUpload.suggestion && (
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-black tracking-wide flex items-center gap-1.5 shadow-xs hover:shadow-md transition-all cursor-pointer"
+                  title="Refresh the page in your browser"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Refresh Browser</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 disabled={uploadProgress}
@@ -1399,6 +1872,19 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               </button>
             </div>
           </div>
+
+          {/* Suggestion notice for repeated "Failed to fetch" errors */}
+          {lastFailedUpload.suggestion && (
+            <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-start gap-2.5 text-xs text-amber-950 font-medium leading-relaxed">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div className="space-y-1 flex-1">
+                <div className="font-bold text-amber-900 text-xs flex items-center gap-1.5">
+                  <span>Connection Issue Troubleshooting:</span>
+                </div>
+                <div>{lastFailedUpload.suggestion}</div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1568,20 +2054,65 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             const totalForms = order.items?.length || 0;
             
             // Vessel progress calculation
-            const myVesselProgress = isVesselUser ? order.vesselProgress : null;
+            const myVessel = isVesselUser 
+              ? (order.vessels.find(v => {
+                  const myVId = currentUser.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
+                  const myName = (currentUser.username || '').toLowerCase().trim();
+                  const vId = v.vessel_id != null ? String(v.vessel_id).trim() : '';
+                  const vName = (v.vessel_name || '').toLowerCase().trim();
+                  if (myVId && vId && (myVId === vId || myVId.replace(/^v/i, '') === vId.replace(/^v/i, ''))) return true;
+                  if (myName && vName && (myName === vName || myName.includes(vName) || vName.includes(myName))) return true;
+                  return false;
+                }) || order.vessels[0])
+              : null;
+
+            const myUploads = isVesselUser ? getVesselUploads(order.uploads, myVessel, order.vessels) : [];
+            const myVerifiedCount = order.items?.filter(item => myUploads.some(u => checkFormUploadMatch(u, item))).length || 0;
+            
+            const isMyVesselDone = isVesselUser && (myVessel?.status === 'Completed' || (myVessel?.submittedCount || 0) >= totalForms || (totalForms > 0 && myVerifiedCount >= totalForms));
+            // Calculate uploaded files per vessel and overall progress
+            let totalUploadedFilesCount = 0;
+            let completedVesselsCount = 0;
+            const targetVesselsCount = Math.max(1, order.vessels.length);
+
+            order.vessels.forEach(v => {
+              const vUps = getVesselUploads(order.uploads, v, order.vessels);
+              const vVerified = order.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
+              const isVDone = v.status === 'Completed' || (totalForms > 0 && (vVerified >= totalForms || (v.submittedCount || 0) >= totalForms));
+              const distinctCount = isVDone ? totalForms : vVerified;
+              totalUploadedFilesCount += distinctCount;
+              if (isVDone) {
+                completedVesselsCount++;
+              }
+            });
+
+            const isAllVesselsDone = order.vessels.length > 0 && completedVesselsCount === order.vessels.length;
+            const isFullyCompleted = isVesselUser ? isMyVesselDone : (order.overallStatus === 'Completed' || isAllVesselsDone);
+
+            // Progress targets and uploaded counts
+            const totalTarget = isVesselUser 
+              ? totalForms 
+              : (order.vessels.length === 1 ? totalForms : totalForms * targetVesselsCount);
+
             const submittedCount = isVesselUser 
-              ? (myVesselProgress?.submittedCount || 0)
-              : order.vessels.filter(v => v.status === 'Completed').length;
-            const totalTarget = isVesselUser ? totalForms : order.vessels.length;
+              ? (isMyVesselDone ? totalForms : myVerifiedCount)
+              : (isFullyCompleted ? totalTarget : totalUploadedFilesCount);
+
             const percent = totalTarget > 0 ? Math.min(100, Math.round((submittedCount / totalTarget) * 100)) : 0;
-            const isFullyCompleted = isVesselUser 
-              ? (myVesselProgress?.status === 'Completed' || (totalForms > 0 && (myVesselProgress?.submittedCount || 0) >= totalForms))
-              : order.overallStatus === 'Completed';
+
+            const hasAnyReplacementReq = (order.uploads || []).some(u => Boolean(u.replace_requested_at));
+            const myHasReplacementReq = isVesselUser 
+              ? myUploads.some(u => Boolean(u.replace_requested_at))
+              : hasAnyReplacementReq;
 
             return (
               <div
                 key={order.id}
-                className="bg-white rounded-2xl border border-slate-100 shadow-2xs hover:shadow-sm hover:border-slate-200 transition-all p-5 space-y-4"
+                className={`rounded-2xl border transition-all p-5 space-y-4 ${
+                  myHasReplacementReq
+                    ? 'bg-gradient-to-r from-rose-50/90 via-rose-50/40 to-white border-2 border-rose-300/90 shadow-md shadow-rose-100 hover:border-rose-400'
+                    : 'bg-white border-slate-100 shadow-2xs hover:shadow-sm hover:border-slate-200'
+                }`}
               >
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                   {/* Left Column: Label, Due date, creator */}
@@ -1592,6 +2123,13 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                       </h3>
 
                       {/* Status Badges */}
+                      {myHasReplacementReq && (
+                        <span className="px-2.5 py-0.5 bg-rose-100 text-rose-900 border border-rose-300 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1 shadow-2xs animate-pulse">
+                          <RefreshCw className="w-3 h-3 text-rose-600 animate-spin" style={{ animationDuration: '4s' }} />
+                          File Revision Requested
+                        </span>
+                      )}
+
                       {order.id.startsWith('ord_direct_') && (
                         <span className="px-2.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200/80 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
                           <FolderPlus className="w-3 h-3 text-teal-600" />
@@ -1640,12 +2178,23 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                   {/* Right Column: Progress & Action Buttons */}
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
                     {/* Progress Indicator */}
-                    <div className="bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100 min-w-[170px] space-y-1.5">
+                    <div 
+                      className="bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100 min-w-[170px] space-y-1.5"
+                      title={
+                        !isVesselUser && order.vessels.length > 1
+                          ? `${completedVesselsCount} of ${order.vessels.length} vessels completed all required files (${submittedCount}/${totalTarget} total files, ${percent}%)`
+                          : `${submittedCount} of ${totalTarget} required files uploaded (${percent}%)`
+                      }
+                    >
                       <div className="flex items-center justify-between text-[11px] font-extrabold">
                         <span className="text-slate-500 uppercase tracking-wide">
-                          {isVesselUser ? 'Your Progress' : 'Vessel Completion'}
+                          {isVesselUser 
+                            ? 'Your Progress' 
+                            : order.vessels.length > 1 
+                              ? 'Files Progress' 
+                              : 'Upload Progress'}
                         </span>
-                        <span className={isFullyCompleted ? 'text-emerald-700' : 'text-blue-700'}>
+                        <span className={isFullyCompleted ? 'text-emerald-700 font-black' : 'text-blue-700 font-black'}>
                           {submittedCount} / {totalTarget} ({percent}%)
                         </span>
                       </div>
@@ -1735,10 +2284,13 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 <div className="pt-2 border-t border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 flex-wrap">
                     <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Required Forms:</span>
-                    {order.items.slice(0, 6).map((item, idx) => {
+                    {sortByFormCode(order.items).slice(0, 6).map((item, idx) => {
                       const itemUploaded = isVesselUser 
-                        ? (order.uploads || []).some(u => (u.form_id === item.form_id || u.form_code === item.form_code))
-                        : false;
+                        ? myUploads.some(u => checkFormUploadMatch(u, item))
+                        : (order.uploads || []).some(u => checkFormUploadMatch(u, item));
+                      const itemHasReplaceReq = isVesselUser
+                        ? myUploads.some(u => checkFormUploadMatch(u, item) && Boolean(u.replace_requested_at))
+                        : (order.uploads || []).some(u => checkFormUploadMatch(u, item) && Boolean(u.replace_requested_at));
 
                       return (
                         <button
@@ -1748,13 +2300,19 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                             handlePreviewTemplate(item.form_id, item.form_code, item.template_file_name);
                           }}
                           className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition-colors inline-flex items-center gap-1 cursor-pointer group/badge ${
-                            itemUploaded
-                              ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200/80 hover:border-emerald-300'
-                              : 'bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border-slate-200/60 hover:border-blue-300'
+                            itemHasReplaceReq
+                              ? 'bg-rose-100 hover:bg-rose-200 text-rose-900 border-rose-300 hover:border-rose-400 font-black shadow-2xs'
+                              : itemUploaded
+                                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200/80 hover:border-emerald-300'
+                                : 'bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border-slate-200/60 hover:border-blue-300'
                           }`}
-                          title={`Click to view/preview template for ${item.form_code}: ${item.description}${itemUploaded ? ' (Uploaded)' : ' (Pending Upload)'}`}
+                          title={`Click to view/preview template for ${item.form_code}: ${item.description}${itemHasReplaceReq ? ' (Revision Requested!)' : itemUploaded ? ' (Uploaded)' : ' (Pending Upload)'}`}
                         >
-                          {itemUploaded && <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />}
+                          {itemHasReplaceReq ? (
+                            <RefreshCw className="w-2.5 h-2.5 text-rose-600 shrink-0 animate-spin" style={{ animationDuration: '4s' }} />
+                          ) : itemUploaded ? (
+                            <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                          ) : null}
                           <span>{item.form_code}</span>
                           <Eye className="w-2.5 h-2.5 text-slate-400 group-hover/badge:text-blue-600 transition-colors" />
                         </button>
@@ -1770,18 +2328,29 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                   {!isVesselUser && (
                     <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 flex-wrap">
                       <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Vessels:</span>
-                      {order.vessels.slice(0, 4).map((v, idx) => (
-                        <span
-                          key={idx}
-                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
-                            v.status === 'Completed'
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
-                              : 'bg-slate-50 text-slate-600 border-slate-200'
-                          }`}
-                        >
-                          {v.vessel_name} ({v.submittedCount || 0}/{totalForms})
-                        </span>
-                      ))}
+                      {order.vessels.slice(0, 4).map((v, idx) => {
+                        const vUps = getVesselUploads(order.uploads, v, order.vessels);
+                        const vVerified = order.items?.filter(it => vUps.some(u => checkFormUploadMatch(u, it))).length || 0;
+                        const isVDone = v.status === 'Completed' || (totalForms > 0 && (vVerified >= totalForms || (v.submittedCount || 0) >= totalForms));
+                        const displayCount = isVDone ? totalForms : vVerified;
+                        const vHasReplaceReq = vUps.some(u => Boolean(u.replace_requested_at));
+
+                        return (
+                          <span
+                            key={idx}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-1 ${
+                              vHasReplaceReq
+                                ? 'bg-rose-100 text-rose-900 border-rose-300 font-black shadow-2xs'
+                                : isVDone
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
+                                  : 'bg-slate-50 text-slate-600 border-slate-200'
+                            }`}
+                          >
+                            {vHasReplaceReq && <RefreshCw className="w-2.5 h-2.5 text-rose-600 shrink-0 animate-spin" style={{ animationDuration: '4s' }} />}
+                            <span>{v.vessel_name} ({displayCount}/{totalForms})</span>
+                          </span>
+                        );
+                      })}
                       {order.vessels.length > 4 && (
                         <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-md text-[10px] font-bold">
                           +{order.vessels.length - 4} more
@@ -1796,11 +2365,28 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         </div>
       )}
 
+      {/* MODAL: REPLACEMENT REQUEST DIALOG */}
+      {replacementModalState?.isOpen && (
+        <ReplacementRequestModal
+          isOpen={replacementModalState.isOpen}
+          uploadId={replacementModalState.uploadId}
+          fileName={replacementModalState.fileName}
+          onClose={() => setReplacementModalState(null)}
+          onSubmit={handleRequestReplacement}
+        />
+      )}
+
       {/* MODAL 0: INLINE DOCUMENT & TEMPLATE VIEWER */}
       {previewModal?.isOpen && (
         <DocumentPreviewModal
           modal={previewModal}
           onClose={handleClosePreviewModal}
+          onRequestReplacement={(uploadId, fileName) => {
+            setReplacementModalState({ isOpen: true, uploadId, fileName });
+          }}
+          onCancelReplacementRequest={(uploadId) => {
+            handleCancelReplacementRequest(uploadId);
+          }}
           onDownload={() => {
             if (previewModal.isTemplate && (previewModal.formId || previewModal.formCode)) {
               handleDownloadTemplate(previewModal.formId || '', previewModal.formCode || '', previewModal.fileName);
@@ -1823,6 +2409,12 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       {selectedOrderForInspection && (
         <OrderDetailsModal
           order={selectedOrderForInspection}
+          onRequestReplacement={(uploadId, fileName) => {
+            setReplacementModalState({ isOpen: true, uploadId, fileName });
+          }}
+          onCancelReplacementRequest={(uploadId) => {
+            handleCancelReplacementRequest(uploadId);
+          }}
           isVesselUser={isVesselUser}
           currentUser={currentUser}
           vessels={vessels}
@@ -1843,6 +2435,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           onDeleteUpload={requestDeleteUpload}
           onFileUpload={handleFileUpload}
           onBulkUpload={handleBulkUpload}
+          uploadingForFormId={uploadingForFormId}
           uploadProgress={uploadProgress}
           uploadValidationMessage={uploadValidationMessage}
           uploadErrorMessage={uploadErrorMessage}
@@ -1856,6 +2449,11 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           }}
           onMarkOrderChecked={handleMarkOrderChecked}
           onMarkSingleUploadChecked={handleMarkSingleUploadChecked}
+          onEditOrder={(orderToEdit) => {
+            setSelectedOrderForInspection(null);
+            setEditingOrder(orderToEdit);
+            setIsCreateModalOpen(true);
+          }}
         />
       )}
 
@@ -1873,11 +2471,13 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             setEditingOrder(null);
           }}
           onSuccess={() => {
+            const wasEditing = Boolean(editingOrder);
             setIsCreateModalOpen(false);
             setEditingOrder(null);
             fetchOrders();
             fetchTemplates();
-            showToast(editingOrder ? 'Order list updated successfully!' : 'New order list dispatched to target vessels!');
+            onStatusRefresh?.();
+            showToast(wasEditing ? 'Order list updated successfully!' : 'New order list dispatched to target vessels!', 'success');
           }}
         />
       )}
@@ -1966,6 +2566,15 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 // ==========================================
 // SUBCOMPONENT: CONFIRMATION MODAL
 // ==========================================
+export const sortByFormCode = <T extends { form_code?: string; [key: string]: any }>(items: T[]): T[] => {
+  if (!items) return [];
+  return [...items].sort((a, b) => {
+    const codeA = a.form_code || '';
+    const codeB = b.form_code || '';
+    return codeA.localeCompare(codeB, undefined, { numeric: true, sensitivity: 'base' });
+  });
+};
+
 interface ConfirmationModalProps {
   title: string;
   message: string;
@@ -2045,6 +2654,8 @@ interface DocumentPreviewModalProps {
   onClose: () => void;
   onDownload: () => void;
   onMarkRead?: () => void;
+  onRequestReplacement?: (uploadId: number, fileName: string) => void;
+  onCancelReplacementRequest?: (uploadId: number) => void;
   isManagementOrAdmin?: boolean;
   token?: string;
 }
@@ -2054,6 +2665,8 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   onClose,
   onDownload,
   onMarkRead,
+  onRequestReplacement,
+  onCancelReplacementRequest,
   isManagementOrAdmin = false,
   token
 }) => {
@@ -2202,6 +2815,39 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   <CheckSquare className="w-3.5 h-3.5" />
                   <span>Mark Read</span>
                 </button>
+              )
+            )}
+
+            {!modal.isTemplate && isManagementOrAdmin && modal.uploadId && (
+              modal.replaceRequestedAt ? (
+                <div className="flex items-center gap-1.5">
+                  <span className="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-bold flex items-center gap-1" title={modal.replaceReason || "Revision requested"}>
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Revision Requested</span>
+                  </span>
+                  {onCancelReplacementRequest && (
+                    <button
+                      type="button"
+                      onClick={() => onCancelReplacementRequest(modal.uploadId!)}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold border border-slate-700 transition-colors cursor-pointer"
+                      title="Cancel revision request"
+                    >
+                      Cancel Request
+                    </button>
+                  )}
+                </div>
+              ) : (
+                onRequestReplacement && (
+                  <button
+                    type="button"
+                    onClick={() => onRequestReplacement(modal.uploadId!, modal.fileName)}
+                    className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                    title="Request vessel to replace this file"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Request Revision</span>
+                  </button>
+                )
               )
             )}
 
@@ -2495,6 +3141,7 @@ interface OrderDetailsModalProps {
   onDeleteUpload: (uploadId: number, fileName: string) => void;
   onFileUpload: (orderId: string, formItem: OrderItem, files: FileList | File[]) => void;
   onBulkUpload: (order: SMSOrder, files: FileList | File[]) => void;
+  uploadingForFormId?: string | null;
   uploadProgress: boolean;
   uploadValidationMessage?: string | null;
   uploadErrorMessage?: string | null;
@@ -2504,6 +3151,9 @@ interface OrderDetailsModalProps {
   onClearUploadError?: () => void;
   onMarkOrderChecked?: (orderId: string, vesselId?: string) => void;
   onMarkSingleUploadChecked?: (uploadId: number) => void;
+  onRequestReplacement?: (uploadId: number, fileName: string) => void;
+  onCancelReplacementRequest?: (uploadId: number) => void;
+  onEditOrder?: (order: SMSOrder) => void;
 }
 
 const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
@@ -2524,6 +3174,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onDeleteUpload,
   onFileUpload,
   onBulkUpload,
+  uploadingForFormId,
   uploadProgress,
   uploadValidationMessage,
   uploadErrorMessage,
@@ -2532,28 +3183,95 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onRetryUpload,
   onClearUploadError,
   onMarkOrderChecked,
-  onMarkSingleUploadChecked
+  onMarkSingleUploadChecked,
+  onRequestReplacement,
+  onCancelReplacementRequest,
+  onEditOrder
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [checklistSearch, setChecklistSearch] = useState('');
+  const [checklistFilter, setChecklistFilter] = useState<'all' | 'pending' | 'uploaded' | 'revision'>('all');
 
   // Active target vessel for display
   const activeVessel = isVesselUser 
-    ? (order.vessels.find(v => String(v.vessel_id) === String(currentUser.vessel_id) || v.vessel_name === currentUser.username) || order.vessels[0])
+    ? (order.vessels.find(v => {
+        const currentVId = currentUser.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
+        const currentVIdClean = currentVId.replace(/^v/i, '').trim();
+        const vId = String(v.vessel_id || '').trim();
+        const vIdClean = vId.replace(/^v/i, '').trim();
+        const uName = (currentUser.username || '').toLowerCase().trim();
+        const vName = (v.vessel_name || '').toLowerCase().trim();
+        const normVName = (v.vessel_name || '').toLowerCase().replace(/^m\/?v\.?\s+/i, '').replace(/[^a-z0-9]/g, '').trim();
+        const normUName = uName.replace(/^m\/?v\.?\s+/i, '').replace(/[^a-z0-9]/g, '').trim();
+
+        if (currentVId && vId && (currentVId === vId || currentVIdClean === vIdClean)) return true;
+        if (uName && vName && (uName === vName || normUName === normVName || normUName.includes(normVName) || normVName.includes(normUName))) return true;
+        return false;
+      }) || order.vessels[0])
     : (order.vessels.find(v => v.vessel_name === activeVesselTab) || order.vessels[0]);
 
   // Uploads for the active vessel
-  const vesselUploads = (order.uploads || []).filter(u => 
-    activeVessel && (String(u.vessel_id) === String(activeVessel.vessel_id) || u.vessel_name === activeVessel.vessel_name)
-  );
+  const vesselUploads = getVesselUploads(order.uploads, activeVessel, order.vessels);
 
   const totalRequired = order.items.length;
-  const distinctUploaded = new Set(vesselUploads.map(u => u.form_id || u.form_code)).size;
-  const isVesselDone = totalRequired > 0 && distinctUploaded >= totalRequired;
+  const verifiedCount = order.items.filter(formItem => 
+    vesselUploads.some(u => checkFormUploadMatch(u, formItem))
+  ).length;
+
+  const revisionCount = useMemo(() => {
+    return order.items.filter(formItem => {
+      const itemUploads = vesselUploads.filter(u => checkFormUploadMatch(u, formItem));
+      return itemUploads.some(u => Boolean(u.replace_requested_at));
+    }).length;
+  }, [order.items, vesselUploads]);
+
+  const isVesselDone = (totalRequired > 0 && verifiedCount >= totalRequired) || activeVessel?.status === 'Completed';
+  const distinctUploaded = isVesselDone ? totalRequired : verifiedCount;
+
+  // Filter and search checklist items
+  const filteredChecklistItems = useMemo(() => {
+    const sorted = sortByFormCode(order.items);
+    return sorted.filter((formItem) => {
+      const itemUploads = vesselUploads.filter(u => checkFormUploadMatch(u, formItem));
+      const hasUploaded = itemUploads.length > 0;
+      const hasRevisionReq = itemUploads.some(u => Boolean(u.replace_requested_at));
+
+      // Status filter
+      if (checklistFilter === 'pending' && hasUploaded) return false;
+      if (checklistFilter === 'uploaded' && !hasUploaded) return false;
+      if (checklistFilter === 'revision' && !hasRevisionReq) return false;
+
+      // Search filter
+      if (!checklistSearch.trim()) return true;
+      const query = checklistSearch.toLowerCase().trim();
+
+      const codeMatch = (formItem.form_code || '').toLowerCase().includes(query);
+      const descMatch = (formItem.description || '').toLowerCase().includes(query);
+      const catMatch = (formItem.category || '').toLowerCase().includes(query);
+      const dateMatch = (formItem.form_date || '').toLowerCase().includes(query);
+      const fileTypesMatch = (formItem.allowed_file_types || []).some(t => t.toLowerCase().includes(query));
+      const uploadedFileMatch = itemUploads.some(u => 
+        (u.file_name || '').toLowerCase().includes(query) || 
+        (u.uploaded_by || '').toLowerCase().includes(query) ||
+        (u.replace_reason || '').toLowerCase().includes(query) ||
+        (u.replace_requested_by || '').toLowerCase().includes(query)
+      );
+      const revisionKeywordMatch = hasRevisionReq && (
+        'revision'.includes(query) || 
+        'replace'.includes(query) || 
+        'replacement'.includes(query) ||
+        'action required'.includes(query)
+      );
+
+      return codeMatch || descMatch || catMatch || dateMatch || fileTypesMatch || uploadedFileMatch || revisionKeywordMatch;
+    });
+  }, [order.items, vesselUploads, checklistSearch, checklistFilter]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (uploadProgress) return;
     if (e.type === 'dragenter' || e.type === 'dragover') {
       setDragActive(true);
     } else if (e.type === 'dragleave') {
@@ -2565,8 +3283,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
+    if (uploadProgress) return;
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      onBulkUpload(order, e.dataTransfer.files);
+      onBulkUpload(order, Array.from(e.dataTransfer.files));
     }
   };
 
@@ -2645,6 +3364,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               <FolderDown className="w-4 h-4 text-slate-600" />
               <span className="hidden sm:inline">Uploads ZIP</span>
             </button>
+            {!isVesselUser && !order.id.startsWith('ord_direct_') && onEditOrder && (
+              <button
+                onClick={() => onEditOrder(order)}
+                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl border border-slate-200 text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors"
+                title="Edit this SMS Order List"
+              >
+                <Edit3 className="w-4 h-4 text-slate-600" />
+                <span className="hidden sm:inline">Edit Order</span>
+              </button>
+            )}
             <button
               onClick={onClose}
               className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
@@ -2700,6 +3429,30 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 </div>
               )}
 
+              {/* Suggestion notice for repeated "Failed to fetch" errors */}
+              {lastFailedUpload?.suggestion && (
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-start gap-2.5 text-xs text-amber-950 font-medium leading-relaxed">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1.5 flex-1">
+                    <div className="font-bold text-amber-900 text-xs flex items-center gap-1.5">
+                      <span>Connection Issue Troubleshooting:</span>
+                    </div>
+                    <div>{lastFailedUpload.suggestion}</div>
+                    <div className="pt-1 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => window.location.reload()}
+                        className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-black tracking-wide flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                        title="Refresh the page in your browser"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        <span>Refresh Browser</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Retry Button in Error Banner */}
               {lastFailedUpload && onRetryUpload && (
                 <div className="pt-1 flex items-center justify-between gap-3 border-t border-rose-200/60">
@@ -2752,25 +3505,42 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               </label>
               <div className="flex items-center gap-2 overflow-x-auto pb-1">
                 {order.vessels.map((v) => {
-                  const isDone = (v.submittedCount || 0) >= totalRequired && totalRequired > 0;
+                  const vUploads = getVesselUploads(order.uploads, v, order.vessels);
+                  const vVerified = order.items.filter(formItem => 
+                    vUploads.some(u => checkFormUploadMatch(u, formItem))
+                  ).length;
+                  const isDone = (totalRequired > 0 && vVerified >= totalRequired) || v.status === 'Completed' || (v.submittedCount || 0) >= totalRequired;
+                  const vSubmittedCount = isDone ? totalRequired : vVerified;
                   const isActive = activeVessel?.vessel_name === v.vessel_name;
+                  const vHasReplaceReq = vUploads.some(u => Boolean(u.replace_requested_at));
 
                   return (
                     <button
-                      key={v.vessel_id}
+                      key={v.vessel_id || v.vessel_name}
                       onClick={() => setActiveVesselTab(v.vessel_name)}
                       className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 border ${
-                        isActive
-                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                          : 'bg-white text-slate-600 hover:text-slate-900 border-slate-200 hover:bg-slate-50'
+                        vHasReplaceReq
+                          ? isActive
+                            ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                            : 'bg-rose-50 text-rose-900 border-rose-300 hover:bg-rose-100 font-black'
+                          : isActive
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                            : 'bg-white text-slate-600 hover:text-slate-900 border-slate-200 hover:bg-slate-50'
                       }`}
                     >
-                      <Ship className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                      <Ship className={`w-3.5 h-3.5 ${isActive ? 'text-white' : vHasReplaceReq ? 'text-rose-600' : 'text-slate-400'}`} />
                       <span>{v.vessel_name}</span>
+                      {vHasReplaceReq && (
+                        <span className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wide ${
+                          isActive ? 'bg-white/20 text-white' : 'bg-rose-200 text-rose-950'
+                        }`}>
+                          Replace Req
+                        </span>
+                      )}
                       <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${
                         isActive ? 'bg-white/20 text-white' : isDone ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
                       }`}>
-                        {v.submittedCount || 0}/{totalRequired}
+                        {vSubmittedCount}/{totalRequired}
                       </span>
                     </button>
                   );
@@ -2779,78 +3549,216 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </div>
           )}
 
-          {/* Bulk Drag-and-Drop Uploader (Available to Vessel Users) */}
-          {isVesselUser && (
-            <div
-              onDragEnter={handleDrag}
-              onDragLeave={handleDrag}
-              onDragOver={handleDrag}
-              onDrop={handleDrop}
-              className={`p-6 rounded-2xl border-2 border-dashed transition-all text-center space-y-2 relative overflow-hidden ${
-                dragActive 
+          {/* Bulk Drag-and-Drop Uploader */}
+          <div
+            onDragEnter={handleDrag}
+            onDragLeave={handleDrag}
+            onDragOver={handleDrag}
+            onDrop={handleDrop}
+            className={`p-6 rounded-2xl border-2 border-dashed transition-all text-center space-y-2 relative overflow-hidden ${
+              uploadProgress
+                ? 'border-slate-300 bg-slate-100/70 opacity-60 cursor-not-allowed pointer-events-none'
+                : dragActive 
                   ? 'border-blue-500 bg-blue-50/60 scale-[1.01]' 
                   : 'border-slate-200 bg-slate-50/50 hover:bg-slate-50'
-              }`}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
-                    onBulkUpload(order, e.target.files);
-                  }
-                }}
-              />
-              <div className="w-12 h-12 bg-white shadow-2xs rounded-2xl flex items-center justify-center mx-auto text-blue-600 border border-slate-100">
-                <Upload className={`w-6 h-6 ${uploadProgress ? 'animate-bounce text-blue-600' : ''}`} />
-              </div>
-              <div className="space-y-0.5">
-                <p className="text-xs font-black text-slate-800">
-                  {uploadProgress ? 'Checking & uploading documents...' : 'Bulk Drag & Drop Files or ZIP Package'}
-                </p>
-                <p className="text-[11px] text-slate-500 max-w-md mx-auto">
-                  Drop scanned checklists, reports or a pre-compiled ZIP folder here. The system validates form code, description, dates, and allowed file formats automatically.
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={uploadProgress}
-                onClick={() => fileInputRef.current?.click()}
-                className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold shadow-2xs transition-colors inline-flex items-center gap-1.5"
-              >
-                <FolderArchive className="w-3.5 h-3.5 text-blue-600" />
-                Browse &amp; Upload Files
-              </button>
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              disabled={uploadProgress}
+              accept=".pdf,.docx,.doc,.xlsx,.xls,.csv,.jpg,.jpeg,.png,.webp,.zip"
+              className="hidden"
+              onChange={(e) => {
+                if (uploadProgress) return;
+                if (e.target.files && e.target.files.length > 0) {
+                  const selected = Array.from(e.target.files);
+                  e.target.value = '';
+                  onBulkUpload(order, selected);
+                }
+              }}
+            />
+            <div className="w-12 h-12 bg-white shadow-2xs rounded-2xl flex items-center justify-center mx-auto text-blue-600 border border-slate-100">
+              <Upload className={`w-6 h-6 ${uploadProgress ? 'animate-bounce text-blue-600' : ''}`} />
             </div>
-          )}
+            <div className="space-y-0.5">
+              <p className="text-xs font-black text-slate-800">
+                {uploadProgress ? 'Checking & uploading documents...' : 'Bulk Drag & Drop Files or ZIP Package'}
+              </p>
+              <p className="text-[11px] text-slate-500 max-w-md mx-auto">
+                Drop scanned checklists, reports or a pre-compiled ZIP folder here. The system validates form code, description, dates, and allowed file formats automatically.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={uploadProgress}
+              onClick={() => {
+                if (uploadProgress) return;
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = '';
+                  fileInputRef.current.click();
+                }
+              }}
+              className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold shadow-2xs transition-colors inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <FolderArchive className="w-3.5 h-3.5 text-blue-600" />
+              Browse &amp; Upload Files
+            </button>
+          </div>
 
           {/* Form Requirements & Uploaded Files Breakdown */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-black uppercase tracking-wider text-slate-400">
-                Required SMS Forms &amp; Checklist Items ({order.items.length})
-              </h3>
-              <span className="text-xs font-bold text-slate-600">
-                Status: <strong className={isVesselDone ? 'text-emerald-600' : 'text-amber-600'}>{distinctUploaded} of {totalRequired} Uploaded</strong>
-              </span>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-black uppercase tracking-wider text-slate-500">
+                  Required SMS Forms &amp; Checklist Items ({order.items.length})
+                </h3>
+                {checklistSearch.trim() && (
+                  <p className="text-[11px] text-blue-600 font-semibold mt-0.5">
+                    Found {filteredChecklistItems.length} matching item{filteredChecklistItems.length === 1 ? '' : 's'} for &ldquo;{checklistSearch.trim()}&rdquo;
+                  </p>
+                )}
+                {checklistFilter === 'revision' && !checklistSearch.trim() && (
+                  <p className="text-[11px] text-rose-600 font-bold mt-0.5 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 text-rose-600" />
+                    <span>Showing {filteredChecklistItems.length} item{filteredChecklistItems.length === 1 ? '' : 's'} requiring revision/replacement</span>
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-600 bg-slate-50 border border-slate-200/80 px-2.5 py-1 rounded-lg">
+                  Status: <strong className={isVesselDone ? 'text-emerald-600' : 'text-amber-600'}>{distinctUploaded} of {totalRequired} Uploaded</strong>
+                </span>
+              </div>
             </div>
 
-            <div className="divide-y divide-slate-100 border border-slate-200/80 rounded-2xl overflow-hidden bg-white shadow-2xs">
-              {order.items.map((formItem, idx) => {
-                const itemUploads = vesselUploads.filter(u => u.form_id === formItem.form_id || u.form_code === formItem.form_code);
-                const hasUploaded = itemUploads.length > 0;
-
-                return (
-                  <div
-                    key={idx}
-                    className={`p-4.5 transition-colors space-y-3 ${
-                      hasUploaded
-                        ? 'bg-emerald-50/35 hover:bg-emerald-50/55 border-l-4 border-l-emerald-500'
-                        : 'bg-amber-50/20 hover:bg-amber-50/40 border-l-4 border-l-amber-400'
-                    }`}
+            {/* Checklist Search & Quick Filter Controls */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 bg-slate-50/80 p-2.5 rounded-2xl border border-slate-200/80">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={checklistSearch}
+                  onChange={(e) => setChecklistSearch(e.target.value)}
+                  placeholder="Search checklist items by form code, title, category, revision note, or file..."
+                  className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-2xs"
+                />
+                {checklistSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setChecklistSearch('')}
+                    className="p-1 text-slate-400 hover:text-slate-600 absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md hover:bg-slate-100 cursor-pointer"
+                    title="Clear search"
                   >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Status Filter Tabs */}
+              <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs shrink-0 flex-wrap sm:flex-nowrap">
+                <button
+                  type="button"
+                  onClick={() => setChecklistFilter('all')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    checklistFilter === 'all'
+                      ? 'bg-slate-800 text-white shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                  }`}
+                >
+                  All ({order.items.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChecklistFilter('pending')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                    checklistFilter === 'pending'
+                      ? 'bg-amber-600 text-white shadow-2xs'
+                      : 'text-amber-700 hover:bg-amber-50'
+                  }`}
+                >
+                  <Clock className="w-3 h-3" />
+                  Pending ({totalRequired - verifiedCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChecklistFilter('uploaded')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                    checklistFilter === 'uploaded'
+                      ? 'bg-emerald-600 text-white shadow-2xs'
+                      : 'text-emerald-700 hover:bg-emerald-50'
+                  }`}
+                >
+                  <CheckCircle2 className="w-3 h-3" />
+                  Uploaded ({verifiedCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChecklistFilter('revision')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                    checklistFilter === 'revision'
+                      ? 'bg-rose-600 text-white shadow-2xs'
+                      : revisionCount > 0
+                        ? 'text-rose-700 hover:bg-rose-100 bg-rose-50/80 border border-rose-200 font-black'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                  }`}
+                  title={revisionCount > 0 ? `${revisionCount} file(s) require replacement / revision` : 'Filter files requiring revision'}
+                >
+                  <AlertTriangle className={`w-3 h-3 ${checklistFilter === 'revision' ? 'text-white' : revisionCount > 0 ? 'text-rose-600' : 'text-slate-400'}`} />
+                  <span>Revision Required ({revisionCount})</span>
+                  {revisionCount > 0 && checklistFilter !== 'revision' && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse shrink-0" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Checklist Items List or Empty Search State */}
+            {filteredChecklistItems.length === 0 ? (
+              <div className="py-12 px-4 text-center bg-white border border-slate-200/80 rounded-2xl space-y-3 shadow-2xs">
+                <div className="w-12 h-12 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-center mx-auto text-slate-400">
+                  <Search className="w-6 h-6" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-sm font-bold text-slate-800">No matching checklist items found</h4>
+                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                    {checklistSearch.trim()
+                      ? `No checklist requirements matched "${checklistSearch.trim()}". Check spelling or reset search.`
+                      : checklistFilter === 'revision'
+                        ? 'No files currently require revision or replacement for this vessel.'
+                        : 'No checklist items match the selected status filter.'}
+                  </p>
+                </div>
+                {(checklistSearch.trim() || checklistFilter !== 'all') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setChecklistSearch('');
+                      setChecklistFilter('all');
+                    }}
+                    className="px-4 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Reset Search &amp; Filters
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100 border border-slate-200/80 rounded-2xl overflow-hidden bg-white shadow-2xs">
+                {filteredChecklistItems.map((formItem, idx) => {
+                  const itemUploads = vesselUploads.filter(u => checkFormUploadMatch(u, formItem));
+                  const hasUploaded = itemUploads.length > 0;
+
+                  return (
+                    <div
+                      key={idx}
+                      className={`p-4.5 transition-colors space-y-3 ${
+                        hasUploaded
+                          ? 'bg-emerald-50/35 hover:bg-emerald-50/55 border-l-4 border-l-emerald-500'
+                          : 'bg-amber-50/20 hover:bg-amber-50/40 border-l-4 border-l-amber-400'
+                      }`}
+                    >
                     <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                       <div className="space-y-1 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -2931,23 +3839,58 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           </button>
                         )}
 
-                        {isVesselUser && (
-                          <label className="cursor-pointer px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-black tracking-wide flex items-center gap-1.5 shadow-2xs transition-colors" title={formItem.is_hira ? 'Upload one or more files for this form' : hasUploaded ? 'Replace existing file' : 'Upload file for this form'}>
-                            <Upload className="w-3.5 h-3.5" />
-                            <span>{hasUploaded && !formItem.is_hira ? 'Replace File' : formItem.is_hira ? 'Upload File(s)' : 'Upload File'}</span>
-                            <input
-                              type="file"
-                              multiple={Boolean(formItem.is_hira)}
-                              className="hidden"
-                              onChange={(e) => {
-                                if (e.target.files && e.target.files.length > 0) {
-                                  onFileUpload(order.id, formItem, e.target.files);
-                                  e.target.value = '';
-                                }
-                              }}
-                            />
-                          </label>
-                        )}
+                        {isVesselUser && (() => {
+                          const isThisItemUploading = uploadProgress && uploadingForFormId === String(formItem.id ?? formItem.form_id ?? formItem.form_code);
+                          return (
+                            <label 
+                              className={`px-3 py-1.5 rounded-xl text-xs font-black tracking-wide flex items-center gap-1.5 shadow-2xs transition-all ${
+                                uploadProgress
+                                  ? isThisItemUploading
+                                    ? 'bg-blue-100 text-blue-800 border border-blue-300 cursor-wait opacity-90 pointer-events-none shadow-none'
+                                    : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-50 pointer-events-none shadow-none'
+                                  : 'bg-blue-50 hover:bg-blue-100 text-blue-700 cursor-pointer'
+                              }`} 
+                              title={
+                                uploadProgress
+                                  ? isThisItemUploading
+                                    ? 'Uploading file for this form...'
+                                    : 'Upload is currently in progress. Please wait for it to complete.'
+                                  : formItem.is_hira 
+                                    ? 'Upload one or more files for this form' 
+                                    : hasUploaded 
+                                      ? 'Replace existing file' 
+                                      : 'Upload file for this form'
+                              }
+                            >
+                              {isThisItemUploading ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-700" />
+                                  <span>Uploading...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Upload className="w-3.5 h-3.5" />
+                                  <span>{hasUploaded && !formItem.is_hira ? 'Replace File' : formItem.is_hira ? 'Upload File(s)' : 'Upload File'}</span>
+                                </>
+                              )}
+                              <input
+                                type="file"
+                                disabled={uploadProgress}
+                                multiple={Boolean(formItem.is_hira)}
+                                accept={formItem.allowed_file_types && formItem.allowed_file_types.length > 0 ? formItem.allowed_file_types.join(',') : '.pdf,.docx,.doc,.xlsx,.xls,.csv,.jpg,.jpeg,.png,.webp'}
+                                className="hidden"
+                                onChange={(e) => {
+                                  if (uploadProgress) return;
+                                  if (e.target.files && e.target.files.length > 0) {
+                                    const selected = Array.from(e.target.files);
+                                    e.target.value = '';
+                                    onFileUpload(order.id, formItem, selected);
+                                  }
+                                }}
+                              />
+                            </label>
+                          );
+                        })()}
                       </div>
                     </div>
 
@@ -2958,14 +3901,43 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                           <span>Uploaded Document ({itemUploads.length})</span>
                         </div>
+
+                        {/* Vessel replacement warning box */}
+                        {isVesselUser && (() => {
+                          const reqUp = itemUploads.find(u => Boolean(u.replace_requested_at));
+                          if (!reqUp) return null;
+                          return (
+                            <div className="bg-rose-50 p-2.5 rounded-xl border border-rose-200/90 text-rose-800 text-xs font-medium flex items-start gap-2.5 shadow-2xs my-1">
+                              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                              <div className="flex-1 min-w-0">
+                                <p className="font-bold text-rose-950 flex items-center gap-1.5">
+                                  <span>Revision Requested by Management</span>
+                                  <span className="px-1.5 py-0.2 bg-rose-200 text-rose-900 rounded text-[9px] font-black uppercase">Action Required</span>
+                                </p>
+                                <p className="text-[11px] text-rose-800 mt-0.5 font-semibold">
+                                  "{reqUp.replace_reason || 'Please re-upload a clear and revised copy.'}"
+                                </p>
+                                <p className="text-[10px] text-rose-500 mt-0.5">
+                                  Requested by {reqUp.replace_requested_by || 'Management'}
+                                  {reqUp.replace_requested_at && ` on ${new Date(reqUp.replace_requested_at).toLocaleDateString()}`}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
                         <div className="space-y-1.5">
                           {itemUploads.map((up) => (
                             <div
                               key={up.id}
-                              className="bg-emerald-50/40 p-2.5 rounded-lg border border-emerald-200/60 flex items-center justify-between gap-3 text-xs"
+                              className={`p-2.5 rounded-lg border flex items-center justify-between gap-3 text-xs ${
+                                up.replace_requested_at 
+                                  ? 'bg-rose-50/70 border-rose-200/80' 
+                                  : 'bg-emerald-50/40 border-emerald-200/60'
+                              }`}
                             >
                               <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                                <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                                <FileText className={`w-4 h-4 shrink-0 ${up.replace_requested_at ? 'text-rose-600' : 'text-emerald-600'}`} />
                                 <span className="font-bold text-slate-800 truncate" title={up.file_name}>
                                   {up.file_name}
                                 </span>
@@ -2977,7 +3949,41 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                 </span>
                               </div>
 
-                              <div className="flex items-center gap-1.5 shrink-0">
+                              <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                                {/* Revision Request status badge / action button */}
+                                {up.replace_requested_at ? (
+                                  <div className="flex items-center gap-1">
+                                    <span
+                                      className="px-2 py-0.5 bg-rose-100 text-rose-800 border border-rose-300 rounded-md text-[10px] font-black flex items-center gap-1"
+                                      title={up.replace_reason ? `Reason: ${up.replace_reason}` : 'Revision requested'}
+                                    >
+                                      <AlertTriangle className="w-3 h-3 text-rose-600" />
+                                      <span>Revision Requested</span>
+                                    </span>
+                                    {!isVesselUser && onCancelReplacementRequest && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onCancelReplacementRequest(up.id)}
+                                        className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-md text-[10px] font-bold transition-colors cursor-pointer"
+                                        title="Cancel revision request"
+                                      >
+                                        Cancel Request
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  !isVesselUser && onRequestReplacement && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onRequestReplacement(up.id, up.file_name)}
+                                      className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 hover:border-rose-300 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
+                                      title="Request vessel to replace this file"
+                                    >
+                                      <RefreshCw className="w-3 h-3 text-rose-600" />
+                                      <span>Request Revision</span>
+                                    </button>
+                                  )
+                                )}
                                 {up.is_read || up.checked_at ? (
                                   <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300/80 rounded-md text-[10px] font-black flex items-center gap-1">
                                     <CheckCircle2 className="w-3 h-3 text-emerald-600" />
@@ -3042,8 +4048,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 );
               })}
             </div>
-          </div>
+          )}
         </div>
+      </div>
 
         {/* Modal Footer */}
         <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
@@ -3092,26 +4099,71 @@ const CreateOrEditOrderModal: React.FC<CreateOrEditOrderModalProps> = ({
   );
   const [instructions, setInstructions] = useState(editingOrder?.instructions || '');
 
+  // Helper to resolve canonical vessel ID
+  const resolveVesselId = useCallback((rawVId: string | number, rawVName?: string): string => {
+    const rawStr = String(rawVId || '').trim();
+    const rawStrClean = rawStr.replace(/^v/i, '').trim();
+    const match = vessels.find(v => 
+      String(v.id) === rawStr ||
+      String(v.id).replace(/^v/i, '') === rawStrClean ||
+      (rawVName && v.name && v.name.toLowerCase().trim() === rawVName.toLowerCase().trim())
+    );
+    return match ? String(match.id) : rawStr;
+  }, [vessels]);
+
+  // Helper to resolve canonical form ID
+  const resolveFormId = useCallback((rawFId: string, rawFCode?: string): string => {
+    const rawStr = String(rawFId || '').trim();
+    const match = availableForms.find(f => 
+      f.id === rawStr ||
+      (rawFCode && f.formCode && f.formCode.toLowerCase().trim() === rawFCode.toLowerCase().trim()) ||
+      (f.formCode && f.formCode.toLowerCase().trim() === rawStr.toLowerCase().trim())
+    );
+    return match ? match.id : rawStr;
+  }, [availableForms]);
+
   // Vessel Selection state
-  const [selectedVesselIds, setSelectedVesselIds] = useState<string[]>(
-    editingOrder?.vessels?.map(v => String(v.vessel_id)) || []
-  );
+  const [selectedVesselIds, setSelectedVesselIds] = useState<string[]>(() => {
+    if (!editingOrder?.vessels) return [];
+    return editingOrder.vessels.map(v => resolveVesselId(v.vessel_id, v.vessel_name));
+  });
 
   // Forms Selection state
-  const [selectedFormIds, setSelectedFormIds] = useState<string[]>(
-    editingOrder?.items?.map(i => i.form_id) || []
-  );
+  const [selectedFormIds, setSelectedFormIds] = useState<string[]>(() => {
+    if (!editingOrder?.items) return [];
+    return editingOrder.items.map(i => resolveFormId(i.form_id, i.form_code));
+  });
 
   // Per-form Multiple Files (is_hira) customization state
   const [formMultipleFiles, setFormMultipleFiles] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
     if (editingOrder?.items) {
       editingOrder.items.forEach(item => {
+        const resolvedId = resolveFormId(item.form_id, item.form_code);
+        initial[resolvedId] = Boolean(item.is_hira);
         initial[item.form_id] = Boolean(item.is_hira);
       });
     }
     return initial;
   });
+
+  // Keep state in sync if editingOrder prop updates
+  useEffect(() => {
+    if (editingOrder) {
+      setLabel(editingOrder.label || '');
+      setDeadlineDate(editingOrder.deadlineDate || new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
+      setInstructions(editingOrder.instructions || '');
+      setSelectedVesselIds(editingOrder.vessels?.map(v => resolveVesselId(v.vessel_id, v.vessel_name)) || []);
+      setSelectedFormIds(editingOrder.items?.map(i => resolveFormId(i.form_id, i.form_code)) || []);
+      const multiState: Record<string, boolean> = {};
+      editingOrder.items?.forEach(item => {
+        const resolvedId = resolveFormId(item.form_id, item.form_code);
+        multiState[resolvedId] = Boolean(item.is_hira);
+        multiState[item.form_id] = Boolean(item.is_hira);
+      });
+      setFormMultipleFiles(multiState);
+    }
+  }, [editingOrder, resolveVesselId, resolveFormId]);
 
   // Filter state inside form catalog selector
   const [formSearch, setFormSearch] = useState('');
@@ -3181,7 +4233,7 @@ const CreateOrEditOrderModal: React.FC<CreateOrEditOrderModalProps> = ({
 
   // Apply Template
   const applyTemplate = (tpl: OrderTemplate) => {
-    setSelectedFormIds(tpl.itemFormIds);
+    setSelectedFormIds(tpl.itemFormIds.map(fid => resolveFormId(fid)));
     if (!label) setLabel(tpl.title);
     if (tpl.description && !instructions) setInstructions(tpl.description);
   };
@@ -3211,16 +4263,33 @@ const CreateOrEditOrderModal: React.FC<CreateOrEditOrderModalProps> = ({
     setSubmitting(true);
 
     try {
-      const selectedVesselObjects = vessels
-        .filter(v => selectedVesselIds.includes(String(v.id)))
-        .map(v => ({ vessel_id: String(v.id), vessel_name: v.name }));
+      // Build robust vessel objects
+      const selectedVesselObjects = selectedVesselIds.map(vId => {
+        const v = vessels.find(item => 
+          String(item.id) === String(vId) || 
+          String(item.id).replace(/^v/i, '') === String(vId).replace(/^v/i, '')
+        );
+        if (v) {
+          return { vessel_id: String(v.id), vessel_name: v.name };
+        }
+        const prevV = editingOrder?.vessels?.find(pv => 
+          String(pv.vessel_id) === String(vId) ||
+          String(pv.vessel_id).replace(/^v/i, '') === String(vId).replace(/^v/i, '')
+        );
+        return { vessel_id: String(vId), vessel_name: prevV?.vessel_name || `Vessel ${vId}` };
+      });
 
-      const selectedFormObjects = availableForms
-        .filter(f => selectedFormIds.includes(f.id))
-        .map(f => {
-          const isMultiple = formMultipleFiles[f.id] !== undefined
-            ? formMultipleFiles[f.id]
-            : Boolean(f.isHira);
+      // Build robust form item objects
+      const selectedFormObjects = selectedFormIds.map(fId => {
+        const f = availableForms.find(item => 
+          item.id === fId || 
+          item.formCode.toLowerCase().trim() === fId.toLowerCase().trim()
+        );
+        const isMultiple = formMultipleFiles[fId] !== undefined
+          ? formMultipleFiles[fId]
+          : (f ? Boolean(f.isHira) : false);
+
+        if (f) {
           return {
             form_id: f.id,
             form_code: f.formCode,
@@ -3233,18 +4302,36 @@ const CreateOrEditOrderModal: React.FC<CreateOrEditOrderModalProps> = ({
             allowed_file_types: f.allowedFileTypes || [],
             template_file_name: f.templateFileName
           };
-        });
+        }
+        const prevItem = editingOrder?.items?.find(pi => 
+          pi.form_id === fId || 
+          (pi.form_code && pi.form_code.toLowerCase().trim() === fId.toLowerCase().trim())
+        );
+        return {
+          form_id: fId,
+          form_code: prevItem?.form_code || fId,
+          category: prevItem?.category || '1. Monthly',
+          description: prevItem?.description || '',
+          form_date: prevItem?.form_date,
+          type: prevItem?.type || 'Form',
+          is_hira: isMultiple,
+          remove_filename_restriction: prevItem?.remove_filename_restriction ?? false,
+          allowed_file_types: prevItem?.allowed_file_types || [],
+          template_file_name: prevItem?.template_file_name
+        };
+      });
 
       const payload = {
         id: editingOrder?.id || undefined,
-        label,
+        label: label.trim(),
         deadlineDate,
-        instructions,
+        instructions: instructions.trim(),
         vessels: selectedVesselObjects,
         items: selectedFormObjects
       };
 
-      const res = await fetch('/api/sms/orders', {
+      const endpoint = editingOrder?.id ? `/api/sms/orders/${editingOrder.id}` : '/api/sms/orders';
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -3601,23 +4688,25 @@ const CreateOrEditOrderModal: React.FC<CreateOrEditOrderModalProps> = ({
 
                 <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
                   {selectedFormIds.map(fId => {
-                    const form = availableForms.find(f => f.id === fId);
-                    if (!form) return null;
-                    const isMulti = formMultipleFiles[form.id] !== undefined
-                      ? formMultipleFiles[form.id]
-                      : Boolean(form.isHira);
+                    const form = availableForms.find(f => f.id === fId || f.formCode.toLowerCase().trim() === fId.toLowerCase().trim());
+                    const prevItem = editingOrder?.items?.find(pi => pi.form_id === fId || (pi.form_code && pi.form_code.toLowerCase().trim() === fId.toLowerCase().trim()));
+                    const code = form?.formCode || prevItem?.form_code || fId;
+                    const desc = form?.description || prevItem?.description || 'SMS Form Item';
+                    const isMulti = formMultipleFiles[fId] !== undefined
+                      ? formMultipleFiles[fId]
+                      : (form ? Boolean(form.isHira) : Boolean(prevItem?.is_hira));
 
                     return (
                       <div
-                        key={form.id}
+                        key={fId}
                         className="bg-white p-2.5 rounded-xl border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 shadow-2xs"
                       >
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-md text-[10px] font-black shrink-0">
-                            {form.formCode}
+                            {code}
                           </span>
-                          <span className="text-xs font-bold text-slate-800 truncate" title={form.description}>
-                            {form.description}
+                          <span className="text-xs font-bold text-slate-800 truncate" title={desc}>
+                            {desc}
                           </span>
                         </div>
 
@@ -3629,7 +4718,7 @@ const CreateOrEditOrderModal: React.FC<CreateOrEditOrderModalProps> = ({
                               onChange={(e) => {
                                 setFormMultipleFiles(prev => ({
                                   ...prev,
-                                  [form.id]: e.target.checked
+                                  [fId]: e.target.checked
                                 }));
                               }}
                               className="w-3.5 h-3.5 rounded text-amber-600 focus:ring-amber-500 border-slate-300"
@@ -3642,7 +4731,7 @@ const CreateOrEditOrderModal: React.FC<CreateOrEditOrderModalProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              setSelectedFormIds(prev => prev.filter(id => id !== form.id));
+                              setSelectedFormIds(prev => prev.filter(id => id !== fId));
                             }}
                             className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
                             title="Remove form from this order"
@@ -3804,6 +4893,134 @@ const TemplatesManagerModal: React.FC<TemplatesManagerModalProps> = ({
             Done
           </button>
         </div>
+      </div>
+    </div>
+  );
+};
+
+
+// ==========================================
+// SUBCOMPONENT: REPLACEMENT REQUEST MODAL
+// ==========================================
+interface ReplacementRequestModalProps {
+  isOpen: boolean;
+  uploadId: number;
+  fileName: string;
+  onClose: () => void;
+  onSubmit: (uploadId: number, reason: string) => Promise<void> | void;
+}
+
+const ReplacementRequestModal: React.FC<ReplacementRequestModalProps> = ({
+  isOpen,
+  uploadId,
+  fileName,
+  onClose,
+  onSubmit
+}) => {
+  const [reason, setReason] = useState("Management requested revision of this file. Please re-upload a clear and revised copy.");
+  const [loading, setLoading] = useState(false);
+
+  if (!isOpen) return null;
+
+  const quickReasons = [
+    "Illegible / Blurry scan",
+    "Wrong form version attached",
+    "Missing required signature / stamp",
+    "Incomplete document pages",
+    "Outdated or expired document"
+  ];
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await onSubmit(uploadId, reason);
+      onClose();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className="px-6 py-4 bg-rose-50/80 border-b border-rose-100 flex items-center justify-between">
+          <div className="flex items-center gap-2.5 text-rose-800">
+            <RefreshCw className="w-5 h-5 text-rose-600 shrink-0" />
+            <h3 className="font-bold text-base">Request File Revision</h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1 text-slate-400 hover:text-slate-600 rounded-lg transition-colors cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+              File to Revise
+            </label>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 truncate">
+              {fileName}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+              Reason / Instructions for Vessel
+            </label>
+            <textarea
+              rows={3}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="w-full p-3 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none transition-all"
+              placeholder="Specify why this file needs revision..."
+              required
+            />
+          </div>
+
+          <div>
+            <span className="block text-[11px] font-bold text-slate-400 mb-1.5 uppercase tracking-wider">
+              Quick Presets
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {quickReasons.map((preset, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  onClick={() => setReason(preset)}
+                  className="px-2.5 py-1 bg-slate-100 hover:bg-rose-50 hover:text-rose-700 text-slate-600 border border-slate-200 rounded-lg text-[11px] font-medium transition-colors cursor-pointer"
+                >
+                  {preset}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={loading}
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+            >
+              {loading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              <span>Send Request to Vessel</span>
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

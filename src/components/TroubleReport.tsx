@@ -24,6 +24,7 @@ import {
   Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useRealtimeAutoRefresh } from '../services/realtimeSync';
 
 export interface TroubleReport {
   id: string;
@@ -158,6 +159,11 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
   useEffect(() => {
     fetchReports();
   }, [token]);
+
+  // Realtime live update on trouble report changes
+  useRealtimeAutoRefresh(['trouble_reports'], () => {
+    fetchReports();
+  }, 300, [token]);
 
   const [activeTab, setActiveTab] = useState<'all' | 'Submitted' | 'In Progress' | 'Resolved'>('all');
   const [searchQuery, setSearchQuery] = useState('');

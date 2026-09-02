@@ -420,31 +420,47 @@ export const SMSDirectUploadModal: React.FC<SMSDirectUploadModalProps> = ({
             <div
               onDragOver={(e) => {
                 e.preventDefault();
+                if (isUploading) return;
                 setIsDragging(true);
               }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={(e) => {
                 e.preventDefault();
                 setIsDragging(false);
+                if (isUploading) return;
                 if (e.dataTransfer.files) {
                   handleFilesSelected(e.dataTransfer.files);
                 }
               }}
-              onClick={() => fileInputRef.current?.click()}
-              className={`p-6 border-2 border-dashed rounded-2xl text-center cursor-pointer transition-all ${
-                isDragging
-                  ? 'border-emerald-500 bg-emerald-50/60 scale-[1.005]'
-                  : 'border-slate-300 hover:border-emerald-500 hover:bg-slate-50/80 bg-slate-50/40'
+              onClick={() => {
+                if (isUploading) return;
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = '';
+                  fileInputRef.current.click();
+                }
+              }}
+              className={`p-6 border-2 border-dashed rounded-2xl text-center transition-all ${
+                isUploading
+                  ? 'border-slate-300 bg-slate-100/70 opacity-60 cursor-not-allowed pointer-events-none'
+                  : isDragging
+                    ? 'border-emerald-500 bg-emerald-50/60 scale-[1.005] cursor-pointer'
+                    : 'border-slate-300 hover:border-emerald-500 hover:bg-slate-50/80 bg-slate-50/40 cursor-pointer'
               }`}
             >
               <input
                 ref={fileInputRef}
                 type="file"
                 multiple
+                disabled={isUploading}
                 accept=".pdf,.docx,.doc,.xlsx,.xls,.csv,.jpg,.jpeg,.png,.webp,.zip"
                 className="hidden"
                 onChange={(e) => {
-                  if (e.target.files) handleFilesSelected(e.target.files);
+                  if (isUploading) return;
+                  if (e.target.files && e.target.files.length > 0) {
+                    const selected = Array.from(e.target.files) as File[];
+                    e.target.value = '';
+                    handleFilesSelected(selected);
+                  }
                 }}
               />
               <div className="w-12 h-12 bg-emerald-100 text-emerald-700 rounded-2xl flex items-center justify-center mx-auto mb-2.5 shadow-xs">
@@ -514,7 +530,7 @@ export const SMSDirectUploadModal: React.FC<SMSDirectUploadModalProps> = ({
           <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
               <Info className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-              <span>{isVesselUser ? 'Package will be submitted directly to office management.' : 'Package will appear in Order List and Find SMS Report instantly.'}</span>
+              <span>{isVesselUser && currentUser?.username?.toLowerCase() !== 'test' ? 'Package will be submitted directly to office management.' : 'Package will appear in Order List and Find SMS Report instantly.'}</span>
             </div>
 
             <div className="flex items-center gap-2 self-end sm:self-auto">

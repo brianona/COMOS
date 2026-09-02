@@ -30,10 +30,35 @@ import JSZip from 'jszip';
 import WordExtractor from 'word-extractor';
 import mammoth from 'mammoth';
 import { GraphifyEngine } from './src/services/graphifyScanner';
+import { globalRealtimeEngine, extractTableAndDomainFromSql } from './server_realtime';
 
 const graphifyEngine = new GraphifyEngine();
 
 let globalPool: mysql.Pool | null = null;
+
+let cachedOutboundIp: string | null = null;
+let lastOutboundIpTime = 0;
+
+const getOutboundIp = async (): Promise<string> => {
+  if (cachedOutboundIp && Date.now() - lastOutboundIpTime < 180000) {
+    return cachedOutboundIp;
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('https://api.ipify.org?format=json', { signal: controller.signal });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json() as any;
+      if (data && data.ip) {
+        cachedOutboundIp = String(data.ip).trim();
+        lastOutboundIpTime = Date.now();
+        return cachedOutboundIp;
+      }
+    }
+  } catch (err) {}
+  return cachedOutboundIp || '34.96.48.60';
+};
 
 const getB2Settings = async () => {
   let b2KeyId = process.env.B2_APPLICATION_KEY_ID || '';
@@ -214,6 +239,7 @@ async function startServer() {
   let dbNameUsed: string = 'vessel_cert';
   let dbPassSource: string = 'fallback';
   let dbPassLength: number = 0;
+  let initializeTables: ((activePool: mysql.Pool) => Promise<void>) | null = null;
 
   try {
     let dbHost = process.env.DB_HOST || 'localhost';
@@ -361,15 +387,36 @@ async function startServer() {
       }
     };
 
+    const notifyDbChangeFromSql = (sql: any) => {
+      try {
+        const changeInfo = extractTableAndDomainFromSql(sql);
+        if (changeInfo) {
+          const store = asyncLocalStorage.getStore();
+          const req = store?.req;
+          globalRealtimeEngine.notifyChange({
+            domain: changeInfo.domain,
+            action: changeInfo.verb.toLowerCase(),
+            table: changeInfo.table,
+            userId: req?.user?.id ?? null,
+            username: req?.user?.username ?? req?.user?.role ?? null
+          });
+        }
+      } catch (err) {
+        // Ignore notification errors
+      }
+    };
+
     pool.query = (async (...args: any[]) => {
       const res = await rawQuery(...args);
       logQueryToAudit(args[0], args[1]);
+      notifyDbChangeFromSql(args[0]);
       return res;
     }) as any;
 
     pool.execute = (async (...args: any[]) => {
       const res = await rawExecute(...args);
       logQueryToAudit(args[0], args[1]);
+      notifyDbChangeFromSql(args[0]);
       return res;
     }) as any;
 
@@ -381,33 +428,37 @@ async function startServer() {
       conn.query = (async (...args: any[]) => {
         const res = await rawConnQuery(...args);
         logQueryToAudit(args[0], args[1]);
+        notifyDbChangeFromSql(args[0]);
         return res;
       }) as any;
 
       conn.execute = (async (...args: any[]) => {
         const res = await rawConnExecute(...args);
         logQueryToAudit(args[0], args[1]);
+        notifyDbChangeFromSql(args[0]);
         return res;
       }) as any;
 
       return conn;
     }) as any;
     
-    // Test connection and initialize tables
-    console.log('Initializing database tables...');
-    await pool.query('SELECT 1'); // Simple connection test
-    
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS teams (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL UNIQUE
-      )
-    `);
+    let tablesInitialized = false;
+    initializeTables = async (activePool: mysql.Pool) => {
+      if (tablesInitialized) return;
+      console.log('Initializing database tables...');
+      await activePool.query('SELECT 1'); // Simple connection test
+      
+      await activePool.query(`
+        CREATE TABLE IF NOT EXISTS teams (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL UNIQUE
+        )
+      `);
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(255) NOT NULL UNIQUE,
+      await activePool.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          username VARCHAR(255) NOT NULL UNIQUE,
         password VARCHAR(255) NOT NULL,
         role VARCHAR(50) NOT NULL DEFAULT 'user',
         team_id INT,
@@ -433,7 +484,11 @@ async function startServer() {
       
       if (!columnNames.includes('device_id')) {
         console.log('Migrating users table: Adding device_id...');
-        await pool.query('ALTER TABLE users ADD COLUMN device_id VARCHAR(255)');
+        await pool.query('ALTER TABLE users ADD COLUMN device_id TEXT');
+      } else {
+        try {
+          await pool.query('ALTER TABLE users MODIFY COLUMN device_id TEXT');
+        } catch (e) {}
       }
 
       if (!columnNames.includes('is_verified')) {
@@ -455,11 +510,22 @@ async function startServer() {
         user_id INT NOT NULL,
         device_code VARCHAR(255) NOT NULL,
         device_id VARCHAR(255) NOT NULL,
+        label VARCHAR(255) DEFAULT NULL,
         status ENUM('pending', 'approved', 'rejected') NOT NULL DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )
     `);
+
+    try {
+      const [drCols]: any = await pool.query("SHOW COLUMNS FROM device_registration_requests LIKE 'label'");
+      if (drCols.length === 0) {
+        console.log('Migrating device_registration_requests: Adding label column...');
+        await pool.query('ALTER TABLE device_registration_requests ADD COLUMN label VARCHAR(255)');
+      }
+    } catch (e: any) {
+      console.error('Error during device_registration_requests table migration:', e.message);
+    }
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS user_teams (
@@ -732,15 +798,21 @@ async function startServer() {
         'bunker_bdn_reports', 'bunker_bdn_files',
         'crew_members', 'audit_records', 'audit_comments', 'non_conformities', 'trouble_reports',
         'spare_parts_requisitions', 'requisition_attachments',
-        'sms_uploads', 'sms_forms', 'sms_submission_periods'
+        'sms_uploads', 'sms_forms', 'sms_submission_periods',
+        'sms_orders', 'sms_order_vessels', 'sms_order_items', 'sms_order_uploads', 'sms_order_templates',
+        'flags'
       ];
       
       for (const table of tables) {
-        const [columns]: any = await pool.query(`SHOW COLUMNS FROM ${table}`);
-        const columnNames = columns.map((c: any) => c.Field);
-        if (!columnNames.includes('deleted_at')) {
-          console.log(`Migrating ${table} table: Adding deleted_at...`);
-          await pool.query(`ALTER TABLE ${table} ADD COLUMN deleted_at DATETIME NULL`);
+        try {
+          const [columns]: any = await pool.query(`SHOW COLUMNS FROM ${table}`);
+          const columnNames = columns.map((c: any) => c.Field);
+          if (!columnNames.includes('deleted_at')) {
+            console.log(`Migrating ${table} table: Adding deleted_at...`);
+            await pool.query(`ALTER TABLE ${table} ADD COLUMN deleted_at DATETIME NULL`);
+          }
+        } catch (tblErr: any) {
+          // Table might not be created yet if ordered later in startup; ignore or log
         }
       }
     } catch (e: any) {
@@ -1495,6 +1567,11 @@ async function startServer() {
         await pool.query("UPDATE sms_forms SET category = '4B. Annually' WHERE category IN ('4A. Annually', '4B. Anually', '4B Annually')");
         await pool.query("UPDATE sms_uploads SET category = '4A. Semi Annual' WHERE category IN ('4. Semi Annual', '4.A Semi Annual', '4A Semi Annual')");
         await pool.query("UPDATE sms_uploads SET category = '4B. Annually' WHERE category IN ('4A. Annually', '4B. Anually', '4B Annually')");
+
+        // Correct COMI-SM-1-16 template filename and trim form codes
+        await pool.query("UPDATE sms_forms SET template_file_name = 'COMI-SM-1-16 Purifier Report (Self ejector) (22 May 2026).doc' WHERE formCode = 'COMI-SM-1-16' AND (template_file_name LIKE '%COMI-SM-1-6%' OR template_file_name IS NULL)");
+        await pool.query("UPDATE sms_order_items SET form_code = TRIM(form_code)");
+        await pool.query("UPDATE sms_forms SET formCode = TRIM(formCode)");
       } catch (e: any) {
         console.warn('Note on updating SMS form categories in database:', e.message);
       }
@@ -1644,6 +1721,22 @@ async function startServer() {
       // Column might already exist
     }
 
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN replace_requested_at DATETIME NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN replace_requested_by VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN replace_reason TEXT NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN item_id INT NULL');
+    } catch (e) {}
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sms_order_upload_reads (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -1716,9 +1809,14 @@ async function startServer() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS flags (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL UNIQUE
+        name VARCHAR(255) NOT NULL UNIQUE,
+        deleted_at DATETIME NULL
       )
     `);
+
+    try {
+      await pool.query('ALTER TABLE flags ADD COLUMN deleted_at DATETIME NULL');
+    } catch (e) {}
 
     try {
       const [flagRows]: any = await pool.query('SELECT COUNT(*) as count FROM flags');
@@ -1857,18 +1955,30 @@ async function startServer() {
     } else {
       // Migration: Rename existing teams
       console.log('Running team name migration...');
-      await pool.execute("UPDATE teams SET name = 'Team A' WHERE name = 'Team Alpha'");
-      await pool.execute("UPDATE teams SET name = 'Team B' WHERE name = 'Team Beta'");
-      await pool.execute("UPDATE teams SET name = 'Team C' WHERE name = 'Team Delta'");
-      await pool.execute("UPDATE teams SET name = 'Team D' WHERE name = 'Team Gamma'");
+      await activePool.execute("UPDATE teams SET name = 'Team A' WHERE name = 'Team Alpha'");
+      await activePool.execute("UPDATE teams SET name = 'Team B' WHERE name = 'Team Beta'");
+      await activePool.execute("UPDATE teams SET name = 'Team C' WHERE name = 'Team Delta'");
+      await activePool.execute("UPDATE teams SET name = 'Team D' WHERE name = 'Team Gamma'");
     }
+    tablesInitialized = true;
     console.log('Database initialized successfully.');
-  } catch (err: any) {
-    console.error('DATABASE INITIALIZATION FAILED:', err);
-    dbError = err.message;
-    if (pool) (pool as any)._dbErrorCode = err.code;
-    // We don't exit anymore, allowing the server to start and show errors
+  };
+
+  if (pool) {
+    initializeTables(pool).then(() => {
+      dbError = null;
+      if (pool) (pool as any)._dbErrorCode = null;
+    }).catch(err => {
+      console.error('DATABASE INITIALIZATION FAILED:', err.message || err);
+      dbError = err.message || 'Database initialization failed';
+      if (pool) (pool as any)._dbErrorCode = err.code || null;
+    });
   }
+} catch (err: any) {
+  console.error('DATABASE POOL CREATION FAILED:', err);
+  dbError = err.message;
+  if (pool) (pool as any)._dbErrorCode = err.code;
+}
 
   // File Upload Setup (Database-backed)
   const storage = multer.memoryStorage();
@@ -1931,6 +2041,7 @@ async function startServer() {
   // Health check
   app.get('/api/health', (req, res) => {
     res.json({ 
+      connected: !!pool && !dbError,
       status: pool && !dbError ? 'ok' : 'degraded', 
       database: pool && !dbError ? 'connected' : 'disconnected',
       error: dbError,
@@ -1942,13 +2053,14 @@ async function startServer() {
     try {
       const host = process.env.DB_HOST || 'localhost';
       const port = Number(process.env.DB_PORT) || 3306;
-      
-      // Quick TCP check for port 3306
+      const outboundIp = await getOutboundIp();
+
+      // Quick TCP check for port 3306 first (1.5s timeout)
       let tcpCheck = 'PENDING';
       try {
         tcpCheck = await new Promise((resolve) => {
           const socket = new net.Socket();
-          socket.setTimeout(2000);
+          socket.setTimeout(1500);
           socket.on('connect', () => { socket.destroy(); resolve('OPEN'); });
           socket.on('timeout', () => { socket.destroy(); resolve('TIMEOUT'); });
           socket.on('error', (err) => { socket.destroy(); resolve(`ERROR: ${err.message}`); });
@@ -1958,13 +2070,29 @@ async function startServer() {
         tcpCheck = `EXCEPTION: ${e.message}`;
       }
 
+      // If TCP port is open and pool exists, verify with SELECT 1 and initialize tables
+      if (tcpCheck === 'OPEN' && pool) {
+        try {
+          await pool.query('SELECT 1');
+          if (initializeTables) await initializeTables(pool);
+          dbError = null;
+          (pool as any)._dbErrorCode = null;
+        } catch (pingErr: any) {
+          dbError = pingErr.message;
+          (pool as any)._dbErrorCode = pingErr.code;
+        }
+      } else if (tcpCheck !== 'OPEN') {
+        dbError = `connect ${tcpCheck === 'TIMEOUT' ? 'ETIMEDOUT' : tcpCheck}`;
+        if (pool) (pool as any)._dbErrorCode = tcpCheck === 'TIMEOUT' ? 'ETIMEDOUT' : 'TCP_ERROR';
+      }
+
       res.json({ 
-        connected: !!pool && !dbError,
+        connected: !!pool && !dbError && tcpCheck === 'OPEN',
         error: dbError,
         errorCode: (pool as any)?._dbErrorCode || null,
         tcpStatus: tcpCheck,
         webStatus: 'SKIPPED',
-        outboundIp: 'DISABLED',
+        outboundIp: outboundIp,
         diagnostics: {
           resolvedDbHost,
           dbUserUsed,
@@ -1975,8 +2103,8 @@ async function startServer() {
         },
         config: {
           host,
-          user: process.env.DB_USER || 'root',
-          database: process.env.DB_NAME || 'vessel_cert',
+          user: dbUserUsed,
+          database: dbNameUsed,
           port
         }
       });
@@ -1986,6 +2114,34 @@ async function startServer() {
         error: 'Internal Server Error in status check', 
         details: err.message
       });
+    }
+  });
+
+  app.post('/api/retry-db', async (req, res) => {
+    try {
+      if (pool) {
+        try {
+          await pool.query('SELECT 1');
+          if (initializeTables) await initializeTables(pool);
+          dbError = null;
+          (pool as any)._dbErrorCode = null;
+        } catch (pingErr: any) {
+          dbError = pingErr.message;
+          (pool as any)._dbErrorCode = pingErr.code;
+        }
+      }
+      const host = process.env.DB_HOST || 'localhost';
+      const port = Number(process.env.DB_PORT) || 3306;
+      const outboundIp = await getOutboundIp();
+
+      res.json({
+        connected: !!pool && !dbError,
+        error: dbError,
+        errorCode: (pool as any)?._dbErrorCode || null,
+        outboundIp
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
@@ -2015,6 +2171,57 @@ async function startServer() {
       res.status(401).json({ error: 'Invalid token' });
     }
   };
+
+  // ==================== REALTIME LONG-POLLING API ====================
+  app.get('/api/realtime/poll', authenticate, (req: any, res: any) => {
+    try {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+
+      const lastVersion = parseInt(String(req.query.version || '0'), 10) || 0;
+      const timeoutMs = parseInt(String(req.query.timeout || '20000'), 10) || 20000;
+      const domainsStr = req.query.domains ? String(req.query.domains) : '';
+      const domains = domainsStr ? domainsStr.split(',').map((d: string) => d.trim()).filter(Boolean) : undefined;
+      const subscriberId = `${req.user?.id || 'u'}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+      req.on('close', () => {
+        globalRealtimeEngine.removeSubscriber(subscriberId);
+      });
+
+      globalRealtimeEngine.registerSubscriber(subscriberId, res, req.user, lastVersion, domains, timeoutMs);
+    } catch (e: any) {
+      console.warn('Realtime poll error:', e?.message || e);
+      if (!res.headersSent) {
+        res.status(500).json({ error: e.message, version: globalRealtimeEngine.getVersion() });
+      }
+    }
+  });
+
+  app.get('/api/realtime/status', (req: any, res: any) => {
+    res.json({
+      status: 'active',
+      version: globalRealtimeEngine.getVersion(),
+      activeSubscribers: globalRealtimeEngine.getSubscriberCount(),
+      timestamp: Date.now()
+    });
+  });
+
+  app.post('/api/realtime/notify', authenticate, (req: any, res: any) => {
+    const { domain, action, table, meta } = req.body || {};
+    if (domain) {
+      globalRealtimeEngine.notifyChange({
+        domain,
+        action: action || 'update',
+        table: table || domain,
+        userId: req.user?.id ?? null,
+        username: req.user?.username ?? req.user?.role ?? null,
+        meta
+      });
+    }
+    res.json({ success: true, version: globalRealtimeEngine.getVersion() });
+  });
 
   const isAdmin = (req: any, res: any, next: any) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
@@ -2074,12 +2281,30 @@ async function startServer() {
     const [userTeams]: any = await pool.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [user.id]);
     const teamIds = userTeams.map((ut: any) => ut.team_id);
     
+    let vesselName = null;
+    let vesselId = user.vessel_id;
+    if (vesselId) {
+      try {
+        const [vRows]: any = await pool.execute('SELECT name FROM vessels WHERE id = ?', [vesselId]);
+        if (vRows.length > 0) vesselName = vRows[0].name;
+      } catch (err) {}
+    } else if (user.role === 'vessel') {
+      try {
+        const [vRows]: any = await pool.execute('SELECT id, name FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ?', [user.username, user.username.toLowerCase(), `%${user.username.toLowerCase()}%`]);
+        if (vRows.length > 0) {
+          vesselId = vRows[0].id;
+          vesselName = vRows[0].name;
+        }
+      } catch (err) {}
+    }
+
     const token = jwt.sign({ 
       id: user.id, 
       username: user.username, 
       role: user.role, 
       team_ids: teamIds, 
-      vessel_id: user.vessel_id,
+      vessel_id: vesselId,
+      vessel_name: vesselName,
       device_id: user.device_id,
       is_verified: !!user.is_verified
     }, JWT_SECRET);
@@ -2090,20 +2315,68 @@ async function startServer() {
         username: user.username, 
         role: user.role, 
         team_ids: teamIds, 
-        vessel_id: user.vessel_id,
+        vessel_id: vesselId,
+        vessel_name: vesselName,
         device_id: user.device_id,
         is_verified: !!user.is_verified
       } 
     });
   });
 
+  // Helper to extract hardware fingerprint from device ID
+  function extractDeviceFingerprint(id: string | null | undefined): string | null {
+    if (!id || typeof id !== 'string') return null;
+    const m = id.match(/fp_([a-fA-F0-9]+)/);
+    return m ? m[1].toLowerCase() : null;
+  }
+
+  interface ServerDeviceItem {
+    id: string;
+    label: string;
+    created_at?: string;
+  }
+
+  function parseServerDeviceList(raw: string | null | undefined): ServerDeviceItem[] {
+    if (!raw) return [];
+    const trimmed = String(raw).trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item: any, idx: number) => {
+            if (typeof item === 'string') {
+              return {
+                id: item,
+                label: `Device ${idx + 1}`,
+                created_at: new Date().toISOString()
+              };
+            }
+            if (item && typeof item === 'object' && item.id) {
+              return {
+                id: String(item.id),
+                label: item.label ? String(item.label) : `Device ${idx + 1}`,
+                created_at: item.created_at || new Date().toISOString()
+              };
+            }
+            return null;
+          }).filter(Boolean) as ServerDeviceItem[];
+        }
+      } catch (e) {}
+    }
+    return trimmed.split(',').map((s, idx) => ({
+      id: s.trim(),
+      label: `Device ${idx + 1}`,
+      created_at: new Date().toISOString()
+    })).filter(d => Boolean(d.id));
+  }
+
   // Device Registration Routes
   app.post('/api/device/register', authenticate, async (req: any, res) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
-    const { device_id, device_code } = req.body;
+    const { device_id, device_code, label } = req.body;
     const user_id = req.user.id;
     try {
-      // For vessel users, check if they already have 2 verified devices
+      // For vessel users, check if they already have verified devices
       const [userRows]: any = await pool.execute(
         'SELECT device_id, is_verified, role FROM users WHERE id = ?',
         [user_id]
@@ -2111,20 +2384,40 @@ async function startServer() {
       if (userRows.length > 0) {
         const user = userRows[0];
         if (user.role === 'vessel') {
-          let registeredDevices: string[] = [];
-          if (user.is_verified && user.device_id) {
-            if (user.device_id.startsWith('[') && user.device_id.endsWith(']')) {
-              try {
-                registeredDevices = JSON.parse(user.device_id);
-              } catch (e) {}
-            } else {
-              registeredDevices = user.device_id.split(',').map((s: string) => s.trim()).filter(Boolean);
+          const registeredDevices = parseServerDeviceList(user.device_id);
+
+          // 1. Direct exact match
+          const exactIndex = registeredDevices.findIndex(d => d.id === device_id);
+          if (exactIndex !== -1) {
+            if (label && label.trim() && !registeredDevices[exactIndex].label) {
+              registeredDevices[exactIndex].label = label.trim();
+              await pool.execute('UPDATE users SET device_id = ? WHERE id = ?', [JSON.stringify(registeredDevices), user_id]);
             }
+            return res.json({ success: true, already_registered: true, message: 'Device is already registered and verified.' });
           }
 
-          // If the device being registered is already verified, no need to register it again
-          if (registeredDevices.includes(device_id)) {
-            return res.json({ success: true, already_registered: true });
+          // 2. Hardware profile / fingerprint match (Survives Edge/browser storage clearing)
+          const incomingFp = extractDeviceFingerprint(device_id);
+          if (incomingFp) {
+            const matchIndex = registeredDevices.findIndex(d => extractDeviceFingerprint(d.id) === incomingFp);
+            if (matchIndex !== -1) {
+              // Update registered device entry with new random seed while maintaining verified status and label
+              registeredDevices[matchIndex].id = device_id;
+              if (label && label.trim()) {
+                registeredDevices[matchIndex].label = label.trim();
+              }
+              const newDeviceIdStr = JSON.stringify(registeredDevices);
+              await pool.execute(
+                'UPDATE users SET device_id = ?, is_verified = TRUE WHERE id = ?',
+                [newDeviceIdStr, user_id]
+              );
+              return res.json({ 
+                success: true, 
+                already_registered: true, 
+                device_id: newDeviceIdStr,
+                message: 'Hardware profile recognized. Device registration restored automatically.' 
+              });
+            }
           }
 
           if (registeredDevices.length >= 2) {
@@ -2136,9 +2429,10 @@ async function startServer() {
       // Clear any pending requests for this user first
       await pool.execute("DELETE FROM device_registration_requests WHERE user_id = ? AND status = 'pending'", [user_id]);
       
+      const deviceLabel = label && String(label).trim() ? String(label).trim() : null;
       await pool.execute(
-        'INSERT INTO device_registration_requests (user_id, device_id, device_code) VALUES (?, ?, ?)',
-        [user_id, device_id, device_code]
+        'INSERT INTO device_registration_requests (user_id, device_id, device_code, label) VALUES (?, ?, ?, ?)',
+        [user_id, device_id, device_code, deviceLabel]
       );
       res.json({ success: true });
     } catch (e: any) {
@@ -2180,6 +2474,7 @@ async function startServer() {
         JOIN users u ON dr.user_id = u.id
         LEFT JOIN vessels v ON u.vessel_id = v.id
         WHERE dr.status = 'pending'
+        ORDER BY dr.created_at DESC
       `);
       res.json(rows);
     } catch (e: any) {
@@ -2195,6 +2490,7 @@ async function startServer() {
         FROM users u
         LEFT JOIN vessels v ON u.vessel_id = v.id
         WHERE u.role = 'vessel' AND u.device_id IS NOT NULL AND u.is_verified = TRUE
+        ORDER BY v.name ASC, u.username ASC
       `);
       res.json(rows);
     } catch (e: any) {
@@ -2202,12 +2498,90 @@ async function startServer() {
     }
   });
 
+  // Update a device's label (Accessible to Admin, Management/team_pic, PIC/user)
+  app.post('/api/admin/update-device-label', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { user_id, device_id, label } = req.body;
+    if (!user_id || !device_id) {
+      return res.status(400).json({ error: 'user_id and device_id are required' });
+    }
+
+    try {
+      const [userRows]: any = await pool.execute('SELECT id, username, device_id FROM users WHERE id = ?', [user_id]);
+      if (userRows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+      const devices = parseServerDeviceList(userRows[0].device_id);
+      const target = devices.find(d => d.id === device_id);
+      if (!target) {
+        return res.status(404).json({ error: 'Device not found for this user' });
+      }
+
+      const newLabel = label && String(label).trim() ? String(label).trim() : target.label;
+      target.label = newLabel;
+
+      const newDeviceIdStr = JSON.stringify(devices);
+      await pool.execute('UPDATE users SET device_id = ? WHERE id = ?', [newDeviceIdStr, user_id]);
+
+      await logAudit(
+        req.user.id,
+        req.user.username,
+        'UPDATE_DEVICE_LABEL',
+        `Updated device label to "${newLabel}" for vessel account "${userRows[0].username}"`
+      );
+
+      res.json({ success: true, message: 'Device label updated successfully', device_id: newDeviceIdStr });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Remove device (individual or all)
   app.post('/api/admin/remove-device', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
-    const { user_id } = req.body;
+    const { user_id, device_id: deviceIdToRemove } = req.body;
     try {
+      const [userRows]: any = await pool.execute('SELECT id, username, device_id FROM users WHERE id = ?', [user_id]);
+      if (userRows.length === 0) return res.status(404).json({ error: 'User not found' });
+
+      const username = userRows[0].username;
+
+      if (deviceIdToRemove) {
+        // Remove specific device from list
+        let devices = parseServerDeviceList(userRows[0].device_id);
+        const removedDevice = devices.find(d => d.id === deviceIdToRemove);
+        const removedLabel = removedDevice ? removedDevice.label : 'Device';
+        devices = devices.filter(d => d.id !== deviceIdToRemove);
+
+        const newDeviceIdStr = devices.length > 0 ? JSON.stringify(devices) : null;
+        const isVerified = devices.length > 0 ? 1 : 0;
+        await pool.execute('UPDATE users SET device_id = ?, is_verified = ? WHERE id = ?', [newDeviceIdStr, isVerified, user_id]);
+        
+        await logAudit(
+          req.user.id,
+          req.user.username,
+          'REMOVE_DEVICE',
+          `Removed device "${removedLabel}" (${deviceIdToRemove.slice(0, 16)}...) from vessel account "${username}"`
+        );
+
+        return res.json({ 
+          success: true, 
+          message: `Device "${removedLabel}" removed successfully`, 
+          device_id: newDeviceIdStr, 
+          is_verified: !!isVerified 
+        });
+      }
+
+      // Default: Remove all devices for this user
       await pool.execute('UPDATE users SET device_id = NULL, is_verified = FALSE WHERE id = ?', [user_id]);
-      res.json({ message: 'Device registration removed' });
+      
+      await logAudit(
+        req.user.id,
+        req.user.username,
+        'REMOVE_ALL_DEVICES',
+        `Removed all registered devices for vessel account "${username}"`
+      );
+
+      res.json({ success: true, message: 'All device registrations removed' });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -2215,7 +2589,7 @@ async function startServer() {
 
   app.post('/api/admin/verify-device', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
-    const { request_id, status } = req.body; // status: 'approved' | 'rejected'
+    const { request_id, status, label } = req.body; // status: 'approved' | 'rejected', label?: string
     try {
       if (status === 'approved') {
         const [requests]: any = await pool.execute(
@@ -2225,27 +2599,49 @@ async function startServer() {
         const request = requests[0];
         if (request) {
           const [userRows]: any = await pool.execute(
-            'SELECT device_id, is_verified, role FROM users WHERE id = ?',
+            'SELECT id, username, device_id, is_verified, role FROM users WHERE id = ?',
             [request.user_id]
           );
           if (userRows.length > 0) {
             const user = userRows[0];
-            let registeredDevices: string[] = [];
-            if (user.is_verified && user.device_id) {
-              if (user.device_id.startsWith('[') && user.device_id.endsWith(']')) {
-                try {
-                  registeredDevices = JSON.parse(user.device_id);
-                } catch (e) {}
-              } else {
-                registeredDevices = user.device_id.split(',').map((s: string) => s.trim()).filter(Boolean);
+            const registeredDevices = parseServerDeviceList(user.device_id);
+
+            const assignedLabel = (label && String(label).trim()) || 
+                                 (request.label && String(request.label).trim()) || 
+                                 `Device ${registeredDevices.length + 1}`;
+
+            const requestFp = extractDeviceFingerprint(request.device_id);
+            let updated = false;
+
+            if (requestFp) {
+              const matchIndex = registeredDevices.findIndex(d => extractDeviceFingerprint(d.id) === requestFp);
+              if (matchIndex !== -1) {
+                registeredDevices[matchIndex] = {
+                  id: request.device_id,
+                  label: assignedLabel,
+                  created_at: new Date().toISOString()
+                };
+                updated = true;
               }
             }
 
-            if (!registeredDevices.includes(request.device_id)) {
+            if (!updated) {
+              const exactIndex = registeredDevices.findIndex(d => d.id === request.device_id);
+              if (exactIndex !== -1) {
+                registeredDevices[exactIndex].label = assignedLabel;
+                updated = true;
+              }
+            }
+
+            if (!updated) {
               if (user.role === 'vessel' && registeredDevices.length >= 2) {
                 return res.status(400).json({ error: 'Maximum registered devices (2) limit reached for this vessel account. Please remove an existing device first.' });
               }
-              registeredDevices.push(request.device_id);
+              registeredDevices.push({
+                id: request.device_id,
+                label: assignedLabel,
+                created_at: new Date().toISOString()
+              });
             }
 
             const newDeviceIdStr = JSON.stringify(registeredDevices);
@@ -2253,9 +2649,27 @@ async function startServer() {
               'UPDATE users SET device_id = ?, is_verified = TRUE WHERE id = ?',
               [newDeviceIdStr, request.user_id]
             );
+
+            await logAudit(
+              req.user.id,
+              req.user.username,
+              'APPROVE_DEVICE',
+              `Approved device "${assignedLabel}" for vessel account "${user.username}"`
+            );
           }
         }
+      } else if (status === 'rejected') {
+        const [requests]: any = await pool.execute('SELECT dr.*, u.username FROM device_registration_requests dr JOIN users u ON dr.user_id = u.id WHERE dr.id = ?', [request_id]);
+        if (requests.length > 0) {
+          await logAudit(
+            req.user.id,
+            req.user.username,
+            'REJECT_DEVICE',
+            `Rejected device registration request for vessel account "${requests[0].username}"`
+          );
+        }
       }
+
       await pool.execute(
         'UPDATE device_registration_requests SET status = ? WHERE id = ?',
         [status, request_id]
@@ -2579,7 +2993,7 @@ async function startServer() {
   // Flag Routes
   app.get('/api/flags', authenticate, async (req, res) => {
     try {
-      const [flags] = await pool.query('SELECT * FROM flags ORDER BY name ASC');
+      const [flags] = await pool.query('SELECT * FROM flags WHERE deleted_at IS NULL ORDER BY name ASC');
       res.json(flags);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2592,8 +3006,19 @@ async function startServer() {
       return res.status(400).json({ error: 'Flag name is required' });
     }
     try {
+      const [existing]: any = await pool.execute('SELECT id, deleted_at FROM flags WHERE name = ?', [name.trim()]);
+      if (existing.length > 0) {
+        if (existing[0].deleted_at) {
+          // Restore if previously deleted
+          await pool.execute('UPDATE flags SET deleted_at = NULL WHERE id = ?', [existing[0].id]);
+          await logAudit(req.user.id, req.user.username, 'RESTORE_FLAG', `Restored flag: ${name.trim()}`);
+          return res.json({ id: existing[0].id, name: name.trim() });
+        }
+        return res.status(400).json({ error: 'A flag with this name already exists' });
+      }
+
       const [result]: any = await pool.execute('INSERT INTO flags (name) VALUES (?)', [name.trim()]);
-      await logAudit(req.user.id, req.user.username, 'CREATE_FLAG', `Created flag: ${name}`);
+      await logAudit(req.user.id, req.user.username, 'CREATE_FLAG', `Created flag: ${name.trim()}`);
       res.json({ id: result.insertId, name: name.trim() });
     } catch (e: any) {
       if (e.code === 'ER_DUP_ENTRY') {
@@ -2626,8 +3051,8 @@ async function startServer() {
   app.delete('/api/flags/:id', authenticate, isAdmin, async (req: any, res) => {
     const { id } = req.params;
     try {
-      await pool.execute('DELETE FROM flags WHERE id = ?', [id]);
-      await logAudit(req.user.id, req.user.username, 'DELETE_FLAG', `Deleted flag ID ${id}`);
+      await pool.execute('UPDATE flags SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_FLAG', `Soft-deleted flag ID ${id}`);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -3155,12 +3580,277 @@ async function startServer() {
     }
   });
 
+  // Fast Server-side Bulk Template ZIP Download (All Sections or single category)
+  app.get('/api/sms/templates/download-all-zip', authenticate, async (req: any, res) => {
+    try {
+      const categoryFilter = req.query.category ? String(req.query.category).trim() : null;
+      
+      let query = 'SELECT id, category, formCode, description, type, template_file_name, template_file_data, template_file_mimetype, template_files FROM sms_forms WHERE deleted_at IS NULL';
+      const params: any[] = [];
+      if (categoryFilter) {
+        query += ' AND (category = ? OR TRIM(category) = ?)';
+        params.push(categoryFilter, categoryFilter);
+      }
+      query += ' ORDER BY category ASC, sort_order ASC, formCode ASC, id ASC';
+
+      const [forms]: any = await pool.query(query, params);
+
+      if (!forms || forms.length === 0) {
+        return res.status(404).json({ error: 'No forms found to package templates.' });
+      }
+
+      const zip = new JSZip();
+      const fileEntries: { folder: string; filename: string; buffer: Buffer }[] = [];
+
+      // Process forms in parallel batches of 25 for blazing fast assembly
+      const BATCH_SIZE = 25;
+      for (let i = 0; i < forms.length; i += BATCH_SIZE) {
+        const batch = forms.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(async (form: any) => {
+          try {
+            const rawCat = form.category || '1. Monthly';
+            const safeFolderName = categoryFilter ? '' : rawCat.replace(/[\/\\?%*:|"<>]/g, '_');
+            const code = (form.formCode || 'SMS_FORM').trim();
+            let formFilesAdded = 0;
+
+            // 1. Multiple template files attached
+            if (form.template_files) {
+              let tFiles: any[] = [];
+              try {
+                tFiles = typeof form.template_files === 'string' ? JSON.parse(form.template_files) : form.template_files;
+              } catch (e) {
+                tFiles = [];
+              }
+              if (Array.isArray(tFiles) && tFiles.length > 0) {
+                for (const tf of tFiles) {
+                  if (tf && tf.data) {
+                    try {
+                      let str = String(tf.data);
+                      let buf: Buffer;
+                      if (str.startsWith('B2_KEY:')) {
+                        buf = await handleFileRetrieve(Buffer.from(str));
+                      } else if (str.startsWith('data:')) {
+                        const base64Part = str.split(',')[1] || str;
+                        buf = Buffer.from(base64Part, 'base64');
+                      } else {
+                        buf = Buffer.from(str, 'base64');
+                      }
+                      const rawName = tf.name ? tf.name : `${code}_Template.docx`;
+                      fileEntries.push({ folder: safeFolderName, filename: rawName, buffer: buf });
+                      formFilesAdded++;
+                    } catch (err: any) {
+                      console.warn(`Template file unpack error for ${code}:`, err.message);
+                    }
+                  }
+                }
+              }
+            }
+
+            // 2. Single template file
+            if (formFilesAdded === 0 && form.template_file_data) {
+              try {
+                const rawDataForBuffer = form.template_file_data;
+                let fileBuf: Buffer;
+                if (Buffer.isBuffer(rawDataForBuffer) && rawDataForBuffer.length > 7 && rawDataForBuffer.toString('utf8', 0, 7) === 'B2_KEY:') {
+                  fileBuf = await handleFileRetrieve(rawDataForBuffer);
+                } else {
+                  let str = Buffer.isBuffer(rawDataForBuffer) ? rawDataForBuffer.toString('utf-8') : String(rawDataForBuffer);
+                  if (str.startsWith('B2_KEY:')) {
+                    fileBuf = await handleFileRetrieve(Buffer.from(str));
+                  } else if (str.startsWith('data:')) {
+                    const base64Part = str.split(',')[1] || str;
+                    fileBuf = Buffer.from(base64Part, 'base64');
+                  } else {
+                    fileBuf = Buffer.isBuffer(rawDataForBuffer) ? rawDataForBuffer : Buffer.from(rawDataForBuffer, 'base64');
+                  }
+                }
+                const rawName = form.template_file_name ? form.template_file_name : `${code}_Template.docx`;
+                fileEntries.push({ folder: safeFolderName, filename: rawName, buffer: fileBuf });
+                formFilesAdded++;
+              } catch (err: any) {
+                console.warn(`Single template unpack error for ${code}:`, err.message);
+              }
+            }
+
+            // 3. Clean standard specification text template fallback if no uploaded template
+            if (formFilesAdded === 0) {
+              const desc = (form.description || 'SMS Checklist / Form').trim();
+              const cleanDesc = desc.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
+              const content = `SAFETY MANAGEMENT SYSTEM (SMS) TEMPLATE\n` +
+                `==================================================\n` +
+                `Form Code: ${code}\n` +
+                `Category: ${rawCat}\n` +
+                `Type: ${form.type || 'Form'}\n` +
+                `Description: ${desc}\n` +
+                `Generated: ${new Date().toISOString()}\n\n` +
+                `Instructions:\n` +
+                `This is an approved standard form placeholder. When filing submissions for ${code},\n` +
+                `ensure all vessel measurements, checks, and officer sign-offs are documented.\n`;
+              fileEntries.push({
+                folder: safeFolderName,
+                filename: `${code}_${cleanDesc}_Standard_Template.txt`,
+                buffer: Buffer.from(content, 'utf-8')
+              });
+              formFilesAdded++;
+            }
+          } catch (e: any) {
+            console.error(`Error processing form ${form.formCode}:`, e.message);
+          }
+        }));
+      }
+
+      const usedNames = new Set<string>();
+      for (const entry of fileEntries) {
+        const targetFolder = entry.folder ? (zip.folder(entry.folder) || zip) : zip;
+        let nameCandidate = entry.filename.replace(/[\/\\?%*:|"<>]/g, '_');
+        const uniqueKey = (entry.folder ? entry.folder + '/' : '') + nameCandidate;
+        if (usedNames.has(uniqueKey)) {
+          const lastDot = nameCandidate.lastIndexOf('.');
+          const base = lastDot !== -1 ? nameCandidate.substring(0, lastDot) : nameCandidate;
+          const ext = lastDot !== -1 ? nameCandidate.substring(lastDot) : '';
+          let counter = 1;
+          while (usedNames.has((entry.folder ? entry.folder + '/' : '') + `${base}_${counter}${ext}`)) {
+            counter++;
+          }
+          nameCandidate = `${base}_${counter}${ext}`;
+        }
+        usedNames.add((entry.folder ? entry.folder + '/' : '') + nameCandidate);
+        targetFolder.file(nameCandidate, entry.buffer);
+      }
+
+      const zipBuffer = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 4 }
+      });
+
+      const safeName = categoryFilter
+        ? `SMS_Templates_${categoryFilter.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+        : `SMS_All_Templates_Master_Catalog_${new Date().getFullYear()}`;
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}.zip"`);
+      res.send(zipBuffer);
+    } catch (e: any) {
+      console.error('Error generating master template zip:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Fast Server-side Bulk Uploads / Submissions ZIP Download
+  app.get('/api/sms/uploads/download-all-zip', authenticate, async (req: any, res) => {
+    try {
+      const categoryFilter = req.query.category ? String(req.query.category).trim() : null;
+      const vesselFilter = req.query.vesselId ? String(req.query.vesselId).trim() : null;
+
+      let query = 'SELECT id, vessel_id as vesselId, vessel_name as vesselName, month, year, file_name as fileName, category, file_data FROM sms_uploads WHERE deleted_at IS NULL';
+      const params: any[] = [];
+      if (categoryFilter) {
+        query += ' AND (category = ? OR TRIM(category) = ?)';
+        params.push(categoryFilter, categoryFilter);
+      }
+      if (vesselFilter) {
+        query += ' AND vessel_id = ?';
+        params.push(vesselFilter);
+      }
+      query += ' ORDER BY category ASC, vessel_name ASC, year DESC, month DESC, id DESC';
+
+      const [uploads]: any = await pool.query(query, params);
+      if (!uploads || uploads.length === 0) {
+        return res.status(404).json({ error: 'No SMS uploads found to download.' });
+      }
+
+      const zip = new JSZip();
+      const fileEntries: { folder: string; filename: string; buffer: Buffer }[] = [];
+
+      const BATCH_SIZE = 25;
+      for (let i = 0; i < uploads.length; i += BATCH_SIZE) {
+        const batch = uploads.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(async (up: any) => {
+          try {
+            const rawCat = (up.category || '1. Monthly').replace(/[\/\\?%*:|"<>]/g, '_');
+            const rawVessel = (up.vesselName || 'Vessel').replace(/[\/\\?%*:|"<>]/g, '_');
+            const folder = `${rawCat}/${rawVessel}/${up.month || 'M'}_${up.year || 'Y'}`;
+            
+            let buf: Buffer | null = null;
+            if (up.file_data) {
+              const raw = up.file_data;
+              if (Buffer.isBuffer(raw) && raw.length > 7 && raw.toString('utf8', 0, 7) === 'B2_KEY:') {
+                buf = await handleFileRetrieve(raw);
+              } else {
+                let str = Buffer.isBuffer(raw) ? raw.toString('utf-8') : String(raw);
+                if (str.startsWith('B2_KEY:')) {
+                  buf = await handleFileRetrieve(Buffer.from(str));
+                } else if (str.startsWith('data:')) {
+                  const base64Part = str.split(',')[1] || str;
+                  buf = Buffer.from(base64Part, 'base64');
+                } else {
+                  buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw, 'base64');
+                }
+              }
+            }
+
+            if (!buf) {
+              buf = Buffer.from(`Missing file payload for ${up.fileName}`, 'utf-8');
+            }
+
+            fileEntries.push({ folder, filename: up.fileName || 'file.bin', buffer: buf });
+          } catch (err: any) {
+            console.warn(`Upload unpack error for ${up.fileName}:`, err.message);
+          }
+        }));
+      }
+
+      const usedNames = new Set<string>();
+      for (const entry of fileEntries) {
+        const targetFolder = zip.folder(entry.folder) || zip;
+        let nameCandidate = entry.filename.replace(/[\/\\?%*:|"<>]/g, '_');
+        const uniqueKey = entry.folder + '/' + nameCandidate;
+        if (usedNames.has(uniqueKey)) {
+          const lastDot = nameCandidate.lastIndexOf('.');
+          const base = lastDot !== -1 ? nameCandidate.substring(0, lastDot) : nameCandidate;
+          const ext = lastDot !== -1 ? nameCandidate.substring(lastDot) : '';
+          let counter = 1;
+          while (usedNames.has(entry.folder + '/' + `${base}_${counter}${ext}`)) {
+            counter++;
+          }
+          nameCandidate = `${base}_${counter}${ext}`;
+        }
+        usedNames.add(entry.folder + '/' + nameCandidate);
+        targetFolder.file(nameCandidate, entry.buffer);
+      }
+
+      const zipBuffer = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 3 }
+      });
+
+      const safeName = categoryFilter
+        ? `SMS_Submissions_${categoryFilter.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+        : `SMS_All_Submissions_All_Sections_${new Date().getFullYear()}`;
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}.zip"`);
+      res.send(zipBuffer);
+    } catch (e: any) {
+      console.error('Error generating master uploads zip:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.get('/api/sms/forms/:id/download-template', authenticate, async (req, res) => {
     try {
-      const [rows]: any = await pool.execute(
-        'SELECT template_file_name, template_file_data, template_file_mimetype, template_files FROM sms_forms WHERE (id = ? OR formCode = ?) AND deleted_at IS NULL',
-        [req.params.id, req.params.id]
+      let [rows]: any = await pool.execute(
+        'SELECT formCode, description, template_file_name, template_file_data, template_file_mimetype, template_files FROM sms_forms WHERE id = ? AND deleted_at IS NULL',
+        [req.params.id]
       );
+      if (!rows || rows.length === 0) {
+        [rows] = await pool.execute(
+          'SELECT formCode, description, template_file_name, template_file_data, template_file_mimetype, template_files FROM sms_forms WHERE (formCode = ? OR TRIM(formCode) = TRIM(?)) AND deleted_at IS NULL',
+          [req.params.id, req.params.id]
+        );
+      }
       if (!rows || rows.length === 0) {
         return res.status(404).json({ error: 'No template file found for this form.' });
       }
@@ -3472,34 +4162,221 @@ async function startServer() {
     }
   });
 
+  // ==================== SMS VESSEL MATCHING HELPERS ====================
+  const normalizeVesselName = (s: string) => {
+    return (s || '')
+      .toLowerCase()
+      .replace(/^m\/?v\.?\s+/i, '')
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
+  };
+
+  async function getVesselUserIdentity(poolRef: any, userObj: any) {
+    if (!poolRef || !userObj) return { vesselId: null, vesselName: null };
+    let vId = userObj.vessel_id != null ? String(userObj.vessel_id) : null;
+    let vName: string | null = null;
+
+    try {
+      if (!vId && userObj.id) {
+        const [uRows]: any = await poolRef.execute('SELECT vessel_id, username, role FROM users WHERE id = ?', [userObj.id]);
+        if (uRows.length > 0 && uRows[0].vessel_id) {
+          vId = String(uRows[0].vessel_id);
+        }
+      }
+
+      if (vId) {
+        const cleanId = vId.replace(/^v/i, '').trim();
+        const [vRows]: any = await poolRef.execute('SELECT id, name FROM vessels WHERE id = ? OR id = ? OR name = ?', [vId, cleanId, vId]);
+        if (vRows.length > 0) {
+          vName = vRows[0].name;
+        }
+      }
+
+      if (!vName && userObj.username) {
+        const uTrim = userObj.username.trim();
+        const [vRows]: any = await poolRef.execute(
+          'SELECT id, name FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ?',
+          [uTrim, uTrim.toLowerCase(), `%${uTrim.toLowerCase()}%`]
+        );
+        if (vRows.length > 0) {
+          if (!vId) vId = String(vRows[0].id);
+          vName = vRows[0].name;
+        }
+      }
+    } catch (err) {
+      console.error('Error getting vessel user identity:', err);
+    }
+
+    return { vesselId: vId, vesselName: vName };
+  }
+
+  function checkVesselMatch(
+    vesselId: string | number | null | undefined,
+    vesselName: string | null | undefined,
+    targetId: string | number | null | undefined,
+    targetName: string | null | undefined,
+    username?: string | null
+  ): boolean {
+    const vIdStr = vesselId != null ? String(vesselId).trim() : '';
+    const vIdClean = vIdStr.replace(/^v/i, '').trim();
+    const vNameTrim = (vesselName || '').trim();
+    const vNameNorm = normalizeVesselName(vNameTrim);
+
+    const tIdStr = targetId != null ? String(targetId).trim() : '';
+    const tIdClean = tIdStr.replace(/^v/i, '').trim();
+    const tNameTrim = (targetName || '').trim();
+    const tNameNorm = normalizeVesselName(tNameTrim);
+
+    const uTrim = (username || '').trim();
+    const uNorm = normalizeVesselName(uTrim);
+
+    // 1. Direct ID match (handles '4', 'v4', etc.)
+    if (tIdClean && vIdClean && (tIdClean === vIdClean || tIdStr === vIdStr)) {
+      return true;
+    }
+
+    // 2. Direct name match (case-insensitive)
+    if (tNameTrim && vNameTrim && tNameTrim.toLowerCase() === vNameTrim.toLowerCase()) {
+      return true;
+    }
+    if (uTrim && vNameTrim && uTrim.toLowerCase() === vNameTrim.toLowerCase()) {
+      return true;
+    }
+    if (tNameTrim && vIdStr && tNameTrim.toLowerCase() === vIdStr.toLowerCase()) {
+      return true;
+    }
+
+    // 3. Normalized name match (removes MV, symbols, spaces)
+    if (tNameNorm && vNameNorm && (tNameNorm === vNameNorm || tNameNorm.includes(vNameNorm) || vNameNorm.includes(tNameNorm))) {
+      return true;
+    }
+    if (uNorm && vNameNorm && (uNorm === vNameNorm || uNorm.includes(vNameNorm) || vNameNorm.includes(uNorm))) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function checkFormUploadMatch(u: any, item: any): boolean {
+    if (!u || !item) return false;
+
+    // 0. Direct item_id match (if explicitly linked to this order item)
+    if (u.item_id != null && item.id != null && String(u.item_id) === String(item.id)) {
+      return true;
+    }
+
+    const uFormId = u.form_id != null ? String(u.form_id).trim() : '';
+    const itemFormId = item.form_id != null ? String(item.form_id).trim() : '';
+
+    const uCode = u.form_code != null ? String(u.form_code).trim().toUpperCase() : '';
+    const fCode = item.form_code != null ? String(item.form_code).trim().toUpperCase() : '';
+
+    const fDesc = item.description != null ? String(item.description).toUpperCase() : '';
+    const fName = u.file_name != null ? String(u.file_name).toUpperCase() : '';
+
+    const combinedItemText = `${fCode} ${fDesc}`.toUpperCase();
+    const combinedFileText = `${uCode} ${fName}`.toUpperCase();
+
+    const hasQualifierConflict = (): boolean => {
+      if (!fDesc && !fCode) return false;
+
+      // 1. Department checks (Deck, Engine, Catering)
+      const isDeckItem = combinedItemText.includes('DECK');
+      const isEngineItem = combinedItemText.includes('ENGINE') || combinedItemText.includes('(ENG)') || combinedItemText.includes(' ENGINE ') || combinedItemText.includes('-ENG') || combinedItemText.includes('_ENG');
+      const isCateringItem = combinedItemText.includes('CATERING') || combinedItemText.includes('(CAT)') || combinedItemText.includes('GALLEY') || combinedItemText.includes('STEWARD');
+
+      const isDeckFile = combinedFileText.includes('DECK');
+      const isEngineFile = combinedFileText.includes('ENGINE') || combinedFileText.includes('_ENG') || combinedFileText.includes('-ENG') || combinedFileText.includes(' ENG.') || combinedFileText.includes('(ENG)');
+      const isCateringFile = combinedFileText.includes('CATERING') || combinedFileText.includes('_CAT') || combinedFileText.includes('-CAT') || combinedFileText.includes('GALLEY');
+
+      if ((isDeckItem || isEngineItem || isCateringItem) && (isDeckFile || isEngineFile || isCateringFile)) {
+        if (isDeckItem && !isDeckFile) return true;
+        if (isEngineItem && !isEngineFile) return true;
+        if (isCateringItem && !isCateringFile) return true;
+      }
+
+      // 2. Flag / Jurisdiction checks (e.g. Malta, Singapore vs Panama vs Liberia etc.)
+      const flagsList = ['MALTA', 'SINGAPORE', 'PANAMA', 'LIBERIA', 'MARSHALL', 'BAHAMAS', 'CYPRUS', 'TUVALU', 'VANUATU', 'ANTIGUA', 'HONG KONG'];
+      const itemFlags = flagsList.filter(flg => combinedItemText.includes(flg));
+      const fileFlags = flagsList.filter(flg => combinedFileText.includes(flg));
+
+      if (itemFlags.length > 0 && fileFlags.length > 0) {
+        const hasCommonFlag = itemFlags.some(flg => fileFlags.includes(flg));
+        if (!hasCommonFlag) return true;
+      }
+
+      // 3. Sub-code suffix checks (e.g. COMI-SM-1-8 vs COMI-SM-1-8A vs COMI-SM-1-3A vs COMI-SM-1-3)
+      if (fCode) {
+        const escapedCode = fCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const extendedCodeRegex = new RegExp(`(^|[^A-Z0-9])${escapedCode}[-_]?([A-Z0-9]+)`, 'i');
+        const match = combinedFileText.match(extendedCodeRegex);
+        if (match && match[2]) {
+          const subToken = match[2].toUpperCase();
+          const cleanFCode = fCode.replace(/[^A-Z0-9]/g, '');
+          const isPartOfFCode = cleanFCode.endsWith(subToken) || fCode.toUpperCase().includes(subToken);
+          const isYear = /^(202[0-9]|203[0-9])$/.test(subToken);
+          const isPartOfDesc = fDesc.includes(subToken) || subToken.length > 3;
+          if (!isPartOfFCode && !isYear && !isPartOfDesc) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    };
+
+    // 1. Direct form_id match
+    if (uFormId && itemFormId && uFormId === itemFormId) {
+      if (hasQualifierConflict()) return false;
+      return true;
+    }
+
+    // 2. Exact or normalized form_code match
+    if (uCode && fCode) {
+      const uNorm = uCode.replace(/[^A-Z0-9]/g, '');
+      const fNorm = fCode.replace(/[^A-Z0-9]/g, '');
+      if (uCode === fCode || uNorm === fNorm) {
+        if (hasQualifierConflict()) return false;
+        return true;
+      }
+    }
+
+    // 3. Match by form_code token in file_name
+    if (fName && fCode) {
+      const escapedCode = fCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[^A-Z0-9]/g, '[^A-Z0-9]');
+      const regex = new RegExp(`(^|[^A-Z0-9])${escapedCode}([^A-Z0-9]|$)`, 'i');
+      if (regex.test(fName)) {
+        if (hasQualifierConflict()) return false;
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   // ==================== SMS ORDER LIST ROUTES ====================
   app.get('/api/sms/orders', authenticate, async (req: any, res) => {
     try {
       const isVessel = req.user.role === 'vessel';
-      let orderQuery = `
-        SELECT o.id, o.label, o.deadline_date, o.instructions, o.created_by_id, o.created_by_name, o.created_at, o.updated_at
-        FROM sms_orders o
-        WHERE o.deleted_at IS NULL
-      `;
-      let orderParams: any[] = [];
+      let assignedVesselId: string | null = null;
+      let assignedVesselName: string | null = null;
+
       if (isVessel) {
-        orderQuery = `
-          SELECT DISTINCT o.id, o.label, o.deadline_date, o.instructions, o.created_by_id, o.created_by_name, o.created_at, o.updated_at
-          FROM sms_orders o
-          JOIN sms_order_vessels ov ON o.id = ov.order_id
-          WHERE o.deleted_at IS NULL AND ov.deleted_at IS NULL AND (ov.vessel_id = ? OR ov.vessel_id = ? OR ov.vessel_name = ?)
-        `;
-        orderParams = [String(req.user.vessel_id || ''), String(req.user.id || ''), req.user.username || ''];
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        assignedVesselId = idInfo.vesselId;
+        assignedVesselName = idInfo.vesselName;
       }
-      orderQuery += ' ORDER BY o.created_at DESC';
 
-      const [orders]: any = await pool.query(orderQuery, orderParams);
+      // Fetch all active orders
+      const [orders]: any = await pool.query(
+        'SELECT o.id, o.label, o.deadline_date, o.instructions, o.created_by_id, o.created_by_name, o.created_at, o.updated_at FROM sms_orders o WHERE o.deleted_at IS NULL ORDER BY o.created_at DESC'
+      );
 
-      const orderIds = orders.map((o: any) => o.id);
-      if (orderIds.length === 0) {
+      if (orders.length === 0) {
         return res.json([]);
       }
 
+      const orderIds = orders.map((o: any) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
       const [vessels]: any = await pool.query(
         `SELECT id, order_id, vessel_id, vessel_name, status, completed_at FROM sms_order_vessels WHERE order_id IN (${placeholders}) AND deleted_at IS NULL`,
@@ -3512,7 +4389,7 @@ async function startServer() {
       );
 
       const [uploads]: any = await pool.query(
-        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by FROM sms_order_uploads WHERE order_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
+        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, item_id, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by, replace_requested_at, replace_requested_by, replace_reason FROM sms_order_uploads WHERE order_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
         orderIds
       );
 
@@ -3531,8 +4408,21 @@ async function startServer() {
         }
       }
 
-      const result = orders.map((o: any) => {
+      const results = [];
+
+      for (const o of orders) {
         const orderVessels = vessels.filter((v: any) => v.order_id === o.id);
+
+        // For vessel users, only include orders assigned to their vessel
+        if (isVessel) {
+          const isAssigned = orderVessels.some((v: any) =>
+            checkVesselMatch(v.vessel_id, v.vessel_name, assignedVesselId, assignedVesselName, req.user.username)
+          );
+          if (!isAssigned) {
+            continue;
+          }
+        }
+
         const orderItems = items.filter((i: any) => i.order_id === o.id).map((it: any) => {
           let parsedAllowed: string[] = [];
           try {
@@ -3548,7 +4438,10 @@ async function startServer() {
             remove_filename_restriction: Boolean(it.remove_filename_restriction),
             allowed_file_types: parsedAllowed
           };
-        });
+        }).sort((a: any, b: any) =>
+          String(a.form_code || '').localeCompare(String(b.form_code || ''), undefined, { numeric: true, sensitivity: 'base' })
+        );
+
         const orderUploads = uploads.filter((u: any) => u.order_id === o.id).map((u: any) => {
           const isRead = isVessel ? true : userReadMap.has(u.id);
           const readAt = isRead ? userReadMap.get(u.id) || u.checked_at || u.uploaded_at : null;
@@ -3564,12 +4457,16 @@ async function startServer() {
         const totalItemsCount = orderItems.length;
 
         const mappedVessels = orderVessels.map((v: any) => {
-          const vUploads = orderUploads.filter((u: any) => String(u.vessel_id) === String(v.vessel_id) || u.vessel_name === v.vessel_name);
-          const distinctFormsUploaded = new Set(vUploads.map((u: any) => u.form_id || u.form_code)).size;
-          const isCompleted = totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount;
+          const vUploads = orderUploads.filter((u: any) => 
+            checkVesselMatch(u.vessel_id, u.vessel_name, v.vessel_id, v.vessel_name)
+          );
+          const distinctFormsUploaded = orderItems.filter((item: any) => {
+            return vUploads.some((u: any) => checkFormUploadMatch(u, item));
+          }).length;
+          const isCompleted = (totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount) || v.status === 'Completed';
           return {
             ...v,
-            submittedCount: distinctFormsUploaded,
+            submittedCount: isCompleted ? totalItemsCount : distinctFormsUploaded,
             totalRequiredCount: totalItemsCount,
             totalFilesUploaded: vUploads.length,
             status: isCompleted ? 'Completed' : (v.status || 'Pending')
@@ -3590,7 +4487,9 @@ async function startServer() {
 
         let vesselProgress = null;
         if (isVessel) {
-          const myVessel = mappedVessels.find((v: any) => String(v.vessel_id) === String(req.user.vessel_id) || v.vessel_name === req.user.username) || mappedVessels[0];
+          const myVessel = mappedVessels.find((v: any) =>
+            checkVesselMatch(v.vessel_id, v.vessel_name, assignedVesselId, assignedVesselName, req.user.username)
+          ) || mappedVessels[0];
           if (myVessel) {
             vesselProgress = {
               submittedCount: myVessel.submittedCount,
@@ -3601,7 +4500,11 @@ async function startServer() {
           }
         }
 
-        return {
+        const returnedUploads = isVessel
+          ? orderUploads.filter((u: any) => checkVesselMatch(u.vessel_id, u.vessel_name, assignedVesselId, assignedVesselName, req.user.username))
+          : orderUploads;
+
+        results.push({
           id: o.id,
           label: o.label,
           deadlineDate: o.deadline_date,
@@ -3612,15 +4515,15 @@ async function startServer() {
           updatedAt: o.updated_at,
           vessels: mappedVessels,
           items: orderItems,
-          uploads: orderUploads,
+          uploads: returnedUploads,
           totalItemsCount,
           totalVesselsCount: mappedVessels.length,
           overallStatus,
           vesselProgress
-        };
-      });
+        });
+      }
 
-      res.json(result);
+      res.json(results);
     } catch (e: any) {
       console.error('Error fetching SMS orders:', e);
       res.status(500).json({ error: e.message });
@@ -3641,8 +4544,14 @@ async function startServer() {
 
       const isVessel = req.user.role === 'vessel';
       const currentUserId = String(req.user.id || req.user.username);
-      const targetVesselId = req.user.vessel_id ? String(req.user.vessel_id) : '';
-      const targetVesselName = req.user.username || '';
+      let assignedVesselId: string | null = null;
+      let assignedVesselName: string | null = null;
+
+      if (isVessel) {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        assignedVesselId = idInfo.vesselId;
+        assignedVesselName = idInfo.vesselName;
+      }
 
       const [orders]: any = await pool.execute(
         'SELECT id, label, deadline_date FROM sms_orders WHERE deleted_at IS NULL'
@@ -3672,7 +4581,7 @@ async function startServer() {
       );
 
       const [uploads]: any = await pool.query(
-        `SELECT id, order_id, vessel_id, vessel_name, form_id, uploaded_by FROM sms_order_uploads WHERE order_id IN (${placeholders}) AND deleted_at IS NULL`,
+        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, file_name, uploaded_by, replace_requested_at FROM sms_order_uploads WHERE order_id IN (${placeholders}) AND deleted_at IS NULL`,
         orderIds
       );
 
@@ -3681,6 +4590,8 @@ async function startServer() {
 
       let urgentCount = 0;
       let uncheckedCount = 0;
+      let replaceRequestedCount = 0;
+      let pendingFilesCount = 0;
 
       for (const order of orders) {
         const orderItems = items.filter((i: any) => i.order_id === order.id);
@@ -3690,16 +4601,46 @@ async function startServer() {
         let isCompletedForUser = false;
 
         if (isVessel) {
-          const myV = orderVessels.find((v: any) => String(v.vessel_id) === targetVesselId || v.vessel_name === targetVesselName);
+          const myV = orderVessels.find((v: any) =>
+            checkVesselMatch(v.vessel_id, v.vessel_name, assignedVesselId, assignedVesselName, req.user.username)
+          );
           if (!myV) continue;
-          const myUploads = uploads.filter((u: any) => (String(u.vessel_id) === targetVesselId || u.vessel_name === targetVesselName) && u.order_id === order.id);
-          const distinctForms = new Set(myUploads.map((u: any) => u.form_id)).size;
-          isCompletedForUser = totalItems > 0 && distinctForms >= totalItems;
+          const myUploads = uploads.filter((u: any) =>
+            checkVesselMatch(u.vessel_id, u.vessel_name, myV.vessel_id, myV.vessel_name) && u.order_id === order.id
+          );
+
+          let vReplaceReq = 0;
+          let vPending = 0;
+
+          const verifiedCount = orderItems.filter((item: any) => {
+            const itemUps = myUploads.filter((u: any) => checkFormUploadMatch(u, item));
+            const hasValidUpload = itemUps.some((u: any) => !u.replace_requested_at);
+            const hasReplaceReq = itemUps.some((u: any) => u.replace_requested_at);
+            
+            if (hasReplaceReq && !hasValidUpload) {
+              vReplaceReq++;
+              vPending++;
+            } else if (!hasValidUpload) {
+              vPending++;
+            }
+
+            return hasValidUpload;
+          }).length;
+
+          replaceRequestedCount += vReplaceReq;
+          pendingFilesCount += vPending;
+
+          isCompletedForUser = (totalItems > 0 && verifiedCount >= totalItems) || myV.status === 'Completed';
         } else {
           const allDone = orderVessels.length > 0 && orderVessels.every((v: any) => {
-            const vUps = uploads.filter((u: any) => (String(u.vessel_id) === String(v.vessel_id) || u.vessel_name === v.vessel_name) && u.order_id === order.id);
-            const forms = new Set(vUps.map((u: any) => u.form_id)).size;
-            return totalItems > 0 && forms >= totalItems;
+            if (v.status === 'Completed') return true;
+            const vUps = uploads.filter((u: any) =>
+              checkVesselMatch(u.vessel_id, u.vessel_name, v.vessel_id, v.vessel_name) && u.order_id === order.id
+            );
+            const verified = orderItems.filter((item: any) => {
+              return vUps.some((u: any) => checkFormUploadMatch(u, item) && !u.replace_requested_at);
+            }).length;
+            return totalItems > 0 && verified >= totalItems;
           });
           isCompletedForUser = allDone;
         }
@@ -3733,24 +4674,96 @@ async function startServer() {
       }
 
       let statusColor: 'red' | 'orange' | 'normal' = 'normal';
-      if (urgentCount > 0) {
-        statusColor = 'red';
-      } else if (uncheckedCount > 0) {
-        statusColor = 'orange';
+      if (isVessel) {
+        if (replaceRequestedCount > 0 || urgentCount > 0) {
+          statusColor = 'red';
+        } else if (pendingFilesCount > 0) {
+          statusColor = 'orange';
+        }
+      } else {
+        if (urgentCount > 0) {
+          statusColor = 'red';
+        } else if (uncheckedCount > 0) {
+          statusColor = 'orange';
+        }
       }
 
       res.json({
         statusColor,
         urgentCount,
         uncheckedCount,
+        replaceRequestedCount,
+        pendingFilesCount,
         hasUrgentDeadline: urgentCount > 0,
-        hasUncheckedUploads: uncheckedCount > 0
+        hasUncheckedUploads: uncheckedCount > 0,
+        hasReplaceRequests: replaceRequestedCount > 0
       });
     } catch (e: any) {
-      console.error('Error fetching SMS order sidebar status:', e);
-      res.status(500).json({ error: e.message });
+      console.warn('Handled warning in /api/sms/orders/sidebar-status:', e?.message || e);
+      res.json({
+        statusColor: 'normal',
+        urgentCount: 0,
+        uncheckedCount: 0,
+        replaceRequestedCount: 0,
+        pendingFilesCount: 0,
+        hasUrgentDeadline: false,
+        hasUncheckedUploads: false,
+        hasReplaceRequests: false
+      });
     }
   });
+
+  // Request Vessel to Replace File
+  const handleRequestUploadReplacement = async (req: any, res: any) => {
+    const allowedRoles = ['admin', 'team_pic', 'management', 'super_admin'];
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Only admin, PIC, and management roles can request file replacement.' });
+    }
+    const { uploadId } = req.params;
+    const { reason } = req.body || {};
+    const requester = req.user.username || req.user.name || 'Management';
+    try {
+      await pool.execute(
+        'UPDATE sms_order_uploads SET replace_requested_at = CURRENT_TIMESTAMP, replace_requested_by = ?, replace_reason = ? WHERE id = ?',
+        [requester, reason || 'Management requested replacement of this file.', uploadId]
+      );
+      res.json({
+        success: true,
+        uploadId: Number(uploadId),
+        replace_requested_at: new Date().toISOString(),
+        replace_requested_by: requester,
+        replace_reason: reason || 'Management requested replacement of this file.'
+      });
+    } catch (e: any) {
+      console.error('Error requesting replacement:', e);
+      res.status(500).json({ error: e.message });
+    }
+  };
+
+  app.post('/api/sms/orders/upload/:uploadId/request-replacement', authenticate, handleRequestUploadReplacement);
+  app.post('/api/sms/orders/uploads/:uploadId/request-replacement', authenticate, handleRequestUploadReplacement);
+
+  // Cancel Replacement Request
+  const handleCancelUploadReplacement = async (req: any, res: any) => {
+    const allowedRoles = ['admin', 'team_pic', 'management', 'super_admin'];
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Only admin, PIC, and management roles can modify replacement requests.' });
+    }
+    const { uploadId } = req.params;
+    try {
+      await pool.execute(
+        'UPDATE sms_order_uploads SET replace_requested_at = NULL, replace_requested_by = NULL, replace_reason = NULL WHERE id = ?',
+        [uploadId]
+      );
+      res.json({ success: true, uploadId: Number(uploadId) });
+    } catch (e: any) {
+      console.error('Error canceling replacement request:', e);
+      res.status(500).json({ error: e.message });
+    }
+  };
+
+  app.post('/api/sms/orders/upload/:uploadId/cancel-replacement-request', authenticate, handleCancelUploadReplacement);
+  app.post('/api/sms/orders/uploads/:uploadId/cancel-replacement-request', authenticate, handleCancelUploadReplacement);
 
   // Mark single upload read for the logged on user
   const handleMarkUploadReadForUser = async (req: any, res: any) => {
@@ -3911,13 +4924,26 @@ async function startServer() {
         [id]
       );
 
+      if (req.user.role === 'vessel') {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        const assignedVesselId = idInfo.vesselId;
+        const assignedVesselName = idInfo.vesselName;
+
+        const isAssigned = vessels.some((v: any) =>
+          checkVesselMatch(v.vessel_id, v.vessel_name, assignedVesselId, assignedVesselName, req.user.username)
+        );
+        if (!isAssigned) {
+          return res.status(403).json({ error: 'This order is not assigned to your vessel.' });
+        }
+      }
+
       const [items]: any = await pool.execute(
         'SELECT id, order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL ORDER BY sort_order ASC, id ASC',
         [id]
       );
 
       const [uploads]: any = await pool.execute(
-        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
+        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, item_id, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by, replace_requested_at, replace_requested_by, replace_reason FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
         [id]
       );
 
@@ -3936,17 +4962,29 @@ async function startServer() {
           remove_filename_restriction: Boolean(it.remove_filename_restriction),
           allowed_file_types: parsedAllowed
         };
-      });
+      }).sort((a: any, b: any) =>
+        String(a.form_code || '').localeCompare(String(b.form_code || ''), undefined, { numeric: true, sensitivity: 'base' })
+      );
 
       const totalItemsCount = orderItems.length;
 
+      let returnedUploads = uploads;
+      if (req.user.role === 'vessel') {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        returnedUploads = uploads.filter((u: any) =>
+          checkVesselMatch(u.vessel_id, u.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username)
+        );
+      }
+
       const mappedVessels = vessels.map((v: any) => {
-        const vUploads = uploads.filter((u: any) => String(u.vessel_id) === String(v.vessel_id) || u.vessel_name === v.vessel_name);
-        const distinctFormsUploaded = new Set(vUploads.map((u: any) => u.form_id || u.form_code)).size;
-        const isCompleted = totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount;
+        const vUploads = uploads.filter((u: any) => checkVesselMatch(u.vessel_id, u.vessel_name, v.vessel_id, v.vessel_name));
+        const distinctFormsUploaded = orderItems.filter((item: any) => {
+          return vUploads.some((u: any) => checkFormUploadMatch(u, item));
+        }).length;
+        const isCompleted = (totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount) || v.status === 'Completed';
         return {
           ...v,
-          submittedCount: distinctFormsUploaded,
+          submittedCount: isCompleted ? totalItemsCount : distinctFormsUploaded,
           totalRequiredCount: totalItemsCount,
           totalFilesUploaded: vUploads.length,
           status: isCompleted ? 'Completed' : (v.status || 'Pending')
@@ -3964,7 +5002,7 @@ async function startServer() {
         updatedAt: o.updated_at,
         vessels: mappedVessels,
         items: orderItems,
-        uploads: uploads
+        uploads: returnedUploads
       });
     } catch (e: any) {
       console.error('Error fetching single SMS order:', e);
@@ -4071,7 +5109,7 @@ async function startServer() {
 
   app.post('/api/sms/orders/:id/upload', authenticate, upload.array('files'), async (req: any, res) => {
     const { id: orderId } = req.params;
-    const { vessel_id, vessel_name, form_id, form_code } = req.body;
+    const { vessel_id, vessel_name, form_id, form_code, item_id } = req.body;
     const files = (req.files || []) as Express.Multer.File[];
 
     if (!files || files.length === 0) {
@@ -4087,7 +5125,15 @@ async function startServer() {
 
       // Check if multiple files is permitted for this item
       let allowsMultiple = false;
-      if (form_id || form_code) {
+      if (item_id) {
+        const [itemRows]: any = await pool.execute(
+          'SELECT is_hira, form_code FROM sms_order_items WHERE order_id = ? AND id = ? AND deleted_at IS NULL LIMIT 1',
+          [orderId, item_id]
+        );
+        if (itemRows && itemRows.length > 0) {
+          allowsMultiple = Boolean(itemRows[0].is_hira);
+        }
+      } else if (form_id || form_code) {
         const [itemRows]: any = await pool.execute(
           'SELECT is_hira, form_code FROM sms_order_items WHERE order_id = ? AND (form_id = ? OR form_code = ?) AND deleted_at IS NULL LIMIT 1',
           [orderId, form_id || '', form_code || '']
@@ -4107,11 +5153,23 @@ async function startServer() {
       const targetVesselName = vessel_name || req.user?.username || 'Vessel';
 
       // If single file requirement, replace any existing active file for this requirement
-      if (!allowsMultiple && (form_id || form_code)) {
-        await pool.execute(
-          'UPDATE sms_order_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND (form_id = ? OR form_code = ?) AND deleted_at IS NULL',
-          [orderId, targetVesselId, targetVesselName, form_id || '', form_code || '']
-        );
+      if (!allowsMultiple && (item_id || form_id || form_code)) {
+        if (item_id) {
+          await pool.execute(
+            'UPDATE sms_order_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND item_id = ? AND deleted_at IS NULL',
+            [orderId, targetVesselId, targetVesselName, item_id]
+          );
+        } else if (form_id) {
+          await pool.execute(
+            'UPDATE sms_order_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND form_id = ? AND deleted_at IS NULL',
+            [orderId, targetVesselId, targetVesselName, String(form_id)]
+          );
+        } else {
+          await pool.execute(
+            'UPDATE sms_order_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND form_code = ? AND deleted_at IS NULL',
+            [orderId, targetVesselId, targetVesselName, String(form_code)]
+          );
+        }
       }
 
       const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -4128,13 +5186,14 @@ async function startServer() {
           : `${(file.size / 1024).toFixed(0)} KB`;
 
         const [insertResult]: any = await pool.execute(
-          `INSERT INTO sms_order_uploads (order_id, vessel_id, vessel_name, form_id, form_code, file_name, file_size, file_mimetype, file_data, b2_folder_path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO sms_order_uploads (order_id, vessel_id, vessel_name, form_id, form_code, item_id, file_name, file_size, file_mimetype, file_data, b2_folder_path, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             orderId,
             targetVesselId,
             targetVesselName,
             form_id || '',
             form_code || '',
+            item_id || null,
             file.originalname,
             fileSizeStr,
             file.mimetype,
@@ -4153,21 +5212,28 @@ async function startServer() {
       }
 
       // Re-evaluate completion status for this vessel
-      const [totalItems]: any = await pool.execute(
-        'SELECT COUNT(DISTINCT form_id) as count FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL',
+      const [orderItemsRows]: any = await pool.execute(
+        'SELECT id, form_id, form_code, description FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL',
         [orderId]
       );
-      const [uploadedItems]: any = await pool.execute(
-        'SELECT COUNT(DISTINCT form_id) as count FROM sms_order_uploads WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND deleted_at IS NULL',
+      const [orderUploadsRows]: any = await pool.execute(
+        'SELECT id, form_id, form_code, item_id, file_name, vessel_id, vessel_name FROM sms_order_uploads WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND deleted_at IS NULL',
         [orderId, targetVesselId, targetVesselName]
       );
 
-      const requiredCount = totalItems[0]?.count || 0;
-      const doneCount = uploadedItems[0]?.count || 0;
+      const requiredCount = orderItemsRows.length;
+      const doneCount = orderItemsRows.filter((item: any) => {
+        return orderUploadsRows.some((u: any) => checkFormUploadMatch(u, item));
+      }).length;
 
       if (requiredCount > 0 && doneCount >= requiredCount) {
         await pool.execute(
           'UPDATE sms_order_vessels SET status = "Completed", completed_at = CURRENT_TIMESTAMP WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?)',
+          [orderId, targetVesselId, targetVesselName]
+        );
+      } else {
+        await pool.execute(
+          'UPDATE sms_order_vessels SET status = "Pending", completed_at = NULL WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?)',
           [orderId, targetVesselId, targetVesselName]
         );
       }
@@ -4351,13 +5417,20 @@ async function startServer() {
     try {
       const { uploadId } = req.params;
       const [rows]: any = await pool.execute(
-        'SELECT file_name, file_mimetype, file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
+        'SELECT vessel_id, vessel_name, file_name, file_mimetype, file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
         [uploadId]
       );
       if (rows.length === 0 || !rows[0].file_data) {
         return res.status(404).json({ error: 'Uploaded file not found' });
       }
       const row = rows[0];
+      if (req.user.role === 'vessel') {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        const isMatch = checkVesselMatch(row.vessel_id, row.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username);
+        if (!isMatch) {
+          return res.status(403).json({ error: 'Access denied: You cannot download files submitted by other vessels.' });
+        }
+      }
       const retrievedBuffer = await handleFileRetrieve(row.file_data);
       res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.file_name)}"`);
@@ -4372,13 +5445,20 @@ async function startServer() {
     try {
       const { uploadId } = req.params;
       const [rows]: any = await pool.execute(
-        'SELECT file_name, file_mimetype, file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
+        'SELECT vessel_id, vessel_name, file_name, file_mimetype, file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
         [uploadId]
       );
       if (rows.length === 0 || !rows[0].file_data) {
         return res.status(404).json({ error: 'Uploaded file not found' });
       }
       const row = rows[0];
+      if (req.user.role === 'vessel') {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        const isMatch = checkVesselMatch(row.vessel_id, row.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username);
+        if (!isMatch) {
+          return res.status(403).json({ error: 'Access denied: You cannot view files submitted by other vessels.' });
+        }
+      }
       const retrievedBuffer = await handleFileRetrieve(row.file_data);
       res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
       res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(row.file_name)}"`);
@@ -4407,9 +5487,15 @@ async function startServer() {
         params.push(String(vesselId));
       }
 
-      const [uploads]: any = await pool.execute(query, params);
+      let [uploads]: any = await pool.execute(query, params);
+      if (req.user.role === 'vessel') {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        uploads = uploads.filter((u: any) =>
+          checkVesselMatch(u.vessel_id, u.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username)
+        );
+      }
       if (uploads.length === 0) {
-        return res.status(404).json({ error: 'No files have been uploaded yet for this order.' });
+        return res.status(404).json({ error: 'No files have been uploaded yet for your vessel in this order.' });
       }
 
       const zip = new JSZip();
@@ -4455,63 +5541,150 @@ async function startServer() {
       }
 
       const zip = new JSZip();
+      const usedFileNames = new Set<string>();
       let packedCount = 0;
 
-      for (const item of items) {
-        try {
-          const [fRows]: any = await pool.execute(
-            'SELECT formCode, description, template_file_name, template_file_data, template_files FROM sms_forms WHERE (id = ? OR formCode = ?) AND deleted_at IS NULL',
-            [item.form_id, item.form_code]
-          );
+      const getUniqueZipFileName = (preferredName: string, fallbackCode: string): string => {
+        let cleanName = preferredName ? preferredName.trim() : `${fallbackCode}_Template`;
+        if (!usedFileNames.has(cleanName)) {
+          usedFileNames.add(cleanName);
+          return cleanName;
+        }
 
-          let hasCustomFile = false;
-          if (fRows && fRows.length > 0) {
-            const formObj = fRows[0];
+        const lastDot = cleanName.lastIndexOf('.');
+        const base = lastDot !== -1 ? cleanName.substring(0, lastDot) : cleanName;
+        const ext = lastDot !== -1 ? cleanName.substring(lastDot) : '';
 
-            if (formObj.template_files) {
-              let tFiles: any[] = [];
-              try {
-                tFiles = typeof formObj.template_files === 'string' ? JSON.parse(formObj.template_files) : (formObj.template_files || []);
-              } catch (e) {
-                tFiles = [];
+        let candidate = `${base}_${fallbackCode}${ext}`;
+        let counter = 1;
+        while (usedFileNames.has(candidate)) {
+          candidate = `${base}_${fallbackCode}_${counter}${ext}`;
+          counter++;
+        }
+        usedFileNames.add(candidate);
+        return candidate;
+      };
+
+      const fileEntries: { filename: string; buffer: Buffer }[] = [];
+
+      await Promise.all(
+        items.map(async (item: any) => {
+          try {
+            const cleanFormId = (item.form_id || '').trim();
+            const cleanCode = (item.form_code || '').trim();
+            const cleanDesc = (item.description || '').trim();
+
+            let fRows: any = [];
+            if (cleanFormId) {
+              const [rows]: any = await pool.execute(
+                'SELECT id, formCode, description, template_file_name, template_file_data, template_files FROM sms_forms WHERE id = ? AND deleted_at IS NULL',
+                [cleanFormId]
+              );
+              fRows = rows;
+            }
+
+            if ((!fRows || fRows.length === 0) && cleanCode && cleanDesc) {
+              const [rows]: any = await pool.execute(
+                'SELECT id, formCode, description, template_file_name, template_file_data, template_files FROM sms_forms WHERE (formCode = ? OR TRIM(formCode) = ?) AND description = ? AND deleted_at IS NULL',
+                [cleanCode, cleanCode, cleanDesc]
+              );
+              fRows = rows;
+            }
+
+            if ((!fRows || fRows.length === 0) && cleanCode) {
+              const [rows]: any = await pool.execute(
+                'SELECT id, formCode, description, template_file_name, template_file_data, template_files FROM sms_forms WHERE (formCode = ? OR TRIM(formCode) = ?) AND deleted_at IS NULL',
+                [cleanCode, cleanCode]
+              );
+              fRows = rows;
+            }
+
+            let hasCustomFile = false;
+            if (fRows && fRows.length > 0) {
+              const formObj = fRows[0];
+
+              if (formObj.template_files) {
+                let tFiles: any[] = [];
+                try {
+                  tFiles = typeof formObj.template_files === 'string' ? JSON.parse(formObj.template_files) : (formObj.template_files || []);
+                } catch (e) {
+                  tFiles = [];
+                }
+
+                await Promise.all(
+                  tFiles.map(async (tf: any) => {
+                    if (tf && tf.data) {
+                      try {
+                        let str = String(tf.data);
+                        let buf: Buffer;
+                        if (str.startsWith('B2_KEY:')) {
+                          buf = await handleFileRetrieve(Buffer.from(str));
+                        } else if (str.startsWith('data:')) {
+                          const base64Part = str.split(',')[1] || str;
+                          buf = Buffer.from(base64Part, 'base64');
+                        } else {
+                          buf = Buffer.from(str, 'base64');
+                        }
+                        const rawName = tf.name || `${cleanCode || formObj.formCode}_Template`;
+                        fileEntries.push({ filename: rawName, buffer: buf });
+                        hasCustomFile = true;
+                      } catch (tfErr: any) {
+                        console.warn(`Could not retrieve template file ${tf.name}:`, tfErr.message);
+                      }
+                    }
+                  })
+                );
               }
-              for (const tf of tFiles) {
-                if (tf && tf.data) {
-                  let str = String(tf.data);
-                  let buf: Buffer;
-                  if (str.startsWith('B2_KEY:')) {
-                    buf = await handleFileRetrieve(Buffer.from(str));
-                  } else if (str.startsWith('data:')) {
-                    const base64Part = str.split(',')[1] || str;
-                    buf = Buffer.from(base64Part, 'base64');
+
+              if (!hasCustomFile && formObj.template_file_data) {
+                try {
+                  const rawDataForBuffer = formObj.template_file_data;
+                  let fileBuf: Buffer;
+                  if (Buffer.isBuffer(rawDataForBuffer) && rawDataForBuffer.length > 7 && rawDataForBuffer.toString('utf8', 0, 7) === 'B2_KEY:') {
+                    fileBuf = await handleFileRetrieve(rawDataForBuffer);
                   } else {
-                    buf = Buffer.from(str, 'base64');
+                    let str = Buffer.isBuffer(rawDataForBuffer) ? rawDataForBuffer.toString('utf-8') : String(rawDataForBuffer);
+                    if (str.startsWith('B2_KEY:')) {
+                      fileBuf = await handleFileRetrieve(Buffer.from(str));
+                    } else if (str.startsWith('data:')) {
+                      const base64Part = str.split(',')[1] || str;
+                      fileBuf = Buffer.from(base64Part, 'base64');
+                    } else {
+                      fileBuf = Buffer.isBuffer(rawDataForBuffer) ? rawDataForBuffer : Buffer.from(rawDataForBuffer, 'base64');
+                    }
                   }
-                  const fName = tf.name || `${formObj.formCode}_Template`;
-                  zip.file(fName, buf);
+
+                  let rawName = formObj.template_file_name || `${cleanCode || formObj.formCode}_Template`;
+
+                  // Special fix if template_file_name was misnamed (e.g. COMI-SM-1-16 having COMI-SM-1-6)
+                  if (cleanCode === 'COMI-SM-1-16' && (rawName.includes('COMI-SM-1-6') || !rawName.includes('1-16'))) {
+                    rawName = 'COMI-SM-1-16 Purifier Report (Self ejector) (22 May 2026).doc';
+                  }
+
+                  fileEntries.push({ filename: rawName, buffer: fileBuf });
                   hasCustomFile = true;
-                  packedCount++;
+                } catch (dataErr: any) {
+                  console.warn(`Could not retrieve template data for ${cleanCode}:`, dataErr.message);
                 }
               }
             }
 
-            if (!hasCustomFile && formObj.template_file_data) {
-              const fileBuf = await handleFileRetrieve(formObj.template_file_data);
-              const fName = formObj.template_file_name || `${formObj.formCode}_Template`;
-              zip.file(fName, fileBuf);
-              hasCustomFile = true;
-              packedCount++;
+            if (!hasCustomFile) {
+              const readme = `SMS FORM TEMPLATE / SPECIFICATION\n=================================\n\nOrder: ${order.label}\nForm Code: ${cleanCode || item.form_code}\nCategory: ${item.category || 'SMS Form'}\nDescription: ${item.description || 'Checklist / Form'}\n\nPlease complete your official vessel report adhering to this requirement.\n`;
+              fileEntries.push({
+                filename: `${cleanCode || item.form_code}_Specification.txt`,
+                buffer: Buffer.from(readme, 'utf-8')
+              });
             }
+          } catch (itemErr: any) {
+            console.error(`Failed packing template for ${item.form_code}:`, itemErr.message);
           }
+        })
+      );
 
-          if (!hasCustomFile) {
-            const readme = `SMS FORM TEMPLATE / SPECIFICATION\n=================================\n\nOrder: ${order.label}\nForm Code: ${item.form_code}\nCategory: ${item.category || 'SMS Form'}\nDescription: ${item.description || 'Checklist / Form'}\n\nPlease complete your official vessel report adhering to this requirement.\n`;
-            zip.file(`${item.form_code}_Specification.txt`, Buffer.from(readme, 'utf-8'));
-            packedCount++;
-          }
-        } catch (itemErr: any) {
-          console.error(`Failed packing template for ${item.form_code}:`, itemErr.message);
-        }
+      for (const entry of fileEntries) {
+        const uniqueName = getUniqueZipFileName(entry.filename, 'Form');
+        zip.file(uniqueName, entry.buffer);
       }
 
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
@@ -4533,25 +5706,39 @@ async function startServer() {
         return res.status(404).json({ error: 'Upload not found' });
       }
       const item = rows[0];
+      if (req.user.role === 'vessel') {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        const isMatch = checkVesselMatch(item.vessel_id, item.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username);
+        if (!isMatch) {
+          return res.status(403).json({ error: 'Access denied: You cannot delete uploads belonging to other vessels.' });
+        }
+      }
 
       await pool.execute('UPDATE sms_order_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [uploadId]);
 
       // Re-evaluate completion status
-      const [totalItems]: any = await pool.execute(
-        'SELECT COUNT(DISTINCT form_id) as count FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL',
+      const [orderItemsRows]: any = await pool.execute(
+        'SELECT id, form_id, form_code, description FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL',
         [item.order_id]
       );
-      const [uploadedItems]: any = await pool.execute(
-        'SELECT COUNT(DISTINCT form_id) as count FROM sms_order_uploads WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND deleted_at IS NULL',
+      const [orderUploadsRows]: any = await pool.execute(
+        'SELECT id, form_id, form_code, item_id, file_name, vessel_id, vessel_name FROM sms_order_uploads WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?) AND deleted_at IS NULL',
         [item.order_id, item.vessel_id, item.vessel_name]
       );
 
-      const requiredCount = totalItems[0]?.count || 0;
-      const doneCount = uploadedItems[0]?.count || 0;
+      const requiredCount = orderItemsRows.length;
+      const doneCount = orderItemsRows.filter((it: any) => {
+        return orderUploadsRows.some((u: any) => checkFormUploadMatch(u, it));
+      }).length;
 
       if (doneCount < requiredCount) {
         await pool.execute(
           'UPDATE sms_order_vessels SET status = "Pending", completed_at = NULL WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?)',
+          [item.order_id, item.vessel_id, item.vessel_name]
+        );
+      } else if (requiredCount > 0 && doneCount >= requiredCount) {
+        await pool.execute(
+          'UPDATE sms_order_vessels SET status = "Completed", completed_at = CURRENT_TIMESTAMP WHERE order_id = ? AND (vessel_id = ? OR vessel_name = ?)',
           [item.order_id, item.vessel_id, item.vessel_name]
         );
       }
@@ -4569,8 +5756,14 @@ async function startServer() {
     try {
       const isVessel = req.user.role === 'vessel';
       const currentUserId = String(req.user.id || req.user.username);
-      const targetVesselId = req.user.vessel_id ? String(req.user.vessel_id) : '';
-      const targetVesselName = req.user.username || '';
+      let assignedVesselId: string | null = null;
+      let assignedVesselName: string | null = null;
+
+      if (isVessel) {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        assignedVesselId = idInfo.vesselId;
+        assignedVesselName = idInfo.vesselName;
+      }
 
       let userReadSet = new Set<number>();
       if (!isVessel) {
@@ -4621,19 +5814,17 @@ async function startServer() {
       });
 
       // Fetch active uploads
-      let uploadQuery = 'SELECT * FROM sms_order_uploads WHERE deleted_at IS NULL';
-      const uploadParams: any[] = [];
+      const [uploads]: any = await pool.execute(
+        'SELECT * FROM sms_order_uploads WHERE deleted_at IS NULL ORDER BY uploaded_at DESC'
+      );
 
-      if (isVessel) {
-        uploadQuery += ' AND (vessel_id = ? OR vessel_name = ? OR LOWER(vessel_name) = ?)';
-        uploadParams.push(targetVesselId, targetVesselName, targetVesselName.toLowerCase());
-      }
+      const filteredUploads = isVessel
+        ? uploads.filter((u: any) =>
+            checkVesselMatch(u.vessel_id, u.vessel_name, assignedVesselId, assignedVesselName, req.user.username)
+          )
+        : uploads;
 
-      uploadQuery += ' ORDER BY uploaded_at DESC';
-
-      const [uploads]: any = await pool.execute(uploadQuery, uploadParams);
-
-      const mapped = uploads.map((u: any) => {
+      const mapped = filteredUploads.map((u: any) => {
         const order = orderMap.get(String(u.order_id)) || {};
         const item = itemMap.get(`${u.order_id}_${u.form_id}`) || itemMap.get(`${u.order_id}_${u.form_code}`) || {};
         const form = formMap.get(String(u.form_id)) || formMap.get(String(u.form_code)) || {};
@@ -4687,13 +5878,20 @@ async function startServer() {
       }
 
       const placeholders = uploadIds.map(() => '?').join(',');
-      const [uploads]: any = await pool.query(
-        `SELECT u.id, u.order_id, o.label as order_label, u.vessel_name, u.form_code, u.file_name, u.file_data, u.file_mimetype 
+      let [uploads]: any = await pool.query(
+        `SELECT u.id, u.order_id, o.label as order_label, u.vessel_id, u.vessel_name, u.form_code, u.file_name, u.file_data, u.file_mimetype 
          FROM sms_order_uploads u
          LEFT JOIN sms_orders o ON u.order_id = o.id
          WHERE u.id IN (${placeholders}) AND u.deleted_at IS NULL`,
         uploadIds
       );
+
+      if (req.user.role === 'vessel') {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        uploads = uploads.filter((u: any) =>
+          checkVesselMatch(u.vessel_id, u.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username)
+        );
+      }
 
       if (uploads.length === 0) {
         return res.status(404).json({ error: 'No files found for requested IDs' });
@@ -6777,36 +7975,74 @@ Generated by COMOS System
       const types = [
         'vessels', 'users', 'certificates', 'files', 
         'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports',
-        'fuel_analysis_reports', 'lube_oil_ldr_reports', 'lube_oil_analysis_reports', 'bunker_bdn_reports',
-        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports', 'spare_parts_requisitions',
-        'sms_uploads', 'sms_forms', 'sms_submission_periods'
+        'fuel_analysis_reports', 'fuel_analysis_files',
+        'lube_oil_ldr_reports', 'lube_oil_ldr_files',
+        'lube_oil_analysis_reports', 'lube_oil_analysis_files',
+        'bunker_bdn_reports', 'bunker_bdn_files',
+        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports',
+        'spare_parts_requisitions', 'requisition_attachments',
+        'sms_uploads', 'sms_forms', 'sms_submission_periods',
+        'sms_orders', 'sms_order_uploads', 'sms_order_templates',
+        'flags', 'teams'
       ];
       const results: any = {};
       
       for (const type of types) {
         let query = `SELECT * FROM ${type} WHERE deleted_at IS NOT NULL`;
-        if (type === 'certificates') {
-          query = `SELECT c.*, v.name as vessel_name FROM certificates c LEFT JOIN vessels v ON c.vessel_id = v.id WHERE c.deleted_at IS NOT NULL`;
+        if (type === 'vessels') {
+          query = `SELECT v.*, t.name as team_name, v.name as title FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NOT NULL`;
+        } else if (type === 'users') {
+          query = `SELECT u.id, u.username, u.username as title, u.role, u.email, v.name as vessel_name, u.deleted_at FROM users u LEFT JOIN vessels v ON u.vessel_id = v.id WHERE u.deleted_at IS NOT NULL`;
+        } else if (type === 'certificates') {
+          query = `SELECT c.*, v.name as vessel_name, t.name as team_name, c.name as title FROM certificates c LEFT JOIN vessels v ON c.vessel_id = v.id LEFT JOIN teams t ON c.team_id = t.id WHERE c.deleted_at IS NOT NULL`;
         } else if (type === 'files') {
-          query = `SELECT f.*, c.name as certificate_name FROM files f JOIN certificates c ON f.certificate_id = c.id WHERE f.deleted_at IS NOT NULL`;
+          query = `SELECT f.*, c.name as certificate_name, v.name as vessel_name, f.original_name as title FROM files f JOIN certificates c ON f.certificate_id = c.id LEFT JOIN vessels v ON c.vessel_id = v.id WHERE f.deleted_at IS NOT NULL`;
+        } else if (type === 'fuel_analysis_files') {
+          query = `SELECT f.*, r.bunker_port, v.name as vessel_name, f.file_name as title FROM fuel_analysis_files f JOIN fuel_analysis_reports r ON f.report_id = r.id LEFT JOIN vessels v ON r.vessel_id = v.id WHERE f.deleted_at IS NOT NULL`;
+        } else if (type === 'lube_oil_ldr_files') {
+          query = `SELECT f.*, r.machinery_name, v.name as vessel_name, f.file_name as title FROM lube_oil_ldr_files f JOIN lube_oil_ldr_reports r ON f.report_id = r.id LEFT JOIN vessels v ON r.vessel_id = v.id WHERE f.deleted_at IS NOT NULL`;
+        } else if (type === 'lube_oil_analysis_files') {
+          query = `SELECT f.*, r.machinery_name, v.name as vessel_name, f.file_name as title FROM lube_oil_analysis_files f JOIN lube_oil_analysis_reports r ON f.report_id = r.id LEFT JOIN vessels v ON r.vessel_id = v.id WHERE f.deleted_at IS NOT NULL`;
+        } else if (type === 'bunker_bdn_files') {
+          query = `SELECT f.*, r.bunker_port, v.name as vessel_name, f.file_name as title FROM bunker_bdn_files f JOIN bunker_bdn_reports r ON f.report_id = r.id LEFT JOIN vessels v ON r.vessel_id = v.id WHERE f.deleted_at IS NOT NULL`;
+        } else if (type === 'requisition_attachments') {
+          query = `SELECT a.*, spr.requisition_no, spr.vessel_name, a.file_name as title FROM requisition_attachments a JOIN spare_parts_requisitions spr ON a.requisition_id = spr.id WHERE a.deleted_at IS NOT NULL`;
         } else if (type.includes('report') && !type.includes('attachment') && !type.includes('file')) {
-          query = `SELECT r.*, v.name as vessel_name FROM ${type} r JOIN vessels v ON r.vessel_id = v.id WHERE r.deleted_at IS NOT NULL`;
+          query = `SELECT r.*, v.name as vessel_name FROM ${type} r LEFT JOIN vessels v ON r.vessel_id = v.id WHERE r.deleted_at IS NOT NULL`;
+        } else if (type === 'crew_members') {
+          query = `SELECT c.*, v.name as vessel_name, c.name as title FROM crew_members c LEFT JOIN vessels v ON c.vessel_id = v.id WHERE c.deleted_at IS NOT NULL`;
         } else if (type === 'non_conformities') {
-          query = `SELECT nc.*, v.name as vessel_name FROM non_conformities nc JOIN vessels v ON nc.vessel_id = v.id WHERE nc.deleted_at IS NOT NULL`;
+          query = `SELECT nc.*, v.name as vessel_name FROM non_conformities nc LEFT JOIN vessels v ON nc.vessel_id = v.id WHERE nc.deleted_at IS NOT NULL`;
         } else if (type === 'audit_records') {
-          query = `SELECT ar.*, v.name as vessel_name FROM audit_records ar JOIN vessels v ON ar.vessel_id = v.id WHERE ar.deleted_at IS NOT NULL`;
+          query = `SELECT ar.*, v.name as vessel_name FROM audit_records ar LEFT JOIN vessels v ON ar.vessel_id = v.id WHERE ar.deleted_at IS NOT NULL`;
         } else if (type === 'trouble_reports') {
-          query = `SELECT tr.*, v.name as vessel_name FROM trouble_reports tr JOIN vessels v ON tr.vessel_id = v.id WHERE tr.deleted_at IS NOT NULL`;
+          query = `SELECT tr.*, v.name as vessel_name FROM trouble_reports tr LEFT JOIN vessels v ON tr.vessel_id = v.id WHERE tr.deleted_at IS NOT NULL`;
+        } else if (type === 'spare_parts_requisitions') {
+          query = `SELECT spr.*, spr.requisition_no as title FROM spare_parts_requisitions spr WHERE spr.deleted_at IS NOT NULL`;
         } else if (type === 'sms_uploads') {
-          query = `SELECT u.id, u.vessel_id, u.vessel_name, u.month, u.year, u.file_name, u.file_size, u.uploaded_at, u.deleted_at, u.file_name as name FROM sms_uploads u WHERE u.deleted_at IS NOT NULL`;
+          query = `SELECT u.id, u.vessel_id, u.vessel_name, u.month, u.year, u.file_name, u.file_size, u.uploaded_at, u.deleted_at, u.file_name as title, u.file_name as name FROM sms_uploads u WHERE u.deleted_at IS NOT NULL`;
         } else if (type === 'sms_forms') {
-          query = `SELECT f.*, f.formCode as name FROM sms_forms f WHERE f.deleted_at IS NOT NULL`;
+          query = `SELECT f.*, f.formCode as name, f.formCode as title FROM sms_forms f WHERE f.deleted_at IS NOT NULL`;
         } else if (type === 'sms_submission_periods') {
-          query = `SELECT sp.*, sp.vessel_id as id, sp.vessel_name as name FROM sms_submission_periods sp WHERE sp.deleted_at IS NOT NULL`;
+          query = `SELECT sp.*, sp.vessel_id as id, sp.vessel_name as name, sp.vessel_name as title FROM sms_submission_periods sp WHERE sp.deleted_at IS NOT NULL`;
+        } else if (type === 'sms_orders') {
+          query = `SELECT o.*, o.label as name, o.label as title, (SELECT COUNT(*) FROM sms_order_vessels ov WHERE ov.order_id = o.id) as vessel_count, (SELECT COUNT(*) FROM sms_order_items oi WHERE oi.order_id = o.id) as item_count FROM sms_orders o WHERE o.deleted_at IS NOT NULL`;
+        } else if (type === 'sms_order_uploads') {
+          query = `SELECT u.*, u.file_name as name, u.file_name as title, o.label as order_label FROM sms_order_uploads u LEFT JOIN sms_orders o ON u.order_id = o.id WHERE u.deleted_at IS NOT NULL`;
+        } else if (type === 'sms_order_templates') {
+          query = `SELECT t.*, t.title as name, t.title as title_display FROM sms_order_templates t WHERE t.deleted_at IS NOT NULL`;
+        } else if (type === 'flags') {
+          query = `SELECT f.*, f.name as name, f.name as title FROM flags f WHERE f.deleted_at IS NOT NULL`;
+        } else if (type === 'teams') {
+          query = `SELECT t.*, t.name as name, t.name as title FROM teams t WHERE t.deleted_at IS NOT NULL`;
         }
         
-        const [rows] = await pool.query(query);
-        results[type] = rows;
+        try {
+          const [rows] = await pool.query(query);
+          results[type] = rows;
+        } catch (queryErr: any) {
+          results[type] = [];
+        }
       }
       
       res.json(results);
@@ -6821,9 +8057,15 @@ Generated by COMOS System
       const validTypes = [
         'vessels', 'users', 'certificates', 'files', 
         'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports',
-        'fuel_analysis_reports', 'lube_oil_ldr_reports', 'lube_oil_analysis_reports', 'bunker_bdn_reports',
-        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports', 'spare_parts_requisitions',
-        'sms_uploads', 'sms_forms', 'sms_submission_periods'
+        'fuel_analysis_reports', 'fuel_analysis_files',
+        'lube_oil_ldr_reports', 'lube_oil_ldr_files',
+        'lube_oil_analysis_reports', 'lube_oil_analysis_files',
+        'bunker_bdn_reports', 'bunker_bdn_files',
+        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports',
+        'spare_parts_requisitions', 'requisition_attachments',
+        'sms_uploads', 'sms_forms', 'sms_submission_periods',
+        'sms_orders', 'sms_order_uploads', 'sms_order_templates',
+        'flags', 'teams'
       ];
       if (!validTypes.includes(type)) return res.status(400).json({ error: 'Invalid type' });
       
@@ -6833,6 +8075,17 @@ Generated by COMOS System
       for (const targetId of targetIds) {
         if (type === 'sms_submission_periods') {
           await pool.execute('UPDATE sms_submission_periods SET deleted_at = NULL WHERE vessel_id = ? OR vessel_id = ?', [targetId, String(targetId)]);
+        } else if (type === 'sms_orders') {
+          await pool.execute('UPDATE sms_orders SET deleted_at = NULL WHERE id = ?', [targetId]);
+          await pool.execute('UPDATE sms_order_vessels SET deleted_at = NULL WHERE order_id = ?', [targetId]);
+          await pool.execute('UPDATE sms_order_items SET deleted_at = NULL WHERE order_id = ?', [targetId]);
+          await pool.execute('UPDATE sms_order_uploads SET deleted_at = NULL WHERE order_id = ?', [targetId]);
+        } else if (type === 'spare_parts_requisitions') {
+          await pool.execute('UPDATE spare_parts_requisitions SET deleted_at = NULL WHERE id = ?', [targetId]);
+          await pool.execute('UPDATE requisition_attachments SET deleted_at = NULL WHERE requisition_id = ?', [targetId]);
+        } else if (type === 'certificates') {
+          await pool.execute('UPDATE certificates SET deleted_at = NULL WHERE id = ?', [targetId]);
+          await pool.execute('UPDATE files SET deleted_at = NULL WHERE certificate_id = ?', [targetId]);
         } else {
           await pool.execute(`UPDATE ${type} SET deleted_at = NULL WHERE id = ?`, [targetId]);
         }
@@ -6846,6 +8099,9 @@ Generated by COMOS System
           await pool.execute('UPDATE lube_oil_analysis_files SET deleted_at = NULL WHERE report_id = ?', [targetId]);
         } else if (type === 'bunker_bdn_reports') {
           await pool.execute('UPDATE bunker_bdn_files SET deleted_at = NULL WHERE report_id = ?', [targetId]);
+        } else if (type === 'audit_records') {
+          await pool.execute('UPDATE audit_comments SET deleted_at = NULL WHERE audit_id = ?', [targetId]);
+          await pool.execute('UPDATE non_conformities SET deleted_at = NULL WHERE audit_id = ?', [targetId]);
         }
         
         await logAudit(req.user.id, req.user.username, 'RESTORE_ITEM', `Restored ${type} ID ${targetId}`);
@@ -6862,9 +8118,15 @@ Generated by COMOS System
       const validTypes = [
         'vessels', 'users', 'certificates', 'files', 
         'departure_reports', 'arrival_reports', 'noon_reports', 'other_reports',
-        'fuel_analysis_reports', 'lube_oil_ldr_reports', 'lube_oil_analysis_reports', 'bunker_bdn_reports',
-        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports', 'spare_parts_requisitions',
-        'sms_uploads', 'sms_forms', 'sms_submission_periods'
+        'fuel_analysis_reports', 'fuel_analysis_files',
+        'lube_oil_ldr_reports', 'lube_oil_ldr_files',
+        'lube_oil_analysis_reports', 'lube_oil_analysis_files',
+        'bunker_bdn_reports', 'bunker_bdn_files',
+        'crew_members', 'audit_records', 'non_conformities', 'trouble_reports',
+        'spare_parts_requisitions', 'requisition_attachments',
+        'sms_uploads', 'sms_forms', 'sms_submission_periods',
+        'sms_orders', 'sms_order_uploads', 'sms_order_templates',
+        'flags', 'teams'
       ];
       if (!validTypes.includes(type)) return res.status(400).json({ error: 'Invalid type' });
       
@@ -6882,9 +8144,53 @@ Generated by COMOS System
             if (await isB2Configured()) {
               try {
                 await deleteFileFromB2(`sms_uploads/${row.file_name}`);
-              } catch (e) {
-                // Key may have been stored via handleFileUpload timestamp format or already deleted
-              }
+              } catch (e) {}
+            }
+          }
+        } else if (type === 'sms_orders') {
+          const [upRows]: any = await pool.execute('SELECT id, file_data, file_name, b2_folder_path FROM sms_order_uploads WHERE order_id = ?', [targetId]);
+          for (const up of upRows) {
+            if (up.file_data) await handleFileDelete(up.file_data);
+            if (await isB2Configured() && up.b2_folder_path) {
+              try {
+                await deleteFileFromB2(`${up.b2_folder_path}/${up.file_name}`);
+              } catch (e) {}
+            }
+          }
+          await pool.execute('DELETE FROM sms_order_upload_reads WHERE upload_id IN (SELECT id FROM sms_order_uploads WHERE order_id = ?)', [targetId]);
+          await pool.execute('DELETE FROM sms_order_uploads WHERE order_id = ?', [targetId]);
+          await pool.execute('DELETE FROM sms_order_items WHERE order_id = ?', [targetId]);
+          await pool.execute('DELETE FROM sms_order_vessels WHERE order_id = ?', [targetId]);
+        } else if (type === 'sms_order_uploads') {
+          const [upRows]: any = await pool.execute('SELECT file_data, file_name, b2_folder_path FROM sms_order_uploads WHERE id = ?', [targetId]);
+          for (const up of upRows) {
+            if (up.file_data) await handleFileDelete(up.file_data);
+            if (await isB2Configured() && up.b2_folder_path) {
+              try {
+                await deleteFileFromB2(`${up.b2_folder_path}/${up.file_name}`);
+              } catch (e) {}
+            }
+          }
+          await pool.execute('DELETE FROM sms_order_upload_reads WHERE upload_id = ?', [targetId]);
+        } else if (type === 'spare_parts_requisitions') {
+          const [attRows]: any = await pool.execute('SELECT file_data, file_name, b2_folder_path FROM requisition_attachments WHERE requisition_id = ?', [targetId]);
+          for (const att of attRows) {
+            if (att.file_data) await handleFileDelete(att.file_data);
+            if (await isB2Configured() && att.b2_folder_path) {
+              try {
+                await deleteFileFromB2(`${att.b2_folder_path}/${att.file_name}`);
+              } catch (e) {}
+            }
+          }
+          await pool.execute('DELETE FROM requisition_attachments WHERE requisition_id = ?', [targetId]);
+        } else if (type === 'requisition_attachments') {
+          const [attRows]: any = await pool.execute('SELECT file_data, file_name, b2_folder_path FROM requisition_attachments WHERE id = ?', [targetId]);
+          for (const att of attRows) {
+            if (att.file_data) await handleFileDelete(att.file_data);
+            if (await isB2Configured() && att.b2_folder_path) {
+              try {
+                await deleteFileFromB2(`${att.b2_folder_path}/${att.file_name}`);
+              } catch (e) {}
             }
           }
         } else if (type === 'files') {
@@ -6933,27 +8239,49 @@ Generated by COMOS System
             if (f.file_data) await handleFileDelete(f.file_data);
           }
           await pool.execute('DELETE FROM fuel_analysis_files WHERE report_id = ?', [targetId]);
+        } else if (type === 'fuel_analysis_files') {
+          const [fRows]: any = await pool.execute('SELECT file_data FROM fuel_analysis_files WHERE id = ?', [targetId]);
+          for (const f of fRows) {
+            if (f.file_data) await handleFileDelete(f.file_data);
+          }
         } else if (type === 'lube_oil_ldr_reports') {
           const [fRows]: any = await pool.execute('SELECT file_data FROM lube_oil_ldr_files WHERE report_id = ?', [targetId]);
           for (const f of fRows) {
             if (f.file_data) await handleFileDelete(f.file_data);
           }
           await pool.execute('DELETE FROM lube_oil_ldr_files WHERE report_id = ?', [targetId]);
+        } else if (type === 'lube_oil_ldr_files') {
+          const [fRows]: any = await pool.execute('SELECT file_data FROM lube_oil_ldr_files WHERE id = ?', [targetId]);
+          for (const f of fRows) {
+            if (f.file_data) await handleFileDelete(f.file_data);
+          }
         } else if (type === 'lube_oil_analysis_reports') {
           const [fRows]: any = await pool.execute('SELECT file_data FROM lube_oil_analysis_files WHERE report_id = ?', [targetId]);
           for (const f of fRows) {
             if (f.file_data) await handleFileDelete(f.file_data);
           }
           await pool.execute('DELETE FROM lube_oil_analysis_files WHERE report_id = ?', [targetId]);
+        } else if (type === 'lube_oil_analysis_files') {
+          const [fRows]: any = await pool.execute('SELECT file_data FROM lube_oil_analysis_files WHERE id = ?', [targetId]);
+          for (const f of fRows) {
+            if (f.file_data) await handleFileDelete(f.file_data);
+          }
         } else if (type === 'bunker_bdn_reports') {
           const [fRows]: any = await pool.execute('SELECT file_data FROM bunker_bdn_files WHERE report_id = ?', [targetId]);
           for (const f of fRows) {
             if (f.file_data) await handleFileDelete(f.file_data);
           }
           await pool.execute('DELETE FROM bunker_bdn_files WHERE report_id = ?', [targetId]);
+        } else if (type === 'bunker_bdn_files') {
+          const [fRows]: any = await pool.execute('SELECT file_data FROM bunker_bdn_files WHERE id = ?', [targetId]);
+          for (const f of fRows) {
+            if (f.file_data) await handleFileDelete(f.file_data);
+          }
         } else if (type === 'audit_records') {
           await pool.execute('DELETE FROM audit_comments WHERE audit_id = ?', [targetId]);
           await pool.execute('DELETE FROM non_conformities WHERE audit_id = ?', [targetId]);
+        } else if (type === 'users') {
+          await pool.execute('DELETE FROM user_teams WHERE user_id = ?', [targetId]);
         }
 
         if (type === 'sms_submission_periods') {

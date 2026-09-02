@@ -4,7 +4,11 @@ import * as pdfjsLib from 'pdfjs-dist';
 // Initialize PDF.js worker if in browser
 const PDF_JS_VERSION = '5.6.205';
 if (typeof window !== 'undefined' && pdfjsLib && pdfjsLib.GlobalWorkerOptions) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${PDF_JS_VERSION}/build/pdf.worker.min.mjs`;
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${PDF_JS_VERSION}/build/pdf.worker.min.mjs`;
+  } catch (e) {
+    console.warn('Could not set pdfjs workerSrc:', e);
+  }
 }
 
 export interface FormValidationTarget {
@@ -132,8 +136,16 @@ export const extractTextFromFile = async (file: File, cachedBuffer?: ArrayBuffer
     try {
       const arrayBuffer = await safeReadFileAsArrayBuffer(file, cachedBuffer);
       const data = new Uint8Array(arrayBuffer.slice(0));
-      const loadingTask = pdfjsLib.getDocument({ data });
-      const pdfDoc = await loadingTask.promise;
+      const loadingTask = pdfjsLib.getDocument({
+        data,
+        isEvalSupported: false,
+        useSystemFonts: true,
+        stopAtErrors: false
+      });
+      const pdfDoc = await Promise.race([
+        loadingTask.promise,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('PDF parsing timeout')), 4000))
+      ]);
       let extractedText = '';
       const maxPages = Math.min(pdfDoc.numPages, 3);
       for (let p = 1; p <= maxPages; p++) {
@@ -144,12 +156,16 @@ export const extractTextFromFile = async (file: File, cachedBuffer?: ArrayBuffer
       }
       return extractedText;
     } catch (e: any) {
-      console.error('Error parsing PDF:', e);
+      console.warn('PDF parsing fallback for file:', file.name, e?.message || e);
       return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = (ev) => resolve((ev.target?.result as string) || '');
-        reader.onerror = () => resolve('');
-        reader.readAsText(file.slice(0, 50 * 1024));
+        try {
+          const reader = new FileReader();
+          reader.onload = (ev) => resolve((ev.target?.result as string) || '');
+          reader.onerror = () => resolve('');
+          reader.readAsText(file.slice(0, 50 * 1024));
+        } catch (err) {
+          resolve('');
+        }
       });
     }
   } else if (ext === 'docx' || ext === 'xlsx') {
