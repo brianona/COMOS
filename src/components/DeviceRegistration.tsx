@@ -1,15 +1,16 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'motion/react';
-import { ShieldAlert, Tag, RefreshCw, Clock, LogOut } from 'lucide-react';
+import { ShieldAlert, Tag, RefreshCw, Clock, LogOut, CheckCircle2, XCircle } from 'lucide-react';
 import { cn } from '../utils/helpers';
 import { getDeviceId, healAndSyncDeviceId } from '../utils/deviceIdentifier';
 import { User } from '../types';
+import { realtimeSync } from '../services/realtimeSync';
 
 interface DeviceRegistrationProps {
   user: User;
   token: string;
   onLogout: () => void;
-  onVerified: (isVerified: boolean, deviceId: string) => void;
+  onVerified: (isVerified: boolean, deviceId: string, updatedUser?: User, newToken?: string) => void;
 }
 
 export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
@@ -18,14 +19,20 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
   onLogout,
   onVerified
 }) => {
-  const [deviceCode] = useState(() => Math.random().toString(36).substring(2, 8).toUpperCase());
+  const [deviceCode, setDeviceCode] = useState(() => Math.random().toString(36).substring(2, 8).toUpperCase());
   const [deviceLabel, setDeviceLabel] = useState('');
   const [status, setStatus] = useState<'idle' | 'checking' | 'pending' | 'approved' | 'rejected'>('idle');
   const [error, setError] = useState('');
   const [isCheckingNow, setIsCheckingNow] = useState(false);
+  const checkInFlightRef = useRef(false);
 
   const checkStatus = useCallback(async (isManual = false) => {
-    if (isManual) setIsCheckingNow(true);
+    if (checkInFlightRef.current && !isManual) return;
+    checkInFlightRef.current = true;
+    if (isManual) {
+      setIsCheckingNow(true);
+      setError('');
+    }
     const currentDeviceId = getDeviceId();
     try {
       const res = await fetch('/api/device/verify', {
@@ -34,26 +41,69 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
           'X-Device-Id': currentDeviceId
         }
       });
-      const data = await res.json();
-      if (res.ok && data.is_verified) {
-        setStatus('approved');
-        const syncedId = healAndSyncDeviceId(data.device_id || user.device_id);
-        onVerified(true, syncedId);
-      } else if (res.ok && data.pending_request) {
-        setStatus('pending');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.is_verified) {
+          setStatus('approved');
+          const syncedId = healAndSyncDeviceId(data.device_id || user.device_id);
+          // Auto-redirect directly to dashboard
+          setTimeout(() => {
+            onVerified(true, syncedId, data.user, data.token);
+          }, 350);
+          return;
+        }
+        
+        if (data.status === 'rejected') {
+          setStatus('rejected');
+          return;
+        }
+
+        if (data.pending_request) {
+          setStatus('pending');
+          if (data.device_code) {
+            setDeviceCode(data.device_code);
+          }
+        }
+      } else {
+        if (isManual) {
+          const errData = await res.json().catch(() => ({}));
+          setError(errData.error || 'Failed to verify status. Please try again.');
+        }
       }
     } catch (e: any) {
       if (isManual) setError('Failed to verify status. Please try again.');
     } finally {
+      checkInFlightRef.current = false;
       if (isManual) setIsCheckingNow(false);
     }
   }, [token, user.device_id, onVerified]);
 
+  // Realtime subscription: auto-detect administrator approval instantly
   useEffect(() => {
-    checkStatus();
-    const interval = setInterval(() => checkStatus(false), 10000);
+    const unsub = realtimeSync.subscribe(['device', 'device_registration_requests', 'users'], (event) => {
+      if (!event.userId || event.userId === user.id) {
+        checkStatus(false);
+      }
+    });
+
+    const handleWindowFocus = () => {
+      checkStatus(false);
+    };
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      unsub();
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [checkStatus, user.id]);
+
+  // Adaptive polling interval: poll every 3s while pending, or every 8s while idle
+  useEffect(() => {
+    checkStatus(false);
+    const pollInterval = status === 'pending' || status === 'checking' ? 3000 : 8000;
+    const interval = setInterval(() => checkStatus(false), pollInterval);
     return () => clearInterval(interval);
-  }, [checkStatus]);
+  }, [checkStatus, status]);
 
   const handleRegister = async () => {
     setStatus('checking');
@@ -75,8 +125,11 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
       const data = await res.json();
       if (res.ok) {
         if (data.already_registered) {
+          setStatus('approved');
           const syncedId = healAndSyncDeviceId(data.device_id || user.device_id);
-          onVerified(true, syncedId);
+          setTimeout(() => {
+            onVerified(true, syncedId, data.user, data.token);
+          }, 350);
           return;
         }
         setStatus('pending');
@@ -111,7 +164,43 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
           </p>
         </div>
 
-        {status === 'idle' && (
+        {status === 'approved' && (
+          <div className="space-y-6 py-6 text-center">
+            <div className="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto ring-1 ring-emerald-500/40 animate-pulse">
+              <CheckCircle2 className="w-8 h-8" />
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xl font-bold text-emerald-400">Device Approved!</h3>
+              <p className="text-sm text-slate-300">Authorization confirmed. Redirecting to Dashboard...</p>
+            </div>
+          </div>
+        )}
+
+        {status === 'rejected' && (
+          <div className="space-y-6 py-4 text-center">
+            <div className="w-16 h-16 bg-rose-500/20 text-rose-400 rounded-full flex items-center justify-center mx-auto ring-1 ring-rose-500/40">
+              <XCircle className="w-8 h-8" />
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xl font-bold text-rose-400">Registration Declined</h3>
+              <p className="text-sm text-slate-400 px-2 leading-relaxed">
+                The administrator declined this registration request. You may generate a new code to request authorization again.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setDeviceCode(Math.random().toString(36).substring(2, 8).toUpperCase());
+                setStatus('idle');
+                setError('');
+              }}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-95 text-sm"
+            >
+              Submit New Request
+            </button>
+          </div>
+        )}
+
+        {(status === 'idle' || status === 'checking') && (
           <div className="space-y-6">
             <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-700/50 text-center">
               <span className="text-xs font-bold text-blue-400 uppercase tracking-widest block mb-4">Registration Code</span>
@@ -154,9 +243,10 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
               <div className="flex gap-2">
                 <button
                   onClick={handleRegister}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-95 flex items-center justify-center gap-2 text-sm"
+                  disabled={status === 'checking'}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-95 flex items-center justify-center gap-2 text-sm"
                 >
-                  Request Registration
+                  {status === 'checking' ? 'Registering...' : 'Request Registration'}
                 </button>
                 <button
                   onClick={() => checkStatus(true)}

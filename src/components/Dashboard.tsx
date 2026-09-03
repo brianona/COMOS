@@ -3973,7 +3973,6 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 onPendingAckCountChange={setPendingAckCount}
                 onNavigateMode={(targetMode) => {
                   if (targetMode === 'management') setView('sms');
-                  else if (targetMode === 'reporting') setView('sms_reporting');
                   else if (targetMode === 'overview') setView('sms_overview');
                 }}
               />
@@ -3991,25 +3990,6 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 onPendingAckCountChange={setPendingAckCount}
                 onNavigateMode={(targetMode) => {
                   if (targetMode === 'management') setView('sms');
-                  else if (targetMode === 'reporting') setView('sms_reporting');
-                  else if (targetMode === 'overview') setView('sms_overview');
-                }}
-              />
-            </div>
-          )}
-
-          {view === 'sms_reporting' && user.role !== 'vessel' && (
-            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <SMSView 
-                vessels={vessels} 
-                currentUser={user} 
-                token={token} 
-                mode="reporting" 
-                flags={flags} 
-                onPendingAckCountChange={setPendingAckCount}
-                onNavigateMode={(targetMode) => {
-                  if (targetMode === 'management') setView('sms');
-                  else if (targetMode === 'reporting') setView('sms_reporting');
                   else if (targetMode === 'overview') setView('sms_overview');
                 }}
               />

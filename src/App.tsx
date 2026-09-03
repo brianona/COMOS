@@ -76,15 +76,74 @@ export const App = () => {
     setIsVerified(false);
   };
 
-  const handleVerified = (verified: boolean, activeDeviceId: string) => {
+  const handleVerified = (verified: boolean, activeDeviceId: string, updatedUser?: User, newToken?: string) => {
     setIsVerified(verified);
     localStorage.setItem("isDeviceVerified", String(verified));
-    if (user) {
-      const updatedUser = { ...user, device_id: activeDeviceId };
+    if (newToken) {
+      localStorage.setItem("token", newToken);
+      setToken(newToken);
+    }
+    if (updatedUser) {
+      const u = { ...updatedUser, is_verified: verified };
+      localStorage.setItem("user", JSON.stringify(u));
+      setUser(u);
+    } else if (user) {
+      const updatedUser = { ...user, device_id: activeDeviceId, is_verified: verified };
       localStorage.setItem("user", JSON.stringify(updatedUser));
       setUser(updatedUser);
     }
   };
+
+  // Check device verification on session restore or when token changes
+  useEffect(() => {
+    if (token && user && user.role === "vessel") {
+      const activeDevId = healAndSyncDeviceId(user.device_id);
+      fetch("/api/device/verify", {
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "X-Device-Id": activeDevId
+        }
+      })
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data && data.is_verified) {
+            handleVerified(true, data.device_id || user.device_id, data.user, data.token);
+          } else if (data && data.is_verified === false && isVerified) {
+            setIsVerified(false);
+            localStorage.setItem("isDeviceVerified", "false");
+          }
+        })
+        .catch(err => console.warn("Device verification check:", err));
+    }
+  }, [token]);
+
+  // Listen to realtime device updates in App level
+  useEffect(() => {
+    if (!token || !user || user.role !== "vessel") return;
+    const unsub = realtimeSync.subscribe(['device', 'device_registration_requests', 'users'], (event) => {
+      if (!event.userId || event.userId === user.id) {
+        const activeDevId = healAndSyncDeviceId(user.device_id);
+        fetch("/api/device/verify", {
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "X-Device-Id": activeDevId
+          }
+        })
+          .then(res => res.ok ? res.json() : null)
+          .then(data => {
+            if (data && data.is_verified) {
+              handleVerified(true, data.device_id || user.device_id, data.user, data.token);
+            } else if (data && data.is_verified === false) {
+              setIsVerified(false);
+              localStorage.setItem("isDeviceVerified", "false");
+            }
+          })
+          .catch(err => console.warn("Realtime device check:", err));
+      }
+    });
+
+    return () => unsub();
+  }, [token, user?.id, user?.role]);
 
   if (!token || !user) {
     return <Login onLogin={handleLogin} dbStatus={dbStatus} onRefreshDb={handleRefreshDb} />;

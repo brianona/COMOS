@@ -4278,15 +4278,6 @@ startxref
                   {currentUser?.role !== 'vessel' && (
                     <button
                       type="button"
-                      onClick={() => onNavigateMode ? onNavigateMode('reporting') : null}
-                      className="w-full py-2 bg-blue-50 hover:bg-blue-100/80 text-blue-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Upload className="w-3.5 h-3.5" /> Go to SMS Reporting (Uploads)
-                    </button>
-                  )}
-                  {currentUser?.role !== 'vessel' && (
-                    <button
-                      type="button"
                       onClick={() => onNavigateMode ? onNavigateMode('management') : null}
                       className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                     >

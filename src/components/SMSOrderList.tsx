@@ -164,6 +164,7 @@ interface OrderTemplate {
   description?: string;
   itemFormIds: string[];
   createdBy: string;
+  createdById?: string;
   createdAt: string;
 }
 
@@ -767,25 +768,37 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       const overdue = userVisibleOrders.filter(o => o.overallStatus === 'Overdue' && !o.vessels.some(v => v.status === 'Completed')).length;
       return { total, completed, pending, overdue };
     } else {
-      const completed = orders.filter(o => o.overallStatus === 'Completed' || (o.vessels.length > 0 && o.vessels.every(v => v.status === 'Completed' || ((o.items?.length || 0) > 0 && (v.submittedCount || 0) >= (o.items?.length || 0))))).length;
-      const inProgress = orders.filter(o => o.overallStatus === 'In Progress').length;
-      const pending = orders.filter(o => o.overallStatus === 'Pending').length;
-      const overdue = orders.filter(o => o.overallStatus === 'Overdue').length;
+      const completed = userVisibleOrders.filter(o => o.overallStatus === 'Completed' || (o.vessels.length > 0 && o.vessels.every(v => v.status === 'Completed' || ((o.items?.length || 0) > 0 && (v.submittedCount || 0) >= (o.items?.length || 0))))).length;
+      const inProgress = userVisibleOrders.filter(o => o.overallStatus === 'In Progress').length;
+      const pending = userVisibleOrders.filter(o => o.overallStatus === 'Pending').length;
+      const overdue = userVisibleOrders.filter(o => o.overallStatus === 'Overdue').length;
       return { total, completed, inProgress, pending, overdue };
     }
-  }, [orders, userVisibleOrders, isVesselUser, currentUser]);
+  }, [userVisibleOrders, isVesselUser, currentUser]);
 
   // Unread uploads count across all orders for the logged on management user
   const totalUncheckedCount = useMemo(() => {
     if (isVesselUser) return 0;
     let count = 0;
-    orders.forEach(o => {
+    userVisibleOrders.forEach(o => {
       (o.uploads || []).forEach(u => {
         if (!u.is_read && !u.checked_at) count++;
       });
     });
     return count;
-  }, [orders, isVesselUser]);
+  }, [userVisibleOrders, isVesselUser]);
+
+  // Reusable order templates saved by the user themselves
+  const userVisibleTemplates = useMemo(() => {
+    if (!currentUser) return [];
+    const myId = currentUser.id != null ? String(currentUser.id).trim() : '';
+    const myName = (currentUser.username || '').toLowerCase().trim();
+    return templates.filter(t => {
+      const matchId = t.createdById && myId && String(t.createdById) === myId;
+      const matchName = t.createdBy && myName && t.createdBy.toLowerCase().trim() === myName;
+      return matchId || matchName;
+    });
+  }, [templates, currentUser]);
 
   // Request Delete Order (Opens Custom Modal)
   const requestDeleteOrder = (orderId: string, label: string) => {
@@ -1791,9 +1804,15 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               <button
                 onClick={() => setIsTemplatesModalOpen(true)}
                 className="px-3.5 py-2.5 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-2xl border border-slate-200 transition-all shadow-xs flex items-center gap-2 text-xs font-bold"
+                title="Manage reusable order templates saved by yourself"
               >
                 <BookmarkPlus className="w-4 h-4 text-blue-600" />
                 <span>Templates</span>
+                {userVisibleTemplates.length > 0 && (
+                  <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full text-[10px] font-black border border-blue-200">
+                    {userVisibleTemplates.length}
+                  </span>
+                )}
               </button>
 
               <button
@@ -2463,7 +2482,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           editingOrder={editingOrder}
           availableForms={availableForms}
           vessels={vessels}
-          templates={templates}
+          templates={userVisibleTemplates}
           token={token}
           currentUser={currentUser}
           onClose={() => {
@@ -2485,7 +2504,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       {/* MODAL 3: REUSABLE TEMPLATES MANAGER */}
       {isTemplatesModalOpen && (
         <TemplatesManagerModal
-          templates={templates}
+          templates={userVisibleTemplates}
           availableForms={availableForms}
           token={token}
           onClose={() => setIsTemplatesModalOpen(false)}
@@ -4832,6 +4851,7 @@ const TemplatesManagerModal: React.FC<TemplatesManagerModalProps> = ({
           <div className="space-y-0.5">
             <span className="text-[10px] font-black uppercase text-blue-600 tracking-wider">SMS Templates</span>
             <h2 className="text-lg font-black text-slate-800 tracking-tight">Saved Order Templates</h2>
+            <p className="text-xs text-slate-500">Only showing reusable templates saved by yourself</p>
           </div>
           <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 rounded-full">
             <X className="w-5 h-5" />
@@ -4842,8 +4862,8 @@ const TemplatesManagerModal: React.FC<TemplatesManagerModalProps> = ({
           {templates.length === 0 ? (
             <div className="text-center py-10 space-y-2 text-slate-400">
               <BookmarkPlus className="w-8 h-8 mx-auto stroke-[1.5]" />
-              <p className="text-xs font-bold">No saved order templates yet.</p>
-              <p className="text-[11px]">When creating an order list, check "Save this form list as a reusable Order Template" to reuse it anytime.</p>
+              <p className="text-xs font-bold">No saved order templates found for your account.</p>
+              <p className="text-[11px]">When creating an order list, check "Save this form list as a reusable Order Template" to save your personal templates for fast reuse.</p>
             </div>
           ) : (
             templates.map(tpl => (

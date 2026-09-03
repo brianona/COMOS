@@ -1754,10 +1754,15 @@ async function startServer() {
         description TEXT NULL,
         item_form_ids TEXT NOT NULL,
         created_by VARCHAR(255) NOT NULL,
+        created_by_id VARCHAR(100) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         deleted_at DATETIME NULL
       )
     `);
+
+    try {
+      await pool.query('ALTER TABLE sms_order_templates ADD COLUMN created_by_id VARCHAR(100) NULL');
+    } catch (e) {}
 
     // Seed default SMS orders and templates if missing
     try {
@@ -2434,36 +2439,154 @@ async function startServer() {
         'INSERT INTO device_registration_requests (user_id, device_id, device_code, label) VALUES (?, ?, ?, ?)',
         [user_id, device_id, device_code, deviceLabel]
       );
+
+      try {
+        globalRealtimeEngine?.notifyChange?.({
+          domain: 'device',
+          action: 'create',
+          table: 'device_registration_requests',
+          userId: user_id,
+          meta: { device_id, device_code }
+        });
+      } catch (e) {}
+
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
-  app.get('/api/device/status', authenticate, async (req: any, res) => {
+  const handleDeviceVerificationCheck = async (req: any, res: any) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
     const user_id = req.user.id;
-    try {
-      const [rows]: any = await pool.execute(
-        'SELECT is_verified, device_id FROM users WHERE id = ?',
-        [user_id]
-      );
-      if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
-      
-      const [pending]: any = await pool.execute(
-        "SELECT * FROM device_registration_requests WHERE user_id = ? AND status = 'pending'",
-        [user_id]
-      );
+    const currentDeviceId = String(req.headers['x-device-id'] || req.query.device_id || req.body?.device_id || '').trim();
 
-      res.json({ 
-        is_verified: !!rows[0].is_verified, 
-        device_id: rows[0].device_id,
-        has_pending_request: pending.length > 0
+    try {
+      const [userRows]: any = await pool.execute(
+        'SELECT id, username, role, device_id, is_verified, vessel_id FROM users WHERE id = ?',
+        [user_id]
+      );
+      if (userRows.length === 0) return res.status(404).json({ error: 'User not found' });
+      const user = userRows[0];
+
+      // Non-vessel accounts are not restricted by device registration
+      if (user.role !== 'vessel') {
+        return res.json({
+          success: true,
+          is_verified: true,
+          status: 'approved',
+          device_id: user.device_id,
+          user: {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            vessel_id: user.vessel_id,
+            device_id: user.device_id,
+            is_verified: true
+          }
+        });
+      }
+
+      // Check registered devices
+      const registeredDevices = parseServerDeviceList(user.device_id);
+      let isVerified = false;
+      let matchedDevice: ServerDeviceItem | null = null;
+
+      if (currentDeviceId) {
+        // 1. Direct ID match
+        const directMatch = registeredDevices.find(d => d.id === currentDeviceId);
+        if (directMatch) {
+          isVerified = true;
+          matchedDevice = directMatch;
+        }
+
+        // 2. Hardware profile / fingerprint match
+        if (!isVerified) {
+          const incomingFp = extractDeviceFingerprint(currentDeviceId);
+          if (incomingFp) {
+            const fpMatch = registeredDevices.find(d => extractDeviceFingerprint(d.id) === incomingFp);
+            if (fpMatch) {
+              isVerified = true;
+              matchedDevice = fpMatch;
+              // Synchronize the registered ID in DB if the random seed part changed
+              if (fpMatch.id !== currentDeviceId) {
+                fpMatch.id = currentDeviceId;
+                await pool.execute('UPDATE users SET device_id = ? WHERE id = ?', [JSON.stringify(registeredDevices), user_id]);
+              }
+            }
+          }
+        }
+      }
+
+      // 3. Query the latest request in device_registration_requests
+      const [reqRows]: any = await pool.execute(
+        'SELECT * FROM device_registration_requests WHERE user_id = ? ORDER BY id DESC LIMIT 1',
+        [user_id]
+      );
+      const latestRequest = reqRows[0] || null;
+
+      // If the latest request was approved and matches this device, verify it
+      if (!isVerified && latestRequest && latestRequest.status === 'approved') {
+        if (currentDeviceId) {
+          const reqFp = extractDeviceFingerprint(latestRequest.device_id);
+          const incomingFp = extractDeviceFingerprint(currentDeviceId);
+          if (latestRequest.device_id === currentDeviceId || (reqFp && incomingFp && reqFp === incomingFp)) {
+            isVerified = true;
+          }
+        }
+      }
+
+      // Prepare fresh JWT token with verified claims
+      const [userTeams]: any = await pool.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [user.id]);
+      const teamIds = userTeams.map((ut: any) => ut.team_id);
+      
+      let vesselName = null;
+      if (user.vessel_id) {
+        try {
+          const [vRows]: any = await pool.execute('SELECT name FROM vessels WHERE id = ?', [user.vessel_id]);
+          if (vRows.length > 0) vesselName = vRows[0].name;
+        } catch (e) {}
+      }
+
+      const token = jwt.sign({ 
+        id: user.id, 
+        username: user.username, 
+        role: user.role, 
+        team_ids: teamIds, 
+        vessel_id: user.vessel_id,
+        vessel_name: vesselName,
+        device_id: user.device_id,
+        is_verified: isVerified
+      }, JWT_SECRET);
+
+      return res.json({
+        success: true,
+        is_verified: isVerified,
+        status: isVerified ? 'approved' : (latestRequest ? latestRequest.status : 'idle'),
+        pending_request: latestRequest ? latestRequest.status === 'pending' : false,
+        device_code: latestRequest?.device_code,
+        label: matchedDevice?.label || latestRequest?.label,
+        device_id: user.device_id,
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          team_ids: teamIds,
+          vessel_id: user.vessel_id,
+          vessel_name: vesselName,
+          device_id: user.device_id,
+          is_verified: isVerified
+        }
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
-  });
+  };
+
+  app.get('/api/device/verify', authenticate, handleDeviceVerificationCheck);
+  app.post('/api/device/verify', authenticate, handleDeviceVerificationCheck);
+  app.get('/api/device/status', authenticate, handleDeviceVerificationCheck);
 
   app.get('/api/admin/device-requests', authenticate, isTeamPicOrAdmin, async (req, res) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
@@ -2563,6 +2686,16 @@ async function startServer() {
           `Removed device "${removedLabel}" (${deviceIdToRemove.slice(0, 16)}...) from vessel account "${username}"`
         );
 
+        try {
+          globalRealtimeEngine?.notifyChange?.({
+            domain: 'device',
+            action: 'remove',
+            table: 'device_registration_requests',
+            userId: user_id,
+            meta: { deviceId: deviceIdToRemove }
+          });
+        } catch (e) {}
+
         return res.json({ 
           success: true, 
           message: `Device "${removedLabel}" removed successfully`, 
@@ -2581,6 +2714,15 @@ async function startServer() {
         `Removed all registered devices for vessel account "${username}"`
       );
 
+      try {
+        globalRealtimeEngine?.notifyChange?.({
+          domain: 'device',
+          action: 'remove_all',
+          table: 'device_registration_requests',
+          userId: user_id
+        });
+      } catch (e) {}
+
       res.json({ success: true, message: 'All device registrations removed' });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2591,6 +2733,9 @@ async function startServer() {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
     const { request_id, status, label } = req.body; // status: 'approved' | 'rejected', label?: string
     try {
+      let targetUserId: number | null = null;
+      let targetDeviceId: string | null = null;
+
       if (status === 'approved') {
         const [requests]: any = await pool.execute(
           'SELECT * FROM device_registration_requests WHERE id = ?',
@@ -2598,6 +2743,8 @@ async function startServer() {
         );
         const request = requests[0];
         if (request) {
+          targetUserId = request.user_id;
+          targetDeviceId = request.device_id;
           const [userRows]: any = await pool.execute(
             'SELECT id, username, device_id, is_verified, role FROM users WHERE id = ?',
             [request.user_id]
@@ -2661,6 +2808,8 @@ async function startServer() {
       } else if (status === 'rejected') {
         const [requests]: any = await pool.execute('SELECT dr.*, u.username FROM device_registration_requests dr JOIN users u ON dr.user_id = u.id WHERE dr.id = ?', [request_id]);
         if (requests.length > 0) {
+          targetUserId = requests[0].user_id;
+          targetDeviceId = requests[0].device_id;
           await logAudit(
             req.user.id,
             req.user.username,
@@ -2674,6 +2823,17 @@ async function startServer() {
         'UPDATE device_registration_requests SET status = ? WHERE id = ?',
         [status, request_id]
       );
+
+      try {
+        globalRealtimeEngine?.notifyChange?.({
+          domain: 'device',
+          action: status === 'approved' ? 'approve' : 'reject',
+          table: 'device_registration_requests',
+          userId: targetUserId,
+          meta: { requestId: request_id, status, deviceId: targetDeviceId }
+        });
+      } catch (e) {}
+
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -4409,6 +4569,54 @@ async function startServer() {
     return false;
   }
 
+  async function getPicUserTeamVessels(poolRef: any, userObj: any): Promise<{ hasFilter: boolean; teamVessels: any[]; teamIds: number[] }> {
+    if (!poolRef || !userObj) {
+      return { hasFilter: false, teamVessels: [], teamIds: [] };
+    }
+    // Admins have access to all vessels; vessel users have their own vessel identity
+    const isPic = userObj.role === 'team_pic' || userObj.role === 'user';
+    if (!isPic) {
+      return { hasFilter: false, teamVessels: [], teamIds: [] };
+    }
+
+    let teamIds: number[] = Array.isArray(userObj.team_ids) ? userObj.team_ids.map(Number).filter(Boolean) : [];
+    if (teamIds.length === 0 && userObj.id) {
+      try {
+        const [uTeams]: any = await poolRef.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [userObj.id]);
+        teamIds = uTeams.map((ut: any) => Number(ut.team_id)).filter(Boolean);
+      } catch (err: any) {
+        console.warn('Error fetching user_teams for PIC user:', err.message);
+      }
+    }
+
+    if (teamIds.length === 0) {
+      return { hasFilter: true, teamVessels: [], teamIds: [] };
+    }
+
+    try {
+      const placeholders = teamIds.map(() => '?').join(',');
+      const [teamVessels]: any = await poolRef.query(
+        `SELECT id, name, team_id FROM vessels WHERE team_id IN (${placeholders}) AND deleted_at IS NULL`,
+        teamIds
+      );
+      return { hasFilter: true, teamVessels: teamVessels || [], teamIds };
+    } catch (err: any) {
+      console.error('Error fetching vessels for PIC user teams:', err);
+      return { hasFilter: true, teamVessels: [], teamIds };
+    }
+  }
+
+  function isVesselUnderPicTeam(
+    vesselId: string | number | null | undefined,
+    vesselName: string | null | undefined,
+    teamVessels: any[]
+  ): boolean {
+    if (!teamVessels || teamVessels.length === 0) return false;
+    return teamVessels.some((tv: any) =>
+      checkVesselMatch(vesselId, vesselName, tv.id, tv.name)
+    );
+  }
+
   // ==================== SMS ORDER LIST ROUTES ====================
   app.get('/api/sms/orders', authenticate, async (req: any, res) => {
     try {
@@ -4420,6 +4628,11 @@ async function startServer() {
         const idInfo = await getVesselUserIdentity(pool, req.user);
         assignedVesselId = idInfo.vesselId;
         assignedVesselName = idInfo.vesselName;
+      }
+
+      const picInfo = await getPicUserTeamVessels(pool, req.user);
+      if (picInfo.hasFilter && picInfo.teamVessels.length === 0) {
+        return res.json([]);
       }
 
       // Fetch all active orders
@@ -4478,6 +4691,18 @@ async function startServer() {
           }
         }
 
+        // For PIC users, only show orders sent to vessels under their team
+        let targetVessels = orderVessels;
+        if (picInfo.hasFilter) {
+          targetVessels = orderVessels.filter((v: any) =>
+            isVesselUnderPicTeam(v.vessel_id, v.vessel_name, picInfo.teamVessels)
+          );
+          if (targetVessels.length === 0) {
+            // Not sent to any vessel under this PIC user's team
+            continue;
+          }
+        }
+
         const orderItems = items.filter((i: any) => i.order_id === o.id).map((it: any) => {
           let parsedAllowed: string[] = [];
           try {
@@ -4511,7 +4736,7 @@ async function startServer() {
 
         const totalItemsCount = orderItems.length;
 
-        const mappedVessels = orderVessels.map((v: any) => {
+        const mappedVessels = targetVessels.map((v: any) => {
           const vUploads = orderUploads.filter((u: any) => 
             checkVesselMatch(u.vessel_id, u.vessel_name, v.vessel_id, v.vessel_name)
           );
@@ -4557,7 +4782,9 @@ async function startServer() {
 
         const returnedUploads = isVessel
           ? orderUploads.filter((u: any) => checkVesselMatch(u.vessel_id, u.vessel_name, assignedVesselId, assignedVesselName, req.user.username))
-          : orderUploads;
+          : (picInfo.hasFilter
+              ? orderUploads.filter((u: any) => isVesselUnderPicTeam(u.vessel_id, u.vessel_name, picInfo.teamVessels))
+              : orderUploads);
 
         results.push({
           id: o.id,
@@ -4606,6 +4833,20 @@ async function startServer() {
         const idInfo = await getVesselUserIdentity(pool, req.user);
         assignedVesselId = idInfo.vesselId;
         assignedVesselName = idInfo.vesselName;
+      }
+
+      const picInfo = await getPicUserTeamVessels(pool, req.user);
+      if (picInfo.hasFilter && picInfo.teamVessels.length === 0) {
+        return res.json({
+          statusColor: 'normal',
+          urgentCount: 0,
+          uncheckedCount: 0,
+          replaceRequestedCount: 0,
+          pendingFilesCount: 0,
+          hasUrgentDeadline: false,
+          hasUncheckedUploads: false,
+          hasReplaceRequests: false
+        });
       }
 
       const [orders]: any = await pool.execute(
@@ -4686,6 +4927,23 @@ async function startServer() {
           pendingFilesCount += vPending;
 
           isCompletedForUser = (totalItems > 0 && verifiedCount >= totalItems) || myV.status === 'Completed';
+        } else if (picInfo.hasFilter) {
+          const matchingPicVessels = orderVessels.filter((v: any) =>
+            isVesselUnderPicTeam(v.vessel_id, v.vessel_name, picInfo.teamVessels)
+          );
+          if (matchingPicVessels.length === 0) continue;
+
+          const allDone = matchingPicVessels.length > 0 && matchingPicVessels.every((v: any) => {
+            if (v.status === 'Completed') return true;
+            const vUps = uploads.filter((u: any) =>
+              checkVesselMatch(u.vessel_id, u.vessel_name, v.vessel_id, v.vessel_name) && u.order_id === order.id
+            );
+            const verified = orderItems.filter((item: any) => {
+              return vUps.some((u: any) => checkFormUploadMatch(u, item) && !u.replace_requested_at);
+            }).length;
+            return totalItems > 0 && verified >= totalItems;
+          });
+          isCompletedForUser = allDone;
         } else {
           const allDone = orderVessels.length > 0 && orderVessels.every((v: any) => {
             if (v.status === 'Completed') return true;
@@ -4721,7 +4979,10 @@ async function startServer() {
             [currentUserId]
           );
           const userReadSet = new Set<number>(userReads.map((r: any) => r.upload_id));
-          const unreadUploads = uploads.filter((u: any) => !userReadSet.has(u.id));
+          const relevantUploads = picInfo.hasFilter
+            ? uploads.filter((u: any) => isVesselUnderPicTeam(u.vessel_id, u.vessel_name, picInfo.teamVessels))
+            : uploads;
+          const unreadUploads = relevantUploads.filter((u: any) => !userReadSet.has(u.id));
           uncheckedCount = unreadUploads.length;
         } catch (e: any) {
           console.warn('Note on checking unread count:', e.message);
@@ -4881,14 +5142,18 @@ async function startServer() {
     }
     const currentUserId = String(req.user.id || req.user.username);
     try {
-      const [ups]: any = await pool.query('SELECT id FROM sms_order_uploads WHERE deleted_at IS NULL');
-      for (const u of ups) {
+      const picInfo = await getPicUserTeamVessels(pool, req.user);
+      const [ups]: any = await pool.query('SELECT id, vessel_id, vessel_name FROM sms_order_uploads WHERE deleted_at IS NULL');
+      const targetUps = picInfo.hasFilter
+        ? ups.filter((u: any) => isVesselUnderPicTeam(u.vessel_id, u.vessel_name, picInfo.teamVessels))
+        : ups;
+      for (const u of targetUps) {
         await pool.execute(
           'INSERT INTO sms_order_upload_reads (user_id, upload_id, read_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE read_at = CURRENT_TIMESTAMP',
           [currentUserId, u.id]
         );
       }
-      res.json({ success: true, count: ups.length });
+      res.json({ success: true, count: targetUps.length });
     } catch (e: any) {
       console.error('Error marking all SMS order uploads as read for user:', e);
       res.status(500).json({ error: e.message });
@@ -4979,6 +5244,8 @@ async function startServer() {
         [id]
       );
 
+      const picInfo = await getPicUserTeamVessels(pool, req.user);
+
       if (req.user.role === 'vessel') {
         const idInfo = await getVesselUserIdentity(pool, req.user);
         const assignedVesselId = idInfo.vesselId;
@@ -4989,6 +5256,13 @@ async function startServer() {
         );
         if (!isAssigned) {
           return res.status(403).json({ error: 'This order is not assigned to your vessel.' });
+        }
+      } else if (picInfo.hasFilter) {
+        const hasTeamVessel = vessels.some((v: any) =>
+          isVesselUnderPicTeam(v.vessel_id, v.vessel_name, picInfo.teamVessels)
+        );
+        if (!hasTeamVessel) {
+          return res.status(403).json({ error: 'This order is not assigned to any vessel under your team.' });
         }
       }
 
@@ -5029,10 +5303,21 @@ async function startServer() {
         returnedUploads = uploads.filter((u: any) =>
           checkVesselMatch(u.vessel_id, u.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username)
         );
+      } else if (picInfo.hasFilter) {
+        returnedUploads = uploads.filter((u: any) =>
+          isVesselUnderPicTeam(u.vessel_id, u.vessel_name, picInfo.teamVessels)
+        );
       }
 
-      const mappedVessels = vessels.map((v: any) => {
-        const vUploads = uploads.filter((u: any) => checkVesselMatch(u.vessel_id, u.vessel_name, v.vessel_id, v.vessel_name));
+      let visibleVessels = vessels;
+      if (picInfo.hasFilter) {
+        visibleVessels = vessels.filter((v: any) =>
+          isVesselUnderPicTeam(v.vessel_id, v.vessel_name, picInfo.teamVessels)
+        );
+      }
+
+      const mappedVessels = visibleVessels.map((v: any) => {
+        const vUploads = returnedUploads.filter((u: any) => checkVesselMatch(u.vessel_id, u.vessel_name, v.vessel_id, v.vessel_name));
         const distinctFormsUploaded = orderItems.filter((item: any) => {
           return vUploads.some((u: any) => checkFormUploadMatch(u, item));
         }).length;
@@ -5149,6 +5434,17 @@ async function startServer() {
     }
     const { id } = req.params;
     try {
+      const picInfo = await getPicUserTeamVessels(pool, req.user);
+      if (picInfo.hasFilter) {
+        const [oVessels]: any = await pool.execute('SELECT vessel_id, vessel_name FROM sms_order_vessels WHERE order_id = ? AND deleted_at IS NULL', [id]);
+        const hasTeamVessel = oVessels.some((v: any) =>
+          isVesselUnderPicTeam(v.vessel_id, v.vessel_name, picInfo.teamVessels)
+        );
+        if (!hasTeamVessel) {
+          return res.status(403).json({ error: 'Forbidden: You can only delete orders assigned to vessels under your team' });
+        }
+      }
+
       await pool.execute('UPDATE sms_orders SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
       await pool.execute('UPDATE sms_order_vessels SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [id]);
       await pool.execute('UPDATE sms_order_items SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [id]);
@@ -5206,6 +5502,19 @@ async function startServer() {
 
       const targetVesselId = String(vessel_id || req.user?.vessel_id || '');
       const targetVesselName = vessel_name || req.user?.username || 'Vessel';
+
+      if (req.user.role === 'vessel') {
+        const idInfo = await getVesselUserIdentity(pool, req.user);
+        const isMatch = checkVesselMatch(targetVesselId, targetVesselName, idInfo.vesselId, idInfo.vesselName, req.user.username);
+        if (!isMatch) {
+          return res.status(403).json({ error: 'Access denied: You cannot upload files for other vessels.' });
+        }
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        const picInfo = await getPicUserTeamVessels(pool, req.user);
+        if (picInfo.hasFilter && !isVesselUnderPicTeam(targetVesselId, targetVesselName, picInfo.teamVessels)) {
+          return res.status(403).json({ error: 'Access denied: You can only upload files for vessels under your team.' });
+        }
+      }
 
       // If single file requirement, replace any existing active file for this requirement
       if (!allowsMultiple && (item_id || form_id || form_code)) {
@@ -5485,6 +5794,11 @@ async function startServer() {
         if (!isMatch) {
           return res.status(403).json({ error: 'Access denied: You cannot download files submitted by other vessels.' });
         }
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        const picInfo = await getPicUserTeamVessels(pool, req.user);
+        if (picInfo.hasFilter && !isVesselUnderPicTeam(row.vessel_id, row.vessel_name, picInfo.teamVessels)) {
+          return res.status(403).json({ error: 'Access denied: You cannot download files for vessels outside your team.' });
+        }
       }
       const retrievedBuffer = await handleFileRetrieve(row.file_data);
       res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
@@ -5512,6 +5826,11 @@ async function startServer() {
         const isMatch = checkVesselMatch(row.vessel_id, row.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username);
         if (!isMatch) {
           return res.status(403).json({ error: 'Access denied: You cannot view files submitted by other vessels.' });
+        }
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        const picInfo = await getPicUserTeamVessels(pool, req.user);
+        if (picInfo.hasFilter && !isVesselUnderPicTeam(row.vessel_id, row.vessel_name, picInfo.teamVessels)) {
+          return res.status(403).json({ error: 'Access denied: You cannot view files for vessels outside your team.' });
         }
       }
       const retrievedBuffer = await handleFileRetrieve(row.file_data);
@@ -5548,9 +5867,16 @@ async function startServer() {
         uploads = uploads.filter((u: any) =>
           checkVesselMatch(u.vessel_id, u.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username)
         );
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        const picInfo = await getPicUserTeamVessels(pool, req.user);
+        if (picInfo.hasFilter) {
+          uploads = uploads.filter((u: any) =>
+            isVesselUnderPicTeam(u.vessel_id, u.vessel_name, picInfo.teamVessels)
+          );
+        }
       }
       if (uploads.length === 0) {
-        return res.status(404).json({ error: 'No files have been uploaded yet for your vessel in this order.' });
+        return res.status(404).json({ error: 'No files have been uploaded yet for your vessels in this order.' });
       }
 
       const zip = new JSZip();
@@ -5979,13 +6305,30 @@ async function startServer() {
 
   app.get('/api/sms/order-templates', authenticate, async (req: any, res) => {
     try {
-      const [rows]: any = await pool.query('SELECT * FROM sms_order_templates WHERE deleted_at IS NULL ORDER BY created_at DESC');
+      if (req.user.role === 'vessel') {
+        return res.json([]);
+      }
+      const currentUserId = req.user?.id != null ? String(req.user.id).trim() : '';
+      const currentUsername = (req.user?.username || '').toLowerCase().trim();
+
+      // Only show templates that were saved by the user themselves
+      const [rows]: any = await pool.execute(
+        `SELECT * FROM sms_order_templates 
+         WHERE deleted_at IS NULL 
+           AND (
+             (created_by_id IS NOT NULL AND created_by_id != '' AND created_by_id = ?)
+             OR (created_by IS NOT NULL AND LOWER(TRIM(created_by)) = ?)
+           )
+         ORDER BY created_at DESC`,
+        [currentUserId, currentUsername]
+      );
       const mapped = rows.map((r: any) => ({
         id: r.id,
         title: r.title,
         description: r.description,
         itemFormIds: r.item_form_ids ? JSON.parse(r.item_form_ids) : [],
         createdBy: r.created_by,
+        createdById: r.created_by_id,
         createdAt: r.created_at
       }));
       res.json(mapped);
@@ -6003,20 +6346,29 @@ async function startServer() {
     if (!title) {
       return res.status(400).json({ error: 'Template title is required' });
     }
+    const currentUserId = req.user?.id != null ? String(req.user.id).trim() : '';
+    const currentUsername = req.user?.username || 'Management';
+
     try {
       const tId = id || `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
       const formIdsStr = JSON.stringify(itemFormIds || []);
-      const [existing]: any = await pool.execute('SELECT id FROM sms_order_templates WHERE id = ?', [tId]);
+      const [existing]: any = await pool.execute('SELECT id, created_by, created_by_id FROM sms_order_templates WHERE id = ?', [tId]);
 
       if (existing.length > 0) {
+        const old = existing[0];
+        const isOwner = (old.created_by_id && currentUserId && String(old.created_by_id) === currentUserId) ||
+                        (old.created_by && old.created_by.toLowerCase().trim() === currentUsername.toLowerCase().trim());
+        if (!isOwner) {
+          return res.status(403).json({ error: 'You can only modify templates saved by yourself' });
+        }
         await pool.execute(
-          'UPDATE sms_order_templates SET title = ?, description = ?, item_form_ids = ?, deleted_at = NULL WHERE id = ?',
-          [title, description || '', formIdsStr, tId]
+          'UPDATE sms_order_templates SET title = ?, description = ?, item_form_ids = ?, created_by = ?, created_by_id = ?, deleted_at = NULL WHERE id = ?',
+          [title, description || '', formIdsStr, currentUsername, currentUserId, tId]
         );
       } else {
         await pool.execute(
-          'INSERT INTO sms_order_templates (id, title, description, item_form_ids, created_by) VALUES (?, ?, ?, ?, ?)',
-          [tId, title, description || '', formIdsStr, req.user?.username || 'Management']
+          'INSERT INTO sms_order_templates (id, title, description, item_form_ids, created_by, created_by_id) VALUES (?, ?, ?, ?, ?, ?)',
+          [tId, title, description || '', formIdsStr, currentUsername, currentUserId]
         );
       }
       res.json({ success: true, id: tId });
@@ -6030,7 +6382,24 @@ async function startServer() {
     if (req.user.role === 'vessel') {
       return res.status(403).json({ error: 'Vessel users cannot delete order templates' });
     }
+    const currentUserId = req.user?.id != null ? String(req.user.id).trim() : '';
+    const currentUsername = (req.user?.username || '').toLowerCase().trim();
+
     try {
+      const [existing]: any = await pool.execute(
+        'SELECT id, created_by, created_by_id FROM sms_order_templates WHERE id = ? AND deleted_at IS NULL',
+        [req.params.id]
+      );
+      if (existing.length === 0) {
+        return res.status(404).json({ error: 'Template not found' });
+      }
+      const old = existing[0];
+      const isOwner = (old.created_by_id && currentUserId && String(old.created_by_id) === currentUserId) ||
+                      (old.created_by && old.created_by.toLowerCase().trim() === currentUsername);
+      if (!isOwner) {
+        return res.status(403).json({ error: 'You can only delete templates saved by yourself' });
+      }
+
       await pool.execute('UPDATE sms_order_templates SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
       res.json({ success: true });
     } catch (e: any) {

@@ -194,7 +194,7 @@ export const SidebarContent = ({
               setIsSmsReportingOpen(true);
             }}
             className={getCategoryToggleClass(
-              view === 'sms_overview' || view === 'sms' || view === 'sms_reporting' || view === 'sms_order_list' || view === 'sms_find_report',
+              view === 'sms_overview' || view === 'sms' || view === 'sms_order_list' || view === 'sms_find_report',
               isSmsReportingOpen
             )}
           >
@@ -236,14 +236,6 @@ export const SidebarContent = ({
                     className={getSubItemClass(view === 'sms')}
                   >
                     <FileText className="w-3.5 h-3.5 shrink-0" /> SMS Management
-                  </button>
-                )}
-                {user.role !== 'vessel' && (
-                  <button 
-                    onClick={() => { setView('sms_reporting'); setIsSidebarOpen(false); }}
-                    className={getSubItemClass(view === 'sms_reporting')}
-                  >
-                    <FileText className="w-3.5 h-3.5 shrink-0" /> SMS Reporting
                   </button>
                 )}
                 <button 
