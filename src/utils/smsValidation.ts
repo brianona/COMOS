@@ -312,37 +312,37 @@ export const isTargetDateInText = (textUpper: string, year: number, monthNum: nu
   const monthStr = monthNum.toString();
   const monthPad = monthNum < 10 ? '0' + monthNum : monthStr;
   
-  // 1. "28 November 2025" or "28 Nov 2025"
-  const r1 = new RegExp(`\\b${day}(?:th|st|nd|rd)?\\s+(?:${fullMonth}|${shortMonth})\\s+${year}\\b`, 'i');
-  const r1Pad = new RegExp(`\\b${dayPad}\\s+(?:${fullMonth}|${shortMonth})\\s+${year}\\b`, 'i');
+  // 1. Day Month Year: e.g. "28 November 2025", "28 Nov 2025", "28 Nov. 2025", "28 Nov.2025", "28.Nov.2025", "28. Nov. 2025", "28-Nov-2025", "28-Nov.-2025", "28_Nov_2025"
+  const r1 = new RegExp(
+    `(?:^|\\b|[_\\s])(?:${dayStr}|${dayPad})(?:th|st|nd|rd)?(?:\\.|[-/_]|\\s+)?\\s*(?:${fullMonth}|${shortMonth})\\.?\\s*(?:[-/_.,]|\\s)?\\s*${year}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`,
+    'i'
+  );
   
-  // 2. "November 28, 2025" or "Nov 28, 2025"
-  const r2 = new RegExp(`\\b(?:${fullMonth}|${shortMonth})\\s+${day}(?:th|st|nd|rd)?,?\\s+${year}\\b`, 'i');
-  const r2Pad = new RegExp(`\\b(?:${fullMonth}|${shortMonth})\\s+${dayPad},?\\s+${year}\\b`, 'i');
+  // 2. Month Day Year: e.g. "November 28, 2025", "Nov 28, 2025", "Nov. 28, 2025", "Nov.28, 2025", "Nov-28-2025"
+  const r2 = new RegExp(
+    `(?:^|\\b|[_\\s])(?:${fullMonth}|${shortMonth})\\.?\\s*(?:[-/_]|\\s+)?\\s*(?:${dayStr}|${dayPad})(?:th|st|nd|rd)?(?:,)?\\s*(?:[-/_.,]|\\s)?\\s*${year}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`,
+    'i'
+  );
   
-  // 3. "28-Nov-2025" or "28/Nov/2025" or "28.Nov.2025"
-  const r3 = new RegExp(`\\b${day}[-/.]${shortMonth}[-/.]${year}\\b`, 'i');
-  const r3Pad = new RegExp(`\\b${dayPad}[-/.]${shortMonth}[-/.]${year}\\b`, 'i');
+  // 3. Delimited Day-Month-Year: e.g. "28-Nov-2025", "28/Nov/2025", "28.Nov.2025", "28.Nov.-2025"
+  const r3 = new RegExp(`(?:^|\\b|[_\\s])(?:${dayStr}|${dayPad})[-/.](?:${fullMonth}|${shortMonth})\\.?[-/. ]?${year}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`, 'i');
   
   // 4. "2025-11-28" or "2025/11/28"
-  const r4 = new RegExp(`\\b${year}[-/.]${monthPad}[-/.]${dayPad}\\b`);
-  const r4Lenient = new RegExp(`\\b${year}[-/.]${monthStr}[-/.]${dayStr}\\b`);
+  const r4 = new RegExp(`(?:^|\\b|[_\\s])${year}[-/.]${monthPad}[-/.]${dayPad}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`);
+  const r4Lenient = new RegExp(`(?:^|\\b|[_\\s])${year}[-/.]${monthStr}[-/.]${dayStr}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`);
   
   // 5. "11/28/2025" or "11-28-2025"
-  const r5 = new RegExp(`\\b${monthPad}[-/.]${dayPad}[-/.]${year}\\b`);
-  const r5Lenient = new RegExp(`\\b${monthStr}[-/.]${dayStr}[-/.]${year}\\b`);
+  const r5 = new RegExp(`(?:^|\\b|[_\\s])${monthPad}[-/.]${dayPad}[-/.]${year}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`);
+  const r5Lenient = new RegExp(`(?:^|\\b|[_\\s])${monthStr}[-/.]${dayStr}[-/.]${year}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`);
   
   // 6. "28/11/2025" or "28-11-2025"
-  const r6 = new RegExp(`\\b${dayPad}[-/.]${monthPad}[-/.]${year}\\b`);
-  const r6Lenient = new RegExp(`\\b${dayStr}[-/.]${monthStr}[-/.]${year}\\b`);
+  const r6 = new RegExp(`(?:^|\\b|[_\\s])${dayPad}[-/.]${monthPad}[-/.]${year}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`);
+  const r6Lenient = new RegExp(`(?:^|\\b|[_\\s])${dayStr}[-/.]${monthStr}[-/.]${year}(?:$|\\b|[_\\s]|\\.[a-z0-9]+)`);
 
   return (
     r1.test(textUpper) ||
-    r1Pad.test(textUpper) ||
     r2.test(textUpper) ||
-    r2Pad.test(textUpper) ||
     r3.test(textUpper) ||
-    r3Pad.test(textUpper) ||
     r4.test(textUpper) ||
     r4Lenient.test(textUpper) ||
     r5.test(textUpper) ||
@@ -357,16 +357,16 @@ export const hasAnyDateInText = (fileText: string): boolean => {
   
   const monthRegexStr = '(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER|JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)';
   
-  // Pattern 1: DD Month YYYY or Month DD, YYYY
-  const datePattern1 = new RegExp(`\\b\\d{1,2}(?:th|st|nd|rd)?\\s+${monthRegexStr}\\s+\\d{4}\\b`, 'i');
-  const datePattern2 = new RegExp(`\\b${monthRegexStr}\\s+\\d{1,2}(?:th|st|nd|rd)?,?\\s+\\d{4}\\b`, 'i');
+  // Pattern 1: DD Month YYYY or Month DD, YYYY (supports Nov. 2025, Nov.2025, etc.)
+  const datePattern1 = new RegExp(`(?:^|\\b|[_\\s])\\d{1,2}(?:th|st|nd|rd)?(?:\\.|[-/_]|\\s+)?\\s*${monthRegexStr}\\.?\\s*(?:[-/_.,]|\\s)?\\s*\\d{4}(?:$|\\b|[_\\s])`, 'i');
+  const datePattern2 = new RegExp(`(?:^|\\b|[_\\s])${monthRegexStr}\\.?\\s*(?:[-/_]|\\s+)?\\s*\\d{1,2}(?:th|st|nd|rd)?(?:,)?\\s*(?:[-/_.,]|\\s)?\\s*\\d{4}(?:$|\\b|[_\\s])`, 'i');
   
   // Pattern 2: DD-Month-YYYY
-  const datePattern3 = new RegExp(`\\b\\d{1,2}[-/. ]${monthRegexStr}[-/. ]\\d{4}\\b`, 'i');
+  const datePattern3 = new RegExp(`(?:^|\\b|[_\\s])\\d{1,2}[-/.]${monthRegexStr}\\.?[-/. ]?\\d{4}(?:$|\\b|[_\\s])`, 'i');
   
   // Pattern 3: YYYY-MM-DD or MM/DD/YYYY or DD/MM/YYYY with 4-digit years
-  const datePattern4 = /\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b/;
-  const datePattern5 = /\b\d{1,2}[-/.]\d{1,2}[-/.]\d{4}\b/;
+  const datePattern4 = /(?:^|\b|[_\s])\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:$|\b|[_\s])/;
+  const datePattern5 = /(?:^|\b|[_\s])\d{1,2}[-/.]\d{1,2}[-/.]\d{4}(?:$|\b|[_\s])/;
 
   return (
     datePattern1.test(textUpper) ||

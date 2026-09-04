@@ -216,6 +216,7 @@ export interface FailedUploadInfo {
   isFetchError?: boolean;
   failureCount?: number;
   suggestion?: string | null;
+  targetVessel?: { id: string | number; name: string };
 }
 
 export const checkFormUploadMatch = (u: any, item: any): boolean => {
@@ -721,7 +722,20 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           if (statusFilter === 'Pending' && userVesselStatus !== 'Pending') return false;
           if (statusFilter === 'Overdue' && (order.overallStatus !== 'Overdue' || userVesselStatus === 'Completed')) return false;
         } else {
-          if (statusFilter !== order.overallStatus) return false;
+          if (statusFilter === 'Pending') {
+            const totalReq = order.items?.length || 0;
+            const hasAnyPendingVessel = order.vessels.length === 0 || order.vessels.some(v => {
+              if (v.status === 'Completed') return false;
+              if (totalReq > 0 && (v.submittedCount || 0) >= totalReq) return false;
+              const vUps = getVesselUploads(order.uploads, v, order.vessels);
+              const vVerified = totalReq > 0 ? (order.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0) : 0;
+              if (totalReq > 0 && vVerified >= totalReq) return false;
+              return true;
+            });
+            if (!hasAnyPendingVessel && order.overallStatus !== 'Pending') return false;
+          } else {
+            if (statusFilter !== order.overallStatus) return false;
+          }
         }
       }
 
@@ -770,7 +784,18 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     } else {
       const completed = userVisibleOrders.filter(o => o.overallStatus === 'Completed' || (o.vessels.length > 0 && o.vessels.every(v => v.status === 'Completed' || ((o.items?.length || 0) > 0 && (v.submittedCount || 0) >= (o.items?.length || 0))))).length;
       const inProgress = userVisibleOrders.filter(o => o.overallStatus === 'In Progress').length;
-      const pending = userVisibleOrders.filter(o => o.overallStatus === 'Pending').length;
+      const pending = userVisibleOrders.filter(o => {
+        if (o.overallStatus === 'Pending') return true;
+        const totalReq = o.items?.length || 0;
+        return o.vessels.length === 0 || o.vessels.some(v => {
+          if (v.status === 'Completed') return false;
+          if (totalReq > 0 && (v.submittedCount || 0) >= totalReq) return false;
+          const vUps = getVesselUploads(o.uploads, v, o.vessels);
+          const vVerified = totalReq > 0 ? (o.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0) : 0;
+          if (totalReq > 0 && vVerified >= totalReq) return false;
+          return true;
+        });
+      }).length;
       const overdue = userVisibleOrders.filter(o => o.overallStatus === 'Overdue').length;
       return { total, completed, inProgress, pending, overdue };
     }
@@ -1280,8 +1305,13 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
-  // Upload handler for vessel with strict SMS Reporting-style Validation Checker
-  const handleFileUpload = async (orderId: string, formItem: OrderItem, files: FileList | File[]) => {
+  // Upload handler with strict SMS Reporting-style Validation Checker (supports vessel & non-vessel users)
+  const handleFileUpload = async (
+    orderId: string,
+    formItem: OrderItem,
+    files: FileList | File[],
+    targetVesselParam?: { id: string | number; name: string }
+  ) => {
     if (uploadProgress) {
       showToast('An upload is currently in progress. Please wait for it to complete.', 'info');
       return;
@@ -1289,6 +1319,26 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     if (!files || files.length === 0) return;
 
     const fileList = Array.from(files);
+
+    // Resolve target vessel info
+    let targetVessel = targetVesselParam;
+    if (!targetVessel) {
+      if (isVesselUser) {
+        const found = vessels.find(v => String(v.id) === String(currentUser.vessel_id));
+        targetVessel = {
+          id: found?.id || currentUser.vessel_id || 'v1',
+          name: found?.name || currentUser.username
+        };
+      } else {
+        const currentOrder = orders.find(o => o.id === orderId);
+        const vMatch = currentOrder?.vessels?.find(v => v.vessel_name === activeVesselTabInDetail) || currentOrder?.vessels?.[0];
+        if (vMatch) {
+          targetVessel = { id: vMatch.vessel_id, name: vMatch.vessel_name };
+        } else {
+          targetVessel = { id: currentUser.vessel_id || 'v1', name: currentUser.username };
+        }
+      }
+    }
 
     // Clear any previous failed upload state immediately when starting a new/different upload
     setLastFailedUpload(null);
@@ -1304,6 +1354,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         orderId,
         formItem,
         files: fileList,
+        targetVessel,
         fileNames: fileList.map(f => f.name),
         totalSize: formatFilesTotalSize(fileList),
         timestamp: Date.now(),
@@ -1345,6 +1396,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           orderId,
           formItem,
           files: fileList,
+          targetVessel,
           fileNames: fileList.map(f => f.name),
           totalSize: formatFilesTotalSize(fileList),
           timestamp: Date.now(),
@@ -1355,21 +1407,15 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       }
     }
 
-    setUploadValidationMessage('File verified successfully! Uploading...');
+    setUploadValidationMessage(`File verified successfully! Uploading for ${targetVessel.name}...`);
 
     const formData = new FormData();
     for (let i = 0; i < fileList.length; i++) {
       formData.append('files', fileList[i]);
     }
 
-    // Target vessel info
-    const currentVessel = vessels.find(v => String(v.id) === String(currentUser.vessel_id)) || {
-      id: currentUser.vessel_id || 'v1',
-      name: currentUser.username
-    };
-
-    formData.append('vessel_id', String(currentVessel.id));
-    formData.append('vessel_name', currentVessel.name);
+    formData.append('vessel_id', String(targetVessel.id));
+    formData.append('vessel_name', targetVessel.name);
     formData.append('form_id', formItem.form_id || '');
     formData.append('form_code', formItem.form_code || '');
     if (formItem.id != null) {
@@ -1389,7 +1435,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         setUploadDetailedErrors([]);
         setLastFailedUpload(null);
         setBulkFetchFailureCount(0);
-        showToast(`Successfully uploaded ${result.uploadedCount} verified file(s) for ${formItem.form_code}!`);
+        showToast(`Successfully uploaded ${result.uploadedCount} verified file(s) for ${formItem.form_code} (${targetVessel.name})!`);
         await fetchOrders(true);
         onStatusRefresh?.();
       } else {
@@ -1401,6 +1447,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           orderId,
           formItem,
           files: fileList,
+          targetVessel,
           fileNames: fileList.map(f => f.name),
           totalSize: formatFilesTotalSize(fileList),
           timestamp: Date.now(),
@@ -1416,6 +1463,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         orderId,
         formItem,
         files: fileList,
+        targetVessel,
         fileNames: fileList.map(f => f.name),
         totalSize: formatFilesTotalSize(fileList),
         timestamp: Date.now(),
@@ -1430,7 +1478,11 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   };
 
   // Bulk ZIP or Multi-file smart uploader with strict SMS Reporting-style Validation Checker
-  const handleBulkUpload = async (order: SMSOrder, files: FileList | File[]) => {
+  const handleBulkUpload = async (
+    order: SMSOrder,
+    files: FileList | File[],
+    targetVesselParam?: { id: string | number; name: string }
+  ) => {
     if (uploadProgress) {
       showToast('An upload is currently in progress. Please wait for it to complete.', 'info');
       return;
@@ -1439,6 +1491,25 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     const rawInputFiles = Array.from(files);
     if (rawInputFiles.length === 0) return;
 
+    // Resolve target vessel
+    let targetVessel = targetVesselParam;
+    if (!targetVessel) {
+      if (isVesselUser) {
+        const found = vessels.find(v => String(v.id) === String(currentUser.vessel_id));
+        targetVessel = {
+          id: found?.id || currentUser.vessel_id || 'v1',
+          name: found?.name || currentUser.username
+        };
+      } else {
+        const vMatch = order.vessels?.find(v => v.vessel_name === activeVesselTabInDetail) || order.vessels?.[0];
+        if (vMatch) {
+          targetVessel = { id: vMatch.vessel_id, name: vMatch.vessel_name };
+        } else {
+          targetVessel = { id: currentUser.vessel_id || 'v1', name: currentUser.username };
+        }
+      }
+    }
+
     // Clear any previous failed upload state immediately when starting a new/different upload
     setLastFailedUpload(null);
     setUploadErrorMessage(null);
@@ -1446,14 +1517,9 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
     setUploadProgress(true);
     setUploadingForFormId('bulk');
-    setUploadValidationMessage('Scanning and checking files against order checklist requirements...');
+    setUploadValidationMessage(`Scanning and checking files for ${targetVessel.name}...`);
 
     try {
-      const currentVessel = vessels.find(v => String(v.id) === String(currentUser.vessel_id)) || {
-        id: currentUser.vessel_id || 'v1',
-        name: currentUser.username
-      };
-
       let rawFilesList: File[] = [];
       const validationErrors: string[] = [];
 
@@ -1585,8 +1651,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         setUploadValidationMessage(`Uploading ${files.length} file(s) for ${formItem.form_code || 'order checklist item'}...`);
         const formData = new FormData();
         files.forEach(f => formData.append('files', f));
-        formData.append('vessel_id', String(currentVessel.id));
-        formData.append('vessel_name', currentVessel.name);
+        formData.append('vessel_id', String(targetVessel.id));
+        formData.append('vessel_name', targetVessel.name);
         formData.append('form_id', formItem.form_id || '');
         formData.append('form_code', formItem.form_code || '');
         if (formItem.id != null) {
@@ -1621,6 +1687,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           orderId: order.id,
           order,
           files: rawFilesList,
+          targetVessel,
           fileNames: rawFilesList.map(f => f.name),
           totalSize: formatFilesTotalSize(rawFilesList),
           timestamp: Date.now(),
@@ -1633,7 +1700,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         setUploadDetailedErrors([]);
         setLastFailedUpload(null);
         setBulkFetchFailureCount(0);
-        showToast(`Bulk upload complete! Successfully verified and uploaded ${totalUploaded} file(s).`);
+        showToast(`Bulk upload complete! Successfully verified and uploaded ${totalUploaded} file(s) for ${targetVessel.name}.`);
       }
       await fetchOrders(true);
       onStatusRefresh?.();
@@ -1664,6 +1731,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         orderId: order.id,
         order,
         files: Array.from(files),
+        targetVessel,
         fileNames: Array.from(files).map(f => f.name),
         totalSize: formatFilesTotalSize(Array.from(files)),
         timestamp: Date.now(),
@@ -1689,9 +1757,9 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     if (!lastFailedUpload) return;
     const failed = { ...lastFailedUpload };
     if (failed.type === 'single' && failed.formItem) {
-      await handleFileUpload(failed.orderId, failed.formItem, failed.files);
+      await handleFileUpload(failed.orderId, failed.formItem, failed.files, failed.targetVessel);
     } else if (failed.type === 'bulk' && failed.order) {
-      await handleBulkUpload(failed.order, failed.files);
+      await handleBulkUpload(failed.order, failed.files, failed.targetVessel);
     }
   };
 
@@ -2239,7 +2307,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                         className="px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-black tracking-wide transition-colors flex items-center gap-1.5 shadow-2xs"
                       >
                         <Eye className="w-3.5 h-3.5" />
-                        <span>{isVesselUser ? 'Open & Upload' : 'View Details'}</span>
+                        <span>{isVesselUser ? 'Open & Upload' : 'View & Upload'}</span>
                       </button>
 
                       {isManagementOrAdmin && (order.uploads || []).some(u => !u.is_read && !u.checked_at) && (
@@ -2435,6 +2503,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             handleCancelReplacementRequest(uploadId);
           }}
           isVesselUser={isVesselUser}
+          isManagementOrAdmin={isManagementOrAdmin}
           currentUser={currentUser}
           vessels={vessels}
           activeVesselTab={activeVesselTabInDetail}
@@ -3145,6 +3214,7 @@ const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
 interface OrderDetailsModalProps {
   order: SMSOrder;
   isVesselUser: boolean;
+  isManagementOrAdmin?: boolean;
   currentUser: CurrentUser;
   vessels: Vessel[];
   activeVesselTab: string;
@@ -3158,8 +3228,8 @@ interface OrderDetailsModalProps {
   onPreviewUpload: (uploadId: number, fileName: string, fileMimetype?: string, formCode?: string, vesselName?: string, isRead?: boolean) => void;
   onPreviewTemplate: (formId: string, formCode: string, templateFileName?: string) => void;
   onDeleteUpload: (uploadId: number, fileName: string) => void;
-  onFileUpload: (orderId: string, formItem: OrderItem, files: FileList | File[]) => void;
-  onBulkUpload: (order: SMSOrder, files: FileList | File[]) => void;
+  onFileUpload: (orderId: string, formItem: OrderItem, files: FileList | File[], targetVessel?: { id: string | number; name: string }) => void;
+  onBulkUpload: (order: SMSOrder, files: FileList | File[], targetVessel?: { id: string | number; name: string }) => void;
   uploadingForFormId?: string | null;
   uploadProgress: boolean;
   uploadValidationMessage?: string | null;
@@ -3178,6 +3248,7 @@ interface OrderDetailsModalProps {
 const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   order,
   isVesselUser,
+  isManagementOrAdmin,
   currentUser,
   vessels,
   activeVesselTab,
@@ -3304,7 +3375,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     setDragActive(false);
     if (uploadProgress) return;
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      onBulkUpload(order, Array.from(e.dataTransfer.files));
+      onBulkUpload(order, Array.from(e.dataTransfer.files), activeVessel ? { id: activeVessel.vessel_id, name: activeVessel.vessel_name } : undefined);
     }
   };
 
@@ -3520,7 +3591,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           {!isVesselUser && order.vessels.length > 1 && (
             <div className="space-y-2">
               <label className="text-[11px] font-black uppercase text-slate-400 tracking-wider">
-                Select Vessel Inspection Tab ({order.vessels.length} Target Vessels):
+                Select Vessel Inspection &amp; Upload Tab ({order.vessels.length} Target Vessels):
               </label>
               <div className="flex items-center gap-2 overflow-x-auto pb-1">
                 {order.vessels.map((v) => {
@@ -3568,6 +3639,31 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </div>
           )}
 
+          {/* Non-Vessel User Uploading on Behalf Banner */}
+          {!isVesselUser && activeVessel && (
+            <div className="bg-indigo-50/80 border border-indigo-200/90 rounded-2xl p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                  <Ship className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-black text-indigo-950">
+                      Uploading on Behalf of Vessel:
+                    </span>
+                    <span className="px-2 py-0.5 bg-indigo-100 text-indigo-800 rounded-md text-xs font-extrabold border border-indigo-300/80">
+                      {activeVessel.vessel_name}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-indigo-700/90 mt-0.5">
+                    Files uploaded or dropped below will be registered directly for <strong>{activeVessel.vessel_name}</strong>.
+                    {order.vessels.length > 1 && ' Switch tabs above to view or upload documents for a different vessel.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Bulk Drag-and-Drop Uploader */}
           <div
             onDragEnter={handleDrag}
@@ -3594,7 +3690,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 if (e.target.files && e.target.files.length > 0) {
                   const selected = Array.from(e.target.files);
                   e.target.value = '';
-                  onBulkUpload(order, selected);
+                  onBulkUpload(order, selected, activeVessel ? { id: activeVessel.vessel_id, name: activeVessel.vessel_name } : undefined);
                 }
               }}
             />
@@ -3603,10 +3699,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </div>
             <div className="space-y-0.5">
               <p className="text-xs font-black text-slate-800">
-                {uploadProgress ? 'Checking & uploading documents...' : 'Bulk Drag & Drop Files or ZIP Package'}
+                {uploadProgress ? 'Checking & uploading documents...' : !isVesselUser && activeVessel ? `Bulk Drag & Drop Files or ZIP Package for ${activeVessel.vessel_name}` : 'Bulk Drag & Drop Files or ZIP Package'}
               </p>
               <p className="text-[11px] text-slate-500 max-w-md mx-auto">
-                Drop scanned checklists, reports or a pre-compiled ZIP folder here. The system validates form code, description, dates, and allowed file formats automatically.
+                Drop scanned checklists, reports or a pre-compiled ZIP folder here{!isVesselUser && activeVessel ? ` for ${activeVessel.vessel_name}` : ''}. The system validates form code, description, dates, and allowed file formats automatically.
               </p>
             </div>
             <button
@@ -3622,7 +3718,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold shadow-2xs transition-colors inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <FolderArchive className="w-3.5 h-3.5 text-blue-600" />
-              Browse &amp; Upload Files
+              <span>Browse &amp; Upload Files{!isVesselUser && activeVessel ? ` (${activeVessel.vessel_name})` : ''}</span>
             </button>
           </div>
 
@@ -3845,7 +3941,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           <span>Download Template</span>
                         </button>
 
-                        {isVesselUser && lastFailedUpload && lastFailedUpload.type === 'single' && lastFailedUpload.formItem && (lastFailedUpload.formItem.form_id === formItem.form_id || lastFailedUpload.formItem.form_code === formItem.form_code) && (
+                        {lastFailedUpload && lastFailedUpload.type === 'single' && lastFailedUpload.formItem && (lastFailedUpload.formItem.form_id === formItem.form_id || lastFailedUpload.formItem.form_code === formItem.form_code) && (
                           <button
                             type="button"
                             disabled={uploadProgress}
@@ -3858,7 +3954,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           </button>
                         )}
 
-                        {isVesselUser && (() => {
+                        {(() => {
                           const isThisItemUploading = uploadProgress && uploadingForFormId === String(formItem.id ?? formItem.form_id ?? formItem.form_code);
                           return (
                             <label 
@@ -3903,7 +3999,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                   if (e.target.files && e.target.files.length > 0) {
                                     const selected = Array.from(e.target.files);
                                     e.target.value = '';
-                                    onFileUpload(order.id, formItem, selected);
+                                    onFileUpload(order.id, formItem, selected, activeVessel ? { id: activeVessel.vessel_id, name: activeVessel.vessel_name } : undefined);
                                   }
                                 }}
                               />
@@ -3922,7 +4018,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         </div>
 
                         {/* Vessel replacement warning box */}
-                        {isVesselUser && (() => {
+                        {(() => {
                           const reqUp = itemUploads.find(u => Boolean(u.replace_requested_at));
                           if (!reqUp) return null;
                           return (
@@ -4042,7 +4138,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                 >
                                   <Download className="w-3.5 h-3.5" />
                                 </button>
-                                {isVesselUser && (
+                                {(isVesselUser || isManagementOrAdmin) && (
                                   <button
                                     type="button"
                                     onClick={() => onDeleteUpload(up.id, up.file_name)}
