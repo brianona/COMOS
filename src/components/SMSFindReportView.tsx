@@ -159,19 +159,40 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
   const isVesselUser = currentUser?.role === 'vessel';
   const isAdminOrManagement = currentUser?.role === 'admin' || currentUser?.role === 'management' || currentUser?.role === 'team_pic';
 
+  // Helper to identify non-vessel user accounts or system role names
+  const isExcludedVesselName = (name?: string | null): boolean => {
+    if (!name) return true;
+    const lower = name.trim().toLowerCase();
+    return (
+      lower === 'admin' ||
+      lower === 'administrator' ||
+      lower === 'management' ||
+      lower === 'team_pic' ||
+      lower === 'vessel_user' ||
+      lower === 'user' ||
+      lower === 'root' ||
+      lower === 'system' ||
+      lower === 'null' ||
+      lower === 'undefined'
+    );
+  };
+
   // Filter accessible vessels
   const userTeamIds: number[] = useMemo(() => {
     return Array.isArray(currentUser?.team_ids) ? currentUser.team_ids.map(Number) : [];
   }, [currentUser?.team_ids]);
 
   const accessibleVessels = useMemo(() => {
+    // Only consider genuine fleet vessels
+    const validFleetVessels = vessels.filter(v => v.name && !isExcludedVesselName(v.name));
+
     if (isVesselUser) {
       const vId = currentUser?.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
       const vIdClean = vId.replace(/^v/i, '').trim();
       const uName = (currentUser?.username || '').toLowerCase().trim();
       const vName = ((currentUser as any)?.vessel_name || '').toLowerCase().trim();
 
-      const matched = vessels.filter(v => 
+      const matched = validFleetVessels.filter(v => 
         (vId && String(v.id) === vId) || 
         (vIdClean && String(v.id).replace(/^v/i, '').trim() === vIdClean) ||
         (vName && v.name?.toLowerCase().trim() === vName) ||
@@ -180,12 +201,19 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
         normalizeText(v.name) === normalizeText(uName)
       );
       if (matched.length > 0) return matched;
-      return [{ id: vId || 'vessel_user', name: vName || currentUser?.username || 'My Vessel', status: 'active', code: '' } as any];
+
+      const fallbackName = (vName && !isExcludedVesselName(vName))
+        ? vName
+        : (currentUser?.username && !isExcludedVesselName(currentUser.username))
+        ? currentUser.username
+        : 'Fleet Vessel';
+
+      return [{ id: vId || 'vessel_user', name: fallbackName, status: 'active', code: '' } as any];
     }
     if (!isAdminOrManagement && userTeamIds.length > 0) {
-      return vessels.filter(v => v.team_id != null && userTeamIds.includes(Number(v.team_id)));
+      return validFleetVessels.filter(v => v.team_id != null && userTeamIds.includes(Number(v.team_id)));
     }
-    return vessels;
+    return validFleetVessels;
   }, [vessels, isVesselUser, isAdminOrManagement, currentUser?.vessel_id, currentUser?.username, userTeamIds]);
 
   // Helper text normalizer (strips MV/M.V./punctuation/spaces for resilient vessel and order matching)
@@ -248,6 +276,19 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
       setLoading(true);
       let loaded: SMSOrderReportItem[] = [];
 
+      const sanitizeReportVessel = (rawName?: string, repVesselId?: string | number, fallbackList?: any[]): string => {
+        if (rawName && !isExcludedVesselName(rawName)) return rawName;
+        if (repVesselId) {
+          const match = vessels.find(v => String(v.id) === String(repVesselId) && !isExcludedVesselName(v.name));
+          if (match && match.name) return match.name;
+        }
+        if (fallbackList && fallbackList.length > 0) {
+          const found = fallbackList.find((ov: any) => ov.vessel_name && !isExcludedVesselName(ov.vessel_name));
+          if (found && found.vessel_name) return found.vessel_name;
+        }
+        return 'Fleet Vessel';
+      };
+
       // 1. Primary API call to /api/sms/order-reports
       if (token) {
         try {
@@ -257,7 +298,10 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
           if (res.ok) {
             const data = await res.json();
             if (Array.isArray(data) && data.length > 0) {
-              loaded = data;
+              loaded = data.map((item: any) => ({
+                ...item,
+                vesselName: sanitizeReportVessel(item.vesselName, item.vesselId)
+              }));
             }
           }
         } catch (apiErr) {
@@ -278,7 +322,9 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
               ordersData.forEach((o: any) => {
                 (o.uploads || []).forEach((u: any, idx: number) => {
                   const itemMatch = (o.items || []).find((it: any) => it.form_id === u.form_id || it.form_code === u.form_code);
-                  const vesselMatch = (o.vessels || []).find((v: any) => String(v.vessel_id) === String(u.vessel_id) || v.vessel_name === u.vessel_name);
+                  const vesselMatch = (o.vessels || []).find((v: any) => (String(v.vessel_id) === String(u.vessel_id) || v.vessel_name === u.vessel_name) && !isExcludedVesselName(v.vessel_name));
+                  const cleanVName = sanitizeReportVessel(u.vessel_name || vesselMatch?.vessel_name, u.vessel_id || vesselMatch?.vessel_id, o.vessels);
+
                   aggregated.push({
                     id: u.id || `up_${o.id}_${idx}`,
                     orderId: o.id,
@@ -286,7 +332,7 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
                     orderDeadline: o.deadlineDate || o.deadline_date || '',
                     orderInstructions: o.instructions || '',
                     vesselId: u.vessel_id || vesselMatch?.vessel_id || '',
-                    vesselName: u.vessel_name || vesselMatch?.vessel_name || 'Vessel',
+                    vesselName: cleanVName,
                     vesselFlag: u.vessel_flag || undefined,
                     vesselType: u.vessel_type || undefined,
                     vesselOwner: u.vessel_owner || undefined,
@@ -327,6 +373,8 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
           parsed.forEach((o: any) => {
             (o.uploads || []).forEach((u: any, idx: number) => {
               const itemMatch = (o.items || []).find((it: any) => it.form_id === u.form_id || it.form_code === u.form_code);
+              const cleanVName = sanitizeReportVessel(u.vessel_name || u.vesselName, u.vessel_id || u.vesselId, o.vessels);
+
               aggregated.push({
                 id: u.id || `up_local_${o.id}_${idx}`,
                 orderId: o.id,
@@ -334,7 +382,7 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
                 orderDeadline: o.deadlineDate || o.deadline_date || '',
                 orderInstructions: o.instructions || '',
                 vesselId: u.vessel_id || u.vesselId || '',
-                vesselName: u.vessel_name || u.vesselName || 'Vessel',
+                vesselName: cleanVName,
                 formId: u.form_id || u.formId || '',
                 formCode: u.form_code || u.formCode || itemMatch?.form_code || 'COMI-SM-1-1',
                 formDescription: itemMatch?.description || u.file_name || 'Safety Report',
@@ -369,6 +417,13 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
     fetchReports();
   }, [token]);
 
+  // Reset vesselFilter if set to an excluded username like 'admin'
+  useEffect(() => {
+    if (isExcludedVesselName(vesselFilter)) {
+      setVesselFilter('All');
+    }
+  }, [vesselFilter]);
+
   // Realtime updates via long-polling
   useRealtimeAutoRefresh(
     ['sms_orders', 'sms_uploads', 'sms_forms'],
@@ -385,13 +440,13 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
     showToast('SMS reports synchronized.');
   };
 
-  // Distinct vessels for filter dropdown (combines catalog and all submitted reports)
+  // Distinct vessels for filter dropdown (strictly real fleet vessels, excluding user accounts like "admin")
   const distinctVesselsList = useMemo(() => {
     const vesselMap = new Map<string, { id: string; name: string; flag?: string; type?: string }>();
 
-    // 1. Add catalog vessels
+    // 1. Add valid vessels from accessible fleet catalog
     accessibleVessels.forEach(v => {
-      if (v.name) {
+      if (v.name && !isExcludedVesselName(v.name)) {
         vesselMap.set(v.name.toLowerCase().trim(), {
           id: String(v.id),
           name: v.name,
@@ -401,23 +456,34 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
       }
     });
 
-    // 2. Add vessels that appear in reports
+    // 2. Only add vessels from reports if they correspond to an authentic fleet vessel in the vessels catalog
+    // and never add arbitrary users like "admin"
     reports.forEach(r => {
-      if (r.vesselName) {
+      if (r.vesselName && !isExcludedVesselName(r.vesselName)) {
         const key = r.vesselName.toLowerCase().trim();
         if (!vesselMap.has(key)) {
-          vesselMap.set(key, {
-            id: String(r.vesselId || key),
-            name: r.vesselName,
-            flag: r.vesselFlag || undefined,
-            type: r.vesselType || undefined
-          });
+          const catMatch = vessels.find(v => 
+            (r.vesselId && String(v.id) === String(r.vesselId)) ||
+            (v.name && v.name.toLowerCase().trim() === key) ||
+            (v.name && normalizeText(v.name) === normalizeText(r.vesselName))
+          );
+          if (catMatch && catMatch.name && !isExcludedVesselName(catMatch.name)) {
+            const matchKey = catMatch.name.toLowerCase().trim();
+            if (!vesselMap.has(matchKey)) {
+              vesselMap.set(matchKey, {
+                id: String(catMatch.id),
+                name: catMatch.name,
+                flag: catMatch.flag,
+                type: catMatch.type
+              });
+            }
+          }
         }
       }
     });
 
     return Array.from(vesselMap.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [accessibleVessels, reports]);
+  }, [accessibleVessels, reports, vessels]);
 
   // Extract distinct available filter options
   const distinctOrders = useMemo(() => {

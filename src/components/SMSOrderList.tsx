@@ -355,6 +355,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   const [refreshing, setRefreshing] = useState(false);
 
   // Filters
+  const [orderTypeFilter, setOrderTypeFilter] = useState<'order_lists_only' | 'direct_uploads_only' | 'all'>('order_lists_only');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [vesselFilter, setVesselFilter] = useState<string>('All');
@@ -368,6 +369,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   const [activeVesselTabInDetail, setActiveVesselTabInDetail] = useState<string>('');
   const [isTemplatesModalOpen, setIsTemplatesModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [downloadingZipOrderId, setDownloadingZipOrderId] = useState<string | null>(null);
+  const [downloadingTemplatesZipOrderId, setDownloadingTemplatesZipOrderId] = useState<string | null>(null);
   
   // Document Inline Preview Modal state
   const [previewModal, setPreviewModal] = useState<PreviewModalState | null>(null);
@@ -684,9 +687,31 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     return orders.filter(isOrderAssignedToCurrentUserVessel);
   }, [orders, isVesselUser, isOrderAssignedToCurrentUserVessel]);
 
+  // Counts of order lists vs direct uploads from vessels
+  const orderListsCount = useMemo(() => {
+    return userVisibleOrders.filter(o => !o.id.startsWith('ord_direct_')).length;
+  }, [userVisibleOrders]);
+
+  const directUploadsCount = useMemo(() => {
+    return userVisibleOrders.filter(o => o.id.startsWith('ord_direct_')).length;
+  }, [userVisibleOrders]);
+
+  // Orders filtered by the view filter: 'order_lists_only' (default) vs 'direct_uploads_only' vs 'all'
+  const typeFilteredOrders = useMemo(() => {
+    return userVisibleOrders.filter(order => {
+      if (orderTypeFilter === 'order_lists_only' && order.id.startsWith('ord_direct_')) {
+        return false;
+      }
+      if (orderTypeFilter === 'direct_uploads_only' && !order.id.startsWith('ord_direct_')) {
+        return false;
+      }
+      return true;
+    });
+  }, [userVisibleOrders, orderTypeFilter]);
+
   // Filtered orders
   const filteredOrders = useMemo(() => {
-    return userVisibleOrders.filter(order => {
+    return typeFilteredOrders.filter(order => {
       // Search
       const q = searchQuery.toLowerCase();
       const matchesSearch = 
@@ -756,13 +781,13 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
       return true;
     });
-  }, [userVisibleOrders, searchQuery, statusFilter, vesselFilter, teamFilter, isVesselUser, isManagementOrAdmin, vessels, currentUser]);
+  }, [typeFilteredOrders, searchQuery, statusFilter, vesselFilter, teamFilter, isVesselUser, isManagementOrAdmin, vessels, currentUser]);
 
   // Quick statistics
   const stats = useMemo(() => {
-    const total = userVisibleOrders.length;
+    const total = typeFilteredOrders.length;
     if (isVesselUser) {
-      const completed = userVisibleOrders.filter(o => {
+      const completed = typeFilteredOrders.filter(o => {
         const totalReq = o.items?.length || 0;
         if (totalReq === 0) return false;
         const myVId = currentUser.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
@@ -779,12 +804,12 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         return (targetV?.status === 'Completed' || (targetV?.submittedCount || 0) >= totalReq || vVerified >= totalReq);
       }).length;
       const pending = total - completed;
-      const overdue = userVisibleOrders.filter(o => o.overallStatus === 'Overdue' && !o.vessels.some(v => v.status === 'Completed')).length;
+      const overdue = typeFilteredOrders.filter(o => o.overallStatus === 'Overdue' && !o.vessels.some(v => v.status === 'Completed')).length;
       return { total, completed, pending, overdue };
     } else {
-      const completed = userVisibleOrders.filter(o => o.overallStatus === 'Completed' || (o.vessels.length > 0 && o.vessels.every(v => v.status === 'Completed' || ((o.items?.length || 0) > 0 && (v.submittedCount || 0) >= (o.items?.length || 0))))).length;
-      const inProgress = userVisibleOrders.filter(o => o.overallStatus === 'In Progress').length;
-      const pending = userVisibleOrders.filter(o => {
+      const completed = typeFilteredOrders.filter(o => o.overallStatus === 'Completed' || (o.vessels.length > 0 && o.vessels.every(v => v.status === 'Completed' || ((o.items?.length || 0) > 0 && (v.submittedCount || 0) >= (o.items?.length || 0))))).length;
+      const inProgress = typeFilteredOrders.filter(o => o.overallStatus === 'In Progress').length;
+      const pending = typeFilteredOrders.filter(o => {
         if (o.overallStatus === 'Pending') return true;
         const totalReq = o.items?.length || 0;
         return o.vessels.length === 0 || o.vessels.some(v => {
@@ -796,10 +821,10 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           return true;
         });
       }).length;
-      const overdue = userVisibleOrders.filter(o => o.overallStatus === 'Overdue').length;
+      const overdue = typeFilteredOrders.filter(o => o.overallStatus === 'Overdue').length;
       return { total, completed, inProgress, pending, overdue };
     }
-  }, [userVisibleOrders, isVesselUser, currentUser]);
+  }, [typeFilteredOrders, isVesselUser, currentUser]);
 
   // Unread uploads count across all orders for the logged on management user
   const totalUncheckedCount = useMemo(() => {
@@ -859,27 +884,35 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   };
 
   // Download ZIP handler
-  const handleDownloadZip = (orderId: string, label: string, vesselId?: string) => {
-    const url = `/api/sms/orders/${orderId}/download-zip${vesselId ? `?vessel_id=${vesselId}` : ''}`;
-    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-      .then(res => {
-        if (!res.ok) throw new Error('No files available or download failed');
-        return res.blob();
-      })
-      .then(blob => {
-        const blobUrl = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = blobUrl;
-        link.download = `${label.replace(/[^a-zA-Z0-9_-]/g, '_')}_Uploads.zip`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(blobUrl);
-        showToast('ZIP archive downloaded successfully.');
-      })
-      .catch(err => {
-        showToast(err.message, 'error');
-      });
+  const handleDownloadZip = async (orderId: string, label: string, vesselId?: string) => {
+    if (downloadingZipOrderId === orderId) {
+      showToast('Downloading of uploaded files is already processing. Please wait...', 'info');
+      return;
+    }
+    setDownloadingZipOrderId(orderId);
+    showToast('Downloading of uploaded files is processing... Packaging files into ZIP, please wait.', 'info');
+    try {
+      const url = `/api/sms/orders/${orderId}/download-zip${vesselId ? `?vessel_id=${vesselId}` : ''}`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'No files available or download failed');
+      }
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = `${label.replace(/[^a-zA-Z0-9_-]/g, '_')}_Uploads.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+      showToast('Uploaded files ZIP downloaded successfully.', 'success');
+    } catch (err: any) {
+      showToast(err.message || 'Error downloading uploads ZIP', 'error');
+    } finally {
+      setDownloadingZipOrderId(null);
+    }
   };
 
   // Download Single Uploaded File
@@ -1171,8 +1204,13 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
   // Download All Blank Templates for an Order (ZIP)
   const handleDownloadOrderTemplatesZip = async (orderId: string, orderLabel: string) => {
+    if (downloadingTemplatesZipOrderId === orderId) {
+      showToast('Templates package download is already processing. Please wait...', 'info');
+      return;
+    }
+    setDownloadingTemplatesZipOrderId(orderId);
     try {
-      showToast('Preparing template files package...', 'info');
+      showToast('Preparing template files package... Downloading ZIP, please wait.', 'info');
       const res = await fetch(`/api/sms/orders/${orderId}/download-templates-zip`, {
         headers: { Authorization: `Bearer ${token}` }
       });
@@ -1191,9 +1229,11 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(blobUrl);
-      showToast(`All templates for "${orderLabel}" downloaded successfully.`);
+      showToast(`All templates for "${orderLabel}" downloaded successfully.`, 'success');
     } catch (err: any) {
       showToast(err.message || 'Error downloading templates ZIP', 'error');
+    } finally {
+      setDownloadingTemplatesZipOrderId(null);
     }
   };
 
@@ -1774,9 +1814,15 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             'bg-blue-50 text-blue-900 border-blue-300 shadow-blue-950/20'
           }`}
         >
-          {toastMessage.type === 'success' ? <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" /> :
-           toastMessage.type === 'error' ? <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" /> :
-           <Info className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />}
+          {toastMessage.type === 'success' ? (
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+          ) : toastMessage.type === 'error' ? (
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+          ) : toastMessage.text.includes('processing') || toastMessage.text.includes('Preparing') ? (
+            <Loader2 className="w-5 h-5 text-blue-600 shrink-0 mt-0.5 animate-spin" />
+          ) : (
+            <Info className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
+          )}
           <div className="flex-1 min-w-0 pr-1">
             <p className="leading-snug text-xs sm:text-sm font-bold whitespace-pre-wrap">{toastMessage.text}</p>
           </div>
@@ -1979,12 +2025,16 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
         <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs space-y-1">
           <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider">Total Orders</span>
+            <span className="text-[11px] font-extrabold uppercase tracking-wider">
+              {orderTypeFilter === 'order_lists_only' ? 'Total Order Lists' : orderTypeFilter === 'direct_uploads_only' ? 'Direct Uploads' : 'Total Items'}
+            </span>
             <Layers className="w-4 h-4 text-slate-400" />
           </div>
           <div className="text-2xl font-black text-slate-800">{stats.total}</div>
           <div className="text-[11px] text-slate-500 font-medium">
-            {isVesselUser ? 'Assigned to your vessel' : 'Active fleet orders'}
+            {orderTypeFilter === 'direct_uploads_only' 
+              ? 'Direct vessel submissions' 
+              : isVesselUser ? 'Assigned to your vessel' : 'Active fleet orders'}
           </div>
         </div>
 
@@ -2023,71 +2073,165 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       </div>
 
       {/* Filter and Search Controls */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            placeholder={isVesselUser ? "Search orders by label, form code or instructions..." : "Search orders by label, vessel, form code, or created by..."}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-          />
-          {searchQuery && (
-            <button 
-              onClick={() => setSearchQuery('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0">
-          {/* Status filter */}
-          <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200">
-            {['All', 'Pending', 'Completed', 'Overdue'].map((status) => (
+      <div className="bg-white p-4.5 rounded-2xl border border-slate-100 shadow-2xs space-y-3.5">
+        {/* Source / Type Filter: Order Lists Only (Default) vs Direct Uploads from Vessels Only vs All */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100/90 pb-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">
+              View:
+            </span>
+            <div className="inline-flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70">
               <button
-                key={status}
-                onClick={() => setStatusFilter(status)}
-                className={`px-3 py-1 text-[11px] font-bold rounded-lg transition-all whitespace-nowrap ${
-                  statusFilter === status
-                    ? 'bg-white text-blue-700 shadow-xs'
-                    : 'text-slate-500 hover:text-slate-800'
+                type="button"
+                onClick={() => setOrderTypeFilter('order_lists_only')}
+                className={`px-3 py-1.5 text-xs font-black rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                  orderTypeFilter === 'order_lists_only'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                 }`}
+                title="View standard SMS order packages (Default view)"
               >
-                {status}
+                <CheckSquare className="w-3.5 h-3.5" />
+                <span>Order Lists Only</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+                  orderTypeFilter === 'order_lists_only' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-700'
+                }`}>
+                  {orderListsCount}
+                </span>
               </button>
-            ))}
+
+              <button
+                type="button"
+                onClick={() => setOrderTypeFilter('direct_uploads_only')}
+                className={`px-3 py-1.5 text-xs font-black rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                  orderTypeFilter === 'direct_uploads_only'
+                    ? 'bg-teal-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                }`}
+                title="View reports and checklists uploaded directly from vessels without prior office order"
+              >
+                <FolderPlus className="w-3.5 h-3.5" />
+                <span>Direct Uploads from Vessels Only</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+                  orderTypeFilter === 'direct_uploads_only' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-700'
+                }`}>
+                  {directUploadsCount}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setOrderTypeFilter('all')}
+                className={`px-3 py-1.5 text-xs font-black rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                  orderTypeFilter === 'all'
+                    ? 'bg-slate-800 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                }`}
+                title="View both order lists and direct vessel uploads combined"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>All ({userVisibleOrders.length})</span>
+              </button>
+            </div>
           </div>
 
-          {/* Vessel Filter (Non-Vessel Only) */}
-          {isManagementOrAdmin && (
-            <select
-              value={vesselFilter}
-              onChange={(e) => setVesselFilter(e.target.value)}
-              className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="All">All Vessels</option>
-              {vessels.map(v => (
-                <option key={v.id} value={v.name}>{v.name}</option>
-              ))}
-            </select>
-          )}
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-500 font-medium">
+              Showing <strong>{filteredOrders.length}</strong> {orderTypeFilter === 'order_lists_only' ? 'order list(s)' : orderTypeFilter === 'direct_uploads_only' ? 'direct upload(s)' : 'item(s)'}
+            </span>
+            {(searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All' || orderTypeFilter !== 'order_lists_only') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setStatusFilter('All');
+                  setVesselFilter('All');
+                  setTeamFilter('All');
+                  setOrderTypeFilter('order_lists_only');
+                }}
+                className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-rose-600 px-2 py-1 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
+                title="Reset all search queries and filters to default (Order Lists Only)"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset
+              </button>
+            )}
+          </div>
+        </div>
 
-          {/* Team Filter (Non-Vessel Only) */}
-          {isManagementOrAdmin && teams.length > 0 && (
-            <select
-              value={teamFilter}
-              onChange={(e) => setTeamFilter(e.target.value)}
-              className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            >
-              <option value="All">All Teams</option>
-              {teams.map(t => (
-                <option key={t} value={t}>{t}</option>
+        {/* Search, Status, Vessel & Team Filters */}
+        <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder={
+                orderTypeFilter === 'direct_uploads_only'
+                  ? "Search direct uploads by vessel, report description, or submitter..."
+                  : isVesselUser 
+                  ? "Search orders by label, form code or instructions..." 
+                  : "Search orders by label, vessel, form code, or created by..."
+              }
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0">
+            {/* Status filter */}
+            <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200">
+              {['All', 'Pending', 'Completed', 'Overdue'].map((status) => (
+                <button
+                  key={status}
+                  onClick={() => setStatusFilter(status)}
+                  className={`px-3 py-1 text-[11px] font-bold rounded-lg transition-all whitespace-nowrap cursor-pointer ${
+                    statusFilter === status
+                      ? 'bg-white text-blue-700 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {status}
+                </button>
               ))}
-            </select>
-          )}
+            </div>
+
+            {/* Vessel Filter (Non-Vessel Only) */}
+            {isManagementOrAdmin && (
+              <select
+                value={vesselFilter}
+                onChange={(e) => setVesselFilter(e.target.value)}
+                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+              >
+                <option value="All">All Vessels</option>
+                {vessels.map(v => (
+                  <option key={v.id} value={v.name}>{v.name}</option>
+                ))}
+              </select>
+            )}
+
+            {/* Team Filter (Non-Vessel Only) */}
+            {isManagementOrAdmin && teams.length > 0 && (
+              <select
+                value={teamFilter}
+                onChange={(e) => setTeamFilter(e.target.value)}
+                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+              >
+                <option value="All">All Teams</option>
+                {teams.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       </div>
 
@@ -2099,20 +2243,70 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         </div>
       ) : filteredOrders.length === 0 ? (
         <div className="bg-white p-12 rounded-3xl border border-slate-100 text-center space-y-4">
-          <div className="w-14 h-14 bg-blue-50 text-blue-500 rounded-2xl flex items-center justify-center mx-auto">
-            <CheckSquare className="w-7 h-7 stroke-[1.8]" />
+          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto ${
+            orderTypeFilter === 'direct_uploads_only' ? 'bg-teal-50 text-teal-600' : 'bg-blue-50 text-blue-500'
+          }`}>
+            {orderTypeFilter === 'direct_uploads_only' ? (
+              <FolderPlus className="w-7 h-7 stroke-[1.8]" />
+            ) : (
+              <CheckSquare className="w-7 h-7 stroke-[1.8]" />
+            )}
           </div>
           <div className="space-y-1">
-            <h3 className="text-base font-black text-slate-800">No SMS Orders Found</h3>
+            <h3 className="text-base font-black text-slate-800">
+              {orderTypeFilter === 'direct_uploads_only'
+                ? 'No Direct Vessel Uploads Found'
+                : orderTypeFilter === 'order_lists_only'
+                ? 'No SMS Order Lists Found'
+                : 'No SMS Orders or Submissions Found'}
+            </h3>
             <p className="text-xs text-slate-500 max-w-md mx-auto">
               {searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All'
-                ? 'No orders match your current filter criteria. Try adjusting the search term or status filter.'
+                ? `No items match your active search and filter criteria (${orderTypeFilter === 'order_lists_only' ? 'Order Lists Only' : orderTypeFilter === 'direct_uploads_only' ? 'Direct Uploads Only' : 'All'}). Try clearing search or resetting filters.`
+                : orderTypeFilter === 'direct_uploads_only'
+                ? 'No direct submissions from vessels without order have been uploaded yet. Vessels can click "Upload Without Order" to submit checklists anytime.'
                 : isVesselUser
                 ? 'There are currently no active SMS form orders assigned to your vessel.'
                 : 'No SMS order lists have been created yet. Click "Create Order List" above to dispatch requirements to vessels.'}
             </p>
           </div>
           <div className="flex items-center justify-center gap-2 pt-2 flex-wrap">
+            {(searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All' || orderTypeFilter !== 'order_lists_only') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setStatusFilter('All');
+                  setVesselFilter('All');
+                  setTeamFilter('All');
+                  setOrderTypeFilter('order_lists_only');
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Reset to Default View (Order Lists Only)
+              </button>
+            )}
+            {orderTypeFilter === 'order_lists_only' && directUploadsCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setOrderTypeFilter('direct_uploads_only')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                <FolderPlus className="w-3.5 h-3.5" />
+                View Direct Vessel Uploads ({directUploadsCount})
+              </button>
+            )}
+            {orderTypeFilter === 'direct_uploads_only' && orderListsCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setOrderTypeFilter('order_lists_only')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                <CheckSquare className="w-3.5 h-3.5" />
+                View Order Lists Only ({orderListsCount})
+              </button>
+            )}
             <button
               onClick={() => setIsDirectUploadModalOpen(true)}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-sm hover:shadow transition-all cursor-pointer"
@@ -2129,7 +2323,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-sm hover:shadow transition-all cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                Create First Order
+                Create Order List
               </button>
             )}
           </div>
@@ -2217,10 +2411,15 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                         </span>
                       )}
 
-                      {order.id.startsWith('ord_direct_') && (
+                      {order.id.startsWith('ord_direct_') ? (
                         <span className="px-2.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200/80 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
                           <FolderPlus className="w-3 h-3 text-teal-600" />
                           Direct Submission
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                          <CheckSquare className="w-3 h-3 text-blue-600" />
+                          Order List
                         </span>
                       )}
 
@@ -2326,21 +2525,39 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
                       <button
                         onClick={() => handleDownloadOrderTemplatesZip(order.id, order.label)}
-                        className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 rounded-xl text-xs font-bold tracking-wide transition-colors flex items-center gap-1.5 shadow-2xs border border-slate-200"
-                        title="Download all blank form templates for this order in ZIP"
+                        disabled={downloadingTemplatesZipOrderId === order.id}
+                        className={`px-3 py-2 rounded-xl text-xs font-bold tracking-wide transition-colors flex items-center gap-1.5 shadow-2xs border ${
+                          downloadingTemplatesZipOrderId === order.id
+                            ? 'bg-blue-50 text-blue-700 border-blue-300 cursor-not-allowed'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 border-slate-200'
+                        }`}
+                        title={downloadingTemplatesZipOrderId === order.id ? "Preparing template package..." : "Download all blank form templates for this order in ZIP"}
                       >
-                        <FolderDown className="w-3.5 h-3.5 text-blue-600" />
-                        <span className="hidden sm:inline">Templates</span>
+                        {downloadingTemplatesZipOrderId === order.id ? (
+                          <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />
+                        ) : (
+                          <FolderDown className="w-3.5 h-3.5 text-blue-600" />
+                        )}
+                        <span className="hidden sm:inline">{downloadingTemplatesZipOrderId === order.id ? 'Packaging...' : 'Templates'}</span>
                       </button>
 
                       {isManagementOrAdmin && (
                         <>
                           <button
                             onClick={() => handleDownloadZip(order.id, order.label)}
-                            className="p-2 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors"
-                            title="Download all vessel uploads in ZIP"
+                            disabled={downloadingZipOrderId === order.id}
+                            className={`p-2 rounded-xl border transition-colors ${
+                              downloadingZipOrderId === order.id
+                                ? 'bg-blue-50 text-blue-700 border-blue-300 cursor-not-allowed shadow-inner'
+                                : 'text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 border-slate-200'
+                            }`}
+                            title={downloadingZipOrderId === order.id ? "Downloading of uploaded files is processing..." : "Download all vessel uploads in ZIP"}
                           >
-                            <FolderDown className="w-4 h-4 text-slate-600" />
+                            {downloadingZipOrderId === order.id ? (
+                              <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                            ) : (
+                              <FolderDown className="w-4 h-4 text-slate-600" />
+                            )}
                           </button>
 
                           <button
@@ -2514,6 +2731,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             setUploadErrorMessage(null);
             setUploadDetailedErrors([]);
           }}
+          isDownloadingZip={downloadingZipOrderId === selectedOrderForInspection.id}
+          isDownloadingTemplatesZip={downloadingTemplatesZipOrderId === selectedOrderForInspection.id}
           onDownloadZip={handleDownloadZip}
           onDownloadUpload={handleDownloadUpload}
           onDownloadTemplate={handleDownloadTemplate}
@@ -2643,7 +2862,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             setIsDirectUploadModalOpen(false);
             fetchOrders();
             onStatusRefresh?.();
-            showToast(`Successfully uploaded ${count} file(s) without order! Package registered in Order List.`, 'success');
+            setOrderTypeFilter('direct_uploads_only');
+            showToast(`Successfully uploaded ${count} file(s) without order! Switched view to Direct Vessel Uploads.`, 'success');
           }}
         />
       )}
@@ -3243,6 +3463,8 @@ interface OrderDetailsModalProps {
   onRequestReplacement?: (uploadId: number, fileName: string) => void;
   onCancelReplacementRequest?: (uploadId: number) => void;
   onEditOrder?: (order: SMSOrder) => void;
+  isDownloadingZip?: boolean;
+  isDownloadingTemplatesZip?: boolean;
 }
 
 const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
@@ -3276,7 +3498,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onMarkSingleUploadChecked,
   onRequestReplacement,
   onCancelReplacementRequest,
-  onEditOrder
+  onEditOrder,
+  isDownloadingZip,
+  isDownloadingTemplatesZip
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -3440,19 +3664,41 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             )}
             <button
               onClick={() => onDownloadOrderTemplatesZip(order.id, order.label)}
-              className="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl border border-blue-200/70 text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors"
-              title="Download all official blank templates for this order (ZIP)"
+              disabled={isDownloadingTemplatesZip}
+              className={`px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors ${
+                isDownloadingTemplatesZip
+                  ? 'bg-blue-50 text-blue-700 border-blue-300 cursor-not-allowed'
+                  : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200/70'
+              }`}
+              title={isDownloadingTemplatesZip ? "Preparing template files package..." : "Download all official blank templates for this order (ZIP)"}
             >
-              <FolderDown className="w-4 h-4 text-blue-600" />
-              <span className="hidden sm:inline">Templates (ZIP)</span>
+              {isDownloadingTemplatesZip ? (
+                <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+              ) : (
+                <FolderDown className="w-4 h-4 text-blue-600 shrink-0" />
+              )}
+              <span className="hidden sm:inline">
+                {isDownloadingTemplatesZip ? 'Packaging Templates...' : 'Templates (ZIP)'}
+              </span>
             </button>
             <button
               onClick={() => onDownloadZip(order.id, order.label, activeVessel ? activeVessel.vessel_id : undefined)}
-              className="px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 rounded-xl border border-slate-200 text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors"
-              title="Download all vessel uploads as ZIP"
+              disabled={isDownloadingZip}
+              className={`px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all ${
+                isDownloadingZip
+                  ? 'bg-blue-50 text-blue-700 border-blue-300 cursor-not-allowed shadow-inner'
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+              }`}
+              title={isDownloadingZip ? "Downloading of uploaded files is processing..." : "Download all vessel uploads as ZIP"}
             >
-              <FolderDown className="w-4 h-4 text-slate-600" />
-              <span className="hidden sm:inline">Uploads ZIP</span>
+              {isDownloadingZip ? (
+                <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+              ) : (
+                <FolderDown className="w-4 h-4 text-slate-600 shrink-0" />
+              )}
+              <span className="hidden sm:inline">
+                {isDownloadingZip ? 'Downloading ZIP...' : 'Uploads ZIP'}
+              </span>
             </button>
             {!isVesselUser && !order.id.startsWith('ord_direct_') && onEditOrder && (
               <button
@@ -3472,6 +3718,41 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Informative Processing Alert Banners for ZIP Downloads */}
+        {isDownloadingZip && (
+          <div className="bg-gradient-to-r from-blue-50 via-sky-50 to-blue-50 border-b border-blue-200 px-6 py-3.5 flex items-center justify-between gap-3 text-xs text-blue-900 animate-in fade-in slide-in-from-top-2 duration-150 shrink-0 shadow-2xs">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-blue-100/90 text-blue-700 flex items-center justify-center shrink-0 border border-blue-200">
+                <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+              </div>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 min-w-0">
+                <span className="font-black text-blue-950">Downloading of uploaded files is processing:</span>
+                <span className="text-blue-800 font-medium">Packaging files into a ZIP archive from storage. Download will start automatically once ready.</span>
+              </div>
+            </div>
+            <span className="px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200/80 rounded-full shrink-0">
+              Processing ZIP
+            </span>
+          </div>
+        )}
+
+        {isDownloadingTemplatesZip && (
+          <div className="bg-gradient-to-r from-blue-50 via-sky-50 to-blue-50 border-b border-blue-200 px-6 py-3.5 flex items-center justify-between gap-3 text-xs text-blue-900 animate-in fade-in slide-in-from-top-2 duration-150 shrink-0 shadow-2xs">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-blue-100/90 text-blue-700 flex items-center justify-center shrink-0 border border-blue-200">
+                <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+              </div>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 min-w-0">
+                <span className="font-black text-blue-950">Packaging templates:</span>
+                <span className="text-blue-800 font-medium">Downloading and compressing official form templates into a ZIP package. Please wait...</span>
+              </div>
+            </div>
+            <span className="px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200/80 rounded-full shrink-0">
+              Packaging ZIP
+            </span>
+          </div>
+        )}
 
         {/* Modal Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1">

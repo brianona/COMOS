@@ -212,6 +212,34 @@ export const RecycleBinView: React.FC<RecycleBinViewProps> = ({
     });
   });
 
+  // 5B. Certificate Master Definitions
+  (data.certificate_definitions || []).forEach((cd: any) => {
+    allItems.push({
+      id: cd.id,
+      dbType: 'certificate_definitions',
+      categoryTab: 'certificates',
+      categoryLabel: 'Certificate Master Definition',
+      title: cd.name || 'Unnamed Definition',
+      subtitle: `Category: ${cd.category || 'General'} • Status: ${cd.is_valid ? 'Valid' : 'Inactive'}`,
+      vesselName: 'Master Registry',
+      deletedAt: cd.deleted_at
+    });
+  });
+
+  // 5C. Certificate Categories
+  (data.certificate_categories || []).forEach((cc: any) => {
+    allItems.push({
+      id: cc.id,
+      dbType: 'certificate_categories',
+      categoryTab: 'certificates',
+      categoryLabel: 'Certificate Category',
+      title: cc.name || 'Unnamed Category',
+      subtitle: cc.description || 'Statutory category group',
+      vesselName: 'Master Registry',
+      deletedAt: cc.deleted_at
+    });
+  });
+
   // 6. Departure Reports
   (data.departure_reports || []).forEach((d: any) => {
     allItems.push({

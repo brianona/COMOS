@@ -290,7 +290,22 @@ const INITIAL_UPLOADS: VesselUpload[] = [
   { id: 'up_6', vesselId: 'v13', vesselName: 'LIGNUM NETWORK', month: 'June', year: '2026', fileName: 'LignumNet_June2026_SafetyForms.zip', uploadedAt: 'July 4, 2026 at 10:28 AM', fileSize: '22.0 MB', category: '1. Monthly' },
 ];
 
-export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode = 'management', flags = [], onPendingAckCountChange, onNavigateMode }) => {
+export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode: initialMode = 'management', flags = [], onPendingAckCountChange, onNavigateMode }) => {
+  const [activeMode, setActiveMode] = useState<'overview' | 'management' | 'reporting' | 'acknowledgement'>(initialMode);
+
+  useEffect(() => {
+    setActiveMode(initialMode);
+  }, [initialMode]);
+
+  const mode = activeMode;
+
+  const handleNavigateMode = (targetMode: 'overview' | 'management' | 'reporting' | 'acknowledgement') => {
+    setActiveMode(targetMode);
+    if (onNavigateMode) {
+      onNavigateMode(targetMode);
+    }
+  };
+
   // Use either external vessels list or standard seed list
   const vesselsList = useMemo(() => {
     return externalVessels && externalVessels.length > 0 
@@ -4275,10 +4290,17 @@ startxref
               <div className="pt-2 border-t border-slate-100 space-y-2">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Quick Navigation</label>
                 <div className="flex flex-col gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleNavigateMode('reporting')}
+                    className="w-full py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                  >
+                    <Send className="w-3.5 h-3.5" /> Go to SMS Reporting Terminal
+                  </button>
                   {currentUser?.role !== 'vessel' && (
                     <button
                       type="button"
-                      onClick={() => onNavigateMode ? onNavigateMode('management') : null}
+                      onClick={() => handleNavigateMode('management')}
                       className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <FileText className="w-3.5 h-3.5" /> Go to SMS Management
@@ -4287,17 +4309,6 @@ startxref
                 </div>
               </div>
 
-              {/* SMM Compliance Guidelines */}
-              <div className="p-4 bg-slate-50/80 rounded-2xl border border-slate-100 space-y-2.5 text-xs text-slate-600">
-                <p className="font-extrabold text-slate-800 flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" /> SMM Standard Guidelines
-                </p>
-                <ul className="space-y-1.5 text-[11px] text-slate-500 list-disc list-inside">
-                  <li>Form headers must follow standard Fleet Revision codes.</li>
-                  <li>Monthly checklists are due before the 5th of each month.</li>
-                  <li>Permits (Hot Work, Enclosed Space) are valid for single operational shift only.</li>
-                </ul>
-              </div>
 
             </div>
           </div>
@@ -4761,43 +4772,77 @@ startxref
         </div>
       </div>
 
-      {/* SMS Management Navigation Tabs */}
-      {mode === 'management' && (
-        <div className="flex items-center gap-2 bg-white p-1.5 rounded-2xl border border-slate-200/80 shadow-2xs">
+      {/* SMS Unified Navigation Tabs */}
+      {mode !== 'acknowledgement' && (
+        <div className="flex flex-wrap items-center gap-2 bg-white p-1.5 rounded-2xl border border-slate-200/80 shadow-2xs">
           <button
             type="button"
-            onClick={() => setManagementTab('forms')}
+            onClick={() => handleNavigateMode('overview')}
             className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
-              managementTab === 'forms'
+              mode === 'overview'
                 ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}
           >
-            <Layers className="w-4 h-4" />
-            <span>Forms & Checklists</span>
+            <FileText className="w-4 h-4" />
+            <span>SMS Manual & Catalog</span>
           </button>
+
           <button
             type="button"
-            onClick={() => {
-              setManagementTab('submitted_files');
-              setIsAccordion3Open(true);
-            }}
+            onClick={() => handleNavigateMode('reporting')}
             className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
-              managementTab === 'submitted_files'
+              mode === 'reporting'
                 ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
             }`}
           >
-            <Archive className="w-4 h-4" />
-            <span>Submitted Files (Vessel Uploads)</span>
-            {uploads.length > 0 && (
-              <span className={`px-2 py-0.5 text-[10px] font-black rounded-full ${
-                managementTab === 'submitted_files' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-800'
-              }`}>
-                {uploads.length}
-              </span>
-            )}
+            <Send className="w-4 h-4" />
+            <span>SMS Reporting</span>
           </button>
+
+          {currentUser?.role !== 'vessel' && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  handleNavigateMode('management');
+                  setManagementTab('forms');
+                }}
+                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
+                  mode === 'management' && managementTab === 'forms'
+                    ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Layers className="w-4 h-4" />
+                <span>Forms & Checklists</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleNavigateMode('management');
+                  setManagementTab('submitted_files');
+                  setIsAccordion3Open(true);
+                }}
+                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
+                  mode === 'management' && managementTab === 'submitted_files'
+                    ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Archive className="w-4 h-4" />
+                <span>Submitted Files (Vessel Uploads)</span>
+                {uploads.length > 0 && (
+                  <span className={`px-2 py-0.5 text-[10px] font-black rounded-full ${
+                    mode === 'management' && managementTab === 'submitted_files' ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-800'
+                  }`}>
+                    {uploads.length}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -5307,7 +5352,9 @@ startxref
                   <h3 className="text-sm font-black uppercase tracking-wider text-slate-100">SMS Reporting Terminal</h3>
                 </div>
                 <p className="text-xs text-slate-400 max-w-xl">
-                  Vessel users portal to validate safety checklists, auto-match system files, compile secure packages, and upload directly to cloud servers.
+                  {currentUser?.role === 'vessel'
+                    ? 'Vessel portal to validate safety checklists, auto-match system files, compile secure packages, and upload directly to cloud servers.'
+                    : 'Fleet compliance portal to review vessel safety checklists, upload report packages on behalf of vessels, compile files, and monitor submissions.'}
                 </p>
               </div>
 
@@ -5321,9 +5368,9 @@ startxref
                       setReportingVesselId(e.target.value);
                       setUploadedFilesMap({}); // Reset map on vessel change
                     }}
-                    className="bg-slate-800 text-xs font-bold text-white border border-slate-700 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    className="bg-slate-800 text-xs font-bold text-white border border-slate-700 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer"
                   >
-                    {vesselsList
+                    {(teamVesselsList && teamVesselsList.length > 0 ? teamVesselsList : vesselsList)
                       .filter(v => currentUser?.role !== 'vessel' || String(v.id) === String(currentUser?.vessel_id))
                       .map(v => (
                         <option key={v.id} value={String(v.id)}>{v.name}</option>

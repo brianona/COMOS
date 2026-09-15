@@ -4,15 +4,21 @@ import {
   Wrench, Users, ListChecks, FileText, Settings, Info, LogOut, 
   ChevronDown, ChevronRight, Eye, Shield, Tag, MessageSquare, Network,
   Clock, Map as MapIcon, File as FileIcon, Search, CheckSquare, Package,
-  Waves, FlaskConical, Plus, CheckCircle2, ShieldCheck, Compass, Trash2, Monitor
+  Waves, FlaskConical, Plus, CheckCircle2, ShieldCheck, Compass, Trash2, Monitor,
+  Send
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn, getRoleLabel } from "../utils/helpers";
 import { LogoContainer } from "./Logo";
-import { User, ViewType } from "../types";
+import { User, ViewType, CertSidebarStatus } from "../types";
 
 export const SidebarContent = ({ 
-  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, isCertificatesOpen, setIsCertificatesOpen, onLogout, setIsChangePasswordOpen, pendingAckCount, smsSidebarStatus
+  view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, isCertificatesOpen, setIsCertificatesOpen,  onLogout,
+  setIsChangePasswordOpen,
+  pendingAckCount,
+  pendingDeviceRequestsCount = 0,
+  smsSidebarStatus,
+  certSidebarStatus
 }: { 
   view: string, 
   setView: (v: any) => void, 
@@ -43,6 +49,7 @@ export const SidebarContent = ({
   onLogout: () => void,
   setIsChangePasswordOpen: (v: boolean) => void,
   pendingAckCount?: number,
+  pendingDeviceRequestsCount?: number,
   smsSidebarStatus?: {
     statusColor: 'red' | 'orange' | 'normal';
     urgentCount: number;
@@ -51,7 +58,8 @@ export const SidebarContent = ({
     pendingFilesCount?: number;
     hasUrgentDeadline?: boolean;
     hasUncheckedUploads?: boolean;
-  }
+  },
+  certSidebarStatus?: CertSidebarStatus
 }) => {
   const [isSmsReportingOpen, setIsSmsReportingOpen] = React.useState(false);
   // Beautiful interactive helper styling functions
@@ -194,7 +202,7 @@ export const SidebarContent = ({
               setIsSmsReportingOpen(true);
             }}
             className={getCategoryToggleClass(
-              view === 'sms_overview' || view === 'sms' || view === 'sms_order_list' || view === 'sms_find_report',
+              view === 'sms_overview' || view === 'sms' || view === 'sms_reporting' || view === 'sms_order_list' || view === 'sms_find_report',
               isSmsReportingOpen
             )}
           >
@@ -238,6 +246,12 @@ export const SidebarContent = ({
                     <FileText className="w-3.5 h-3.5 shrink-0" /> SMS Management
                   </button>
                 )}
+                <button 
+                  onClick={() => { setView('sms_reporting'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'sms_reporting')}
+                >
+                  <Send className="w-3.5 h-3.5 shrink-0" /> SMS Reporting
+                </button>
                 <button 
                   onClick={() => { setView('sms_order_list'); setIsSidebarOpen(false); }}
                   className={getOrderListItemClass(view === 'sms_order_list')}
@@ -374,11 +388,48 @@ export const SidebarContent = ({
               ['admin_add_cert', 'admin_cert_list'].includes(view),
               isCertificatesOpen
             )}
+            title={
+              certSidebarStatus && certSidebarStatus.totalExpiringCount > 0
+                ? `${certSidebarStatus.totalExpiringCount} expiring/expired certificate(s)`
+                : certSidebarStatus && certSidebarStatus.newlyPostedCount > 0
+                  ? `${certSidebarStatus.newlyPostedCount} newly posted certificate(s)`
+                  : 'Certificates & Reports'
+            }
           >
-            <div className="flex items-center gap-3">
-              <FileText className="w-4 h-4" /> Certificates &amp; Reports
+            <div className="flex items-center gap-3 min-w-0">
+              <FileText className="w-4 h-4 shrink-0" />
+              <span className="truncate">Certificates &amp; Reports</span>
             </div>
-            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isCertificatesOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+
+            <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+              {/* Expiring / Expired Badge */}
+              {certSidebarStatus && certSidebarStatus.totalExpiringCount > 0 && (
+                <span 
+                  className={cn(
+                    "px-1.5 py-0.5 text-[10px] font-black rounded-full leading-none shadow-2xs shrink-0 flex items-center gap-0.5",
+                    certSidebarStatus.expiredCount > 0 
+                      ? "bg-rose-600 text-white animate-pulse" 
+                      : "bg-amber-500 text-white"
+                  )}
+                  title={`${certSidebarStatus.expiredCount > 0 ? `${certSidebarStatus.expiredCount} expired, ` : ''}${certSidebarStatus.expiringCount} expiring certificate(s)`}
+                >
+                  <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                  {certSidebarStatus.totalExpiringCount}
+                </span>
+              )}
+
+              {/* Newly Posted Badge */}
+              {certSidebarStatus && certSidebarStatus.newlyPostedCount > 0 && (
+                <span 
+                  className="px-1.5 py-0.5 text-[10px] font-black bg-emerald-600 text-white rounded-full leading-none shadow-2xs shrink-0"
+                  title={`${certSidebarStatus.newlyPostedCount} newly posted certificate(s)`}
+                >
+                  {certSidebarStatus.newlyPostedCount} New
+                </span>
+              )}
+
+              <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isCertificatesOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+            </div>
           </button>
           
           <AnimatePresence>
@@ -398,9 +449,45 @@ export const SidebarContent = ({
                 </button>
                 <button 
                   onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'admin_cert_list')}
+                  className={cn(
+                    getSubItemClass(view === 'admin_cert_list'),
+                    "flex items-center justify-between"
+                  )}
+                  title={
+                    certSidebarStatus && certSidebarStatus.totalExpiringCount > 0
+                      ? `${certSidebarStatus.totalExpiringCount} expiring/expired certificate(s)`
+                      : certSidebarStatus && certSidebarStatus.newlyPostedCount > 0
+                        ? `${certSidebarStatus.newlyPostedCount} newly posted certificate(s)`
+                        : 'Certificate/Service Report list'
+                  }
                 >
-                  <FileText className="w-3.5 h-3.5 shrink-0" /> Certificate/Service Report list
+                  <div className="flex items-center gap-2 min-w-0">
+                    <FileText className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">Certificate/Service Report list</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0 ml-auto">
+                    {certSidebarStatus && certSidebarStatus.totalExpiringCount > 0 && (
+                      <span 
+                        className={cn(
+                          "px-1.5 py-0.5 text-[9px] font-black rounded-full leading-none shadow-2xs shrink-0",
+                          certSidebarStatus.expiredCount > 0 
+                            ? "bg-rose-600 text-white animate-pulse" 
+                            : "bg-amber-500 text-white"
+                        )}
+                        title={`${certSidebarStatus.expiredCount > 0 ? `${certSidebarStatus.expiredCount} expired, ` : ''}${certSidebarStatus.expiringCount} expiring certificate(s)`}
+                      >
+                        {certSidebarStatus.totalExpiringCount}
+                      </span>
+                    )}
+                    {certSidebarStatus && certSidebarStatus.newlyPostedCount > 0 && (
+                      <span 
+                        className="px-1.5 py-0.5 text-[9px] font-black bg-emerald-600 text-white rounded-full leading-none shadow-2xs shrink-0"
+                        title={`${certSidebarStatus.newlyPostedCount} newly posted certificate(s)`}
+                      >
+                        {certSidebarStatus.newlyPostedCount}
+                      </span>
+                    )}
+                  </div>
                 </button>
               </motion.div>
             )}
@@ -522,7 +609,17 @@ export const SidebarContent = ({
               <div className="flex items-center gap-3">
                 <Settings className="w-4 h-4" /> Admin Panel
               </div>
-              <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isAdminTreeOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+              <div className="flex items-center gap-1.5">
+                {!isAdminTreeOpen && pendingDeviceRequestsCount > 0 && (
+                  <span 
+                    className="px-1.5 py-0.5 text-[10px] font-black bg-amber-500 text-white rounded-full leading-none shadow-2xs shrink-0 animate-pulse" 
+                    title={`${pendingDeviceRequestsCount} pending device registration request(s) for approval`}
+                  >
+                    {pendingDeviceRequestsCount}
+                  </span>
+                )}
+                <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isAdminTreeOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+              </div>
             </button>
             
             <AnimatePresence>
@@ -548,9 +645,18 @@ export const SidebarContent = ({
                   </button>
                   <button 
                     onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
-                    className={getSubItemClass(view === 'admin')}
+                    className={cn(getSubItemClass(view === 'admin'), "justify-between")}
+                    title={pendingDeviceRequestsCount > 0 ? `${pendingDeviceRequestsCount} pending device registration request(s) for approval` : "Admin Settings"}
                   >
-                    <Settings className="w-3.5 h-3.5 shrink-0" /> Admin Settings
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Settings className={cn("w-3.5 h-3.5 shrink-0", pendingDeviceRequestsCount > 0 ? "text-amber-600" : "")} />
+                      <span className="truncate">Admin Settings</span>
+                    </div>
+                    {pendingDeviceRequestsCount > 0 && (
+                      <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-amber-500 text-white rounded-full leading-none shadow-2xs shrink-0 animate-pulse">
+                        {pendingDeviceRequestsCount}
+                      </span>
+                    )}
                   </button>
                   <button 
                     onClick={() => { setView('admin_recycle_bin'); setIsSidebarOpen(false); }}

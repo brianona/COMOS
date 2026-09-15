@@ -1,7 +1,57 @@
-import React from 'react';
-import { Ship, Code, Lightbulb, ShieldCheck, Mail, ArrowUpRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { 
+  Ship, 
+  Code, 
+  Lightbulb, 
+  ShieldCheck, 
+  Mail, 
+  ArrowUpRight, 
+  RefreshCw, 
+  CheckCircle2, 
+  AlertCircle,
+  Sparkles
+} from 'lucide-react';
+import { 
+  CURRENT_CLIENT_VERSION, 
+  CURRENT_CLIENT_BUILD_TIME, 
+  isClientVersionOlder, 
+  refreshBrowserCleanly 
+} from '../utils/version';
+import { SystemVersionInfo } from '../types';
 
 export const AboutView: React.FC = () => {
+  const [serverVersion, setServerVersion] = useState<SystemVersionInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [hasUpdate, setHasUpdate] = useState(false);
+
+  const checkVersion = async () => {
+    setChecking(true);
+    try {
+      const res = await fetch(`/api/system/version?_t=${Date.now()}`, {
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+      if (res.ok) {
+        const data: SystemVersionInfo = await res.json();
+        setServerVersion(data);
+        const older = isClientVersionOlder(
+          CURRENT_CLIENT_VERSION, 
+          data.version, 
+          CURRENT_CLIENT_BUILD_TIME, 
+          data.buildTime
+        );
+        setHasUpdate(older || !!data.urgent);
+      }
+    } catch (e) {
+      console.warn('Failed to check version:', e);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    checkVersion();
+  }, []);
+
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
       {/* Hero Section */}
@@ -30,7 +80,7 @@ export const AboutView: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         
         {/* Core Vision & Purpose */}
-        <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-100 shadow-sm flex flex-col justify-between space-y-6">
+        <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-150 shadow-sm flex flex-col justify-between space-y-6">
           <div className="space-y-4">
             <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-xs font-bold">
               <ShieldCheck className="w-3.5 h-3.5" /> Core Concept
@@ -40,15 +90,59 @@ export const AboutView: React.FC = () => {
               COMOS simplifies and automates maritime compliance by consolidating crew list approvals, vessel voyage reports, fuel analytics, and multi-tier audits into a single, intuitive interface. Designed to minimize operational friction and keep marine ecosystems clean, safe, and efficient.
             </p>
           </div>
-          <div className="pt-4 border-t border-slate-100 flex items-center gap-4">
-            <div className="text-slate-400 text-xs font-mono">
-              Version 1.0.0 (LTS)
+          
+          {/* Version & Status Footer */}
+          <div className="pt-4 border-t border-slate-100 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 text-xs font-mono">
+                  Client Version: <strong className="text-slate-700">v{CURRENT_CLIENT_VERSION}</strong>
+                </span>
+                {hasUpdate ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                    <AlertCircle className="w-3 h-3 text-amber-500" /> Update Available
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Up to Date
+                  </span>
+                )}
+              </div>
+
+              <button
+                onClick={checkVersion}
+                disabled={checking}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                title="Check for updates"
+              >
+                <RefreshCw className={`w-3 h-3 ${checking ? 'animate-spin' : ''}`} />
+                <span className="text-[11px]">{checking ? 'Checking...' : 'Check'}</span>
+              </button>
             </div>
+
+            {hasUpdate && serverVersion && (
+              <div className="p-3 bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200/80 rounded-2xl flex items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <p className="text-xs font-bold text-amber-900">
+                    System updated to v{serverVersion.version}
+                  </p>
+                  <p className="text-[11px] text-amber-700">
+                    Your browser has an older version. Refresh to update.
+                  </p>
+                </div>
+                <button
+                  onClick={refreshBrowserCleanly}
+                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all shrink-0 cursor-pointer flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3 h-3" /> Refresh
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Development & Conceptualization Team */}
-        <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-100 shadow-sm flex flex-col justify-between space-y-6">
+        <div className="bg-white p-6 md:p-8 rounded-3xl border border-slate-150 shadow-sm flex flex-col justify-between space-y-6">
           <div className="space-y-4">
             <div className="inline-flex items-center gap-2 px-3 py-1 bg-amber-50 text-amber-700 rounded-full text-xs font-bold">
               <Lightbulb className="w-3.5 h-3.5" /> Creative Minds

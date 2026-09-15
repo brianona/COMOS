@@ -1,21 +1,75 @@
 import { ViewType } from "../types";
 
+export const cleanCertificateName = (name: string): string => {
+  if (!name) return '';
+  return name
+    .replace(/(?:,\s*|\s+)(?:Class\s+or\s+RO|Flag\s+State|Class|Flag)\s*$/i, '')
+    .replace(/,\s*$/, '')
+    .trim();
+};
+
+export interface CertNumberParts {
+  major: number;
+  minor: number;
+  letter: string;
+}
+
+export const parseCertNumber = (name: string): CertNumberParts | null => {
+  if (!name) return null;
+  // Match patterns like '1.1', '2.9.a', '2.11a', '3.1a', '10.2' at the start of name
+  const match = name.trim().match(/^(\d+)(?:\.(\d+))?(?:\.?([a-zA-Z]))?/);
+  if (!match) return null;
+  return {
+    major: parseInt(match[1], 10),
+    minor: match[2] !== undefined ? parseInt(match[2], 10) : 0,
+    letter: match[3] ? match[3].toLowerCase() : ''
+  };
+};
+
+export const compareCertificatesNumerically = (aName: string, bName: string): number => {
+  const numA = parseCertNumber(aName);
+  const numB = parseCertNumber(bName);
+
+  if (numA && numB) {
+    if (numA.major !== numB.major) return numA.major - numB.major;
+    if (numA.minor !== numB.minor) return numA.minor - numB.minor;
+    if (numA.letter !== numB.letter) return numA.letter.localeCompare(numB.letter);
+    return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+  }
+  if (numA && !numB) return -1;
+  if (!numA && numB) return 1;
+  return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: 'base' });
+};
+
+export const getCategoryMinCertNumber = (categoryName: string, certs: { category?: string; name: string }[]): number => {
+  let min = 999999;
+  for (const c of certs) {
+    if (c.category && c.category !== categoryName) continue;
+    const num = parseCertNumber(c.name);
+    if (num) {
+      const val = num.major * 1000 + num.minor;
+      if (val < min) min = val;
+    }
+  }
+  return min;
+};
+
 export const CAT1_CERTS = [
-  "1.1 Certificate of Registry, Flag State",
-  "1.2 Safety Management Certificate, Class",
-  "1.3 Document of Compliance, Class",
-  "1.4 International Ship Security Certificate, Flag State",
-  "1.5 Continuous Synopsis Record, Flag State",
-  "1.6 Minimum Safe Manning Certificate, Flag State",
-  "1.7 Declaration of MLC Part I, Flag State",
-  "1.8 Declaration of MLC Part II, Class or RO",
-  "1.9 Maritime Labour Certificate, Class",
-  "1.10 Crew Accommodation Statement of Compliance, Class",
-  "1.11 Certificate of Inspection of Crew Accommodation, Flag State",
+  "1.1 Certificate of Registry",
+  "1.2 Safety Management Certificate",
+  "1.3 Document of Compliance",
+  "1.4 International Ship Security Certificate",
+  "1.5 Continuous Synopsis Record",
+  "1.6 Minimum Safe Manning Certificate",
+  "1.7 Declaration of MLC Part I",
+  "1.8 Declaration of MLC Part II",
+  "1.9 Maritime Labour Certificate",
+  "1.10 Crew Accommodation Statement of Compliance",
+  "1.11 Certificate of Inspection of Crew Accommodation",
   "1.12 Ship Sanitation Control Exemption Certificate",
-  "1.13 Certificate of Insurance or Civil Liability for Bunker Oil Pollution, Flag State",
-  "1.14 Annual Tax Receipt/ Fees Invoice, Flag State",
-  "1.15 Wreck Removal Certificate, Flag State",
+  "1.13 Certificate of Insurance or Civil Liability for Bunker Oil Pollution",
+  "1.14 Annual Tax Receipt/ Fees Invoice",
+  "1.15 Wreck Removal Certificate",
   "1.16 P & I Club Certificate of Entry",
   "1.17 Hull & Machinery Insurance Policy",
   "1.18 International Carrier Bonds (ICB), SIGCo",
@@ -25,46 +79,46 @@ export const CAT1_CERTS = [
 ];
 
 export const CAT2_CERTS = [
-  "2.1 Certificate of Installation, Class",
-  "2.2 Certificate of Classification, Class",
-  "2.3 International Tonnage Certificate (1969), Flag State",
-  "2.4 Panama Canal PC/UMS Docs of Total Volume, Class",
-  "2.5 Suez Canal Special Tonnage Certificate, Class",
-  "2.6 International Load Line Certificate, Class",
-  "2.7 Free Board Assignment for Load Lines, Class",
-  "2.8 Cargo Ship Safety Construction Certificate, Class",
-  "2.9 Cargo Ship Safety Equipment Certificate, Class",
-  "2.9.a Record of Equipment for Cargo Ship Safety (Form E), Class",
-  "2.10 Exemption Certificate for Fixed Fire Extinguishing Arrangement in Cargo Spaces, Flag State",
-  "2.11 Cargo Ship Safety Radio Certificate, Class",
-  "2.11a Record of Equipment for Cargo Ship Safety Radio (Form R), Class",
-  "2.12 Radio Station Statutory License, Flag State",
+  "2.1 Certificate of Installation",
+  "2.2 Certificate of Classification",
+  "2.3 International Tonnage Certificate (1969)",
+  "2.4 Panama Canal PC/UMS Docs of Total Volume",
+  "2.5 Suez Canal Special Tonnage Certificate",
+  "2.6 International Load Line Certificate",
+  "2.7 Free Board Assignment for Load Lines",
+  "2.8 Cargo Ship Safety Construction Certificate",
+  "2.9 Cargo Ship Safety Equipment Certificate",
+  "2.9.a Record of Equipment for Cargo Ship Safety (Form E)",
+  "2.10 Exemption Certificate for Fixed Fire Extinguishing Arrangement in Cargo Spaces",
+  "2.11 Cargo Ship Safety Radio Certificate",
+  "2.11a Record of Equipment for Cargo Ship Safety Radio (Form R)",
+  "2.12 Radio Station Statutory License",
   "2.13 Shore-Based Maintenance Agreement for GMDSS & Radio Equipment (JRC or Furuno)",
   "2.14 LRIT Conformance Test Report (Radio service)",
-  "2.15 Document of Compliance Special Requirements for Ship Carrying Dangerous Goods Class",
-  "2.16 Type Approval Certificate for Water Ingress Monitoring Systems, Class"
+  "2.15 Document of Compliance Special Requirements for Ship Carrying Dangerous Goods",
+  "2.16 Type Approval Certificate for Water Ingress Monitoring Systems"
 ];
 
 export const CAT3_CERTS = [
-  "3.1 International Oil Pollution Prevention (IOPP) Certificate, Class",
-  "3.1a Supplement to the IOPP Certificate (Form A), Class",
-  "3.2 International Air Pollution Prevention (IAPP) Certificate, Class",
-  "3.2a Supplement to the IAPP Certificate, Class",
-  "3.3 International Sewage Pollution Prevention Certificate, Class",
-  "3.4 International Energy Efficiency Certificate (IECC) with Supplement, Class",
-  "3.5 Engine International Air Pollution Prevention (EIAPP) Certificate, Class",
-  "3.5a Engine International Air Pollution Prevention (EIAPP) Certificate, Class",
-  "3.6 International Anti-Fouling System Certificate with Record of AFS, Class",
-  "3.6a Endorsement of the Records of AFS, Class",
+  "3.1 International Oil Pollution Prevention (IOPP) Certificate",
+  "3.1a Supplement to the IOPP Certificate (Form A)",
+  "3.2 International Air Pollution Prevention (IAPP) Certificate",
+  "3.2a Supplement to the IAPP Certificate",
+  "3.3 International Sewage Pollution Prevention Certificate",
+  "3.4 International Energy Efficiency Certificate (IECC) with Supplement",
+  "3.5 Engine International Air Pollution Prevention (EIAPP) Certificate",
+  "3.5a Engine International Air Pollution Prevention (EIAPP) Certificate",
+  "3.6 International Anti-Fouling System Certificate with Record of AFS",
+  "3.6a Endorsement of the Records of AFS",
   "3.6b Certificate or Declaration Letter of Anti-Fouling Paint from Maker",
-  "3.7 International Ballast Water Management Certificate, Flag State",
-  "3.8 Statement for Code of Federal Regulations USCG Title 33, Class",
+  "3.7 International Ballast Water Management Certificate",
+  "3.8 Statement for Code of Federal Regulations USCG Title 33",
   "3.9 Statement relating to the MARPOL Annex V Garbage",
   "3.10 Statement of Fact Environmentally Acceptable Lubricants of Stern Tube (EAL), (Kemel or Wartsilal)",
-  "3.11 Statement of Fact Drydock Inspection Report of 2013 VGP, Class",
-  "3.12 Statement of Asbestos Free (during construction at Shipyard), Class",
+  "3.11 Statement of Fact Drydock Inspection Report of 2013 VGP",
+  "3.12 Statement of Asbestos Free (during construction at Shipyard)",
   "3.13 Certificate or Declaration Letter of Asbestos Free, (from Shipyard,Dockyard,Supplier)",
-  "3.14 Statement of Fact for MARPOL Annex IV Sewage Discharge Rate, Class",
+  "3.14 Statement of Fact for MARPOL Annex IV Sewage Discharge Rate",
   "3.15 US NPDES Vessel General Permit /VGP 2018, (to replace VGP 2013)",
   "3.15a US NPDES Vessel General Permit (VGP) 2013",
   "3.15b Annual Report Submission for US NPDES VGP 2013",
@@ -75,11 +129,11 @@ export const CAT3_CERTS = [
   "3.20 Precision Calibration Certificate for 15 PPM Oil Content Meter (OCM) of Bilge Seperator",
   "3.21 Type Approval Certificate for 15 PPM OCM Bilge Alarm of Bilge Seperator",
   "3.22 Type Approval Certificate for ER Bilge Bilge Seperator",
-  "3.23 Type Approval Certificate for Sewage Treatment Plant, Class",
-  "3.24 Type Approval Certificate for ER Ship Board Incinerator, Class",
+  "3.23 Type Approval Certificate for Sewage Treatment Plant",
+  "3.24 Type Approval Certificate for ER Ship Board Incinerator",
   "3.25 Type Approval Certificate for BWTS & AMS",
-  "3.26 Polar Ship Certificate, Class",
-  "3.27 Polar Code Part II-A Compliance, Class",
+  "3.26 Polar Ship Certificate",
+  "3.27 Polar Code Part II-A Compliance",
   "3.28 Portable Type Multi-Gas Detection Meter Calibration Certificate",
   "3.29 Pocket Portable Type Gas Detection Meter Calibration Certificate",
   "3.30 Air Quality Analysis Certicate",
@@ -94,11 +148,11 @@ export const CAT3_CERTS = [
 ];
 
 export const CAT4_CERTS = [
-  "4.1 Cargo Handling Gear Annual Certificate (Thorough Inspection), Class",
-  "4.2 Cargo Handling Gear Load Test, Class",
-  "4.3 International Maritime Solid Bulk Cargoes (IMSBC) Code Certificate, Class",
-  "4.4 Document of Authorization Approval of Ship's Plan for the Carriage of Bulk Grain, Class",
-  "4.5 Certificate of USDA Compliance of Instrument & Sensor in Refrigerating Cargo Space, Class",
+  "4.1 Cargo Handling Gear Annual Certificate (Thorough Inspection)",
+  "4.2 Cargo Handling Gear Load Test",
+  "4.3 International Maritime Solid Bulk Cargoes (IMSBC) Code Certificate",
+  "4.4 Document of Authorization Approval of Ship's Plan for the Carriage of Bulk Grain",
+  "4.5 Certificate of USDA Compliance of Instrument & Sensor in Refrigerating Cargo Space",
   "4.6 USDA Certificate of Approval for Cold Treatment of Fruit in Transit to USA",
   "4.7 Certificate of Inspection for Freezer Vessel Fishery Product Carriage",
   "4.8 Certificate of EU Number for Carriage of Fishery Products in Transit to EU"
@@ -172,7 +226,7 @@ export const CAT7_CERTS = [
   "7.21 SOLAS Training & Maintenance Manual (Life Saving Appliances)",
   "7.21b SOLAS Training & Maintenance Manual (Fire Fighting Equipment)",
   "7.22 Lifeboat-davit Maintenance file MSC.0000",
-  "7.23 Ship Security Plan, Class",
+  "7.23 Ship Security Plan",
   "7.24 Mooring Management Plan"
 ];
 
@@ -219,7 +273,7 @@ export const getViewTitle = (v: ViewType): string => {
     case 'audit_navigational': return 'Navigational Audits';
     case 'sms': return 'SMS Manuals & Procedures';
     case 'sms_overview': return 'Safety Management System (SMS)';
-    case 'sms_reporting': return 'SMS Incidents & Reporting';
+    case 'sms_reporting': return 'SMS Reporting';
     case 'sms_acknowledgement': return 'Report Acknowledgement';
     case 'sms_order_list': return 'SMS Order List';
     case 'sms_find_report': return 'Find SMS Report';

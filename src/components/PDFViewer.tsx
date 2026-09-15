@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Download, Maximize, Minimize, RotateCcw } from 'lucide-react';
+import { Loader2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Download, Maximize, Minimize, RotateCcw, Printer } from 'lucide-react';
 
 // Configure pdfjs worker to use local bundled worker via Vite ?url import
 try {
@@ -17,9 +17,10 @@ interface PDFViewerProps {
   arrayBuffer?: ArrayBuffer;
   title?: string;
   onDownload?: () => void;
+  onPrint?: () => void;
 }
 
-export const PDFViewer: React.FC<PDFViewerProps> = ({ url, blob, arrayBuffer, title, onDownload }) => {
+export const PDFViewer: React.FC<PDFViewerProps> = ({ url, blob, arrayBuffer, title, onDownload, onPrint }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const [pdf, setPdf] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -286,6 +287,47 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({ url, blob, arrayBuffer, ti
     }
   };
 
+  const handlePrint = () => {
+    if (onPrint) {
+      onPrint();
+      return;
+    }
+    const printUrl = url || (blob ? URL.createObjectURL(blob) : null);
+    if (!printUrl) {
+      window.print();
+      return;
+    }
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      iframe.src = printUrl;
+      iframe.onload = () => {
+        setTimeout(() => {
+          try {
+            iframe.contentWindow?.focus();
+            iframe.contentWindow?.print();
+          } catch {
+            window.open(printUrl, '_blank');
+          }
+        }, 400);
+      };
+      document.body.appendChild(iframe);
+      setTimeout(() => {
+        if (blob) URL.revokeObjectURL(printUrl);
+        if (document.body.contains(iframe)) {
+          document.body.removeChild(iframe);
+        }
+      }, 60000);
+    } catch {
+      window.open(printUrl, '_blank');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full w-full bg-slate-900 overflow-hidden select-none">
       {/* Toolbar */}
@@ -375,6 +417,14 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({ url, blob, arrayBuffer, ti
 
         {/* Action Button */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handlePrint}
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+            title="Print PDF"
+          >
+            <Printer className="w-4 h-4" />
+          </button>
           {(url || onDownload) && (
             <button
               type="button"

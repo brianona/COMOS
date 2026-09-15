@@ -9,11 +9,12 @@ import {
   RefreshCw, MapPin, Map as MapIcon, Activity, Anchor, Database, HardDrive,
   Cloud, Package, Save, Monitor, Laptop, Tag, Play, Pause, ChevronLeft,
   Shield, ShieldAlert, ShieldCheck, Compass, Navigation, Paperclip, Download,
-  Droplets, Wrench, FlaskConical, Waves, Camera, Image, Fuel, Network, Info
+  Droplets, Wrench, FlaskConical, Waves, Camera, Image, Fuel, Network, Info,
+  Printer
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, isBefore, addDays, parseISO } from "date-fns";
-import { cn, getRoleLabel, getStatus, isFocOutsideLimits, isGeminiSupportedMimeType, MAX_FILE_SIZE, AUTO_FILL_ENABLED, recognizeCertText } from "../utils/helpers";
+import { cn, getRoleLabel, getStatus, isCertExpiringOrExpired, isNewlyPosted, isFocOutsideLimits, isGeminiSupportedMimeType, MAX_FILE_SIZE, AUTO_FILL_ENABLED, recognizeCertText } from "../utils/helpers";
 import { ConfirmModal, ChangePasswordModal } from "./Modals";
 import { PDFViewer } from "./PDFViewer";
 import { ImageViewer } from "./ImageViewer";
@@ -46,7 +47,7 @@ import {
   CAT4_CERTS, CAT5_CERTS, CAT6_CERTS, CAT7_CERTS, getViewTitle 
 } from "../data/certificates";
 import { 
-  Team, User, Vessel, Certificate, DepartureReport, ArrivalReport, 
+  Team, User, Vessel, Certificate, CertSidebarStatus, DepartureReport, ArrivalReport, 
   NoonReport, OtherReport, Note, FileData, Notification, DBStatus, 
   ViewType, VesselFlag 
 } from "../types";
@@ -153,6 +154,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [newNote, setNewNote] = useState('');
   const [search, setSearch] = useState('');
   const [certVesselFilter, setCertVesselFilter] = useState('');
+  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired'>('all');
   const [newExpDate, setNewExpDate] = useState('');
   const [selectedVessel, setSelectedVessel] = useState<Vessel | null>(null);
   const [vesselCertSearch, setVesselCertSearch] = useState('');
@@ -166,6 +168,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [isEditingRoute, setIsEditingRoute] = useState(false);
   const [pendingAckCount, setPendingAckCount] = useState<number>(0);
+  const [pendingDeviceRequestsCount, setPendingDeviceRequestsCount] = useState<number>(0);
   const [smsSidebarStatus, setSmsSidebarStatus] = useState<{
     statusColor: 'red' | 'orange' | 'normal';
     urgentCount: number;
@@ -182,6 +185,95 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     replaceRequestedCount: 0,
     pendingFilesCount: 0
   });
+
+  // Track acknowledged/viewed new certificates
+  const [viewedCertIds, setViewedCertIds] = useState<Set<number>>(() => {
+    try {
+      const saved = localStorage.getItem('comos_viewed_cert_ids');
+      if (saved) {
+        return new Set(JSON.parse(saved));
+      }
+    } catch (e) {}
+    return new Set<number>();
+  });
+
+  const markCertAsViewed = useCallback((id: number) => {
+    setViewedCertIds(prev => {
+      const next = new Set(prev);
+      next.add(id);
+      try {
+        localStorage.setItem('comos_viewed_cert_ids', JSON.stringify(Array.from(next)));
+      } catch (e) {}
+      return next;
+    });
+  }, []);
+
+  const markAllCertsAsViewed = useCallback(() => {
+    const allIds = certs.map(c => c.id);
+    setViewedCertIds(new Set(allIds));
+    try {
+      localStorage.setItem('comos_viewed_cert_ids', JSON.stringify(allIds));
+    } catch (e) {}
+  }, [certs]);
+
+  // Compute number badge counts for Certificates & Reports
+  const certSidebarStatus = React.useMemo<CertSidebarStatus>(() => {
+    let expiredCount = 0;
+    let expiringCount = 0;
+    let newlyPostedCount = 0;
+
+    for (const cert of certs) {
+      const status = getStatus(cert.expiration_date);
+      if (status === 'expired') {
+        expiredCount++;
+      } else if (status === 'expiring soon' || status === 'expiring') {
+        expiringCount++;
+      }
+
+      if (isNewlyPosted(cert, 7, viewedCertIds)) {
+        newlyPostedCount++;
+      }
+    }
+
+    return {
+      expiredCount,
+      expiringCount,
+      totalExpiringCount: expiredCount + expiringCount,
+      newlyPostedCount
+    };
+  }, [certs, viewedCertIds]);
+
+  const fetchPendingDeviceRequests = useCallback(async (signal?: AbortSignal) => {
+    if (!token || (user?.role !== 'admin' && user?.role !== 'team_pic' && user?.role !== 'user')) return;
+    try {
+      const res = await fetch('/api/admin/device-requests', {
+        headers: { 'Authorization': `Bearer ${token}` },
+        signal
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setPendingDeviceRequestsCount(data.length);
+        }
+      }
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return;
+      console.warn('Note on fetching pending device requests:', e?.message || e);
+    }
+  }, [token, user?.role]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchPendingDeviceRequests(controller.signal);
+    const interval = setInterval(() => {
+      fetchPendingDeviceRequests(controller.signal);
+    }, 25000);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
+  }, [fetchPendingDeviceRequests]);
 
   const fetchSmsSidebarStatus = useCallback(async (signal?: AbortSignal) => {
     if (!token) return;
@@ -329,7 +421,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     shackles: ''
   });
   const [notifications, setNotifications] = useState<Notification[]>([]);
-  const [sortConfig, setSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' } | null>({ key: 'expiration_date', direction: 'asc' });
+  const [sortConfig, setSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' } | null>({ key: 'name', direction: 'asc' });
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     title: string;
@@ -866,6 +958,15 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     [fetchSmsSidebarStatus, fetchPendingAck]
   );
 
+  useRealtimeAutoRefresh(
+    ['device', 'device_registration_requests', 'users'],
+    () => {
+      fetchPendingDeviceRequests();
+    },
+    400,
+    [fetchPendingDeviceRequests]
+  );
+
   const fetchCertDetails = async (cert: Certificate, isRefresh = false) => {
     if (!isRefresh) {
       setTempPreviewUrl(null);
@@ -966,26 +1067,31 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files?.[0] || !selectedCert) return;
-    const file = e.target.files[0];
+    if (!e.target.files || e.target.files.length === 0 || !selectedCert) return;
+    const selectedFiles: File[] = Array.from(e.target.files);
 
-    if (file.size > MAX_FILE_SIZE) {
-      notify('error', 'File is too large (max 20MB)');
+    const oversizedFiles = selectedFiles.filter(f => f.size > MAX_FILE_SIZE);
+    if (oversizedFiles.length > 0) {
+      notify('error', `Some files exceed max 20MB: ${oversizedFiles.map(f => f.name).join(', ')}`);
       e.target.value = '';
       return;
     }
 
     const formData = new FormData();
-    formData.append('file', file);
+    selectedFiles.forEach(file => {
+      formData.append('files', file);
+    });
+    formData.append('file', selectedFiles[0]); // Backward-compatible single field
     formData.append('file_type', uploadFileType);
     
-    const isSupported = isGeminiSupportedMimeType(file.type);
-    if (isSupported) {
+    const primaryFile = selectedFiles[0];
+    const isSupported = isGeminiSupportedMimeType(primaryFile.type);
+    if (isSupported && uploadFileType === 'certificate') {
       setIsRecognizing(true);
     }
     setTempPreviewUrl(null);
     try {
-      // 1. Upload the file
+      // 1. Upload the files
       const res = await fetch(`/api/certificates/${selectedCert.id}/files`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
@@ -994,24 +1100,27 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       
       if (res.ok) {
         const result = await res.json();
-        notify('success', 'File uploaded successfully');
+        notify('success', selectedFiles.length > 1 ? `${selectedFiles.length} files uploaded successfully` : 'File uploaded successfully');
         
-        // Show local preview immediately
-        setPreviewFile(result); // Set the preview to the newly uploaded file details
+        // Show local preview immediately of the primary uploaded file
+        const newFileItem = Array.isArray(result) ? result[0] : (result.files ? result.files[0] : result);
+        if (newFileItem && newFileItem.id) {
+          setPreviewFile(newFileItem);
+        }
         if (sidePanelContentRef.current) {
           sidePanelContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
         }
         
-        const blobUrl = URL.createObjectURL(file);
+        const blobUrl = URL.createObjectURL(primaryFile);
         setTempPreviewUrl(blobUrl);
 
         // Fetch refreshed details
         fetchCertDetails(selectedCert, true);
         
-        // 2. Perform OCR recognition
+        // 2. Perform OCR recognition on the primary certificate document
         if (AUTO_FILL_ENABLED && isSupported && uploadFileType === 'certificate') {
           try {
-            const ocrData = await recognizeCertText(file);
+            const ocrData = await recognizeCertText(primaryFile);
             
             if (ocrData.date_issued || ocrData.certificate_number || ocrData.expiration_date || ocrData.vessel_name || ocrData.cert_type) {
               const updatedCert = {
@@ -1036,7 +1145,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
               setNewExpDate(updatedCert.expiration_date);
               notify('success', 'Information recognized and autofilled. Please verify the fields.');
             } else {
-              notify('info', 'Document uploaded, but no relevant certificate fields were recognized for autofill.');
+              notify('info', 'Document(s) uploaded, but no relevant certificate fields were recognized for autofill.');
             }
           } catch (ocrErr: any) {
             console.error("OCR Auto-fill failed:", ocrErr);
@@ -1051,12 +1160,14 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
           notify('info', 'OCR text recognition is not supported for this file type.');
         }
       } else {
-        notify('error', 'Failed to upload file');
+        const err = await res.json().catch(() => ({}));
+        notify('error', err.error || 'Failed to upload files');
       }
     } catch (err) {
       notify('error', 'Connection error occurred');
     } finally {
       setIsRecognizing(false);
+      e.target.value = '';
     }
   };
 
@@ -1087,6 +1198,76 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     });
   };
 
+  const handlePrintDocument = (file?: FileData | null) => {
+    const targetFile = file || previewFile;
+    if (!targetFile) return;
+
+    const fileUrl = (tempPreviewUrl && targetFile.id === previewFile?.id) 
+      ? tempPreviewUrl 
+      : new URL(`/api/files/${encodeURIComponent(targetFile.filename)}?token=${token}`, window.location.href).href;
+    const ext = targetFile.original_name.split('.').pop()?.toLowerCase();
+    const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
+    const isPdf = ext === 'pdf';
+
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      document.body.appendChild(iframe);
+
+      if (isImage) {
+        const doc = iframe.contentWindow?.document;
+        if (doc) {
+          doc.open();
+          doc.write(`
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <title>${targetFile.original_name}</title>
+                <style>
+                  @page { margin: 10mm; size: auto; }
+                  body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: white; }
+                  img { max-width: 100%; max-height: 98vh; object-fit: contain; }
+                </style>
+              </head>
+              <body>
+                <img src="${fileUrl}" onload="setTimeout(function(){ window.focus(); window.print(); }, 250);" />
+              </body>
+            </html>
+          `);
+          doc.close();
+        }
+      } else if (isPdf) {
+        iframe.src = fileUrl;
+        iframe.onload = () => {
+          setTimeout(() => {
+            try {
+              iframe.contentWindow?.focus();
+              iframe.contentWindow?.print();
+            } catch {
+              window.open(fileUrl, '_blank');
+            }
+          }, 500);
+        };
+      } else {
+        window.open(fileUrl, '_blank');
+      }
+
+      setTimeout(() => {
+        if (document.body.contains(iframe)) {
+          document.body.removeChild(iframe);
+        }
+      }, 60000);
+    } catch (err) {
+      console.error('Print failed:', err);
+      window.open(fileUrl, '_blank');
+    }
+  };
+
 
   const filteredCerts = certs.filter(c => {
     if (certVesselFilter) {
@@ -1099,36 +1280,49 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
         if (!match) return false;
       }
     }
-    const s = (search || '').toLowerCase();
-    return (c.name || '').toLowerCase().includes(s) || 
-           (c.vessel_name || '').toLowerCase().includes(s) ||
-           (c.team_name || '').toLowerCase().includes(s) ||
-           (c.owner || '').toLowerCase().includes(s);
+    if (certStatusFilter !== 'all') {
+      const s = getStatus(c.expiration_date);
+      if (s !== certStatusFilter) return false;
+    }
+    const s = (search || '').trim().toLowerCase();
+    if (s) {
+      const matchesName = (c.name || '').toLowerCase().includes(s);
+      const matchesCertNum = (c.certificate_number || '').toLowerCase().includes(s);
+      const matchesVessel = (c.vessel_name || '').toLowerCase().includes(s);
+      const matchesTeam = (c.team_name || '').toLowerCase().includes(s);
+      const matchesOwner = (c.owner || '').toLowerCase().includes(s);
+      if (!matchesName && !matchesCertNum && !matchesVessel && !matchesTeam && !matchesOwner) {
+        return false;
+      }
+    }
+    return true;
   });
 
   const sortedCerts = React.useMemo(() => {
     let sortableItems = [...filteredCerts];
     if (sortConfig !== null) {
       sortableItems.sort((a, b) => {
-        let aValue: any;
-        let bValue: any;
-
         if (sortConfig.key === 'status') {
           const sA = getStatus(a.expiration_date);
           const sB = getStatus(b.expiration_date);
-          const statusOrder = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3 };
-          const cmp = statusOrder[sA as keyof typeof statusOrder] - statusOrder[sB as keyof typeof statusOrder];
+          const statusOrder: Record<string, number> = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3 };
+          const cmp = (statusOrder[sA] ?? 99) - (statusOrder[sB] ?? 99);
           return sortConfig.direction === 'asc' ? cmp : -cmp;
+        } else if (sortConfig.key === 'expiration_date') {
+          const dateA = a.expiration_date ? new Date(a.expiration_date).getTime() : 0;
+          const dateB = b.expiration_date ? new Date(b.expiration_date).getTime() : 0;
+          return sortConfig.direction === 'asc' ? dateA - dateB : dateB - dateA;
         } else if (sortConfig.key === 'vessel_name') {
-          aValue = a.vessel_name || a.team_name || '';
-          bValue = b.vessel_name || b.team_name || '';
+          const aVal = a.vessel_name || (a.team_name ? `Other (${a.team_name})` : 'Fleet');
+          const bVal = b.vessel_name || (b.team_name ? `Other (${b.team_name})` : 'Fleet');
+          const cmp = aVal.localeCompare(bVal, undefined, { numeric: true, sensitivity: 'base' });
+          return sortConfig.direction === 'asc' ? cmp : -cmp;
         } else {
-          aValue = a[sortConfig.key as keyof Certificate] || '';
-          bValue = b[sortConfig.key as keyof Certificate] || '';
+          const aVal = String(a[sortConfig.key as keyof Certificate] ?? '');
+          const bVal = String(b[sortConfig.key as keyof Certificate] ?? '');
+          const cmp = aVal.localeCompare(bVal, undefined, { numeric: true, sensitivity: 'base' });
+          return sortConfig.direction === 'asc' ? cmp : -cmp;
         }
-
-        const cmp = String(aValue).localeCompare(String(bValue));
-        return sortConfig.direction === 'asc' ? cmp : -cmp;
       });
     }
     return sortableItems;
@@ -1314,7 +1508,9 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
           onLogout={onLogout}
           setIsChangePasswordOpen={setIsChangePasswordOpen}
           pendingAckCount={pendingAckCount}
+          pendingDeviceRequestsCount={pendingDeviceRequestsCount}
           smsSidebarStatus={smsSidebarStatus}
+          certSidebarStatus={certSidebarStatus}
         />
       </aside>
 
@@ -1380,7 +1576,9 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                   onLogout={onLogout}
                   setIsChangePasswordOpen={setIsChangePasswordOpen}
                   pendingAckCount={pendingAckCount}
+                  pendingDeviceRequestsCount={pendingDeviceRequestsCount}
                   smsSidebarStatus={smsSidebarStatus}
+                  certSidebarStatus={certSidebarStatus}
                 />
               </div>
             </motion.aside>
@@ -2119,15 +2317,21 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
 
               {/* Collapsible / Database panel containing original Certificates List */}
               <div id="certs-section" className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
-                <div className="p-6 border-b border-blue-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="p-6 border-b border-blue-50 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                   <div>
-                    <h2 className="font-bold text-slate-900 flex items-center gap-2">
+                    <div className="flex items-center gap-2">
                       <FileText className="w-5 h-5 text-blue-500" />
-                      Certificates & Service Reports Registry
-                    </h2>
+                      <h2 className="font-bold text-slate-900">
+                        Certificates &amp; Service Reports Registry
+                      </h2>
+                      <span className="text-[11px] font-bold px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-full ml-1">
+                        Showing {sortedCerts.length} of {certs.length}
+                      </span>
+                    </div>
                     <p className="text-[10px] font-black uppercase text-slate-400 mt-0.5">Fully searchable global compliance registry</p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    {/* Vessel Filter */}
                     <select
                       value={certVesselFilter}
                       onChange={(e) => setCertVesselFilter(e.target.value)}
@@ -2139,45 +2343,94 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                       ))}
                       <option value="OTHER">Other / Shore Office</option>
                     </select>
+
+                    {/* Status Filter */}
+                    <select
+                      value={certStatusFilter}
+                      onChange={(e) => setCertStatusFilter(e.target.value as any)}
+                      className="px-3 py-2 bg-blue-50/50 border border-blue-100/50 rounded-lg text-xs font-bold uppercase text-slate-700 focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                    >
+                      <option value="all">All Statuses</option>
+                      <option value="active">Active</option>
+                      <option value="expiring">Expiring (30-90 days)</option>
+                      <option value="expiring soon">Expiring Soon (&lt; 30 days)</option>
+                      <option value="expired">Expired</option>
+                    </select>
+
+                    {/* Search */}
                     <div className="relative">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
                       <input 
                         type="text" 
-                        placeholder="Search certificates..." 
+                        placeholder="Search name, cert #, vessel..." 
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        className="pl-10 pr-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                        className="pl-10 pr-8 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                       />
+                      {search && (
+                        <button
+                          type="button"
+                          onClick={() => setSearch('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                          title="Clear search"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
+
+                    {/* Sort Dropdown */}
                     <div className="flex items-center gap-1 bg-blue-50/50 p-1 rounded-xl border border-blue-100/50">
                       <select 
-                        value={sortConfig?.key || 'expiration_date'}
+                        value={sortConfig?.key || 'name'}
                         onChange={(e) => requestSort(e.target.value as any)}
                         className="bg-transparent border-none text-[10px] font-bold uppercase tracking-wider text-slate-600 focus:ring-0 cursor-pointer px-2"
                       >
-                        <option value="name">Name</option>
+                        <option value="name">Name (A-Z)</option>
                         <option value="vessel_name">Vessel</option>
+                        <option value="certificate_number">Cert #</option>
                         <option value="expiration_date">Exp. Date</option>
                         <option value="status">Status</option>
                       </select>
                       <button 
-                        onClick={() => requestSort(sortConfig?.key || 'expiration_date')}
-                        className="p-1.5 hover:bg-blue-100 rounded-lg text-blue-600 transition-colors"
+                        onClick={() => requestSort(sortConfig?.key || 'name')}
+                        className="p-1.5 hover:bg-blue-100 rounded-lg text-blue-600 transition-colors cursor-pointer"
+                        title={sortConfig?.direction === 'asc' ? 'Ascending (click to switch to Descending)' : 'Descending (click to switch to Ascending)'}
                       >
                         {sortConfig?.direction === 'asc' ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
                       </button>
                     </div>
+
+                    {/* Reset Filters */}
+                    {(search || certVesselFilter || certStatusFilter !== 'all') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearch('');
+                          setCertVesselFilter('');
+                          setCertStatusFilter('all');
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-2 text-xs font-bold text-slate-600 hover:text-red-600 bg-blue-50/50 hover:bg-red-50 rounded-lg transition-colors cursor-pointer border border-blue-100/50"
+                        title="Clear all filters"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Reset</span>
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                   <table className="w-full text-left font-sans">
                     <thead>
-                      <tr className="bg-blue-50/30 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                      <tr className="bg-blue-50/30 text-[10px] uppercase font-bold tracking-wider text-slate-400 select-none">
+                        <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('name')}>
+                          <div className="flex items-center">Certificate/Service Report Name {getSortIcon('name')}</div>
+                        </th>
                         <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('vessel_name')}>
                           <div className="flex items-center">Vessel / Team {getSortIcon('vessel_name')}</div>
                         </th>
-                        <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('name')}>
-                          <div className="flex items-center">Certificate/Service Report Name {getSortIcon('name')}</div>
+                        <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('certificate_number')}>
+                          <div className="flex items-center">Cert # {getSortIcon('certificate_number')}</div>
                         </th>
                         <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('expiration_date')}>
                           <div className="flex items-center">Expiration Date {getSortIcon('expiration_date')}</div>
@@ -2185,91 +2438,120 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                         <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('status')}>
                           <div className="flex items-center">Status {getSortIcon('status')}</div>
                         </th>
-                        <th className="px-6 py-4"></th>
+                        <th className="px-6 py-4 text-right">Actions</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-blue-50">
-                      {sortedCerts.map(cert => (
-                        <tr 
-                          key={cert.id} 
-                          className="hover:bg-blue-50/30 transition-colors group cursor-pointer"
-                          onClick={() => fetchCertDetails(cert)}
-                        >
-                          <td className="px-6 py-4 font-medium text-sm">
-                            {cert.vessel_id ? (
-                              <button 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const vessel = vessels.find(v => v.id === cert.vessel_id);
-                                  if (vessel) {
-                                    setSelectedVessel(vessel);
-                                    setView('vessel_details');
-                                  }
-                                }}
-                                className="text-left hover:text-blue-600 hover:underline transition-colors animate-none"
-                              >
-                                {cert.vessel_name}
-                              </button>
-                            ) : (
-                              <span className="text-blue-600 italic">Other ({cert.team_name})</span>
-                            )}
-                          </td>
-                          <td className="px-6 py-4 text-sm font-medium text-slate-900">
-                            {cert.name}
-                          </td>
-                          <td className="px-6 py-4 text-sm font-mono text-slate-600">
-                            {cert.expiration_date}
-                          </td>
-                          <td className="px-6 py-4">
-                            <span className={cn(
-                              "inline-block px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
-                              getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
-                              getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
-                              getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
-                              "bg-blue-100 text-blue-700"
-                            )}>
-                              {getStatus(cert.expiration_date)}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 text-right">
-                            <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
-                                <>
-                                  <button 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setEditingCert(cert);
-                                    }}
-                                    className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors animate-none"
-                                    title="Edit"
-                                  >
-                                    <Edit2 className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteCert(cert.id);
-                                    }}
-                                    className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors animate-none"
-                                    title="Delete"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </>
+                    <tbody className="divide-y divide-blue-50 text-xs">
+                      {sortedCerts.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-12 text-center text-slate-400">
+                            <div className="max-w-xs mx-auto space-y-2">
+                              <Search className="w-8 h-8 text-slate-300 mx-auto" />
+                              <p className="font-semibold text-slate-600">No certificates or service reports found</p>
+                              <p className="text-xs text-slate-400">No records match your active search and filter criteria.</p>
+                              {(search || certVesselFilter || certStatusFilter !== 'all') && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSearch('');
+                                    setCertVesselFilter('');
+                                    setCertStatusFilter('all');
+                                  }}
+                                  className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  Clear all filters
+                                </button>
                               )}
-                              <button 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  fetchCertDetails(cert);
-                                }}
-                                className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors animate-none"
-                              >
-                                <ChevronRight className="w-4 h-4" />
-                              </button>
                             </div>
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        sortedCerts.map(cert => (
+                          <tr 
+                            key={cert.id} 
+                            className="hover:bg-blue-50/30 transition-colors group cursor-pointer"
+                            onClick={() => fetchCertDetails(cert)}
+                          >
+                            <td className="px-6 py-4 text-sm font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
+                              {cert.name}
+                            </td>
+                            <td className="px-6 py-4 font-medium text-sm">
+                              {cert.vessel_id ? (
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const vessel = vessels.find(v => v.id === cert.vessel_id);
+                                    if (vessel) {
+                                      setSelectedVessel(vessel);
+                                      setView('vessel_details');
+                                    }
+                                  }}
+                                  className="text-left hover:text-blue-600 hover:underline transition-colors animate-none"
+                                >
+                                  {cert.vessel_name}
+                                </button>
+                              ) : (
+                                <span className="text-blue-600 italic">Other ({cert.team_name})</span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 text-sm font-mono text-slate-600">
+                              {cert.certificate_number || '-'}
+                            </td>
+                            <td className="px-6 py-4 text-sm font-mono text-slate-600">
+                              {cert.expiration_date}
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={cn(
+                                "inline-block px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
+                                getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
+                                getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
+                                getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
+                                "bg-blue-100 text-blue-700"
+                              )}>
+                                {getStatus(cert.expiration_date)}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-right">
+                              <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
+                                  <>
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingCert(cert);
+                                      }}
+                                      className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors animate-none"
+                                      title="Edit"
+                                    >
+                                      <Edit2 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteCert(cert.id);
+                                      }}
+                                      className="p-2 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-600 transition-colors animate-none"
+                                      title="Delete"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    fetchCertDetails(cert);
+                                  }}
+                                  className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors animate-none"
+                                >
+                                  <ChevronRight className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -3237,9 +3519,29 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                         {/* Certificates & Service Reports */}
                         <div className="bg-white p-6 rounded-3xl border border-blue-100 shadow-sm space-y-5">
                           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                            <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
-                              <FileText className="w-5 h-5 text-blue-600" /> Certificates & Reports
-                            </h3>
+                            <div className="flex items-center gap-2">
+                              <FileText className="w-5 h-5 text-blue-600" />
+                              <h3 className="text-base font-extrabold text-slate-900">Certificates & Reports</h3>
+                              {(() => {
+                                const vExpiring = vCerts.filter(c => isCertExpiringOrExpired(c.expiration_date)).length;
+                                const vNew = vCerts.filter(c => isNewlyPosted(c, 7, viewedCertIds)).length;
+                                return (
+                                  <div className="flex items-center gap-1.5 ml-1">
+                                    {vExpiring > 0 && (
+                                      <span className="px-2 py-0.5 text-[10px] font-black bg-rose-600 text-white rounded-full leading-none flex items-center gap-0.5 shadow-2xs">
+                                        <AlertTriangle className="w-2.5 h-2.5" />
+                                        {vExpiring} Expiring
+                                      </span>
+                                    )}
+                                    {vNew > 0 && (
+                                      <span className="px-2 py-0.5 text-[10px] font-black bg-emerald-600 text-white rounded-full leading-none shadow-2xs">
+                                        {vNew} New
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </div>
                             <span className="text-xs font-bold px-2 py-0.5 bg-blue-50 text-blue-700 rounded-lg">
                               {vCerts.length} total
                             </span>
@@ -3304,7 +3606,14 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                   className="p-3.5 bg-slate-50/60 hover:bg-blue-50/40 border border-slate-100 hover:border-blue-200 rounded-2xl transition-all cursor-pointer group flex items-center justify-between gap-3"
                                 >
                                   <div className="min-w-0 flex-1">
-                                    <h5 className="text-xs font-bold text-slate-900 truncate group-hover:text-blue-600 transition-colors">{cert.name}</h5>
+                                    <div className="flex items-center gap-2">
+                                      <h5 className="text-xs font-bold text-slate-900 truncate group-hover:text-blue-600 transition-colors">{cert.name}</h5>
+                                      {isNewlyPosted(cert, 7, viewedCertIds) && (
+                                        <span className="px-1.5 py-0.5 text-[8px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 rounded leading-none shrink-0 shadow-2xs">
+                                          NEW
+                                        </span>
+                                      )}
+                                    </div>
                                     <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
                                       <Clock className="w-3 h-3 text-slate-400" />
                                       <span>Exp: {cert.expiration_date}</span>
@@ -3374,6 +3683,13 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
               onViewVesselDetails={(v) => { setSelectedVessel(v); setView('vessel_details'); }}
               flags={flags}
               setFlags={setFlags}
+              setView={setView}
+              pendingDeviceRequestsCount={pendingDeviceRequestsCount}
+              onDeviceRequestsChange={fetchPendingDeviceRequests}
+              viewedCertIds={viewedCertIds}
+              markCertAsViewed={markCertAsViewed}
+              markAllCertsAsViewed={markAllCertsAsViewed}
+              certSidebarStatus={certSidebarStatus}
             />
           )}
 
@@ -3974,6 +4290,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 onNavigateMode={(targetMode) => {
                   if (targetMode === 'management') setView('sms');
                   else if (targetMode === 'overview') setView('sms_overview');
+                  else if (targetMode === 'reporting') setView('sms_reporting');
                 }}
               />
             </div>
@@ -3991,6 +4308,25 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 onNavigateMode={(targetMode) => {
                   if (targetMode === 'management') setView('sms');
                   else if (targetMode === 'overview') setView('sms_overview');
+                  else if (targetMode === 'reporting') setView('sms_reporting');
+                }}
+              />
+            </div>
+          )}
+
+          {view === 'sms_reporting' && (
+            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
+              <SMSView 
+                vessels={vessels} 
+                currentUser={user} 
+                token={token} 
+                mode="reporting" 
+                flags={flags} 
+                onPendingAckCountChange={setPendingAckCount}
+                onNavigateMode={(targetMode) => {
+                  if (targetMode === 'management') setView('sms');
+                  else if (targetMode === 'overview') setView('sms_overview');
+                  else if (targetMode === 'reporting') setView('sms_reporting');
                 }}
               />
             </div>
@@ -4683,11 +5019,21 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                         <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full truncate max-w-[200px]">
                           {previewFile.original_name}
                         </span>
+                        <button
+                          type="button"
+                          onClick={() => handlePrintDocument(previewFile)}
+                          className="flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-200 text-slate-700 hover:text-blue-600 rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer"
+                          title="Print Document"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>Print</span>
+                        </button>
                         <a 
                           href={tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href}
                           target="_blank" 
                           rel="noreferrer"
                           className="p-1 hover:bg-blue-50 rounded text-blue-400 hover:text-blue-600 transition-colors"
+                          title="Open in new tab"
                         >
                           <ExternalLink className="w-3 h-3" />
                         </a>
@@ -4705,6 +5051,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                             <ImageViewer 
                               url={fileUrl} 
                               title={previewFile.original_name} 
+                              onPrint={() => handlePrintDocument(previewFile)}
                             />
                           </div>
                         );
@@ -4714,6 +5061,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                             <PDFViewer 
                               url={fileUrl} 
                               title={previewFile.original_name} 
+                              onPrint={() => handlePrintDocument(previewFile)}
                             />
                           </div>
                         );
@@ -4822,8 +5170,8 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                         </div>
                       </div>
                       <label className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-xl text-[10px] font-bold hover:bg-blue-100 transition-colors shadow-sm self-end">
-                        <Upload className="w-3 h-3" /> Upload {uploadFileType === 'certificate' ? 'Cert/Repo' : 'File'}
-                        <input type="file" className="hidden" onChange={handleFileUpload} />
+                        <Upload className="w-3 h-3" /> Upload {uploadFileType === 'certificate' ? 'Cert/Repo' : 'File'}(s)
+                        <input type="file" multiple className="hidden" onChange={handleFileUpload} />
                       </label>
                     </div>
                     
@@ -4878,6 +5226,17 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handlePrintDocument(file);
+                                    }}
+                                    className="p-1.5 hover:bg-blue-100 rounded-lg text-slate-500 hover:text-blue-600 transition-colors cursor-pointer"
+                                    title="Print"
+                                  >
+                                    <Printer className="w-3.5 h-3.5" />
+                                  </button>
                                   <a 
                                     href={new URL(`/api/files/${file.filename}?token=${token}`, window.location.href).href} 
                                     target="_blank" 
@@ -4944,6 +5303,17 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handlePrintDocument(file);
+                                    }}
+                                    className="p-1.5 hover:bg-purple-100 rounded-lg text-slate-500 hover:text-purple-600 transition-colors cursor-pointer"
+                                    title="Print"
+                                  >
+                                    <Printer className="w-3.5 h-3.5" />
+                                  </button>
                                   <a 
                                     href={new URL(`/api/files/${file.filename}?token=${token}`, window.location.href).href} 
                                     target="_blank" 

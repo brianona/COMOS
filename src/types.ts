@@ -74,6 +74,24 @@ export interface VesselFlag {
   name: string;
 }
 
+export interface CertificateCategory {
+  id: number;
+  name: string;
+  description?: string | null;
+  cert_count?: number;
+  valid_cert_count?: number;
+}
+
+export interface CertificateDefinition {
+  id: number;
+  name: string;
+  category: string;
+  is_valid: boolean;
+  description?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface Certificate {
   id: number;
   vessel_id: number | null;
@@ -87,6 +105,16 @@ export interface Certificate {
   certificate_number?: string | null;
   access_type: "office" | "vessel" | "any";
   has_file?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  latest_file_upload?: string | null;
+}
+
+export interface CertSidebarStatus {
+  expiringCount: number;
+  expiredCount: number;
+  totalExpiringCount: number;
+  newlyPostedCount: number;
 }
 
 export interface DepartureReport {
@@ -311,3 +339,12 @@ export type ViewType =
   | "trouble_reports"
   | "spare_parts_requisition"
   | "recycle_bin";
+
+export interface SystemVersionInfo {
+  version: string;
+  buildTime: string;
+  releaseDate?: string;
+  releaseNotes?: string;
+  urgent?: boolean;
+  serverTime?: string;
+}

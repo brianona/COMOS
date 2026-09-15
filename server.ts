@@ -29,6 +29,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } fro
 import JSZip from 'jszip';
 import WordExtractor from 'word-extractor';
 import mammoth from 'mammoth';
+import { CAT1_CERTS, CAT2_CERTS, CAT3_CERTS, CAT4_CERTS, CAT5_CERTS, CAT6_CERTS, CAT7_CERTS, cleanCertificateName, compareCertificatesNumerically, getCategoryMinCertNumber } from './src/data/certificates';
 import { GraphifyEngine } from './src/services/graphifyScanner';
 import { globalRealtimeEngine, extractTableAndDomainFromSql } from './server_realtime';
 
@@ -340,7 +341,78 @@ async function startServer() {
       return `${sqlStr} | Params: ${formattedValues}`;
     };
 
-    const logQueryToAudit = async (sql: any, values?: any) => {
+    const parseSqlAuditInfo = (sql: any, values?: any, queryResult?: any) => {
+      try {
+        const sqlStr = (typeof sql === 'string' ? sql : (sql && sql.sql) ? sql.sql : String(sql || '')).replace(/\s+/g, ' ').trim();
+        const match = sqlStr.match(/^([A-Za-z]+)\s+(?:INTO\s+|FROM\s+)?`?([a-zA-Z0-9_]+)`?/i);
+        if (!match) return null;
+        const verb = match[1].toUpperCase();
+        if (!['INSERT', 'UPDATE', 'DELETE', 'REPLACE'].includes(verb)) return null;
+
+        let table = (match[2] || '').toLowerCase().replace(/[`"']/g, '');
+        if (table === 'into' || table === 'from') {
+          const secondMatch = sqlStr.match(/^([A-Za-z]+)\s+(?:INTO|FROM)\s+`?([a-zA-Z0-9_]+)`?/i);
+          if (secondMatch && secondMatch[2]) table = secondMatch[2].toLowerCase().replace(/[`"']/g, '');
+        }
+
+        // Avoid logging audit_logs itself to prevent infinite loops, and skip high-frequency ephemeral telemetry
+        if (!table || table === 'audit_logs' || table === 'sms_order_upload_reads' || table === 'sent_email_alerts' || table === 'sessions') {
+          return null;
+        }
+
+        const queryValues = (typeof values !== 'function' && values !== undefined)
+          ? values
+          : (typeof sql === 'object' && sql ? sql.values : undefined);
+
+        let recordId: string | null = null;
+        if (queryResult && queryResult[0] && queryResult[0].insertId) {
+          recordId = String(queryResult[0].insertId);
+        } else if (Array.isArray(queryValues) && queryValues.length > 0) {
+          const whereIdMatch = sqlStr.match(/WHERE\s+(?:.*?\b)?(?:id|record_id)\s*=\s*\?/i);
+          if (whereIdMatch) {
+            recordId = String(queryValues[queryValues.length - 1]);
+          } else {
+            const whereKeyMatch = sqlStr.match(/WHERE\s+(?:.*?\b)?([a-zA-Z0-9_]+_key|[a-zA-Z0-9_]+_id)\s*=\s*\?/i);
+            if (whereKeyMatch) {
+              recordId = String(queryValues[queryValues.length - 1]);
+            }
+          }
+        }
+
+        const isSoftDelete = verb === 'UPDATE' && /deleted_at\s*=\s*CURRENT_TIMESTAMP/i.test(sqlStr);
+        let action = verb;
+        if (isSoftDelete) {
+          action = 'SOFT_DELETE';
+        }
+
+        let summary = '';
+        if (isSoftDelete) {
+          summary = `Soft-deleted '${table}' record${recordId ? ` (ID: ${recordId})` : ''}`;
+        } else if (verb === 'INSERT') {
+          summary = `Created new record in '${table}'${recordId ? ` (ID: ${recordId})` : ''}`;
+        } else if (verb === 'UPDATE') {
+          summary = `Updated '${table}' record${recordId ? ` (ID: ${recordId})` : ''}`;
+        } else if (verb === 'DELETE') {
+          summary = `Permanently deleted record from '${table}'${recordId ? ` (ID: ${recordId})` : ''}`;
+        } else {
+          summary = `${verb} operation on '${table}'${recordId ? ` (ID: ${recordId})` : ''}`;
+        }
+
+        return {
+          verb,
+          table,
+          recordId,
+          action,
+          summary,
+          sqlStr,
+          queryValues
+        };
+      } catch (err) {
+        return null;
+      }
+    };
+
+    const logQueryToAudit = async (sql: any, values?: any, queryResult?: any) => {
       try {
         const sqlStr = typeof sql === 'string' ? sql : (sql && sql.sql) ? sql.sql : String(sql);
 
@@ -352,7 +424,7 @@ async function startServer() {
         const store = asyncLocalStorage.getStore();
         const req = store?.req;
         
-        // Do NOT log system database updates (background queries, migration queries, or non-user requests)
+        // Do NOT log system background queries without user context
         if (!req || !req.user) {
           return;
         }
@@ -364,26 +436,43 @@ async function startServer() {
           return;
         }
 
-        const match = sqlStr.trim().match(/^([A-Za-z]+)/);
-        const verb = match ? match[1].toUpperCase() : 'QUERY';
-
-        // Limit logging to ADD (INSERT/REPLACE), UPDATE, and DELETE queries only
-        if (!['INSERT', 'UPDATE', 'DELETE', 'REPLACE'].includes(verb)) {
+        const parsed = parseSqlAuditInfo(sql, values, queryResult);
+        if (!parsed) {
           return;
         }
 
-        const action = `DB_${verb}`;
+        const userRole = req.user.role || null;
+        const ipAddress = req.headers?.['x-forwarded-for']
+          ? String(req.headers['x-forwarded-for']).split(',')[0].trim()
+          : (req.ip || req.socket?.remoteAddress || null);
 
-        const details = formatQueryDetails(sql, values);
+        const formattedValues = parsed.queryValues ? JSON.stringify(parsed.queryValues) : 'None';
+        const details = `${parsed.summary}\n[SQL]: ${parsed.sqlStr}\n[Params]: ${formattedValues}`;
 
-        await rawExecute('INSERT INTO audit_logs (user_id, username, action, details) VALUES (?, ?, ?, ?)', [
+        await rawExecute(
+          'INSERT INTO audit_logs (user_id, username, user_role, ip_address, action, table_name, record_id, query_type, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            userId,
+            username,
+            userRole,
+            ipAddress,
+            parsed.action,
+            parsed.table,
+            parsed.recordId,
+            parsed.verb,
+            details
+          ]
+        );
+
+        globalRealtimeEngine.notifyChange({
+          domain: 'audit_logs',
+          action: parsed.action.toLowerCase(),
+          table: parsed.table,
           userId,
-          username,
-          action,
-          details
-        ]);
+          username
+        });
       } catch (err) {
-        // Silently swallow errors (e.g. before audit_logs table exists during initial boot)
+        // Silently swallow errors (e.g. during initial table creation)
       }
     };
 
@@ -408,14 +497,14 @@ async function startServer() {
 
     pool.query = (async (...args: any[]) => {
       const res = await rawQuery(...args);
-      logQueryToAudit(args[0], args[1]);
+      logQueryToAudit(args[0], args[1], res);
       notifyDbChangeFromSql(args[0]);
       return res;
     }) as any;
 
     pool.execute = (async (...args: any[]) => {
       const res = await rawExecute(...args);
-      logQueryToAudit(args[0], args[1]);
+      logQueryToAudit(args[0], args[1], res);
       notifyDbChangeFromSql(args[0]);
       return res;
     }) as any;
@@ -427,14 +516,14 @@ async function startServer() {
 
       conn.query = (async (...args: any[]) => {
         const res = await rawConnQuery(...args);
-        logQueryToAudit(args[0], args[1]);
+        logQueryToAudit(args[0], args[1], res);
         notifyDbChangeFromSql(args[0]);
         return res;
       }) as any;
 
       conn.execute = (async (...args: any[]) => {
         const res = await rawConnExecute(...args);
-        logQueryToAudit(args[0], args[1]);
+        logQueryToAudit(args[0], args[1], res);
         notifyDbChangeFromSql(args[0]);
         return res;
       }) as any;
@@ -724,6 +813,15 @@ async function startServer() {
         await pool.query("ALTER TABLE certificates ADD COLUMN certificate_number VARCHAR(255)");
         await pool.query("ALTER TABLE certificates ADD COLUMN date_issued DATE");
       }
+
+      if (!columnNames.includes('created_at')) {
+        console.log('Migrating certificates table: Adding created_at and updated_at...');
+        await pool.query("ALTER TABLE certificates ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP");
+        await pool.query("ALTER TABLE certificates ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
+        try {
+          await pool.query("UPDATE certificates SET created_at = COALESCE(date_issued, DATE_SUB(NOW(), INTERVAL 30 DAY)) WHERE created_at >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)");
+        } catch (e) {}
+      }
     } catch (e: any) {
       console.error('Error during certificates table migration:', e.message);
     }
@@ -845,10 +943,68 @@ async function startServer() {
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT,
         username VARCHAR(255),
+        user_role VARCHAR(50) NULL,
+        ip_address VARCHAR(50) NULL,
         action VARCHAR(255) NOT NULL,
+        table_name VARCHAR(100) NULL,
+        record_id VARCHAR(100) NULL,
+        query_type VARCHAR(20) NULL,
         details TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+        INDEX idx_audit_created (created_at DESC),
+        INDEX idx_audit_table (table_name),
+        INDEX idx_audit_action (action)
+      )
+    `);
+
+    // Ensure audit_logs columns and indexes exist on existing databases
+    try {
+      const [cols]: any = await pool.query('SHOW COLUMNS FROM audit_logs');
+      const colNames = cols.map((c: any) => c.Field);
+      if (!colNames.includes('user_role')) {
+        await pool.query('ALTER TABLE audit_logs ADD COLUMN user_role VARCHAR(50) NULL AFTER username');
+      }
+      if (!colNames.includes('ip_address')) {
+        await pool.query('ALTER TABLE audit_logs ADD COLUMN ip_address VARCHAR(50) NULL AFTER user_role');
+      }
+      if (!colNames.includes('table_name')) {
+        await pool.query('ALTER TABLE audit_logs ADD COLUMN table_name VARCHAR(100) NULL AFTER action');
+      }
+      if (!colNames.includes('record_id')) {
+        await pool.query('ALTER TABLE audit_logs ADD COLUMN record_id VARCHAR(100) NULL AFTER table_name');
+      }
+      if (!colNames.includes('query_type')) {
+        await pool.query('ALTER TABLE audit_logs ADD COLUMN query_type VARCHAR(20) NULL AFTER record_id');
+      }
+
+      const [indexes]: any = await pool.query('SHOW INDEX FROM audit_logs');
+      const idxNames = indexes.map((i: any) => i.Key_name);
+      if (!idxNames.includes('idx_audit_created')) {
+        await pool.query('CREATE INDEX idx_audit_created ON audit_logs (created_at DESC)');
+      }
+      if (!idxNames.includes('idx_audit_table')) {
+        await pool.query('CREATE INDEX idx_audit_table ON audit_logs (table_name)');
+      }
+      if (!idxNames.includes('idx_audit_action')) {
+        await pool.query('CREATE INDEX idx_audit_action ON audit_logs (action)');
+      }
+    } catch (migErr: any) {
+      console.warn('Audit logs column migration note:', migErr.message);
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sent_email_alerts (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        certificate_id INT NOT NULL,
+        recipient_email VARCHAR(255) NOT NULL,
+        alert_status VARCHAR(50) NOT NULL,
+        alert_channel VARCHAR(50) NOT NULL DEFAULT 'email',
+        alert_date VARCHAR(10) NOT NULL,
+        sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_cert_recipient_status (certificate_id, recipient_email, alert_status),
+        INDEX idx_alert_date (alert_date),
+        INDEX idx_recipient (recipient_email)
       )
     `);
 
@@ -1836,6 +1992,114 @@ async function startServer() {
       console.error('Failed to seed initial flags:', err.message);
     }
 
+    // Certificate Categories and Definitions
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS certificate_categories (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(100) NOT NULL UNIQUE,
+        description VARCHAR(255) NULL,
+        deleted_at DATETIME NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS certificate_definitions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        category VARCHAR(100) NOT NULL,
+        is_valid BOOLEAN NOT NULL DEFAULT 1,
+        description TEXT NULL,
+        deleted_at DATETIME NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+
+    try {
+      await pool.query('ALTER TABLE certificate_categories ADD COLUMN deleted_at DATETIME NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE certificate_definitions ADD COLUMN is_valid BOOLEAN NOT NULL DEFAULT 1');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE certificate_definitions ADD COLUMN description TEXT NULL');
+    } catch (e) {}
+    try {
+      await pool.query('ALTER TABLE certificate_definitions ADD COLUMN deleted_at DATETIME NULL');
+    } catch (e) {}
+
+    try {
+      const [catRows]: any = await pool.query('SELECT COUNT(*) as count FROM certificate_categories');
+      if (catRows[0].count === 0) {
+        console.log('Seeding initial certificate categories...');
+        const initialCategories = [
+          'Class & Statutory',
+          'Environmental',
+          'Safety & Security',
+          'Cargo Gear & Operations',
+          'Surveys & Inspections',
+          'Plans, Manuals & Procedures',
+          'Trading & Port',
+          'Other'
+        ];
+        for (const cat of initialCategories) {
+          await pool.execute('INSERT IGNORE INTO certificate_categories (name) VALUES (?)', [cat]);
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to seed initial certificate categories:', err.message);
+    }
+
+    try {
+      const [certDefRows]: any = await pool.query('SELECT COUNT(*) as count FROM certificate_definitions');
+      if (certDefRows[0].count === 0) {
+        console.log('Seeding initial certificate definitions...');
+        const initialCerts: { name: string; category: string }[] = [
+          ...CAT1_CERTS.map(c => ({ name: c, category: 'Class & Statutory' })),
+          ...CAT2_CERTS.map(c => ({ name: c, category: 'Class & Statutory' })),
+          ...CAT3_CERTS.map(c => ({ name: c, category: 'Environmental' })),
+          ...CAT4_CERTS.map(c => ({ name: c, category: 'Cargo Gear & Operations' })),
+          ...CAT5_CERTS.map(c => ({ name: c, category: 'Surveys & Inspections' })),
+          ...CAT6_CERTS.map(c => ({ name: c, category: 'Safety & Security' })),
+          ...CAT7_CERTS.map(c => ({ name: c, category: 'Plans, Manuals & Procedures' }))
+        ];
+        for (const c of initialCerts) {
+          await pool.execute(
+            'INSERT IGNORE INTO certificate_definitions (name, category, is_valid) VALUES (?, ?, 1)',
+            [c.name, c.category]
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to seed initial certificate definitions:', err.message);
+    }
+
+    // Migration: Clean trailing "Class" or "Flag" from certificate master list definitions
+    try {
+      const [allDefs]: any = await pool.query('SELECT id, name FROM certificate_definitions');
+      for (const def of allDefs) {
+        const cleaned = cleanCertificateName(def.name);
+        if (cleaned && cleaned !== def.name) {
+          try {
+            const [existing]: any = await pool.query(
+              'SELECT id FROM certificate_definitions WHERE name = ? AND id != ?',
+              [cleaned, def.id]
+            );
+            if (existing.length > 0) {
+              await pool.execute('DELETE FROM certificate_definitions WHERE id = ?', [def.id]);
+            } else {
+              await pool.execute('UPDATE certificate_definitions SET name = ? WHERE id = ?', [cleaned, def.id]);
+            }
+          } catch (e: any) {
+            console.error(`Failed to clean certificate definition "${def.name}":`, e.message);
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to run certificate master cleanup migration:', err.message);
+    }
+
     try {
       await pool.query('ALTER TABLE departure_reports ADD COLUMN voyage_number VARCHAR(100)');
     } catch (e) {}
@@ -1964,6 +2228,17 @@ async function startServer() {
       await activePool.execute("UPDATE teams SET name = 'Team B' WHERE name = 'Team Beta'");
       await activePool.execute("UPDATE teams SET name = 'Team C' WHERE name = 'Team Delta'");
       await activePool.execute("UPDATE teams SET name = 'Team D' WHERE name = 'Team Gamma'");
+
+      try {
+        await activePool.execute(`
+          UPDATE sms_order_uploads u
+          INNER JOIN sms_order_vessels ov ON u.order_id = ov.order_id
+          SET u.vessel_id = ov.vessel_id, u.vessel_name = ov.vessel_name
+          WHERE LOWER(TRIM(u.vessel_name)) = 'admin' AND ov.vessel_name IS NOT NULL AND LOWER(TRIM(ov.vessel_name)) != 'admin'
+        `);
+      } catch (cleanErr) {
+        console.warn('Note: vessel_name cleanup skipped or not applicable:', cleanErr);
+      }
     }
     tablesInitialized = true;
     console.log('Database initialized successfully.');
@@ -2240,6 +2515,13 @@ async function startServer() {
     next();
   };
 
+  const isNonVessel = (req: any, res: any, next: any) => {
+    if (!req.user || req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Forbidden: Vessel users cannot modify certificate master definitions' });
+    }
+    next();
+  };
+
   const canAddCertificate = (req: any, res: any, next: any) => {
     if (req.user.role !== 'admin' && req.user.role !== 'team_pic' && req.user.role !== 'vessel' && req.user.role !== 'user') {
       return res.status(403).json({ error: 'Forbidden' });
@@ -2247,12 +2529,177 @@ async function startServer() {
     next();
   };
 
-  const logAudit = async (userId: number | null, username: string | null, action: string, details: string) => {
+  // ==================== SYSTEM VERSION & UPDATE BROADCAST ====================
+  let currentSystemVersion = '2.4.0';
+  let currentSystemBuildTime = '2026-09-08T19:22:30.000Z';
+  let currentSystemReleaseNotes = 'Performance optimizations, numerical certificate categorization, real-time sync enhancements, and UI stability updates.';
+  let isUrgentUpdate = false;
+
+  // Public endpoint for client version comparison (uncached)
+  app.get('/api/system/version', async (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+
+      if (pool) {
+        try {
+          const [rows]: any = await pool.query(
+            'SELECT setting_key, setting_value FROM settings WHERE setting_key IN ("SYSTEM_VERSION", "SYSTEM_BUILD_TIME", "SYSTEM_RELEASE_NOTES", "SYSTEM_UPDATE_URGENT")'
+          );
+          if (Array.isArray(rows)) {
+            const map = rows.reduce((acc: any, row: any) => {
+              acc[row.setting_key] = row.setting_value;
+              return acc;
+            }, {});
+            if (map.SYSTEM_VERSION) currentSystemVersion = map.SYSTEM_VERSION;
+            if (map.SYSTEM_BUILD_TIME) currentSystemBuildTime = map.SYSTEM_BUILD_TIME;
+            if (map.SYSTEM_RELEASE_NOTES !== undefined) currentSystemReleaseNotes = map.SYSTEM_RELEASE_NOTES;
+            if (map.SYSTEM_UPDATE_URGENT !== undefined) isUrgentUpdate = map.SYSTEM_UPDATE_URGENT === 'true' || map.SYSTEM_UPDATE_URGENT === '1';
+          }
+        } catch (dbErr) {
+          // fallback to in-memory state
+        }
+      }
+
+      res.json({
+        version: currentSystemVersion,
+        buildTime: currentSystemBuildTime,
+        releaseNotes: currentSystemReleaseNotes,
+        urgent: isUrgentUpdate,
+        serverTime: new Date().toISOString()
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Admin broadcast or manual update of system version
+  app.post('/api/system/broadcast-update', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
+    try {
+      const { version, releaseNotes, urgent } = req.body || {};
+      if (version && String(version).trim()) {
+        currentSystemVersion = String(version).trim();
+      }
+      currentSystemBuildTime = new Date().toISOString();
+      if (releaseNotes !== undefined) currentSystemReleaseNotes = String(releaseNotes);
+      if (urgent !== undefined) isUrgentUpdate = !!urgent;
+
+      if (pool) {
+        try {
+          const updates = [
+            ['SYSTEM_VERSION', currentSystemVersion],
+            ['SYSTEM_BUILD_TIME', currentSystemBuildTime],
+            ['SYSTEM_RELEASE_NOTES', currentSystemReleaseNotes],
+            ['SYSTEM_UPDATE_URGENT', isUrgentUpdate ? '1' : '0']
+          ];
+          for (const [k, v] of updates) {
+            await pool.query(
+              'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+              [k, v, v]
+            );
+          }
+        } catch (dbErr) {
+          console.warn('Failed to persist system version to settings:', dbErr);
+        }
+      }
+
+      // Notify all connected clients in real time via the long-polling engine
+      globalRealtimeEngine.notifyChange({
+        domain: 'system',
+        action: 'update',
+        table: 'system_version',
+        meta: {
+          version: currentSystemVersion,
+          buildTime: currentSystemBuildTime,
+          releaseNotes: currentSystemReleaseNotes,
+          urgent: isUrgentUpdate
+        }
+      });
+
+      res.json({
+        success: true,
+        message: 'System update broadcasted to all connected clients.',
+        version: currentSystemVersion,
+        buildTime: currentSystemBuildTime,
+        releaseNotes: currentSystemReleaseNotes,
+        urgent: isUrgentUpdate
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  const logAudit = async (
+    userId: number | null,
+    username: string | null,
+    action: string,
+    details: string,
+    meta?: { tableName?: string; recordId?: string | number; userRole?: string; ipAddress?: string; queryType?: string }
+  ) => {
     try {
       if (!userId || !username || username === 'SYSTEM' || String(username).startsWith('SYSTEM')) {
         return;
       }
-      await pool.execute('INSERT INTO audit_logs (user_id, username, action, details) VALUES (?, ?, ?, ?)', [userId, username, action, details]);
+      const store = asyncLocalStorage.getStore();
+      const req = store?.req;
+      const userRole = meta?.userRole || req?.user?.role || null;
+      const ipAddress = meta?.ipAddress || (req?.headers?.['x-forwarded-for'] ? String(req.headers['x-forwarded-for']).split(',')[0].trim() : (req?.ip || null));
+
+      let tableName = meta?.tableName || null;
+      if (!tableName) {
+        const a = action.toUpperCase();
+        if (a.includes('CERTIFICATE')) tableName = 'certificates';
+        else if (a.includes('VESSEL')) tableName = 'vessels';
+        else if (a.includes('USER')) tableName = 'users';
+        else if (a.includes('SMS_ORDER')) tableName = 'sms_orders';
+        else if (a.includes('SMS_FORM')) tableName = 'sms_forms';
+        else if (a.includes('SMS_PERIOD') || a.includes('SUBMISSION_PERIOD')) tableName = 'sms_submission_periods';
+        else if (a.includes('NOON_REPORT')) tableName = 'noon_reports';
+        else if (a.includes('DEPARTURE_REPORT')) tableName = 'departure_reports';
+        else if (a.includes('ARRIVAL_REPORT')) tableName = 'arrival_reports';
+        else if (a.includes('OTHER_REPORT')) tableName = 'other_reports';
+        else if (a.includes('FUEL_ANALYSIS')) tableName = 'fuel_analysis_reports';
+        else if (a.includes('LUBE_OIL_LDR')) tableName = 'lube_oil_ldr_reports';
+        else if (a.includes('LUBE_OIL_ANALYSIS')) tableName = 'lube_oil_analysis_reports';
+        else if (a.includes('BUNKER_BDN')) tableName = 'bunker_bdn_reports';
+        else if (a.includes('CREW')) tableName = 'crew_members';
+        else if (a.includes('AUDIT_RECORD') || a.includes('AUDIT_REPORT') || a.includes('AUDIT_COMMENT')) tableName = 'audit_records';
+        else if (a.includes('NC') || a.includes('NON_CONFORMITY')) tableName = 'non_conformities';
+        else if (a.includes('TROUBLE_REPORT')) tableName = 'trouble_reports';
+        else if (a.includes('REQUISITION')) tableName = 'spare_parts_requisitions';
+        else if (a.includes('DEVICE')) tableName = 'device_registration_requests';
+        else if (a.includes('SETTINGS') || a.includes('BRANDING') || a.includes('ALERT')) tableName = 'settings';
+        else if (a.includes('FILE')) tableName = 'files';
+        else if (a.includes('FLAG')) tableName = 'flags';
+        else if (a.includes('TEAM')) tableName = 'teams';
+      }
+
+      let recordId = meta?.recordId ? String(meta.recordId) : null;
+      if (!recordId) {
+        const idMatch = details.match(/(?:ID|record|id)[:\s#]+([a-zA-Z0-9_\-]+)/i);
+        if (idMatch && idMatch[1]) {
+          recordId = idMatch[1];
+        }
+      }
+
+      let queryType = meta?.queryType || 'MANUAL';
+      if (action.startsWith('CREATE') || action.startsWith('INSERT') || action.startsWith('UPLOAD')) queryType = 'INSERT';
+      else if (action.startsWith('UPDATE') || action.startsWith('EDIT') || action.startsWith('SET')) queryType = 'UPDATE';
+      else if (action.startsWith('DELETE') || action.startsWith('REMOVE') || action.startsWith('SOFT_DELETE')) queryType = 'DELETE';
+
+      await pool.execute(
+        'INSERT INTO audit_logs (user_id, username, user_role, ip_address, action, table_name, record_id, query_type, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [userId, username, userRole, ipAddress, action, tableName, recordId, queryType, details]
+      );
+
+      globalRealtimeEngine.notifyChange({
+        domain: 'audit_logs',
+        action: action.toLowerCase(),
+        table: tableName || 'general',
+        userId,
+        username
+      });
     } catch (err) {
       console.error('Failed to log audit:', err);
     }
@@ -3269,6 +3716,339 @@ async function startServer() {
       await pool.execute('UPDATE flags SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
       await logAudit(req.user.id, req.user.username, 'DELETE_FLAG', `Soft-deleted flag ID ${id}`);
       res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Certificate Master Definitions & Categories Routes
+  app.get('/api/certificate-definitions', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const { valid_only, category, search } = req.query;
+      let query = 'SELECT id, name, category, is_valid, description, created_at, updated_at FROM certificate_definitions WHERE deleted_at IS NULL';
+      const params: any[] = [];
+
+      if (valid_only === 'true' || valid_only === '1') {
+        query += ' AND is_valid = 1';
+      }
+      if (category && category !== 'all' && category !== '') {
+        query += ' AND category = ?';
+        params.push(category);
+      }
+      if (search && typeof search === 'string' && search.trim() !== '') {
+        query += ' AND (name LIKE ? OR description LIKE ?)';
+        params.push(`%${search.trim()}%`, `%${search.trim()}%`);
+      }
+
+      query += ' ORDER BY category ASC, name ASC';
+      const [rows]: any = await pool.query(query, params);
+      const formatted = rows.map((r: any) => ({
+        ...r,
+        is_valid: Boolean(r.is_valid)
+      }));
+      formatted.sort((a: any, b: any) => compareCertificatesNumerically(a.name, b.name));
+      res.json(formatted);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/certificate-definitions', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { name, category, is_valid = true, description = '' } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Certificate name is required' });
+    }
+    if (!category || !category.trim()) {
+      return res.status(400).json({ error: 'Category is required' });
+    }
+
+    try {
+      const trimmedName = cleanCertificateName(name.trim());
+      const trimmedCategory = category.trim();
+      const trimmedDesc = description ? description.trim() : null;
+      const validVal = is_valid ? 1 : 0;
+
+      const [existing]: any = await pool.execute(
+        'SELECT id, deleted_at FROM certificate_definitions WHERE LOWER(name) = LOWER(?)',
+        [trimmedName]
+      );
+
+      if (existing.length > 0) {
+        if (existing[0].deleted_at) {
+          await pool.execute(
+            'UPDATE certificate_definitions SET deleted_at = NULL, category = ?, is_valid = ?, description = ? WHERE id = ?',
+            [trimmedCategory, validVal, trimmedDesc, existing[0].id]
+          );
+          await logAudit(req.user.id, req.user.username, 'RESTORE_CERTIFICATE_DEFINITION', `Restored certificate definition: ${trimmedName}`);
+          return res.json({ id: existing[0].id, name: trimmedName, category: trimmedCategory, is_valid: Boolean(validVal), description: trimmedDesc });
+        }
+        return res.status(400).json({ error: 'A certificate with this name already exists in the master list' });
+      }
+
+      const [result]: any = await pool.execute(
+        'INSERT INTO certificate_definitions (name, category, is_valid, description) VALUES (?, ?, ?, ?)',
+        [trimmedName, trimmedCategory, validVal, trimmedDesc]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE_DEFINITION', `Created certificate definition: ${trimmedName} (${trimmedCategory}, Valid: ${Boolean(validVal)})`);
+      res.json({ id: result.insertId, name: trimmedName, category: trimmedCategory, is_valid: Boolean(validVal), description: trimmedDesc });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A certificate with this name already exists' });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.put('/api/certificate-definitions/:id', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { id } = req.params;
+    const { name, category, is_valid, description } = req.body;
+
+    try {
+      const [existing]: any = await pool.execute('SELECT * FROM certificate_definitions WHERE id = ?', [id]);
+      if (existing.length === 0) return res.status(404).json({ error: 'Certificate definition not found' });
+
+      const updatedName = name !== undefined ? cleanCertificateName(name.trim()) : existing[0].name;
+      const updatedCategory = category !== undefined ? category.trim() : existing[0].category;
+      const updatedIsValid = is_valid !== undefined ? (is_valid ? 1 : 0) : existing[0].is_valid;
+      const updatedDesc = description !== undefined ? (description ? description.trim() : null) : existing[0].description;
+
+      if (!updatedName) return res.status(400).json({ error: 'Certificate name cannot be empty' });
+      if (!updatedCategory) return res.status(400).json({ error: 'Category cannot be empty' });
+
+      await pool.execute(
+        'UPDATE certificate_definitions SET name = ?, category = ?, is_valid = ?, description = ? WHERE id = ?',
+        [updatedName, updatedCategory, updatedIsValid, updatedDesc, id]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_DEFINITION', `Updated certificate definition ID ${id} to "${updatedName}" (${updatedCategory}, Valid: ${Boolean(updatedIsValid)})`);
+      res.json({ success: true, id: Number(id), name: updatedName, category: updatedCategory, is_valid: Boolean(updatedIsValid), description: updatedDesc });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A certificate with this name already exists' });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.patch('/api/certificate-definitions/:id/validity', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { id } = req.params;
+    const { is_valid } = req.body;
+
+    try {
+      const validVal = is_valid ? 1 : 0;
+      await pool.execute('UPDATE certificate_definitions SET is_valid = ? WHERE id = ?', [validVal, id]);
+      await logAudit(req.user.id, req.user.username, 'TOGGLE_CERTIFICATE_VALIDITY', `Toggled validity of certificate definition ID ${id} to ${Boolean(validVal)}`);
+      res.json({ success: true, is_valid: Boolean(validVal) });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/certificate-definitions/:id', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { id } = req.params;
+    try {
+      await pool.execute('UPDATE certificate_definitions SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_CERTIFICATE_DEFINITION', `Soft-deleted certificate definition ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Certificate Categories Routes
+  app.get('/api/certificate-categories', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const [categories]: any = await pool.query(`
+        SELECT c.id, c.name, c.description,
+          (SELECT COUNT(*) FROM certificate_definitions d WHERE d.category = c.name AND d.deleted_at IS NULL) as cert_count,
+          (SELECT COUNT(*) FROM certificate_definitions d WHERE d.category = c.name AND d.is_valid = 1 AND d.deleted_at IS NULL) as valid_cert_count
+        FROM certificate_categories c
+        WHERE c.deleted_at IS NULL
+      `);
+      const [allDefs]: any = await pool.query('SELECT name, category FROM certificate_definitions WHERE deleted_at IS NULL');
+      categories.sort((a: any, b: any) => {
+        const minA = getCategoryMinCertNumber(a.name, allDefs);
+        const minB = getCategoryMinCertNumber(b.name, allDefs);
+        if (minA !== minB) return minA - minB;
+        return a.name.localeCompare(b.name);
+      });
+      res.json(categories);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/certificate-categories', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { name, description = '' } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Category name is required' });
+    }
+    const trimmedName = name.trim();
+    const trimmedDesc = description ? description.trim() : null;
+
+    try {
+      const [existing]: any = await pool.execute('SELECT id, deleted_at FROM certificate_categories WHERE LOWER(name) = LOWER(?)', [trimmedName]);
+      if (existing.length > 0) {
+        if (existing[0].deleted_at) {
+          await pool.execute('UPDATE certificate_categories SET deleted_at = NULL, description = ? WHERE id = ?', [trimmedDesc, existing[0].id]);
+          await logAudit(req.user.id, req.user.username, 'RESTORE_CERTIFICATE_CATEGORY', `Restored category: ${trimmedName}`);
+          return res.json({ id: existing[0].id, name: trimmedName, description: trimmedDesc });
+        }
+        return res.status(400).json({ error: 'A category with this name already exists' });
+      }
+
+      const [result]: any = await pool.execute(
+        'INSERT INTO certificate_categories (name, description) VALUES (?, ?)',
+        [trimmedName, trimmedDesc]
+      );
+      await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE_CATEGORY', `Created category: ${trimmedName}`);
+      res.json({ id: result.insertId, name: trimmedName, description: trimmedDesc });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A category with this name already exists' });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.put('/api/certificate-categories/:id', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { id } = req.params;
+    const { name, description } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Category name is required' });
+    }
+    const trimmedName = name.trim();
+    const trimmedDesc = description !== undefined ? (description ? description.trim() : null) : null;
+
+    try {
+      const [old]: any = await pool.execute('SELECT name FROM certificate_categories WHERE id = ?', [id]);
+      if (old.length === 0) return res.status(404).json({ error: 'Category not found' });
+      const oldName = old[0].name;
+
+      await pool.execute('UPDATE certificate_categories SET name = ?, description = ? WHERE id = ?', [trimmedName, trimmedDesc, id]);
+
+      // Cascade update category on certificate definitions
+      if (oldName !== trimmedName) {
+        await pool.execute('UPDATE certificate_definitions SET category = ? WHERE category = ?', [trimmedName, oldName]);
+      }
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_CATEGORY', `Updated category ID ${id} to ${trimmedName}`);
+      res.json({ success: true, id: Number(id), name: trimmedName });
+    } catch (e: any) {
+      if (e.code === 'ER_DUP_ENTRY') {
+        res.status(400).json({ error: 'A category with this name already exists' });
+      } else {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.delete('/api/certificate-categories/:id', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const { id } = req.params;
+    try {
+      await pool.execute('UPDATE certificate_categories SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_CERTIFICATE_CATEGORY', `Soft-deleted category ID ${id}`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/certificate-definitions/seed-defaults', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const initialCategories = [
+        'Class & Statutory',
+        'Environmental',
+        'Safety & Security',
+        'Cargo Gear & Operations',
+        'Surveys & Inspections',
+        'Plans, Manuals & Procedures',
+        'Trading & Port',
+        'Other'
+      ];
+      for (const cat of initialCategories) {
+        await pool.execute('INSERT IGNORE INTO certificate_categories (name) VALUES (?)', [cat]);
+      }
+
+      const initialCerts: { name: string; category: string }[] = [
+        ...CAT1_CERTS.map(c => ({ name: c, category: 'Class & Statutory' })),
+        ...CAT2_CERTS.map(c => ({ name: c, category: 'Class & Statutory' })),
+        ...CAT3_CERTS.map(c => ({ name: c, category: 'Environmental' })),
+        ...CAT4_CERTS.map(c => ({ name: c, category: 'Cargo Gear & Operations' })),
+        ...CAT5_CERTS.map(c => ({ name: c, category: 'Surveys & Inspections' })),
+        ...CAT6_CERTS.map(c => ({ name: c, category: 'Safety & Security' })),
+        ...CAT7_CERTS.map(c => ({ name: c, category: 'Plans, Manuals & Procedures' }))
+      ];
+
+      // Clean any existing definitions in database
+      const [allExistingDefs]: any = await pool.query('SELECT id, name FROM certificate_definitions');
+      for (const def of allExistingDefs) {
+        const cleaned = cleanCertificateName(def.name);
+        if (cleaned && cleaned !== def.name) {
+          const [existing]: any = await pool.query(
+            'SELECT id FROM certificate_definitions WHERE name = ? AND id != ?',
+            [cleaned, def.id]
+          );
+          if (existing.length > 0) {
+            await pool.execute('DELETE FROM certificate_definitions WHERE id = ?', [def.id]);
+          } else {
+            await pool.execute('UPDATE certificate_definitions SET name = ? WHERE id = ?', [cleaned, def.id]);
+          }
+        }
+      }
+
+      let insertedCount = 0;
+      for (const c of initialCerts) {
+        const [result]: any = await pool.execute(
+          'INSERT IGNORE INTO certificate_definitions (name, category, is_valid) VALUES (?, ?, 1)',
+          [c.name, c.category]
+        );
+        if (result.affectedRows > 0) insertedCount++;
+      }
+
+      await logAudit(req.user.id, req.user.username, 'SEED_DEFAULT_CERTIFICATES', `Seeded/Restored ${insertedCount} default certificate master definitions`);
+      res.json({ success: true, message: `Master list synchronized with standard certificates (${insertedCount} new added).` });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/certificate-definitions/clean-names', authenticate, isNonVessel, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const [allDefs]: any = await pool.query('SELECT id, name FROM certificate_definitions');
+      let cleanedCount = 0;
+      for (const def of allDefs) {
+        const cleaned = cleanCertificateName(def.name);
+        if (cleaned && cleaned !== def.name) {
+          const [existing]: any = await pool.query(
+            'SELECT id FROM certificate_definitions WHERE name = ? AND id != ?',
+            [cleaned, def.id]
+          );
+          if (existing.length > 0) {
+            await pool.execute('DELETE FROM certificate_definitions WHERE id = ?', [def.id]);
+          } else {
+            await pool.execute('UPDATE certificate_definitions SET name = ? WHERE id = ?', [cleaned, def.id]);
+          }
+          cleanedCount++;
+        }
+      }
+      await logAudit(req.user.id, req.user.username, 'CLEAN_CERTIFICATE_NAMES', `Cleaned ${cleanedCount} certificate names in master list`);
+      res.json({ success: true, cleanedCount, message: `Cleaned ${cleanedCount} certificate names in the master list.` });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -5500,8 +6280,30 @@ async function startServer() {
         });
       }
 
-      const targetVesselId = String(vessel_id || req.user?.vessel_id || '');
-      const targetVesselName = vessel_name || req.user?.username || 'Vessel';
+      let targetVesselId = String(vessel_id || req.user?.vessel_id || '');
+      let targetVesselName = vessel_name || '';
+
+      if (!targetVesselName || targetVesselName.toLowerCase() === 'admin' || targetVesselName.toLowerCase() === 'administrator') {
+        if (targetVesselId) {
+          const [vRows]: any = await pool.execute('SELECT id, name FROM vessels WHERE id = ? LIMIT 1', [targetVesselId]);
+          if (vRows && vRows.length > 0) {
+            targetVesselName = vRows[0].name;
+          }
+        }
+        if (!targetVesselName && orderId) {
+          const [ovRows]: any = await pool.execute(
+            'SELECT vessel_id, vessel_name FROM sms_order_vessels WHERE order_id = ? AND LOWER(vessel_name) != "admin" LIMIT 1',
+            [orderId]
+          );
+          if (ovRows && ovRows.length > 0) {
+            targetVesselName = ovRows[0].vessel_name;
+            if (!targetVesselId) targetVesselId = String(ovRows[0].vessel_id);
+          }
+        }
+        if (!targetVesselName) {
+          targetVesselName = req.user.role === 'vessel' ? (req.user?.vessel_name || req.user?.username || 'Fleet Vessel') : 'Fleet Vessel';
+        }
+      }
 
       if (req.user.role === 'vessel') {
         const idInfo = await getVesselUserIdentity(pool, req.user);
@@ -5631,8 +6433,32 @@ async function startServer() {
 
     try {
       const isVessel = req.user.role === 'vessel';
-      const targetVesselId = String(vessel_id || req.user?.vessel_id || (isVessel ? req.user?.id : 'v1'));
-      const targetVesselName = vessel_name || (isVessel ? req.user?.username : 'Vessel');
+      let targetVesselId = String(vessel_id || req.user?.vessel_id || '');
+      let targetVesselName = vessel_name || '';
+
+      if (!targetVesselName || targetVesselName.toLowerCase() === 'admin' || targetVesselName.toLowerCase() === 'administrator') {
+        if (targetVesselId) {
+          const [vRows]: any = await pool.execute('SELECT id, name FROM vessels WHERE id = ? LIMIT 1', [targetVesselId]);
+          if (vRows && vRows.length > 0) {
+            targetVesselName = vRows[0].name;
+          }
+        }
+        if (!targetVesselName) {
+          if (isVessel) {
+            targetVesselName = req.user?.vessel_name || req.user?.username || 'Fleet Vessel';
+            if (!targetVesselId) targetVesselId = String(req.user?.vessel_id || req.user?.id || 'v1');
+          } else {
+            const [firstVessel]: any = await pool.query('SELECT id, name FROM vessels WHERE deleted_at IS NULL ORDER BY name ASC LIMIT 1');
+            if (firstVessel && firstVessel.length > 0) {
+              targetVesselId = String(firstVessel[0].id);
+              targetVesselName = firstVessel[0].name;
+            } else {
+              targetVesselName = 'Fleet Vessel';
+              targetVesselId = 'v1';
+            }
+          }
+        }
+      }
 
       // Create an order ID
       const orderId = `ord_direct_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
@@ -6194,6 +7020,15 @@ async function startServer() {
         }
       });
 
+      // Fetch order vessels for fallback mapping
+      const [orderVessels]: any = await pool.query('SELECT order_id, vessel_id, vessel_name FROM sms_order_vessels WHERE deleted_at IS NULL');
+      const orderVesselsMap = new Map<string, any[]>();
+      orderVessels.forEach((ov: any) => {
+        const list = orderVesselsMap.get(String(ov.order_id)) || [];
+        list.push(ov);
+        orderVesselsMap.set(String(ov.order_id), list);
+      });
+
       // Fetch active uploads
       const [uploads]: any = await pool.execute(
         'SELECT * FROM sms_order_uploads WHERE deleted_at IS NULL ORDER BY uploaded_at DESC'
@@ -6211,7 +7046,25 @@ async function startServer() {
         const form = formMap.get(String(u.form_id)) || formMap.get(String(u.form_code)) || {};
         
         const cleanVesselName = (u.vessel_name || '').toLowerCase().replace(/^m\/?v\.?\s+/i, '').trim();
-        const vessel = vesselMap.get(String(u.vessel_id)) || vesselMap.get((u.vessel_name || '').toLowerCase().trim()) || vesselMap.get(cleanVesselName) || {};
+        let vessel = vesselMap.get(String(u.vessel_id)) || vesselMap.get((u.vessel_name || '').toLowerCase().trim()) || vesselMap.get(cleanVesselName) || {};
+
+        const isExcludedName = !u.vessel_name || u.vessel_name.toLowerCase() === 'admin' || u.vessel_name.toLowerCase() === 'administrator';
+
+        if ((!vessel.name || isExcludedName) && u.order_id) {
+          const assignedList = orderVesselsMap.get(String(u.order_id)) || [];
+          const validAssigned = assignedList.find((ov: any) => ov.vessel_name && ov.vessel_name.toLowerCase() !== 'admin');
+          if (validAssigned) {
+            vessel = vesselMap.get(String(validAssigned.vessel_id)) || vesselMap.get(validAssigned.vessel_name.toLowerCase().trim()) || {
+              id: validAssigned.vessel_id,
+              name: validAssigned.vessel_name
+            };
+          }
+        }
+
+        const resolvedVesselName = (vessel && vessel.name && vessel.name.toLowerCase() !== 'admin')
+          ? vessel.name
+          : (!isExcludedName ? u.vessel_name : 'Fleet Vessel');
+        const resolvedVesselId = (vessel && vessel.id) ? String(vessel.id) : (u.vessel_id || '');
 
         const isRead = isVessel ? true : userReadSet.has(u.id);
 
@@ -6221,8 +7074,8 @@ async function startServer() {
           orderLabel: order.label || 'SMS Order',
           orderDeadline: order.deadline_date || '',
           orderInstructions: order.instructions || '',
-          vesselId: u.vessel_id || vessel.id || '',
-          vesselName: u.vessel_name || vessel.name || 'Vessel',
+          vesselId: resolvedVesselId,
+          vesselName: resolvedVesselName,
           vesselFlag: vessel.flag || null,
           vesselType: vessel.type || null,
           vesselOwner: vessel.owner || null,
@@ -6414,8 +7267,11 @@ async function startServer() {
       SELECT c.*, 
       DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as expiration_date, 
       DATE_FORMAT(c.date_issued, '%Y-%m-%d') as date_issued,
+      DATE_FORMAT(c.created_at, '%Y-%m-%d %H:%i:%s') as created_at,
+      DATE_FORMAT(c.updated_at, '%Y-%m-%d %H:%i:%s') as updated_at,
       v.name as vessel_name, v.owner, t.name as team_name,
-      (SELECT COUNT(*) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) > 0 as has_file
+      (SELECT COUNT(*) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) > 0 as has_file,
+      (SELECT MAX(DATE_FORMAT(f.upload_date, '%Y-%m-%d %H:%i:%s')) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) as latest_file_upload
       FROM certificates c 
       LEFT JOIN vessels v ON c.vessel_id = v.id
       JOIN teams t ON c.team_id = t.id
@@ -6436,6 +7292,98 @@ async function startServer() {
     }
     const [certs] = await pool.execute(query, params);
     res.json(certs);
+  });
+
+  app.get('/api/certificates/sidebar-status', authenticate, async (req: any, res) => {
+    try {
+      if (!pool) {
+        return res.json({
+          expiredCount: 0,
+          expiringCount: 0,
+          totalExpiringCount: 0,
+          newlyPostedCount: 0
+        });
+      }
+
+      let query = `
+        SELECT 
+          c.id,
+          DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as expiration_date,
+          DATE_FORMAT(c.created_at, '%Y-%m-%d %H:%i:%s') as created_at,
+          (SELECT MAX(DATE_FORMAT(f.upload_date, '%Y-%m-%d %H:%i:%s')) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) as latest_file_upload
+        FROM certificates c
+        WHERE c.deleted_at IS NULL
+      `;
+      let params: any[] = [];
+      if (req.user.role === 'vessel') {
+        query += ` AND c.vessel_id = ? AND c.access_type IN ('vessel', 'any')`;
+        params = [req.user.vessel_id];
+      } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
+        const teamIds = req.user.team_ids || [];
+        if (teamIds.length === 0) {
+          return res.json({ expiredCount: 0, expiringCount: 0, totalExpiringCount: 0, newlyPostedCount: 0 });
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND c.team_id IN (${placeholders}) AND c.access_type IN ('office', 'vessel', 'any')`;
+        params = teamIds;
+      }
+
+      const [rows]: any = await pool.execute(query, params);
+
+      const now = Date.now();
+      const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000;
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+
+      let expiredCount = 0;
+      let expiringCount = 0;
+      let newlyPostedCount = 0;
+
+      for (const row of rows) {
+        if (row.expiration_date) {
+          const expTime = new Date(row.expiration_date).getTime();
+          if (!isNaN(expTime)) {
+            const diff = expTime - now;
+            if (diff < 0) {
+              expiredCount++;
+            } else if (diff <= sixtyDaysMs) {
+              expiringCount++;
+            }
+          }
+        }
+
+        let isNew = false;
+        if (row.created_at) {
+          const cTime = new Date(row.created_at).getTime();
+          if (!isNaN(cTime) && (now - cTime) <= sevenDaysMs && (now - cTime) >= -86400000) {
+            isNew = true;
+          }
+        }
+        if (!isNew && row.latest_file_upload) {
+          const uTime = new Date(row.latest_file_upload).getTime();
+          if (!isNaN(uTime) && (now - uTime) <= sevenDaysMs && (now - uTime) >= -86400000) {
+            isNew = true;
+          }
+        }
+        if (isNew) {
+          newlyPostedCount++;
+        }
+      }
+
+      res.json({
+        expiredCount,
+        expiringCount,
+        totalExpiringCount: expiredCount + expiringCount,
+        newlyPostedCount
+      });
+    } catch (e: any) {
+      console.warn('Error in /api/certificates/sidebar-status:', e?.message || e);
+      res.json({
+        expiredCount: 0,
+        expiringCount: 0,
+        totalExpiringCount: 0,
+        newlyPostedCount: 0
+      });
+    }
   });
 
   app.post('/api/ocr', authenticate, upload.single('file'), async (req: any, res) => {
@@ -6597,7 +7545,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/certificates', authenticate, canAddCertificate, upload.single('file'), async (req: any, res) => {
+  app.post('/api/certificates', authenticate, canAddCertificate, upload.any(), async (req: any, res) => {
     const { vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type } = req.body;
     try {
       if (req.user.role === 'vessel') {
@@ -6621,14 +7569,17 @@ async function startServer() {
       const finalDateIssued = date_issued || null;
       const finalCertNumber = certificate_number || null;
       
-      const saveFile = async (certId: number) => {
-        if (req.file) {
+      const saveFiles = async (certId: number) => {
+        const incomingFiles: any[] = (req.files as any[]) || (req.file ? [req.file] : []);
+        if (incomingFiles && incomingFiles.length > 0) {
           const { file_type } = req.body;
-          const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'certificates');
-          await pool.execute(
-            'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
-            [certId, req.file.originalname, req.file.originalname, req.file.mimetype, file_type || 'certificate', uploadData]
-          );
+          for (const file of incomingFiles) {
+            const uploadData = await handleFileUpload(file.originalname, file.mimetype, file.buffer, 'certificates');
+            await pool.execute(
+              'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
+              [certId, file.originalname, file.originalname, file.mimetype, file_type || 'certificate', uploadData]
+            );
+          }
         }
       };
 
@@ -6636,7 +7587,7 @@ async function startServer() {
         const [vessels]: any = await pool.query('SELECT id, team_id FROM vessels');
         for (const v of vessels) {
           const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
-          await saveFile(result.insertId);
+          await saveFiles(result.insertId);
         }
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for ALL vessels`);
       } else if (vessel_id) {
@@ -6647,12 +7598,12 @@ async function startServer() {
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
         const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
-        await saveFile(result.insertId);
+        await saveFiles(result.insertId);
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for vessel ID ${vessel_id}`);
       } else {
         // Non-vessel related
         const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
-        await saveFile(result.insertId);
+        await saveFiles(result.insertId);
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for team ID ${team_id}`);
       }
       res.json({ success: true });
@@ -6684,6 +7635,7 @@ async function startServer() {
 
         await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, date_issued = ?, certificate_number = ?, access_type = ? WHERE id = ?', 
           [finalName, finalVesselId || null, finalTeamId, finalExpirationDate, finalDateIssued, finalCertNumber, finalAccessType, req.params.id]);
+        await pool.execute('DELETE FROM sent_email_alerts WHERE certificate_id = ?', [req.params.id]);
         await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE', `Updated certificate ID ${req.params.id}: ${finalName}`);
       } else {
         // Non-admins can update expiration date, date issued, and certificate number
@@ -6702,6 +7654,7 @@ async function startServer() {
         }
 
         await pool.execute('UPDATE certificates SET expiration_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', [finalExpirationDate, finalDateIssued, finalCertNumber, req.params.id]);
+        await pool.execute('DELETE FROM sent_email_alerts WHERE certificate_id = ?', [req.params.id]);
         await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_FIELDS', `Updated fields for certificate: ${cert.name} (ID: ${req.params.id})`);
       }
       res.json({ success: true });
@@ -6736,6 +7689,7 @@ async function startServer() {
       await pool.execute('UPDATE notes SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
       await pool.execute('UPDATE files SET deleted_at = CURRENT_TIMESTAMP WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
       await pool.execute('UPDATE certificates SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+      await pool.execute('DELETE FROM sent_email_alerts WHERE certificate_id = ?', [req.params.id]);
       await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_CERTIFICATE', `Soft deleted certificate: ${cert.name} (ID: ${req.params.id})`);
       res.json({ success: true });
     } catch (e: any) {
@@ -6746,18 +7700,193 @@ async function startServer() {
 
   app.get('/api/admin/audit-logs', authenticate, isAdmin, async (req, res) => {
     try {
-      const [logs] = await pool.query(`
-        SELECT * FROM audit_logs 
+      const {
+        search,
+        table,
+        action,
+        queryType,
+        user,
+        role,
+        startDate,
+        endDate,
+        excludeNoise,
+        limit = '250',
+        offset = '0',
+        format: outputFormat
+      } = req.query;
+
+      const whereClauses: string[] = [];
+      const queryParams: any[] = [];
+
+      // Exclude raw administrative non-mutating queries
+      whereClauses.push("action NOT LIKE 'DB_SELECT%'");
+      whereClauses.push("action NOT LIKE 'DB_SHOW%'");
+      whereClauses.push("action NOT LIKE 'DB_SET%'");
+      whereClauses.push("action NOT LIKE 'DB_USE%'");
+      whereClauses.push("action NOT LIKE 'DB_DESCRIBE%'");
+      whereClauses.push("action NOT LIKE 'DB_EXPLAIN%'");
+
+      // By default, filter out pure high-frequency read-tracking telemetry (sms_order_upload_reads, etc.)
+      if (excludeNoise !== 'false') {
+        whereClauses.push("(table_name IS NULL OR table_name != 'sms_order_upload_reads')");
+        whereClauses.push("(details NOT LIKE '%sms_order_upload_reads%')");
+        whereClauses.push("(table_name IS NULL OR table_name != 'sent_email_alerts')");
+      }
+
+      if (table && String(table).trim() !== '' && String(table) !== 'all') {
+        whereClauses.push("table_name = ?");
+        queryParams.push(String(table).trim());
+      }
+
+      if (action && String(action).trim() !== '' && String(action) !== 'all') {
+        const act = String(action).trim();
+        if (act === 'INSERT' || act === 'UPDATE' || act === 'DELETE' || act === 'SOFT_DELETE') {
+          whereClauses.push("(query_type = ? OR action = ? OR action LIKE ?)");
+          queryParams.push(act, act, `%${act}%`);
+        } else {
+          whereClauses.push("(action = ? OR action LIKE ?)");
+          queryParams.push(act, `%${act}%`);
+        }
+      }
+
+      if (queryType && String(queryType).trim() !== '' && String(queryType) !== 'all') {
+        whereClauses.push("query_type = ?");
+        queryParams.push(String(queryType).trim());
+      }
+
+      if (user && String(user).trim() !== '' && String(user) !== 'all') {
+        whereClauses.push("(username = ? OR user_id = ?)");
+        queryParams.push(String(user).trim(), String(user).trim());
+      }
+
+      if (role && String(role).trim() !== '' && String(role) !== 'all') {
+        whereClauses.push("user_role = ?");
+        queryParams.push(String(role).trim());
+      }
+
+      if (startDate && String(startDate).trim() !== '') {
+        whereClauses.push("created_at >= ?");
+        queryParams.push(String(startDate).trim() + ' 00:00:00');
+      }
+
+      if (endDate && String(endDate).trim() !== '') {
+        whereClauses.push("created_at <= ?");
+        queryParams.push(String(endDate).trim() + ' 23:59:59');
+      }
+
+      if (search && String(search).trim() !== '') {
+        const term = `%${String(search).trim()}%`;
+        whereClauses.push("(username LIKE ? OR action LIKE ? OR table_name LIKE ? OR record_id LIKE ? OR details LIKE ? OR ip_address LIKE ?)");
+        queryParams.push(term, term, term, term, term, term);
+      }
+
+      const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+      // Check if CSV export was requested
+      if (outputFormat === 'csv' || req.query.export === 'csv') {
+        const [exportLogs]: any = await pool.query(
+          `SELECT id, created_at, username, user_role, ip_address, action, table_name, record_id, query_type, details 
+           FROM audit_logs ${whereSql} 
+           ORDER BY created_at DESC LIMIT 5000`,
+          queryParams
+        );
+
+        let csv = 'ID,Timestamp UTC,User,Role,IP Address,Action,Table,Record ID,Query Type,Details\n';
+        for (const row of exportLogs) {
+          const escapeCsv = (val: any) => {
+            if (val === null || val === undefined) return '""';
+            const str = String(val).replace(/"/g, '""').replace(/\r?\n/g, ' ');
+            return `"${str}"`;
+          };
+          csv += [
+            row.id,
+            escapeCsv(row.created_at ? format(new Date(row.created_at), 'yyyy-MM-dd HH:mm:ss') : ''),
+            escapeCsv(row.username),
+            escapeCsv(row.user_role),
+            escapeCsv(row.ip_address),
+            escapeCsv(row.action),
+            escapeCsv(row.table_name),
+            escapeCsv(row.record_id),
+            escapeCsv(row.query_type),
+            escapeCsv(row.details)
+          ].join(',') + '\n';
+        }
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="database_audit_logs_${new Date().toISOString().slice(0, 10)}.csv"`);
+        return res.send(csv);
+      }
+
+      const parsedLimit = Math.min(Math.max(1, parseInt(String(limit), 10) || 250), 2000);
+      const parsedOffset = Math.max(0, parseInt(String(offset), 10) || 0);
+
+      const [logs]: any = await pool.query(
+        `SELECT id, user_id, username, user_role, ip_address, action, table_name, record_id, query_type, details, created_at 
+         FROM audit_logs 
+         ${whereSql} 
+         ORDER BY created_at DESC 
+         LIMIT ? OFFSET ?`,
+        [...queryParams, parsedLimit, parsedOffset]
+      );
+
+      // Fast count of matching rows
+      const [countResult]: any = await pool.query(
+        `SELECT COUNT(*) as total FROM audit_logs ${whereSql}`,
+        queryParams
+      );
+      const total = countResult[0]?.total || 0;
+
+      // Aggregated summary stats
+      const [statsResult]: any = await pool.query(`
+        SELECT 
+          COUNT(*) as totalChanges,
+          SUM(CASE WHEN created_at >= NOW() - INTERVAL 24 HOUR THEN 1 ELSE 0 END) as changesToday,
+          COUNT(DISTINCT username) as uniqueUsers
+        FROM audit_logs
         WHERE action NOT LIKE 'DB_SELECT%' 
-          AND action NOT LIKE 'DB_SHOW%' 
-          AND action NOT LIKE 'DB_SET%' 
-          AND action NOT LIKE 'DB_USE%'
-          AND action NOT LIKE 'DB_DESCRIBE%'
-          AND action NOT LIKE 'DB_EXPLAIN%'
-        ORDER BY created_at DESC LIMIT 1000
+          AND (table_name IS NULL OR table_name != 'sms_order_upload_reads')
+          AND (details NOT LIKE '%sms_order_upload_reads%')
       `);
-      res.json(logs);
+
+      // Top tables with recent changes
+      const [tablesResult]: any = await pool.query(`
+        SELECT table_name, COUNT(*) as count 
+        FROM audit_logs 
+        WHERE table_name IS NOT NULL 
+          AND table_name != '' 
+          AND table_name != 'sms_order_upload_reads' 
+          AND table_name != 'sent_email_alerts'
+        GROUP BY table_name 
+        ORDER BY count DESC 
+        LIMIT 30
+      `);
+
+      // Distinct active users
+      const [usersResult]: any = await pool.query(`
+        SELECT username, user_role, COUNT(*) as count 
+        FROM audit_logs 
+        WHERE username IS NOT NULL 
+          AND username != '' 
+          AND username != 'SYSTEM'
+        GROUP BY username, user_role 
+        ORDER BY count DESC 
+        LIMIT 30
+      `);
+
+      res.json({
+        logs,
+        total,
+        stats: {
+          totalChanges: statsResult[0]?.totalChanges || 0,
+          changesToday: statsResult[0]?.changesToday || 0,
+          uniqueUsers: statsResult[0]?.uniqueUsers || 0,
+          topTable: tablesResult[0]?.table_name || 'N/A'
+        },
+        tables: tablesResult,
+        users: usersResult
+      });
     } catch (err: any) {
+      console.error('Audit logs query error:', err);
       res.status(500).json({ error: err.message });
     }
   });
@@ -6930,29 +8059,34 @@ Generated by COMOS System
 
   // File Routes
   app.get('/api/certificates/:id/files', authenticate, async (req, res) => {
-    const [files] = await pool.execute('SELECT id, certificate_id, filename, original_name, mimetype, file_type, upload_date FROM files WHERE certificate_id = ? AND deleted_at IS NULL', [req.params.id]);
+    const [files] = await pool.execute('SELECT id, certificate_id, filename, original_name, mimetype, file_type, upload_date FROM files WHERE certificate_id = ? AND deleted_at IS NULL ORDER BY id DESC', [req.params.id]);
     res.json(files);
   });
 
-  app.post('/api/certificates/:id/files', authenticate, upload.single('file'), async (req: any, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  app.post('/api/certificates/:id/files', authenticate, upload.any(), async (req: any, res) => {
+    const incomingFiles: any[] = (req.files as any[]) || (req.file ? [req.file] : []);
+    if (!incomingFiles || incomingFiles.length === 0) return res.status(400).json({ error: 'No file uploaded' });
     const { file_type } = req.body;
     try {
-      const uploadData = await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'certificates');
-      const [insertResult]: any = await pool.execute(
-        'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
-        [req.params.id, req.file.originalname, req.file.originalname, req.file.mimetype, file_type || 'certificate', uploadData]
-      );
-      await logAudit(req.user.id, req.user.username, 'UPLOAD_FILE', `Uploaded ${file_type || 'certificate'} file: ${req.file.originalname} to certificate ID ${req.params.id}`);
-      res.json({ 
-        id: insertResult.insertId,
-        certificate_id: Number(req.params.id),
-        filename: req.file.originalname,
-        original_name: req.file.originalname,
-        mimetype: req.file.mimetype,
-        file_type: file_type || 'certificate',
-        upload_date: new Date().toISOString()
-      });
+      const insertedFiles: any[] = [];
+      for (const file of incomingFiles) {
+        const uploadData = await handleFileUpload(file.originalname, file.mimetype, file.buffer, 'certificates');
+        const [insertResult]: any = await pool.execute(
+          'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
+          [req.params.id, file.originalname, file.originalname, file.mimetype, file_type || 'certificate', uploadData]
+        );
+        await logAudit(req.user.id, req.user.username, 'UPLOAD_FILE', `Uploaded ${file_type || 'certificate'} file: ${file.originalname} to certificate ID ${req.params.id}`);
+        insertedFiles.push({ 
+          id: insertResult.insertId,
+          certificate_id: Number(req.params.id),
+          filename: file.originalname,
+          original_name: file.originalname,
+          mimetype: file.mimetype,
+          file_type: file_type || 'certificate',
+          upload_date: new Date().toISOString()
+        });
+      }
+      res.json(insertedFiles.length === 1 ? insertedFiles[0] : { success: true, files: insertedFiles, count: insertedFiles.length });
     } catch (err: any) {
       console.error('File upload failed:', err);
       res.status(500).json({ error: 'Failed to save file to database' });
@@ -7880,7 +9014,7 @@ Generated by COMOS System
     }
   }
 
-  async function sendEmail({ to, subject, html, from }: { to: string | string[], subject: string, html: string, from?: string }) {
+  async function sendEmail({ to, subject, html, from, headers }: { to: string | string[], subject: string, html: string, from?: string, headers?: Record<string, string> }) {
     const settings = await getSmtpSettings();
     const apiKey = settings?.RESEND_API_KEY || process.env.RESEND_API_KEY;
     
@@ -7909,6 +9043,7 @@ Generated by COMOS System
         to,
         subject,
         html,
+        headers,
       });
       
       if (error) {
@@ -8051,11 +9186,26 @@ Generated by COMOS System
     }
     lastCheckTimestamps[typeKey] = nowTimestamp;
 
-    let totalEmailsSent = 0;
+    // 2. Distributed lock across all running container instances to prevent duplicate concurrent runs
+    let hasDistributedLock = false;
     try {
+      const [lockRows]: any = await pool.query("SELECT GET_LOCK('comos_alert_dispatch_lock', 0) as locked");
+      if (!lockRows || lockRows[0]?.locked !== 1) {
+        console.log(`Skipping checkExpirations('${typeKey}') - another container holds the dispatch lock.`);
+        return 0;
+      }
+      hasDistributedLock = true;
+
       const settings = await getSmtpSettings();
 
-      // 2. Database-backed deduplication (to catch duplicates across multiple running container processes)
+      // 3. Check if automated alert dispatch is enabled in system settings
+      if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
+        console.log('Email alerts are disabled in settings.');
+        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alerts are disabled.`, 'LAST_ALERT_LOG']);
+        return 0;
+      }
+
+      // 4. Database-backed deduplication (to prevent re-running if scheduled check ran recently)
       if (targetType && settings) {
         const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
         const lastSentStr = settings[lastSentKey];
@@ -8063,9 +9213,7 @@ Generated by COMOS System
           const lastSent = new Date(lastSentStr);
           const diffMs = Date.now() - lastSent.getTime();
           
-          // Minimum safe interval between automated runs of the same target type is 4 hours
           let minIntervalMs = 4 * 60 * 60 * 1000;
-          
           const scheduleType = targetType === 'office' ? 
             settings.ALERT_SCHEDULE_TYPE : 
             settings.VESSEL_ALERT_SCHEDULE_TYPE;
@@ -8073,7 +9221,6 @@ Generated by COMOS System
           if (scheduleType === 'interval') {
             const hoursKey = targetType === 'office' ? 'ALERT_INTERVAL_HOURS' : 'VESSEL_ALERT_INTERVAL_HOURS';
             const hours = parseInt(settings[hoursKey] || '24');
-            // If the user's custom interval is less than 4h, safety window is 80% of their interval
             if (hours < 4) {
               minIntervalMs = hours * 0.8 * 60 * 60 * 1000;
             }
@@ -8084,6 +9231,12 @@ Generated by COMOS System
             return 0;
           }
         }
+
+        // Immediately update timestamp in DB to claim this timeslot and prevent concurrent container overlap
+        await pool.execute(
+          'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+          [lastSentKey, new Date().toISOString(), new Date().toISOString()]
+        );
       }
 
       let query = `
@@ -8108,9 +9261,23 @@ Generated by COMOS System
       const today = new Date();
       const sixtyDaysFromNow = addDays(today, 60);
       const thirtyDaysFromNow = addDays(today, 30);
+      const todayDateStr = today.toISOString().split('T')[0];
 
-      // Group alerts by team and by vessel (for Ship certificates)
-      const teamAlerts: Record<string, { teamName: string, alerts: any[] }> = {};
+      // 5. Query sent_email_alerts table to check which certificate-recipient-status alerts have already been sent
+      const [sentAlertRows]: any = await pool.query(
+        "SELECT certificate_id, recipient_email, alert_status FROM sent_email_alerts"
+      );
+      const sentAlertSet = new Set<string>();
+      for (const row of sentAlertRows) {
+        sentAlertSet.add(`${row.certificate_id}:${row.recipient_email.toLowerCase().trim()}:${row.alert_status}`);
+      }
+
+      const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
+      const senderEmail = settings?.SMTP_FROM || process.env.SMTP_FROM || 'onboarding@resend.dev';
+
+      // Office alerts: consolidated across all teams into a single list
+      const officeAlerts: any[] = [];
+      // Vessel alerts: grouped by vessel ID and vessel user's email
       const vesselAlerts: Record<number, { vesselName: string, alerts: any[], email: string | null }> = {};
 
       for (const cert of certs) {
@@ -8121,119 +9288,106 @@ Generated by COMOS System
           else if (isBefore(expDate, thirtyDaysFromNow)) status = 'EXPIRING SOON';
           
           const alertData = { ...cert, status };
-          
-          // Office/Any certificates go to team alerts for office check
+
+          // Office/Any certificates go to office alerts
           if (targetType === 'office' || (!targetType && (cert.access_type === 'office' || cert.access_type === 'any'))) {
-            if (!teamAlerts[cert.team_id]) {
-              teamAlerts[cert.team_id] = { teamName: cert.team_name, alerts: [] };
+            const officeKey = `${cert.id}:${alertRecipient.toLowerCase().trim()}:${status}`;
+            if (!sentAlertSet.has(officeKey)) {
+              officeAlerts.push(alertData);
             }
-            teamAlerts[cert.team_id].alerts.push(alertData);
           }
 
-          // Vessel certificates go to vessel alerts for vessel check
+          // Vessel certificates go to vessel alerts
           if (targetType === 'vessel' || (!targetType && (cert.access_type === 'vessel' || (cert.access_type === 'any' && cert.vessel_id)))) {
             if (cert.vessel_id) {
               if (!vesselAlerts[cert.vessel_id]) {
-                // Find the email of the user assigned to this vessel
-                const [vesselUsers]: any = await pool.execute("SELECT email FROM users WHERE role = 'vessel' AND vessel_id = ? AND email IS NOT NULL", [cert.vessel_id]);
+                const [vesselUsers]: any = await pool.execute(
+                  "SELECT email FROM users WHERE role = 'vessel' AND vessel_id = ? AND email IS NOT NULL AND deleted_at IS NULL",
+                  [cert.vessel_id]
+                );
                 const email = vesselUsers.length > 0 ? vesselUsers[0].email : null;
                 vesselAlerts[cert.vessel_id] = { vesselName: cert.vessel_name, alerts: [], email };
               }
-              vesselAlerts[cert.vessel_id].alerts.push(alertData);
+              const vesselEmail = vesselAlerts[cert.vessel_id].email;
+              if (vesselEmail) {
+                const vesselKey = `${cert.id}:${vesselEmail.toLowerCase().trim()}:${status}`;
+                if (!sentAlertSet.has(vesselKey)) {
+                  vesselAlerts[cert.vessel_id].alerts.push(alertData);
+                }
+              }
             }
           }
         }
       }
 
-      const teamAlertCount = Object.values(teamAlerts).reduce((acc, team) => acc + team.alerts.length, 0);
-      const vesselAlertCount = Object.values(vesselAlerts).reduce((acc, v) => acc + v.alerts.length, 0);
-      console.log(`Found ${certs.length} total certificates. Team alerts: ${teamAlertCount}, Vessel alerts: ${vesselAlertCount}.`);
+      const freshVesselAlertCount = Object.values(vesselAlerts).reduce((acc, v) => acc + v.alerts.length, 0);
+      console.log(`Found ${certs.length} certificates. Fresh unsent alerts - Office: ${officeAlerts.length}, Vessel: ${freshVesselAlertCount}.`);
 
-      if (teamAlertCount === 0 && vesselAlertCount === 0) {
-        console.log('No certificates require alerts at this time.');
-        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. No alerts found.`, 'LAST_ALERT_LOG']);
-        if (targetType) {
-          const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
-          await pool.execute(
-            'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-            [lastSentKey, new Date().toISOString(), new Date().toISOString()]
-          );
-        }
+      if (officeAlerts.length === 0 && freshVesselAlertCount === 0) {
+        console.log('No new certificate alerts need to be sent (all have already been alerted).');
+        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. All expiring certificates have already been alerted.`, 'LAST_ALERT_LOG']);
         return 0;
       }
 
-      if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
-        console.log('Email alerts are disabled in settings.');
-        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alerts are disabled.`, 'LAST_ALERT_LOG']);
-        if (targetType) {
-          const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
-          await pool.execute(
-            'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-            [lastSentKey, new Date().toISOString(), new Date().toISOString()]
-          );
-        }
-        return 0;
-      }
-      const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
-      const senderEmail = settings?.SMTP_FROM || process.env.SMTP_FROM || 'onboarding@resend.dev';
+      let totalEmailsSent = 0;
 
       if (settings?.RESEND_API_KEY || process.env.RESEND_API_KEY) {
-        // Track unique cert IDs sent per recipient email to avoid sending duplicate alerts
-        const sentRecipientCertMap = new Map<string, Set<number>>();
+        // Send Office Alerts: EXACTLY ONE consolidated email for the office recipient!
+        if (officeAlerts.length > 0) {
+          console.log(`Sending 1 consolidated office alert email to ${alertRecipient} with ${officeAlerts.length} certificate(s)...`);
+          await sendConsolidatedEmail('Office Summary', officeAlerts, alertRecipient, senderEmail);
+          totalEmailsSent++;
 
-        // Send Team Alerts
-        for (const teamId in teamAlerts) {
-          const { teamName, alerts } = teamAlerts[teamId];
-          if (alerts.length === 0) continue;
-
-          const recipientKey = alertRecipient.toLowerCase().trim();
-          if (!sentRecipientCertMap.has(recipientKey)) {
-            sentRecipientCertMap.set(recipientKey, new Set<number>());
-          }
-          const sentSet = sentRecipientCertMap.get(recipientKey)!;
-          const freshAlerts = alerts.filter(a => !sentSet.has(a.id));
-
-          if (freshAlerts.length > 0) {
-            await sendConsolidatedEmail(teamName, freshAlerts, alertRecipient, senderEmail);
-            freshAlerts.forEach(a => sentSet.add(a.id));
-            totalEmailsSent++;
+          // Record sent alerts in database to ensure they are never sent again
+          for (const alert of officeAlerts) {
+            await pool.execute(
+              `INSERT INTO sent_email_alerts (certificate_id, recipient_email, alert_status, alert_channel, alert_date)
+               VALUES (?, ?, ?, 'email', ?)
+               ON DUPLICATE KEY UPDATE sent_at = CURRENT_TIMESTAMP`,
+              [alert.id, alertRecipient.toLowerCase().trim(), alert.status, todayDateStr]
+            );
+            sentAlertSet.add(`${alert.id}:${alertRecipient.toLowerCase().trim()}:${alert.status}`);
           }
         }
 
-        // Send Vessel Alerts
+        // Send Vessel Alerts: EXACTLY ONE email per vessel (only for vessels with new unsent alerts)
         for (const vesselId in vesselAlerts) {
           const { vesselName, alerts, email } = vesselAlerts[vesselId];
           if (alerts.length === 0 || !email) continue;
 
-          const recipientKey = email.toLowerCase().trim();
-          if (!sentRecipientCertMap.has(recipientKey)) {
-            sentRecipientCertMap.set(recipientKey, new Set<number>());
-          }
-          const sentSet = sentRecipientCertMap.get(recipientKey)!;
-          const freshAlerts = alerts.filter(a => !sentSet.has(a.id));
+          console.log(`Sending vessel alert email to ${email} for Vessel: ${vesselName} with ${alerts.length} certificate(s)...`);
+          await sendConsolidatedEmail(`Vessel: ${vesselName}`, alerts, email, senderEmail);
+          totalEmailsSent++;
 
-          if (freshAlerts.length > 0) {
-            await sendConsolidatedEmail(`Vessel: ${vesselName}`, freshAlerts, email, senderEmail);
-            freshAlerts.forEach(a => sentSet.add(a.id));
-            totalEmailsSent++;
+          // Record sent alerts in database to ensure they are never sent again
+          for (const alert of alerts) {
+            await pool.execute(
+              `INSERT INTO sent_email_alerts (certificate_id, recipient_email, alert_status, alert_channel, alert_date)
+               VALUES (?, ?, ?, 'email', ?)
+               ON DUPLICATE KEY UPDATE sent_at = CURRENT_TIMESTAMP`,
+              [alert.id, email.toLowerCase().trim(), alert.status, todayDateStr]
+            );
+            sentAlertSet.add(`${alert.id}:${email.toLowerCase().trim()}:${alert.status}`);
           }
         }
       } else {
         console.warn('RESEND_API_KEY incomplete in both settings and environment. Skipping email alerts.');
         await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Resend API settings incomplete (Missing API Key).`, 'LAST_ALERT_LOG']);
       }
-      if (targetType) {
-        const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
-        await pool.execute(
-          'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [lastSentKey, new Date().toISOString(), new Date().toISOString()]
-        );
-      }
+
       console.log(`Certificate expiration check completed. Sent ${totalEmailsSent} alert email(s).`);
       return totalEmailsSent;
     } catch (err) {
       console.error('Error during certificate expiration check:', err);
       return 0;
+    } finally {
+      if (hasDistributedLock && pool) {
+        try {
+          await pool.query("SELECT RELEASE_LOCK('comos_alert_dispatch_lock')");
+        } catch (releaseErr) {
+          console.error('Failed to release comos_alert_dispatch_lock:', releaseErr);
+        }
+      }
     }
   }
 
@@ -8243,10 +9397,10 @@ Generated by COMOS System
     try {
       const tableRows = alerts.map(alert => `
         <tr>
-          <td style="border: 1px solid #ddd; padding: 8px;">${alert.vessel_name}</td>
+          <td style="border: 1px solid #ddd; padding: 8px;">${alert.team_name ? alert.team_name + ' / ' : ''}${alert.vessel_name}</td>
           <td style="border: 1px solid #ddd; padding: 8px;">${alert.name}</td>
-          <td style="border: 1px solid #ddd; padding: 8px;">${alert.expiration_date}</td>
-          <td style="border: 1px solid #ddd; padding: 8px; color: ${alert.status === 'EXPIRED' ? '#d9534f' : '#f0ad4e'}; font-weight: bold;">${alert.status}</td>
+          <td style="border: 1px solid #ddd; padding: 8px;">${alert.expiration_date ? String(alert.expiration_date).split('T')[0] : 'N/A'}</td>
+          <td style="border: 1px solid #ddd; padding: 8px; color: ${alert.status === 'EXPIRED' ? '#d9534f' : alert.status === 'EXPIRING SOON' ? '#d9534f' : '#f0ad4e'}; font-weight: bold;">${alert.status}</td>
         </tr>
       `).join('');
 
@@ -8260,7 +9414,7 @@ Generated by COMOS System
           <table style="border-collapse: collapse; width: 100%; margin-top: 20px;">
             <thead>
               <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
-                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Vessel</th>
+                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Team / Vessel</th>
                 <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Certificate/Service Report Name</th>
                 <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Expiration Date</th>
                 <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Status</th>
@@ -8276,11 +9430,19 @@ Generated by COMOS System
         </div>
       `;
 
+      // Deterministic idempotency key for Resend
+      const todayDateStr = new Date().toISOString().split('T')[0];
+      const certIdsJoined = alerts.map((a: any) => a.id).sort().join('-');
+      const idempotencyKey = `alert-${recipient.replace(/[^a-zA-Z0-9]/g, '_')}-${todayDateStr}-${certIdsJoined}`;
+
       await sendEmail({
         from: `"COMOS" <${senderEmail}>`,
         to: recipient,
         subject: `[COMOS] Certificate/Service Report Alerts: ${name}`,
-        html: htmlContent
+        html: htmlContent,
+        headers: {
+          'Idempotency-Key': idempotencyKey
+        }
       });
       console.log(`Consolidated email alert sent to ${recipient} for ${name}`);
       await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alert sent to ${recipient} for ${name} (${alerts.length} certs).`, 'LAST_ALERT_LOG']);
@@ -8407,7 +9569,7 @@ Generated by COMOS System
         'spare_parts_requisitions', 'requisition_attachments',
         'sms_uploads', 'sms_forms', 'sms_submission_periods',
         'sms_orders', 'sms_order_uploads', 'sms_order_templates',
-        'flags', 'teams'
+        'flags', 'teams', 'certificate_definitions', 'certificate_categories'
       ];
       const results: any = {};
       
@@ -8459,6 +9621,10 @@ Generated by COMOS System
           query = `SELECT f.*, f.name as name, f.name as title FROM flags f WHERE f.deleted_at IS NOT NULL`;
         } else if (type === 'teams') {
           query = `SELECT t.*, t.name as name, t.name as title FROM teams t WHERE t.deleted_at IS NOT NULL`;
+        } else if (type === 'certificate_definitions') {
+          query = `SELECT d.*, d.name as name, d.name as title FROM certificate_definitions d WHERE d.deleted_at IS NOT NULL`;
+        } else if (type === 'certificate_categories') {
+          query = `SELECT c.*, c.name as name, c.name as title FROM certificate_categories c WHERE c.deleted_at IS NOT NULL`;
         }
         
         try {
@@ -8489,7 +9655,7 @@ Generated by COMOS System
         'spare_parts_requisitions', 'requisition_attachments',
         'sms_uploads', 'sms_forms', 'sms_submission_periods',
         'sms_orders', 'sms_order_uploads', 'sms_order_templates',
-        'flags', 'teams'
+        'flags', 'teams', 'certificate_definitions', 'certificate_categories'
       ];
       if (!validTypes.includes(type)) return res.status(400).json({ error: 'Invalid type' });
       
@@ -8550,7 +9716,7 @@ Generated by COMOS System
         'spare_parts_requisitions', 'requisition_attachments',
         'sms_uploads', 'sms_forms', 'sms_submission_periods',
         'sms_orders', 'sms_order_uploads', 'sms_order_templates',
-        'flags', 'teams'
+        'flags', 'teams', 'certificate_definitions', 'certificate_categories'
       ];
       if (!validTypes.includes(type)) return res.status(400).json({ error: 'Invalid type' });
       

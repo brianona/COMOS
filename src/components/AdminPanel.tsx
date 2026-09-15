@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Ship, 
   FileText, 
@@ -39,10 +39,28 @@ import {
   Image as ImageIcon,
   Upload,
   RotateCcw,
-  Sparkles
+  Sparkles,
+  CheckCheck,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
+  Filter,
+  Award,
+  Download,
+  Layers,
+  Terminal,
+  ExternalLink,
+  Radio,
+  Code
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { Logo, LogoContainer, setCustomLogoUrl, getCustomLogoUrl } from './Logo';
+import { cn, getStatus, isCertExpiringOrExpired, isNewlyPosted } from '../utils/helpers';
+import { CertificateDefinition, CertificateCategory } from '../types';
+import { CertificateMasterTab } from './CertificateMasterTab';
+import { compareCertificatesNumerically, getCategoryMinCertNumber } from '../data/certificates';
+import { CURRENT_CLIENT_VERSION } from '../utils/version';
+import { useRealtimeAutoRefresh } from '../services/realtimeSync';
 
 interface Vessel {
   id: number;
@@ -76,6 +94,9 @@ interface Certificate {
   vessel_name?: string;
   team_name?: string;
   file_name?: string;
+  created_at?: string;
+  updated_at?: string;
+  latest_file_upload?: string;
 }
 
 interface UserAccount {
@@ -135,7 +156,12 @@ interface AuditLogItem {
   id: number;
   user_id: number;
   username: string;
+  user_role?: string | null;
+  ip_address?: string | null;
   action: string;
+  table_name?: string | null;
+  record_id?: string | null;
+  query_type?: string | null;
   details: string;
   created_at: string;
 }
@@ -172,11 +198,23 @@ interface AdminPanelProps {
   setConfirmDialog: (d: any) => void;
   uploadFileType: string;
   setUploadFileType: (t: string) => void;
-  fetchCertDetails: (id: number) => void;
+  fetchCertDetails?: (cert: any) => void;
   setSelectedVessel: (v: Vessel | null) => void;
   onViewVesselDetails: (v: Vessel) => void;
   flags?: any[];
   setFlags?: React.Dispatch<React.SetStateAction<any[]>>;
+  setView?: (v: string) => void;
+  pendingDeviceRequestsCount?: number;
+  onDeviceRequestsChange?: () => void;
+  viewedCertIds?: Set<number>;
+  markCertAsViewed?: (id: number) => void;
+  markAllCertsAsViewed?: () => void;
+  certSidebarStatus?: {
+    expiringCount: number;
+    expiredCount: number;
+    totalExpiringCount: number;
+    newlyPostedCount: number;
+  };
 }
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({
@@ -196,12 +234,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   setEditingCert,
   handleUpdateCert,
   handleDeleteCert,
+  fetchCertDetails,
   onViewVesselDetails,
   flags = [],
-  setFlags
+  setFlags,
+  setView,
+  pendingDeviceRequestsCount,
+  onDeviceRequestsChange,
+  viewedCertIds,
+  markCertAsViewed,
+  markAllCertsAsViewed,
+  certSidebarStatus
 }) => {
   // Active tab inside Admin Settings (when subView === 'admin')
-  const [activeTab, setActiveTab] = useState<'users' | 'flags' | 'branding' | 'storage' | 'notifications' | 'devices' | 'logs'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'flags' | 'cert_master' | 'branding' | 'storage' | 'notifications' | 'devices' | 'logs'>('users');
 
   // ==========================================
   // 1. Users State & Management
@@ -485,6 +531,87 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   // ==========================================
+  // 2B. Certificate Definitions & Categories Master
+  // ==========================================
+  const [certDefinitions, setCertDefinitions] = useState<CertificateDefinition[]>([]);
+  const [certCategories, setCertCategories] = useState<CertificateCategory[]>([]);
+  const [loadingCertDefs, setLoadingCertDefs] = useState(false);
+  const [isCustomCertName, setIsCustomCertName] = useState(false);
+  const [certDropdownFlat, setCertDropdownFlat] = useState(false);
+
+  // Sorted valid certificate definitions in numerical order (1.1, 1.2 ... 7.11)
+  const validCertDefs = useMemo(() => {
+    return certDefinitions
+      .filter(d => d.is_valid !== false)
+      .slice()
+      .sort((a, b) => compareCertificatesNumerically(a.name, b.name));
+  }, [certDefinitions]);
+
+  // Categories ordered numerically by their certificate numbers
+  const sortedCategoriesForDropdown = useMemo(() => {
+    const allCatNames = Array.from(new Set([
+      ...certCategories.map(c => c.name),
+      ...validCertDefs.map(d => d.category)
+    ]));
+
+    return allCatNames.map(catName => {
+      const catObj = certCategories.find(c => c.name === catName);
+      const certsInCat = validCertDefs.filter(d => d.category === catName);
+      const minNum = getCategoryMinCertNumber(catName, certsInCat);
+      return {
+        id: catObj ? catObj.id : catName,
+        name: catName,
+        certs: certsInCat,
+        minNum
+      };
+    }).filter(c => c.certs.length > 0)
+      .sort((a, b) => {
+        if (a.minNum !== b.minNum) return a.minNum - b.minNum;
+        return a.name.localeCompare(b.name);
+      });
+  }, [certCategories, validCertDefs]);
+
+  const fetchCertDefinitions = useCallback(async () => {
+    if (!token) return;
+    setLoadingCertDefs(true);
+    try {
+      const res = await fetch('/api/certificate-definitions', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCertDefinitions(data);
+      }
+    } catch (err: any) {
+      console.error('Error fetching certificate definitions:', err);
+    } finally {
+      setLoadingCertDefs(false);
+    }
+  }, [token]);
+
+  const fetchCertCategories = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch('/api/certificate-categories', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCertCategories(data);
+      }
+    } catch (err: any) {
+      console.error('Error fetching certificate categories:', err);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (token) {
+      fetchCertDefinitions();
+      fetchCertCategories();
+    }
+  }, [token, fetchCertDefinitions, fetchCertCategories]);
+
+  // ==========================================
   // 3. System Settings (Email & Cloud Storage)
   // ==========================================
   const [settingsData, setSettingsData] = useState<Record<string, string>>({
@@ -507,6 +634,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isTestingSmtp, setIsTestingSmtp] = useState(false);
   const [isTestingB2, setIsTestingB2] = useState(false);
+
+  // System Update Broadcast State
+  const [broadcastVersion, setBroadcastVersion] = useState('2.4.1');
+  const [broadcastNotes, setBroadcastNotes] = useState('System update with latest maritime compliance improvements, certificate numerical sorting, and real-time sync.');
+  const [isBroadcasting, setIsBroadcasting] = useState(false);
 
   // Storage breakdown status
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
@@ -739,6 +871,38 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const handleBroadcastUpdate = async () => {
+    if (!broadcastVersion.trim()) {
+      notify('error', 'Please enter a target version string');
+      return;
+    }
+    setIsBroadcasting(true);
+    try {
+      const res = await fetch('/api/system/broadcast-update', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          version: broadcastVersion.trim(),
+          releaseNotes: broadcastNotes.trim(),
+          urgent: false
+        })
+      });
+      if (res.ok) {
+        notify('success', `System update v${broadcastVersion} broadcasted to all connected tabs!`);
+      } else {
+        const err = await res.json();
+        notify('error', err.error || 'Failed to broadcast update');
+      }
+    } catch (e: any) {
+      notify('error', e.message || 'Network error');
+    } finally {
+      setIsBroadcasting(false);
+    }
+  };
+
   const handleTestB2 = async () => {
     if (!settingsData.B2_APPLICATION_KEY_ID || !settingsData.B2_APPLICATION_KEY || !settingsData.B2_BUCKET_NAME || !settingsData.B2_ENDPOINT) {
       notify('error', 'Please fill in all Backblaze B2 credentials before testing');
@@ -813,7 +977,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [token]);
 
   useEffect(() => {
-    if (subView === 'admin' && activeTab === 'devices') {
+    if (subView === 'admin') {
       fetchDevices();
     }
   }, [subView, activeTab, fetchDevices]);
@@ -831,6 +995,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (res.ok) {
         notify('success', `Device request ${status}`);
         fetchDevices();
+        onDeviceRequestsChange?.();
       } else {
         const err = await res.json();
         notify('error', err.error || 'Failed to update device status');
@@ -875,6 +1040,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         notify('success', data.message || 'Device authorization revoked');
         setDeviceRevokeModal(null);
         fetchDevices();
+        onDeviceRequestsChange?.();
       } else {
         const err = await res.json();
         notify('error', err.error || 'Failed to revoke device authorization');
@@ -917,30 +1083,177 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [logSearch, setLogSearch] = useState('');
+  const [selectedTableFilter, setSelectedTableFilter] = useState('all');
+  const [selectedActionFilter, setSelectedActionFilter] = useState('all');
+  const [selectedUserFilter, setSelectedUserFilter] = useState('all');
+  const [includeNoiseLogs, setIncludeNoiseLogs] = useState(false);
+  const [autoRefreshLogs, setAutoRefreshLogs] = useState(true);
+  const [inspectedLog, setInspectedLog] = useState<AuditLogItem | null>(null);
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [totalLogsCount, setTotalLogsCount] = useState(0);
+  const [logStats, setLogStats] = useState<{ totalChanges: number; changesToday: number; uniqueUsers: number; topTable: string } | null>(null);
+  const [availableTables, setAvailableTables] = useState<{ table_name: string; count: number }[]>([]);
+  const [availableUsers, setAvailableUsers] = useState<{ username: string; user_role?: string; count: number }[]>([]);
+  const [logPage, setLogPage] = useState(1);
+  const logPageSize = 50;
 
   const fetchAuditLogs = useCallback(async () => {
     if (!token) return;
     setLoadingLogs(true);
     try {
-      const res = await fetch('/api/admin/audit-logs', {
+      const params = new URLSearchParams();
+      if (selectedTableFilter && selectedTableFilter !== 'all') params.set('table', selectedTableFilter);
+      if (selectedActionFilter && selectedActionFilter !== 'all') params.set('action', selectedActionFilter);
+      if (selectedUserFilter && selectedUserFilter !== 'all') params.set('user', selectedUserFilter);
+      if (includeNoiseLogs) params.set('excludeNoise', 'false');
+      if (logSearch.trim()) params.set('search', logSearch.trim());
+      params.set('limit', '500');
+
+      const res = await fetch(`/api/admin/audit-logs?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
         const data = await res.json();
-        setAuditLogs(data);
+        if (Array.isArray(data)) {
+          setAuditLogs(data);
+          setTotalLogsCount(data.length);
+        } else {
+          setAuditLogs(data.logs || []);
+          setTotalLogsCount(data.total || 0);
+          if (data.stats) setLogStats(data.stats);
+          if (data.tables) setAvailableTables(data.tables);
+          if (data.users) setAvailableUsers(data.users);
+        }
       }
     } catch (err: any) {
       console.error('Error fetching audit logs:', err);
     } finally {
       setLoadingLogs(false);
     }
-  }, [token]);
+  }, [token, selectedTableFilter, selectedActionFilter, selectedUserFilter, includeNoiseLogs, logSearch]);
 
   useEffect(() => {
     if (subView === 'admin' && activeTab === 'logs') {
       fetchAuditLogs();
     }
   }, [subView, activeTab, fetchAuditLogs]);
+
+  // Real-time live synchronization for audit logs
+  useRealtimeAutoRefresh(
+    ['audit_logs', 'system', 'vessels', 'certificates', 'sms_orders'],
+    () => {
+      if (subView === 'admin' && activeTab === 'logs' && autoRefreshLogs) {
+        fetchAuditLogs();
+      }
+    }
+  );
+
+  const handleExportCsv = async () => {
+    if (!token) return;
+    try {
+      const params = new URLSearchParams();
+      if (selectedTableFilter && selectedTableFilter !== 'all') params.set('table', selectedTableFilter);
+      if (selectedActionFilter && selectedActionFilter !== 'all') params.set('action', selectedActionFilter);
+      if (selectedUserFilter && selectedUserFilter !== 'all') params.set('user', selectedUserFilter);
+      if (includeNoiseLogs) params.set('excludeNoise', 'false');
+      if (logSearch.trim()) params.set('search', logSearch.trim());
+      params.set('export', 'csv');
+
+      const res = await fetch(`/api/admin/audit-logs?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Failed to export CSV');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `database_audit_logs_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      notify('success', 'Database audit log exported to CSV successfully');
+    } catch (err: any) {
+      notify('error', 'Failed to export CSV: ' + err.message);
+    }
+  };
+
+  const handleCopyText = (text: string, fieldName: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(fieldName);
+    setTimeout(() => setCopiedField(null), 2000);
+  };
+
+  const parseLogDetails = (details: string) => {
+    if (!details) return { summary: '-', sql: '', params: '' };
+    const parts = details.split('\n');
+    let summary = parts[0] || '';
+    let sql = '';
+    let params = '';
+
+    for (let i = 1; i < parts.length; i++) {
+      const line = parts[i];
+      if (line.startsWith('[SQL]:')) {
+        sql = line.replace('[SQL]:', '').trim();
+      } else if (line.startsWith('[Params]:')) {
+        params = line.replace('[Params]:', '').trim();
+      }
+    }
+
+    if (!sql && summary.includes(' | Params: ')) {
+      const [sqlPart, paramPart] = summary.split(' | Params: ');
+      sql = sqlPart.trim();
+      params = paramPart ? paramPart.trim() : '';
+      summary = sql.length > 80 ? sql.slice(0, 80) + '...' : sql;
+    }
+
+    return { summary, sql, params };
+  };
+
+  const getActionBadge = (action: string, queryType?: string | null) => {
+    const act = (queryType || action || '').toUpperCase();
+    if (act === 'INSERT' || act.includes('CREATE') || act.includes('UPLOAD')) {
+      return {
+        label: act === 'INSERT' ? '+ INSERT' : act,
+        bg: 'bg-emerald-50 text-emerald-700 border-emerald-200'
+      };
+    }
+    if (act === 'UPDATE' || act.includes('EDIT') || act.includes('SET')) {
+      return {
+        label: act === 'UPDATE' ? '✎ UPDATE' : act,
+        bg: 'bg-blue-50 text-blue-700 border-blue-200'
+      };
+    }
+    if (act === 'DELETE' || act.includes('REMOVE') || act.includes('DROP')) {
+      return {
+        label: act === 'DELETE' ? '✕ DELETE' : act,
+        bg: 'bg-rose-50 text-rose-700 border-rose-200'
+      };
+    }
+    if (act === 'SOFT_DELETE' || act.includes('SOFT')) {
+      return {
+        label: '⎌ SOFT DEL',
+        bg: 'bg-amber-50 text-amber-700 border-amber-200'
+      };
+    }
+    return {
+      label: act,
+      bg: 'bg-slate-100 text-slate-700 border-slate-200'
+    };
+  };
+
+  const getRoleBadge = (role?: string | null) => {
+    switch (role?.toLowerCase()) {
+      case 'admin':
+        return 'bg-purple-50 text-purple-700 border-purple-200';
+      case 'team_pic':
+        return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+      case 'vessel':
+        return 'bg-teal-50 text-teal-700 border-teal-200';
+      default:
+        return 'bg-slate-50 text-slate-600 border-slate-200';
+    }
+  };
 
   // ==========================================
   // Vessel & Cert Creation Form States
@@ -968,11 +1281,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     team_id: '',
     access_type: 'any'
   });
-  const [certFile, setCertFile] = useState<File | null>(null);
+  const [certFiles, setCertFiles] = useState<File[]>([]);
   const [isSubmittingCert, setIsSubmittingCert] = useState(false);
 
   const [vesselSearch, setVesselSearch] = useState('');
   const [certSearch, setCertSearch] = useState('');
+  const [certVesselFilter, setCertVesselFilter] = useState('');
+  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'expiring_or_expired' | 'newly_posted'>('all');
+  const [certSortConfig, setCertSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' }>({ key: 'name', direction: 'asc' });
+
+  const requestCertSort = (key: keyof Certificate | 'status') => {
+    let direction: 'asc' | 'desc' = 'asc';
+    if (certSortConfig.key === key && certSortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setCertSortConfig({ key, direction });
+  };
+
+  const getCertSortIcon = (key: keyof Certificate | 'status') => {
+    if (certSortConfig.key !== key) return <ArrowUpDown className="w-3 h-3 ml-1 opacity-30 inline-block" />;
+    return certSortConfig.direction === 'asc' 
+      ? <ArrowUp className="w-3 h-3 ml-1 text-blue-600 inline-block" /> 
+      : <ArrowDown className="w-3 h-3 ml-1 text-blue-600 inline-block" />;
+  };
 
   const handleCreateVessel = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1028,6 +1359,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleCreateCert = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!newCert.name.trim()) {
+      notify('error', 'Please select or enter a certificate name');
+      return;
+    }
     if (!newCert.expiration_date) {
       notify('error', 'Expiration date is required');
       return;
@@ -1038,8 +1373,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       Object.entries(newCert).forEach(([k, v]) => {
         if (v) formData.append(k, String(v));
       });
-      if (certFile) {
-        formData.append('file', certFile);
+      if (certFiles.length > 0) {
+        certFiles.forEach(f => {
+          formData.append('files', f);
+        });
+        formData.append('file', certFiles[0]);
       }
 
       const res = await fetch('/api/certificates', {
@@ -1049,10 +1387,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       });
 
       if (res.ok) {
-        notify('success', 'Certificate added successfully');
+        notify('success', `Certificate added successfully${certFiles.length > 1 ? ` with ${certFiles.length} files` : ''}`);
         setNewCert({
           name: '',
-          category: 'Class & Statutory',
+          category: certCategories[0]?.name || 'Class & Statutory',
           certificate_number: '',
           date_issued: '',
           expiration_date: '',
@@ -1060,7 +1398,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           team_id: '',
           access_type: 'any'
         });
-        setCertFile(null);
+        setIsCustomCertName(false);
+        setCertFiles([]);
         onRefresh();
       } else {
         const err = await res.json();
@@ -1078,11 +1417,73 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     (v.imo || '').toLowerCase().includes(vesselSearch.toLowerCase())
   );
 
-  const filteredCerts = certs.filter(c => 
-    c.name.toLowerCase().includes(certSearch.toLowerCase()) ||
-    (c.certificate_number || '').toLowerCase().includes(certSearch.toLowerCase()) ||
-    (c.vessel_name || '').toLowerCase().includes(certSearch.toLowerCase())
-  );
+  const filteredCerts = React.useMemo(() => {
+    const list = certs.filter(c => {
+      // 1. Vessel filter
+      if (certVesselFilter) {
+        if (certVesselFilter === 'OTHER') {
+          if (c.vessel_id || c.vessel_name) return false;
+        } else {
+          const selVessel = vessels.find(v => String(v.id) === certVesselFilter);
+          const match = (c.vessel_id && String(c.vessel_id) === certVesselFilter) ||
+                        (selVessel && c.vessel_name && c.vessel_name.toLowerCase() === selVessel.name.toLowerCase());
+          if (!match) return false;
+        }
+      }
+
+      // 2. Status filter
+      if (certStatusFilter === 'newly_posted') {
+        if (!isNewlyPosted(c, 7, viewedCertIds)) return false;
+      } else if (certStatusFilter === 'expiring_or_expired') {
+        const s = getStatus(c.expiration_date);
+        if (s === 'active' || s === 'unknown') return false;
+      } else if (certStatusFilter !== 'all') {
+        const s = getStatus(c.expiration_date);
+        if (s !== certStatusFilter) return false;
+      }
+
+      // 3. Search query
+      if (certSearch.trim()) {
+        const q = certSearch.toLowerCase();
+        const matchesName = (c.name || '').toLowerCase().includes(q);
+        const matchesCertNum = (c.certificate_number || '').toLowerCase().includes(q);
+        const matchesVessel = (c.vessel_name || '').toLowerCase().includes(q);
+        const matchesTeam = (c.team_name || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesCertNum && !matchesVessel && !matchesTeam) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    // Sort - default alphanumerical by name (asc)
+    list.sort((a, b) => {
+      if (certSortConfig.key === 'status') {
+        const sA = getStatus(a.expiration_date);
+        const sB = getStatus(b.expiration_date);
+        const statusOrder: Record<string, number> = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3 };
+        const cmp = (statusOrder[sA] ?? 99) - (statusOrder[sB] ?? 99);
+        return certSortConfig.direction === 'asc' ? cmp : -cmp;
+      } else if (certSortConfig.key === 'expiration_date') {
+        const dateA = a.expiration_date ? new Date(a.expiration_date).getTime() : 0;
+        const dateB = b.expiration_date ? new Date(b.expiration_date).getTime() : 0;
+        return certSortConfig.direction === 'asc' ? dateA - dateB : dateB - dateA;
+      } else if (certSortConfig.key === 'vessel_name') {
+        const aVal = a.vessel_name || (a.team_name ? `Other (${a.team_name})` : 'Fleet');
+        const bVal = b.vessel_name || (b.team_name ? `Other (${b.team_name})` : 'Fleet');
+        const cmp = aVal.localeCompare(bVal, undefined, { numeric: true, sensitivity: 'base' });
+        return certSortConfig.direction === 'asc' ? cmp : -cmp;
+      } else {
+        const aVal = String(a[certSortConfig.key as keyof Certificate] ?? '');
+        const bVal = String(b[certSortConfig.key as keyof Certificate] ?? '');
+        const cmp = aVal.localeCompare(bVal, undefined, { numeric: true, sensitivity: 'base' });
+        return certSortConfig.direction === 'asc' ? cmp : -cmp;
+      }
+    });
+
+    return list;
+  }, [certs, certVesselFilter, certStatusFilter, certSearch, certSortConfig, vessels, viewedCertIds]);
 
   const filteredUsers = usersList.filter(u => {
     const matchesSearch = 
@@ -1093,11 +1494,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return matchesSearch && matchesRole;
   });
 
-  const filteredLogs = auditLogs.filter(l => 
-    l.username.toLowerCase().includes(logSearch.toLowerCase()) ||
-    l.action.toLowerCase().includes(logSearch.toLowerCase()) ||
-    (l.details || '').toLowerCase().includes(logSearch.toLowerCase())
-  );
+  const filteredLogs = useMemo(() => {
+    return auditLogs.filter(l => {
+      if (!logSearch.trim()) return true;
+      const term = logSearch.toLowerCase();
+      return (
+        (l.username || '').toLowerCase().includes(term) ||
+        (l.action || '').toLowerCase().includes(term) ||
+        (l.table_name || '').toLowerCase().includes(term) ||
+        (l.record_id || '').toLowerCase().includes(term) ||
+        (l.details || '').toLowerCase().includes(term) ||
+        (l.ip_address || '').toLowerCase().includes(term) ||
+        (l.user_role || '').toLowerCase().includes(term)
+      );
+    });
+  }, [auditLogs, logSearch]);
+
+  const totalLogPages = Math.max(1, Math.ceil(filteredLogs.length / logPageSize));
+  const paginatedLogs = useMemo(() => {
+    const start = (logPage - 1) * logPageSize;
+    return filteredLogs.slice(start, start + logPageSize);
+  }, [filteredLogs, logPage, logPageSize]);
 
   // Format bytes helper
   const formatBytes = (bytes: number) => {
@@ -1330,15 +1747,118 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
 
             <div>
-              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Certificate Name *</label>
-              <input
-                type="text"
-                required
-                value={newCert.name}
-                onChange={e => setNewCert({ ...newCert, name: e.target.value })}
-                placeholder="e.g. Safety Management Certificate (SMC)"
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
-              />
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[10px] font-bold uppercase text-slate-400 block">Certificate Name *</label>
+                <div className="flex items-center gap-2">
+                  {isCustomCertName ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCustomCertName(false);
+                        setNewCert({ ...newCert, name: '' });
+                      }}
+                      className="text-[11px] font-bold text-blue-600 hover:text-blue-700 underline cursor-pointer"
+                    >
+                      Select from Master List
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setCertDropdownFlat(!certDropdownFlat)}
+                        className="text-[11px] font-bold text-slate-500 hover:text-blue-600 cursor-pointer"
+                        title={certDropdownFlat ? "Switch to grouped numerical view" : "Switch to flat sequential numerical view"}
+                      >
+                        {certDropdownFlat ? 'Group by Category' : 'Flat Numerical (1-7)'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCustomCertName(true);
+                          setNewCert({ ...newCert, name: '' });
+                        }}
+                        className="text-[11px] font-bold text-slate-500 hover:text-blue-600 cursor-pointer"
+                      >
+                        + Custom Name
+                      </button>
+                    </>
+                  )}
+                  {user?.role !== 'vessel' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (setView) {
+                          setView('admin');
+                        }
+                        setActiveTab('cert_master');
+                      }}
+                      className="text-[11px] font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 cursor-pointer"
+                      title="Manage Certificate Master List in Admin Settings"
+                    >
+                      <Award className="w-3 h-3" />
+                      <span>Admin List</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {isCustomCertName ? (
+                <input
+                  type="text"
+                  required
+                  value={newCert.name}
+                  onChange={e => setNewCert({ ...newCert, name: e.target.value })}
+                  placeholder="e.g. Safety Management Certificate (SMC)"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+                  autoFocus
+                />
+              ) : (
+                <select
+                  required
+                  value={newCert.name}
+                  onChange={e => {
+                    const selectedVal = e.target.value;
+                    if (selectedVal === '__custom__') {
+                      setIsCustomCertName(true);
+                      setNewCert({ ...newCert, name: '' });
+                      return;
+                    }
+                    const found = validCertDefs.find(d => d.name === selectedVal) || certDefinitions.find(d => d.name === selectedVal);
+                    setNewCert({
+                      ...newCert,
+                      name: selectedVal,
+                      category: found ? found.category : newCert.category
+                    });
+                  }}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none cursor-pointer"
+                >
+                  <option value="">-- Select Certificate from Official Master List (1.1 - 7.11) --</option>
+                  
+                  {certDropdownFlat ? (
+                    // Flat sequential numerical list (1.1 -> 7.11)
+                    validCertDefs.map(d => (
+                      <option key={d.id} value={d.name}>
+                        {d.name} {d.category ? `[${d.category}]` : ''}
+                      </option>
+                    ))
+                  ) : (
+                    // Categorized options in strict numerical section order
+                    sortedCategoriesForDropdown.map(cat => (
+                      <optgroup key={cat.id} label={`${cat.name} (${cat.certs.length})`}>
+                        {cat.certs.map(d => (
+                          <option key={d.id} value={d.name}>{d.name}</option>
+                        ))}
+                      </optgroup>
+                    ))
+                  )}
+
+                  {/* Preserve custom or currently selected name if not in definition list */}
+                  {newCert.name && !validCertDefs.some(d => d.name === newCert.name) && (
+                    <option value={newCert.name}>{newCert.name} (Selected)</option>
+                  )}
+                  <option value="__custom__">+ Other / Enter Custom Certificate Name...</option>
+                </select>
+              )}
             </div>
 
             <div>
@@ -1357,13 +1877,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <select
                 value={newCert.category}
                 onChange={e => setNewCert({ ...newCert, category: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none cursor-pointer"
               >
-                <option value="Class & Statutory">Class & Statutory</option>
-                <option value="Trading & Port">Trading & Port</option>
-                <option value="Safety & Security">Safety & Security</option>
-                <option value="Environmental">Environmental</option>
-                <option value="Other">Other</option>
+                {(certCategories.length > 0
+                  ? certCategories.map(c => c.name)
+                  : [
+                      'Class & Statutory',
+                      'Trading & Port',
+                      'Safety & Security',
+                      'Environmental',
+                      'Cargo Gear & Operations',
+                      'Surveys & Inspections',
+                      'Plans, Manuals & Procedures',
+                      'Other'
+                    ]
+                ).map(catName => (
+                  <option key={catName} value={catName}>
+                    {catName}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -1390,12 +1922,54 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
 
           <div>
-            <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Certificate Document (PDF / Scanned File)</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[10px] font-bold uppercase text-slate-400">
+                Certificate Documents (PDF / Scanned Files) - Multi-file Supported
+              </label>
+              {certFiles.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCertFiles([])}
+                  className="text-[10px] text-red-500 hover:text-red-700 font-semibold cursor-pointer"
+                >
+                  Clear all ({certFiles.length})
+                </button>
+              )}
+            </div>
             <input
               type="file"
-              onChange={e => setCertFile(e.target.files ? e.target.files[0] : null)}
-              className="text-xs file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              multiple
+              onChange={e => {
+                if (e.target.files) {
+                  const newFiles = Array.from(e.target.files);
+                  setCertFiles(prev => [...prev, ...newFiles]);
+                }
+                e.target.value = '';
+              }}
+              className="text-xs file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
             />
+            {certFiles.length > 0 && (
+              <div className="mt-2.5 flex flex-wrap gap-2 max-h-36 overflow-y-auto p-2 bg-slate-50 rounded-xl border border-slate-200">
+                {certFiles.map((file, idx) => (
+                  <div
+                    key={`${file.name}-${idx}`}
+                    className="flex items-center gap-1.5 px-2.5 py-1 bg-white rounded-lg border border-slate-200 text-[11px] font-medium text-slate-700 shadow-2xs"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                    <span className="truncate max-w-[200px]" title={file.name}>{file.name}</span>
+                    <span className="text-[9px] text-slate-400">({(file.size / 1024).toFixed(0)} KB)</span>
+                    <button
+                      type="button"
+                      onClick={() => setCertFiles(prev => prev.filter((_, i) => i !== idx))}
+                      className="p-0.5 text-slate-400 hover:text-red-500 rounded transition-colors ml-0.5 cursor-pointer"
+                      title="Remove file"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end pt-4 border-t border-slate-100">
@@ -1416,65 +1990,308 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
          ========================================== */}
       {subView === 'admin_cert_list' && (
         <div className="bg-white p-6 rounded-2xl border border-blue-100/80 shadow-xs space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
             <div>
-              <h2 className="text-base font-bold text-slate-900">Certificate Repository</h2>
-              <p className="text-xs text-slate-500">Overview of all active certificates across the entire fleet.</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-600" />
+                <h2 className="text-base font-bold text-slate-900">Certificate &amp; Service Report List</h2>
+                <span className="text-[11px] font-bold px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-full">
+                  Showing {filteredCerts.length} of {certs.length}
+                </span>
+                {certSidebarStatus && certSidebarStatus.totalExpiringCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCertStatusFilter(certStatusFilter === 'expiring_or_expired' ? 'all' : 'expiring_or_expired')}
+                    className={cn(
+                      "text-[10px] font-black px-2.5 py-0.5 rounded-full flex items-center gap-1 transition-all cursor-pointer",
+                      certStatusFilter === 'expiring_or_expired'
+                        ? "bg-rose-600 text-white shadow-xs"
+                        : "bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100"
+                    )}
+                    title="Filter expiring or expired certificates"
+                  >
+                    <AlertTriangle className="w-3 h-3" />
+                    {certSidebarStatus.totalExpiringCount} Expiring
+                  </button>
+                )}
+                {certSidebarStatus && certSidebarStatus.newlyPostedCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCertStatusFilter(certStatusFilter === 'newly_posted' ? 'all' : 'newly_posted')}
+                    className={cn(
+                      "text-[10px] font-black px-2.5 py-0.5 rounded-full flex items-center gap-1 transition-all cursor-pointer",
+                      certStatusFilter === 'newly_posted'
+                        ? "bg-emerald-600 text-white shadow-xs"
+                        : "bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                    )}
+                    title="Filter newly posted certificates"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    {certSidebarStatus.newlyPostedCount} New
+                  </button>
+                )}
+                {certSidebarStatus && certSidebarStatus.newlyPostedCount > 0 && markAllCertsAsViewed && (
+                  <button
+                    type="button"
+                    onClick={() => markAllCertsAsViewed()}
+                    className="text-[10px] font-bold px-2.5 py-0.5 bg-slate-100 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 border border-slate-200 rounded-full flex items-center gap-1 transition-colors cursor-pointer"
+                    title="Mark all newly posted certificates as read"
+                  >
+                    <CheckCheck className="w-3 h-3 text-emerald-600" />
+                    Mark all read
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Search, filter by vessel and status, and sort certificates and service reports across the fleet.</p>
             </div>
-            <div className="relative w-full sm:w-64">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={certSearch}
-                onChange={e => setCertSearch(e.target.value)}
-                placeholder="Search certificates..."
-                className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
-              />
+
+            {/* Filter and Search Controls */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Search input */}
+              <div className="relative min-w-[200px] flex-1 sm:flex-initial">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={certSearch}
+                  onChange={e => setCertSearch(e.target.value)}
+                  placeholder="Search name, cert #, vessel..."
+                  className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none transition-all"
+                />
+                {certSearch && (
+                  <button 
+                    type="button"
+                    onClick={() => setCertSearch('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Vessel Filter */}
+              <select
+                value={certVesselFilter}
+                onChange={e => setCertVesselFilter(e.target.value)}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:bg-white focus:border-blue-500 outline-none cursor-pointer"
+              >
+                <option value="">All Vessels &amp; Fleet</option>
+                {vessels.map(v => (
+                  <option key={v.id} value={String(v.id)}>{v.name}</option>
+                ))}
+                <option value="OTHER">Other / Shore Office</option>
+              </select>
+
+              {/* Status Filter */}
+              <select
+                value={certStatusFilter}
+                onChange={e => setCertStatusFilter(e.target.value as any)}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:bg-white focus:border-blue-500 outline-none cursor-pointer"
+              >
+                <option value="all">All Statuses</option>
+                <option value="expiring_or_expired">⚠️ Expiring or Expired {certSidebarStatus ? `(${certSidebarStatus.totalExpiringCount})` : ''}</option>
+                <option value="newly_posted">✨ Newly Posted {certSidebarStatus ? `(${certSidebarStatus.newlyPostedCount})` : ''}</option>
+                <option value="active">Active</option>
+                <option value="expiring">Expiring (30-90 days)</option>
+                <option value="expiring soon">Expiring Soon (&lt; 30 days)</option>
+                <option value="expired">Expired</option>
+              </select>
+
+              {/* Sort Dropdown and Direction */}
+              <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl p-0.5">
+                <select
+                  value={certSortConfig.key}
+                  onChange={e => setCertSortConfig(prev => ({ ...prev, key: e.target.value as any }))}
+                  className="bg-transparent border-none text-[11px] font-bold text-slate-700 focus:ring-0 cursor-pointer px-2 py-1.5"
+                >
+                  <option value="name">Sort: Name (A-Z)</option>
+                  <option value="vessel_name">Sort: Vessel</option>
+                  <option value="certificate_number">Sort: Cert #</option>
+                  <option value="expiration_date">Sort: Expiry Date</option>
+                  <option value="status">Sort: Status</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setCertSortConfig(prev => ({ ...prev, direction: prev.direction === 'asc' ? 'desc' : 'asc' }))}
+                  className="p-1.5 hover:bg-slate-200 rounded-lg text-blue-600 transition-colors cursor-pointer"
+                  title={certSortConfig.direction === 'asc' ? 'Ascending (click to switch to Descending)' : 'Descending (click to switch to Ascending)'}
+                >
+                  {certSortConfig.direction === 'asc' ? <ArrowUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+
+              {/* Reset Filters button */}
+              {(certSearch || certVesselFilter || certStatusFilter !== 'all') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCertSearch('');
+                    setCertVesselFilter('');
+                    setCertStatusFilter('all');
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-2 text-xs font-bold text-slate-600 hover:text-red-600 bg-slate-100 hover:bg-red-50 rounded-xl transition-colors cursor-pointer"
+                  title="Clear all filters"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset</span>
+                </button>
+              )}
             </div>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-slate-100 text-[10px] font-bold uppercase text-slate-400">
-                  <th className="py-3 px-4">Certificate Name</th>
-                  <th className="py-3 px-4">Vessel</th>
-                  <th className="py-3 px-4">Cert #</th>
-                  <th className="py-3 px-4">Expiry Date</th>
+                <tr className="border-b border-slate-100 text-[10px] font-bold uppercase text-slate-400 select-none bg-slate-50/50">
+                  <th 
+                    className="py-3 px-4 cursor-pointer hover:text-blue-600 hover:bg-slate-100/50 transition-colors"
+                    onClick={() => requestCertSort('name')}
+                  >
+                    <div className="flex items-center">
+                      Certificate/Report Name {getCertSortIcon('name')}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 cursor-pointer hover:text-blue-600 hover:bg-slate-100/50 transition-colors"
+                    onClick={() => requestCertSort('vessel_name')}
+                  >
+                    <div className="flex items-center">
+                      Vessel / Location {getCertSortIcon('vessel_name')}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 cursor-pointer hover:text-blue-600 hover:bg-slate-100/50 transition-colors"
+                    onClick={() => requestCertSort('certificate_number')}
+                  >
+                    <div className="flex items-center">
+                      Cert # {getCertSortIcon('certificate_number')}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 cursor-pointer hover:text-blue-600 hover:bg-slate-100/50 transition-colors"
+                    onClick={() => requestCertSort('expiration_date')}
+                  >
+                    <div className="flex items-center">
+                      Expiry Date {getCertSortIcon('expiration_date')}
+                    </div>
+                  </th>
+                  <th 
+                    className="py-3 px-4 cursor-pointer hover:text-blue-600 hover:bg-slate-100/50 transition-colors"
+                    onClick={() => requestCertSort('status')}
+                  >
+                    <div className="flex items-center">
+                      Status {getCertSortIcon('status')}
+                    </div>
+                  </th>
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
-                {filteredCerts.map(c => (
-                  <tr key={c.id} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="py-3 px-4 font-bold text-slate-800">{c.name}</td>
-                    <td className="py-3 px-4 text-blue-700 font-semibold">{c.vessel_name || 'Fleet'}</td>
-                    <td className="py-3 px-4 text-slate-600">{c.certificate_number || '-'}</td>
-                    <td className="py-3 px-4 text-slate-700 font-medium">
-                      {c.expiration_date ? format(new Date(c.expiration_date), 'yyyy-MM-dd') : '-'}
-                    </td>
-                    <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setEditingCert(c)}
-                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                          title="Edit"
-                        >
-                          <Edit className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteCert(c.id)}
-                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                          title="Delete"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                {filteredCerts.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-12 text-center text-slate-400">
+                      <div className="max-w-xs mx-auto space-y-2">
+                        <Search className="w-8 h-8 text-slate-300 mx-auto" />
+                        <p className="font-semibold text-slate-600">No certificates or service reports found</p>
+                        <p className="text-xs text-slate-400">No records match your active search and filter criteria.</p>
+                        {(certSearch || certVesselFilter || certStatusFilter !== 'all') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCertSearch('');
+                              setCertVesselFilter('');
+                              setCertStatusFilter('all');
+                            }}
+                            className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            Clear all filters
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  filteredCerts.map(c => {
+                    const status = getStatus(c.expiration_date);
+                    return (
+                      <tr 
+                        key={c.id} 
+                        onClick={() => {
+                          markCertAsViewed?.(c.id);
+                          if (fetchCertDetails) {
+                            fetchCertDetails(c);
+                          }
+                        }}
+                        className="hover:bg-blue-50/50 transition-colors cursor-pointer group"
+                      >
+                        <td className="py-3 px-4 font-bold text-slate-800 group-hover:text-blue-600 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <span>{c.name}</span>
+                            {isNewlyPosted(c, 7, viewedCertIds) && (
+                              <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center gap-1 shrink-0 shadow-2xs">
+                                <Sparkles className="w-2.5 h-2.5 text-emerald-600" /> NEW
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-blue-700 font-semibold">{c.vessel_name || (c.team_name ? `Other (${c.team_name})` : 'Fleet')}</td>
+                        <td className="py-3 px-4 text-slate-600 font-mono">{c.certificate_number || '-'}</td>
+                        <td className="py-3 px-4 text-slate-700 font-medium font-mono">
+                          {c.expiration_date ? format(new Date(c.expiration_date), 'yyyy-MM-dd') : '-'}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={cn(
+                            "px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider inline-block",
+                            status === 'expired' ? "bg-red-100 text-red-700" :
+                            status === 'expiring soon' ? "bg-orange-100 text-orange-700" :
+                            status === 'expiring' ? "bg-amber-100 text-amber-700" :
+                            "bg-emerald-100 text-emerald-700"
+                          )}>
+                            {status}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingCert(c);
+                              }}
+                              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                              title="Edit Certificate/Service Report"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteCert(c.id);
+                              }}
+                              className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Delete Certificate/Service Report"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (fetchCertDetails) fetchCertDetails(c);
+                              }}
+                              className="p-1.5 text-slate-400 group-hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                              title="View / Update Certificate"
+                            >
+                              <ChevronRight className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
@@ -1506,6 +2323,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 onClick={() => {
                   if (activeTab === 'users') fetchUsers();
                   if (activeTab === 'flags') fetchFlags();
+                  if (activeTab === 'cert_master') { fetchCertDefinitions(); fetchCertCategories(); }
                   if (activeTab === 'branding') fetchSettings();
                   if (activeTab === 'storage') { fetchSettings(); fetchStorageStatus(); }
                   if (activeTab === 'notifications') fetchSettings();
@@ -1547,6 +2365,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             >
               <Flag className="w-3.5 h-3.5" />
               <span>Flag States ({flagList.length || flagOptions.length || '•'})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('cert_master')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
+                activeTab === 'cert_master'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200/80'
+              }`}
+            >
+              <Award className="w-3.5 h-3.5" />
+              <span>Certificate Master List ({certDefinitions.length || '•'})</span>
             </button>
 
             <button
@@ -1598,7 +2429,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               }`}
             >
               <Smartphone className="w-3.5 h-3.5" />
-              <span>Device Security {deviceRequests.length > 0 && <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded-full text-[10px] font-extrabold">{deviceRequests.length}</span>}</span>
+              <span>Device Security</span>
+              {((deviceRequests && deviceRequests.length > 0) || (pendingDeviceRequestsCount && pendingDeviceRequestsCount > 0)) ? (
+                <span className="px-1.5 py-0.5 bg-amber-500 text-white rounded-full text-[10px] font-extrabold animate-pulse">
+                  {deviceRequests && deviceRequests.length > 0 ? deviceRequests.length : pendingDeviceRequestsCount}
+                </span>
+              ) : null}
             </button>
 
             <button
@@ -1900,6 +2736,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 ))}
               </div>
             </div>
+          )}
+
+          {/* TAB: CERTIFICATE MASTER & CATEGORIES */}
+          {activeTab === 'cert_master' && (
+            <CertificateMasterTab
+              token={token}
+              user={user}
+              notify={notify}
+              certDefinitions={certDefinitions}
+              certCategories={certCategories}
+              loadingCertDefs={loadingCertDefs}
+              fetchCertDefinitions={fetchCertDefinitions}
+              fetchCertCategories={fetchCertCategories}
+            />
           )}
 
           {/* TAB: SYSTEM LOGO & BRANDING */}
@@ -2502,6 +3352,63 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <span>Save Email & Alert Settings</span>
                 </button>
               </div>
+
+              {/* System Version & Live Update Broadcaster */}
+              <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-blue-950 text-white p-6 rounded-2xl border border-blue-800/40 shadow-sm space-y-5">
+                <div className="flex items-start justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-cyan-400" />
+                      <h4 className="text-sm font-bold text-white tracking-tight">System Version &amp; Live Update Notification</h4>
+                      <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-cyan-300 text-[10px] font-bold border border-blue-400/30">
+                        Current Bundle: v{CURRENT_CLIENT_VERSION}
+                      </span>
+                    </div>
+                    <p className="text-xs text-blue-200/70">
+                      Broadcast system update announcements to connected browser clients. If a user's running browser version is older, the system will notify them and recommend updating by refreshing their browser.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-[10px] font-bold uppercase text-blue-300 block mb-1">Target Version</label>
+                    <input
+                      type="text"
+                      value={broadcastVersion}
+                      onChange={e => setBroadcastVersion(e.target.value)}
+                      placeholder="e.g. 2.4.1"
+                      className="w-full px-3 py-2 bg-slate-800/90 border border-blue-500/30 rounded-xl text-xs font-mono text-white focus:bg-slate-800 focus:border-cyan-400 outline-none"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="text-[10px] font-bold uppercase text-blue-300 block mb-1">Release Highlights / Notes</label>
+                    <input
+                      type="text"
+                      value={broadcastNotes}
+                      onChange={e => setBroadcastNotes(e.target.value)}
+                      placeholder="e.g. Numerical certificate sorting, realtime sync enhancements, and UI updates"
+                      className="w-full px-3 py-2 bg-slate-800/90 border border-blue-500/30 rounded-xl text-xs text-white focus:bg-slate-800 focus:border-cyan-400 outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-blue-900/60">
+                  <div className="text-[11px] text-blue-300/80 font-mono">
+                    Clients will receive the prompt live via real-time long polling and periodic update checks.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleBroadcastUpdate}
+                    disabled={isBroadcasting}
+                    className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-2 shadow-md shadow-cyan-500/20 transition-all cursor-pointer"
+                  >
+                    <Send className={`w-3.5 h-3.5 ${isBroadcasting ? 'animate-spin' : ''}`} />
+                    <span>{isBroadcasting ? 'Broadcasting...' : 'Broadcast System Update'}</span>
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -2758,60 +3665,539 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
           {/* TAB 6: AUDIT LOGS */}
           {activeTab === 'logs' && (
-            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-blue-600" />
-                    System Administrative Audit Logs
-                  </h3>
-                  <p className="text-xs text-slate-500">Live immutable record of administrative actions, user changes, and settings modifications.</p>
+            <div className="space-y-6">
+              {/* Top Title & Actions Bar */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-5">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-5">
+                  <div>
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
+                        <Database className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                          Database & System Audit Trail
+                          {autoRefreshLogs && (
+                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                              Live Sync
+                            </span>
+                          )}
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Continuous monitoring of user database mutations (INSERT, UPDATE, DELETE, SOFT_DELETE) across vessels, certificates, reports, and settings.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    {/* Real-time Toggle */}
+                    <button
+                      type="button"
+                      onClick={() => setAutoRefreshLogs(!autoRefreshLogs)}
+                      className={cn(
+                        "px-3 py-1.5 text-xs font-semibold rounded-xl border transition-colors flex items-center gap-1.5",
+                        autoRefreshLogs 
+                          ? "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100/70"
+                          : "bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100"
+                      )}
+                      title={autoRefreshLogs ? "Live monitoring active. Click to pause." : "Live monitoring paused. Click to enable."}
+                    >
+                      <Radio className={cn("w-3.5 h-3.5", autoRefreshLogs ? "text-emerald-600" : "text-slate-400")} />
+                      <span>{autoRefreshLogs ? "Live: ON" : "Live: Paused"}</span>
+                    </button>
+
+                    {/* Export CSV */}
+                    <button
+                      type="button"
+                      onClick={handleExportCsv}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Download className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Export CSV</span>
+                    </button>
+
+                    {/* Manual Refresh */}
+                    <button
+                      type="button"
+                      onClick={fetchAuditLogs}
+                      disabled={loadingLogs}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+                    >
+                      <RefreshCw className={cn("w-3.5 h-3.5", loadingLogs && "animate-spin")} />
+                      <span>{loadingLogs ? "Syncing..." : "Refresh"}</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="relative w-full sm:w-64">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={logSearch}
-                    onChange={e => setLogSearch(e.target.value)}
-                    placeholder="Search logs..."
-                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
-                  />
+                {/* KPI Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-3.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-medium text-slate-500">Total Mutations</span>
+                      <Database className="w-3.5 h-3.5 text-blue-600" />
+                    </div>
+                    <div className="mt-1 text-lg font-bold text-slate-900">
+                      {logStats?.totalChanges ? logStats.totalChanges.toLocaleString() : totalLogsCount.toLocaleString()}
+                    </div>
+                    <span className="text-[10px] text-slate-400">Recorded changes</span>
+                  </div>
+
+                  <div className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-3.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-medium text-slate-500">24h Activity</span>
+                      <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                    </div>
+                    <div className="mt-1 text-lg font-bold text-slate-900">
+                      {logStats?.changesToday ? logStats.changesToday.toLocaleString() : '0'}
+                    </div>
+                    <span className="text-[10px] text-slate-400">Past 24 hours</span>
+                  </div>
+
+                  <div className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-3.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-medium text-slate-500">Active Modifiers</span>
+                      <UserCheck className="w-3.5 h-3.5 text-purple-600" />
+                    </div>
+                    <div className="mt-1 text-lg font-bold text-slate-900">
+                      {logStats?.uniqueUsers ? logStats.uniqueUsers.toLocaleString() : (availableUsers.length || '1')}
+                    </div>
+                    <span className="text-[10px] text-slate-400">Distinct user accounts</span>
+                  </div>
+
+                  <div className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-3.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-medium text-slate-500">Top Table</span>
+                      <Layers className="w-3.5 h-3.5 text-amber-600" />
+                    </div>
+                    <div className="mt-1 text-sm font-bold text-slate-900 truncate font-mono" title={logStats?.topTable || 'N/A'}>
+                      {logStats?.topTable || availableTables[0]?.table_name || 'certificates'}
+                    </div>
+                    <span className="text-[10px] text-slate-400">Most updated table</span>
+                  </div>
+                </div>
+
+                {/* Filter Controls Bar */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2">
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={logSearch}
+                      onChange={e => setLogSearch(e.target.value)}
+                      placeholder="Search users, tables, records..."
+                      className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+                    />
+                    {logSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setLogSearch('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Table Filter */}
+                  <div>
+                    <select
+                      value={selectedTableFilter}
+                      onChange={e => {
+                        setSelectedTableFilter(e.target.value);
+                        setLogPage(1);
+                      }}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+                    >
+                      <option value="all">All Database Tables</option>
+                      {availableTables.map(t => (
+                        <option key={t.table_name} value={t.table_name}>
+                          {t.table_name} ({t.count.toLocaleString()})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Operation Action Filter */}
+                  <div>
+                    <select
+                      value={selectedActionFilter}
+                      onChange={e => {
+                        setSelectedActionFilter(e.target.value);
+                        setLogPage(1);
+                      }}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+                    >
+                      <option value="all">All Operations</option>
+                      <option value="INSERT">+ INSERT (Created)</option>
+                      <option value="UPDATE">✎ UPDATE (Modified)</option>
+                      <option value="DELETE">✕ DELETE (Removed)</option>
+                      <option value="SOFT_DELETE">⎌ SOFT_DELETE (Soft-deleted)</option>
+                    </select>
+                  </div>
+
+                  {/* User Filter */}
+                  <div>
+                    <select
+                      value={selectedUserFilter}
+                      onChange={e => {
+                        setSelectedUserFilter(e.target.value);
+                        setLogPage(1);
+                      }}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+                    >
+                      <option value="all">All Modifying Users</option>
+                      {availableUsers.map(u => (
+                        <option key={u.username} value={u.username}>
+                          {u.username} {u.user_role ? `(${u.user_role})` : ''} - {u.count} changes
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Sub-bar: Telemetry toggle & active filter reset */}
+                <div className="flex flex-wrap items-center justify-between text-xs text-slate-500 pt-1 border-t border-slate-100">
+                  <div className="flex items-center gap-4">
+                    <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={includeNoiseLogs}
+                        onChange={e => {
+                          setIncludeNoiseLogs(e.target.checked);
+                          setLogPage(1);
+                        }}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                      />
+                      <span className="text-[11px] text-slate-600">Include read-tracking telemetry (sms_order_upload_reads)</span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <span>
+                      Showing <strong>{filteredLogs.length}</strong> matching records
+                      {totalLogsCount > filteredLogs.length && ` (of ${totalLogsCount.toLocaleString()} total)`}
+                    </span>
+                    {(selectedTableFilter !== 'all' || selectedActionFilter !== 'all' || selectedUserFilter !== 'all' || logSearch.trim() || includeNoiseLogs) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedTableFilter('all');
+                          setSelectedActionFilter('all');
+                          setSelectedUserFilter('all');
+                          setLogSearch('');
+                          setIncludeNoiseLogs(false);
+                          setLogPage(1);
+                        }}
+                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 underline"
+                      >
+                        Reset filters
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              <div className="overflow-x-auto border border-slate-100 rounded-xl max-h-[600px] overflow-y-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead className="sticky top-0 bg-slate-50 z-10">
-                    <tr className="border-b border-slate-200 text-[10px] font-bold uppercase text-slate-500">
-                      <th className="py-2.5 px-4">Timestamp</th>
-                      <th className="py-2.5 px-4">User</th>
-                      <th className="py-2.5 px-4">Action</th>
-                      <th className="py-2.5 px-4">Details</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredLogs.slice(0, 200).map(l => (
-                      <tr key={l.id} className="hover:bg-slate-50/50">
-                        <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap font-mono text-[11px]">
-                          {l.created_at ? format(new Date(l.created_at), 'yyyy-MM-dd HH:mm:ss') : '-'}
-                        </td>
-                        <td className="py-2.5 px-4 font-bold text-slate-800">{l.username}</td>
-                        <td className="py-2.5 px-4">
-                          <span className="inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-700">
-                            {l.action}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-4 text-slate-600">{l.details}</td>
+              {/* Data Table */}
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+                <div className="overflow-x-auto max-h-[640px] overflow-y-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead className="sticky top-0 bg-slate-50 z-10 border-b border-slate-200 shadow-2xs">
+                      <tr className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">
+                        <th className="py-3 px-4 w-40">Timestamp</th>
+                        <th className="py-3 px-4 w-44">User / Account</th>
+                        <th className="py-3 px-4 w-32">Operation</th>
+                        <th className="py-3 px-4 w-40">Target Table</th>
+                        <th className="py-3 px-4">Change Summary</th>
+                        <th className="py-3 px-4 w-20 text-right">Details</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {paginatedLogs.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-12 text-center text-slate-400">
+                            <Activity className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                            <p className="font-semibold text-slate-600">No matching audit records found</p>
+                            <p className="text-[11px] text-slate-400 mt-1">Try adjusting your search query or filter selections</p>
+                          </td>
+                        </tr>
+                      ) : (
+                        paginatedLogs.map(l => {
+                          const badge = getActionBadge(l.action, l.query_type);
+                          const roleBadge = getRoleBadge(l.user_role);
+                          const parsed = parseLogDetails(l.details);
+
+                          return (
+                            <tr key={l.id} className="hover:bg-slate-50/70 transition-colors group">
+                              {/* Timestamp */}
+                              <td className="py-3 px-4 text-slate-500 whitespace-nowrap font-mono text-[11px]">
+                                {l.created_at ? format(new Date(l.created_at), 'yyyy-MM-dd HH:mm:ss') : '-'}
+                              </td>
+
+                              {/* User & Role */}
+                              <td className="py-3 px-4">
+                                <div className="flex flex-col">
+                                  <span className="font-bold text-slate-900 truncate max-w-[150px]">{l.username}</span>
+                                  <div className="flex items-center gap-1.5 mt-0.5">
+                                    {l.user_role && (
+                                      <span className={cn("px-1.5 py-0.2 rounded text-[9px] font-semibold border", roleBadge)}>
+                                        {l.user_role}
+                                      </span>
+                                    )}
+                                    {l.ip_address && (
+                                      <span className="text-[10px] text-slate-400 font-mono truncate max-w-[90px]" title={`IP: ${l.ip_address}`}>
+                                        {l.ip_address}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Operation Badge */}
+                              <td className="py-3 px-4">
+                                <span className={cn("inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold border", badge.bg)}>
+                                  {badge.label}
+                                </span>
+                              </td>
+
+                              {/* Target Table & Record ID */}
+                              <td className="py-3 px-4">
+                                <div className="flex flex-col gap-1">
+                                  {l.table_name ? (
+                                    <span className="font-mono text-[11px] font-semibold text-slate-800 bg-slate-100 px-2 py-0.5 rounded w-fit">
+                                      {l.table_name}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400 text-[11px] italic">system</span>
+                                  )}
+                                  {l.record_id && (
+                                    <span className="font-mono text-[10px] text-slate-500">
+                                      ID: {l.record_id}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Change Summary */}
+                              <td className="py-3 px-4">
+                                <div className="space-y-0.5 max-w-xl">
+                                  <p className="text-slate-800 font-medium line-clamp-1 text-xs">
+                                    {parsed.summary}
+                                  </p>
+                                  {parsed.sql && (
+                                    <p className="text-[10px] text-slate-400 font-mono line-clamp-1 truncate" title={parsed.sql}>
+                                      {parsed.sql}
+                                    </p>
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Inspect Action */}
+                              <td className="py-3 px-4 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => setInspectedLog(l)}
+                                  className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-100 hover:bg-blue-50 hover:text-blue-700 text-slate-700 transition-colors inline-flex items-center gap-1"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>View</span>
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination footer */}
+                {totalLogPages > 1 && (
+                  <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50/50 text-xs text-slate-600">
+                    <div>
+                      Page <strong>{logPage}</strong> of <strong>{totalLogPages}</strong>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setLogPage(p => Math.max(1, p - 1))}
+                        disabled={logPage === 1}
+                        className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-medium hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        Previous
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setLogPage(p => Math.min(totalLogPages, p + 1))}
+                        disabled={logPage === totalLogPages}
+                        className="px-3 py-1 bg-white border border-slate-200 rounded-lg text-xs font-medium hover:bg-slate-50 disabled:opacity-40"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
         </div>
       )}
+
+      {/* ==========================================
+          MODAL: Inspect Audit Log Event
+         ========================================== */}
+      {inspectedLog && (() => {
+        const badge = getActionBadge(inspectedLog.action, inspectedLog.query_type);
+        const parsed = parseLogDetails(inspectedLog.details);
+
+        return (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+            <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-100 space-y-5 my-8">
+              {/* Header */}
+              <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
+                    <Database className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                      Audit Event #{inspectedLog.id}
+                      <span className={cn("px-2 py-0.5 rounded text-[10px] font-bold border", badge.bg)}>
+                        {badge.label}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Logged at {inspectedLog.created_at ? format(new Date(inspectedLog.created_at), 'yyyy-MM-dd HH:mm:ss') : '-'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInspectedLog(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Metadata Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 rounded-xl p-3.5 border border-slate-100 text-xs">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400">User</span>
+                  <p className="font-bold text-slate-800 truncate">{inspectedLog.username}</p>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Role</span>
+                  <p className="font-medium text-slate-700">{inspectedLog.user_role || 'user'}</p>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Target Table</span>
+                  <p className="font-mono font-semibold text-slate-800">{inspectedLog.table_name || 'general'}</p>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400">Record ID</span>
+                  <p className="font-mono font-semibold text-slate-800">{inspectedLog.record_id || 'N/A'}</p>
+                </div>
+              </div>
+
+              {/* IP Address banner if present */}
+              {inspectedLog.ip_address && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 rounded-lg border border-slate-100 text-xs text-slate-600">
+                  <Terminal className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Client IP Address: <strong className="font-mono text-slate-800">{inspectedLog.ip_address}</strong></span>
+                </div>
+              )}
+
+              {/* Summary */}
+              <div className="space-y-1.5">
+                <span className="text-xs font-bold text-slate-700">Change Summary</span>
+                <div className="p-3 bg-blue-50/50 border border-blue-100 rounded-xl text-xs font-medium text-slate-800">
+                  {parsed.summary}
+                </div>
+              </div>
+
+              {/* SQL Statement (if available) */}
+              {parsed.sql && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                      <Code className="w-3.5 h-3.5 text-slate-400" />
+                      Executed SQL Query
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(parsed.sql, 'sql')}
+                      className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                    >
+                      {copiedField === 'sql' ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-600" />
+                          <span className="text-emerald-600">Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>Copy SQL</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <pre className="p-3 bg-slate-900 text-slate-100 rounded-xl text-[11px] font-mono overflow-x-auto whitespace-pre-wrap max-h-48">
+                    {parsed.sql}
+                  </pre>
+                </div>
+              )}
+
+              {/* Parameters (if available) */}
+              {parsed.params && parsed.params !== 'None' && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-700 flex items-center gap-1.5">
+                      <Sliders className="w-3.5 h-3.5 text-slate-400" />
+                      Query Parameters
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(parsed.params, 'params')}
+                      className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                    >
+                      {copiedField === 'params' ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-600" />
+                          <span className="text-emerald-600">Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>Copy Params</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <pre className="p-3 bg-slate-900 text-emerald-300 rounded-xl text-[11px] font-mono overflow-x-auto whitespace-pre-wrap max-h-36">
+                    {parsed.params}
+                  </pre>
+                </div>
+              )}
+
+              {/* Modal Footer */}
+              <div className="flex justify-end pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setInspectedLog(null)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ==========================================
           MODAL: Create / Edit User Account

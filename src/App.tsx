@@ -12,6 +12,7 @@ import {
   requestStoragePersistence 
 } from "./utils/deviceIdentifier";
 import { realtimeSync } from "./services/realtimeSync";
+import { SystemUpdateNotifier } from "./components/SystemUpdateNotifier";
 
 export const App = () => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("token"));
@@ -146,26 +147,37 @@ export const App = () => {
   }, [token, user?.id, user?.role]);
 
   if (!token || !user) {
-    return <Login onLogin={handleLogin} dbStatus={dbStatus} onRefreshDb={handleRefreshDb} />;
+    return (
+      <>
+        <SystemUpdateNotifier />
+        <Login onLogin={handleLogin} dbStatus={dbStatus} onRefreshDb={handleRefreshDb} />
+      </>
+    );
   }
 
   if (user.role === "vessel" && !isVerified) {
     return (
-      <DeviceRegistration
-        user={user}
-        token={token}
-        onLogout={handleLogout}
-        onVerified={handleVerified}
-      />
+      <>
+        <SystemUpdateNotifier />
+        <DeviceRegistration
+          user={user}
+          token={token}
+          onLogout={handleLogout}
+          onVerified={handleVerified}
+        />
+      </>
     );
   }
 
   return (
-    <Dashboard
-      user={user}
-      token={token}
-      onLogout={handleLogout}
-    />
+    <>
+      <SystemUpdateNotifier />
+      <Dashboard
+        user={user}
+        token={token}
+        onLogout={handleLogout}
+      />
+    </>
   );
 };
 

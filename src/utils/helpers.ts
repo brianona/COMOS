@@ -33,6 +33,41 @@ export const getStatus = (date: string) => {
   return "active";
 };
 
+export const isCertExpiringOrExpired = (expirationDate: string): boolean => {
+  const status = getStatus(expirationDate);
+  return status === 'expired' || status === 'expiring soon' || status === 'expiring';
+};
+
+export const isNewlyPosted = (
+  cert: { created_at?: string | null; latest_file_upload?: string | null; date_issued?: string | null; id?: number },
+  daysThreshold = 7,
+  acknowledgedIds?: Set<number> | number[]
+): boolean => {
+  if (cert.id && acknowledgedIds) {
+    const isAcked = acknowledgedIds instanceof Set ? acknowledgedIds.has(cert.id) : acknowledgedIds.includes(cert.id);
+    if (isAcked) return false;
+  }
+
+  const now = Date.now();
+  const thresholdMs = daysThreshold * 24 * 60 * 60 * 1000;
+
+  if (cert.created_at) {
+    const t = new Date(cert.created_at).getTime();
+    if (!isNaN(t) && (now - t) <= thresholdMs && (now - t) >= -86400000) {
+      return true;
+    }
+  }
+
+  if (cert.latest_file_upload) {
+    const t = new Date(cert.latest_file_upload).getTime();
+    if (!isNaN(t) && (now - t) <= thresholdMs && (now - t) >= -86400000) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 export const isFocOutsideLimits = (focStr: string, minLimitStr?: string | null, maxLimitStr?: string | null) => {
   const foc = parseFloat(focStr);
   if (isNaN(foc) || foc <= 0) return false;

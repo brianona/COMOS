@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Loader2, ZoomIn, ZoomOut, Download, RotateCcw, Maximize, Minimize } from 'lucide-react';
+import { Loader2, ZoomIn, ZoomOut, Download, RotateCcw, Maximize, Minimize, Printer } from 'lucide-react';
 
 interface ImageViewerProps {
   url: string;
   title?: string;
+  onPrint?: () => void;
 }
 
-export const ImageViewer: React.FC<ImageViewerProps> = ({ url, title }) => {
+export const ImageViewer: React.FC<ImageViewerProps> = ({ url, title, onPrint }) => {
   const [scale, setScale] = useState(1.0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +75,51 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ url, title }) => {
     setScale(1.0);
   };
 
+  const handlePrint = () => {
+    if (onPrint) {
+      onPrint();
+      return;
+    }
+    try {
+      const iframe = document.createElement('iframe');
+      iframe.style.position = 'fixed';
+      iframe.style.right = '0';
+      iframe.style.bottom = '0';
+      iframe.style.width = '0';
+      iframe.style.height = '0';
+      iframe.style.border = '0';
+      document.body.appendChild(iframe);
+      const doc = iframe.contentWindow?.document;
+      if (doc) {
+        doc.open();
+        doc.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>${title || 'Image Preview'}</title>
+              <style>
+                @page { margin: 10mm; size: auto; }
+                body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background: white; }
+                img { max-width: 100%; max-height: 98vh; object-fit: contain; }
+              </style>
+            </head>
+            <body>
+              <img src="${url}" onload="setTimeout(function(){ window.focus(); window.print(); }, 250);" />
+            </body>
+          </html>
+        `);
+        doc.close();
+      }
+      setTimeout(() => {
+        if (document.body.contains(iframe)) {
+          document.body.removeChild(iframe);
+        }
+      }, 60000);
+    } catch {
+      window.open(url, '_blank');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl">
       {/* Toolbar */}
@@ -136,15 +182,25 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ url, title }) => {
           </div>
         </div>
 
-        <a
-          href={url}
-          target="_blank"
-          rel="noreferrer"
-          className="p-1.5 text-blue-400 hover:text-blue-300 hover:bg-slate-700 rounded-lg transition-colors"
-          title="Download Image"
-        >
-          <Download className="w-4 h-4" />
-        </a>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handlePrint}
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
+            title="Print Image"
+          >
+            <Printer className="w-4 h-4" />
+          </button>
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="p-1.5 text-blue-400 hover:text-blue-300 hover:bg-slate-700 rounded-lg transition-colors"
+            title="Download Image"
+          >
+            <Download className="w-4 h-4" />
+          </a>
+        </div>
       </div>
 
       {/* Viewport with rotateX to put the horizontal scrollbar on top */}
