@@ -13,6 +13,7 @@ import {
 } from "./utils/deviceIdentifier";
 import { realtimeSync } from "./services/realtimeSync";
 import { SystemUpdateNotifier } from "./components/SystemUpdateNotifier";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 export const App = () => {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("token"));
@@ -172,11 +173,13 @@ export const App = () => {
   return (
     <>
       <SystemUpdateNotifier />
-      <Dashboard
-        user={user}
-        token={token}
-        onLogout={handleLogout}
-      />
+      <ErrorBoundary>
+        <Dashboard
+          user={user}
+          token={token}
+          onLogout={handleLogout}
+        />
+      </ErrorBoundary>
     </>
   );
 };

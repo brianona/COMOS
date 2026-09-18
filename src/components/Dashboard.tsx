@@ -38,6 +38,7 @@ import { NoonToNoonView } from "./NoonToNoonView";
 import { OtherReportView } from "./OtherReportView";
 import { FuelConsumptionView } from "./FuelConsumptionView";
 import { SlideshowView } from "./SlideshowView";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { VesselRoutingUserView } from "./VesselRoutingUserView";
 import { Logo, LogoContainer, setCustomLogoUrl } from "./Logo";
 import { NotificationToast } from "./NotificationToast";
@@ -415,10 +416,14 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [routeForm, setRouteForm] = useState({
     next_port: '',
     route_status: '',
+    loading_status: '',
+    operation_type: '',
     eta_atb: '',
+    etb: '',
     etd_atd: '',
     cargo: '',
-    shackles: ''
+    shackles: '',
+    remark_from_vessel: ''
   });
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [sortConfig, setSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' } | null>({ key: 'name', direction: 'asc' });
@@ -571,8 +576,8 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       const form = routingForm[v.id];
       const status = form?.route_status || v.route_status || '';
       if (status === 'At sea') atSea++;
-      else if (status === 'In Port' || status === 'In port') inPort++;
-      else if (status === 'At Anchor' || status === 'Anchor') atAnchor++;
+      else if (status === 'In Port' || status === 'In port' || status === 'At port' || status === 'At Port') inPort++;
+      else if (status === 'At Anchor' || status === 'Anchor' || status === 'Anchorage') atAnchor++;
       else if (status === 'Drifting') drifting++;
     });
 
@@ -600,8 +605,10 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       }
 
       if (routingStatusFilter) {
-        if (routingStatusFilter === 'At Anchor') {
-          if (currentStatus !== 'At Anchor' && currentStatus !== 'Anchor') return;
+        if (routingStatusFilter === 'At Anchor' || routingStatusFilter === 'Anchorage') {
+          if (currentStatus !== 'At Anchor' && currentStatus !== 'Anchor' && currentStatus !== 'Anchorage') return;
+        } else if (routingStatusFilter === 'In Port' || routingStatusFilter === 'At port') {
+          if (currentStatus !== 'In Port' && currentStatus !== 'In port' && currentStatus !== 'At port' && currentStatus !== 'At Port') return;
         } else if (currentStatus !== routingStatusFilter) {
           return;
         }
@@ -1380,7 +1387,13 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     try {
       const res = await fetch('/api/vessels', { headers });
       if (res.ok) {
-        setVessels(await res.json());
+        const data = await res.json();
+        setVessels(data);
+        setSelectedVessel(prev => {
+          if (!prev) return null;
+          const found = data.find((v: Vessel) => v.id === prev.id);
+          return found || prev;
+        });
       }
     } catch (err) {
       console.error('Failed to fetch vessels:', err);
@@ -1965,10 +1978,16 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                           ) : (
                             vessels.slice(0, 10).map(v => {
                               const routeStatusColors: Record<string, string> = {
+                                'At sea': 'bg-emerald-50 text-emerald-700 border-emerald-100',
                                 'Underway': 'bg-emerald-50 text-emerald-700 border-emerald-100',
+                                'At port': 'bg-blue-50 text-blue-700 border-blue-100',
                                 'At Port': 'bg-blue-50 text-blue-700 border-blue-100',
+                                'In Port': 'bg-blue-50 text-blue-700 border-blue-100',
+                                'Anchorage': 'bg-amber-50 text-amber-700 border-amber-100',
+                                'At Anchor': 'bg-amber-50 text-amber-700 border-amber-100',
                                 'Anchored': 'bg-amber-50 text-amber-700 border-amber-100',
                                 'Drifting': 'bg-indigo-50 text-indigo-700 border-indigo-100',
+                                'Transiting': 'bg-cyan-50 text-cyan-700 border-cyan-100',
                                 'Standby': 'bg-purple-50 text-purple-700 border-purple-100',
                               };
                               return (
@@ -2788,6 +2807,11 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
           )}
 
           {view === 'vessel_details' && (
+            <ErrorBoundary
+              fallbackTitle="Error Loading Vessel Details"
+              fallbackMessage="An unexpected issue occurred while displaying this vessel's information. Click below to return to the fleet list."
+              onReset={() => setView('vessels')}
+            >
             <div className="space-y-8 animate-fadeIn">
               {/* Header Navigation Bar */}
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-blue-100 shadow-xs">
@@ -2841,7 +2865,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
               </div>
 
               {(() => {
-                const v = selectedVessel || vessels[0];
+                const v = (selectedVessel ? vessels.find(x => x.id === selectedVessel.id) : null) || selectedVessel || vessels[0];
                 if (!v) {
                   return (
                     <div className="p-12 text-center bg-white rounded-2xl border border-slate-200">
@@ -2859,6 +2883,17 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 const latestNoon = [...noonReports].filter(r => r.vessel_id === v.id).sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
                 const latestDep = [...departureReports].filter(r => r.vessel_id === v.id).sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
                 const latestArr = [...arrivalReports].filter(r => r.vessel_id === v.id).sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
+
+                const safeFormatUtc = (dateStr?: string | null, suffix = '') => {
+                  if (!dateStr) return '';
+                  try {
+                    const d = typeof dateStr === 'string' ? parseISO(dateStr) : new Date(dateStr);
+                    if (isNaN(d.getTime())) return '';
+                    return format(d, 'yyyy-MM-dd HH:mm') + (suffix ? ` ${suffix}` : '');
+                  } catch (e) {
+                    return '';
+                  }
+                };
 
                 return (
                   <div className="space-y-8">
@@ -3170,9 +3205,12 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                   >
                                     <option value="">Select Status</option>
                                     <option value="At sea">At sea</option>
+                                    <option value="At port">At port</option>
                                     <option value="In Port">In Port</option>
+                                    <option value="Anchorage">Anchorage</option>
                                     <option value="At Anchor">At Anchor</option>
                                     <option value="Drifting">Drifting</option>
+                                    <option value="Transiting">Transiting</option>
                                   </select>
                                 </div>
                                 <div className="space-y-1">
@@ -3189,7 +3227,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                 </div>
                               </div>
 
-                              {(routeForm.route_status === 'At Anchor' || routeForm.route_status === 'Anchor') && (
+                              {(routeForm.route_status === 'At Anchor' || routeForm.route_status === 'Anchor' || routeForm.route_status === 'Anchorage') && (
                                 <div className="space-y-1">
                                   <label className="text-xs font-bold uppercase tracking-wider text-amber-700 flex items-center gap-1">
                                     <Anchor className="w-3.5 h-3.5 text-amber-600" />
@@ -3304,8 +3342,8 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                               <div className="p-4 rounded-2xl bg-slate-50/80 border border-slate-100 space-y-1">
                                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Navigational Status</span>
                                 <span className="text-sm font-extrabold text-slate-900 block">
-                                  {v.route_status === 'Anchor' ? 'At Anchor' : (v.route_status || 'Not Set')}
-                                  {(v.route_status === 'At Anchor' || v.route_status === 'Anchor') && v.shackles && (
+                                  {v.route_status === 'Anchor' || v.route_status === 'Anchorage' ? 'At Anchor' : (v.route_status || 'Not Set')}
+                                  {(v.route_status === 'At Anchor' || v.route_status === 'Anchor' || v.route_status === 'Anchorage') && v.shackles && (
                                     <span className="block text-xs font-bold text-amber-700 mt-0.5">
                                       Shackles: {v.shackles}
                                     </span>
@@ -3370,7 +3408,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                   <span className="text-xs font-extrabold text-slate-900">Latest Noon Report</span>
                                 </div>
                                 {latestNoon ? (
-                                  <span className="text-[10px] font-bold text-slate-500">{latestNoon.utc_date_time ? format(parseISO(latestNoon.utc_date_time), 'yyyy-MM-dd HH:mm UTC') : ''}</span>
+                                  <span className="text-[10px] font-bold text-slate-500">{safeFormatUtc(latestNoon.utc_date_time, 'UTC')}</span>
                                 ) : (
                                   <span className="text-[10px] font-medium text-slate-400">No reports</span>
                                 )}
@@ -3391,8 +3429,15 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                     <span className="font-bold text-slate-800">{latestNoon.distance_to_go || 'N/A'} NM</span>
                                   </div>
                                   <div>
-                                    <span className="text-[10px] text-slate-400 font-bold block uppercase">Cargo Status</span>
-                                    <span className="font-bold text-slate-800 capitalize">{latestNoon.cargo_status || 'N/A'}</span>
+                                    <span className="text-[10px] text-slate-400 font-bold block uppercase">Cargo / Report Type</span>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="font-bold text-slate-800 capitalize">{latestNoon.cargo_status || 'N/A'}</span>
+                                      {latestNoon.report_type && (
+                                        <span className="px-1.5 py-0.5 text-[9px] font-bold bg-indigo-50 text-indigo-700 rounded border border-indigo-200">
+                                          {latestNoon.report_type}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
                               ) : (
@@ -3407,12 +3452,12 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                   <span className="text-xs font-extrabold text-sky-900 flex items-center gap-1">
                                     <Navigation className="w-3.5 h-3.5 text-sky-600" /> Latest Departure
                                   </span>
-                                  {latestDep && <span className="text-[10px] text-slate-500 font-bold">{latestDep.port}</span>}
+                                  {latestDep && <span className="text-[10px] text-slate-500 font-bold">{latestDep.departure_port || latestDep.port || 'Departure Port'}</span>}
                                 </div>
                                 {latestDep ? (
                                   <div className="text-xs text-slate-700 space-y-0.5 pt-1">
-                                    <p><strong className="text-slate-900">UTC:</strong> {latestDep.utc_date_time ? format(parseISO(latestDep.utc_date_time), 'yyyy-MM-dd HH:mm') : ''}</p>
-                                    <p><strong className="text-slate-900">Next Port:</strong> {latestDep.next_port || 'N/A'}</p>
+                                    <p><strong className="text-slate-900">UTC:</strong> {safeFormatUtc(latestDep.utc_date_time)}</p>
+                                    <p><strong className="text-slate-900">Next Port:</strong> {latestDep.destination_port || latestDep.next_port || 'N/A'}</p>
                                     <p><strong className="text-slate-900">Cargo:</strong> {latestDep.cargo || 'N/A'}</p>
                                   </div>
                                 ) : (
@@ -3425,11 +3470,11 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                   <span className="text-xs font-extrabold text-emerald-900 flex items-center gap-1">
                                     <Anchor className="w-3.5 h-3.5 text-emerald-600" /> Latest Arrival
                                   </span>
-                                  {latestArr && <span className="text-[10px] text-slate-500 font-bold">{latestArr.arrival_port}</span>}
+                                  {latestArr && <span className="text-[10px] text-slate-500 font-bold">{latestArr.arrival_port || 'Arrival Port'}</span>}
                                 </div>
                                 {latestArr ? (
                                   <div className="text-xs text-slate-700 space-y-0.5 pt-1">
-                                    <p><strong className="text-slate-900">UTC:</strong> {latestArr.utc_date_time ? format(parseISO(latestArr.utc_date_time), 'yyyy-MM-dd HH:mm') : ''}</p>
+                                    <p><strong className="text-slate-900">UTC:</strong> {safeFormatUtc(latestArr.utc_date_time)}</p>
                                     <p><strong className="text-slate-900">Operation:</strong> {latestArr.operation_type || 'N/A'}</p>
                                     <p><strong className="text-slate-900">Cargo:</strong> {latestArr.cargo || 'N/A'}</p>
                                   </div>
@@ -3643,6 +3688,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 );
               })()}
             </div>
+            </ErrorBoundary>
           )}
 
           {view.startsWith('admin') && view !== 'admin_recycle_bin' && (
@@ -3936,9 +3982,12 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                       >
                         <option value="">All Navigational Statuses</option>
                         <option value="At sea">At sea</option>
+                        <option value="At port">At port</option>
                         <option value="In Port">In Port</option>
+                        <option value="Anchorage">Anchorage</option>
                         <option value="At Anchor">At Anchor</option>
                         <option value="Drifting">Drifting</option>
+                        <option value="Transiting">Transiting</option>
                       </select>
                       <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
@@ -4092,20 +4141,24 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                             className={cn(
                                               "w-full px-2.5 py-1.5 border rounded-xl text-xs font-bold outline-none cursor-pointer transition-all",
                                               currentNavStatus === 'At sea' ? "bg-blue-50 text-blue-800 border-blue-200" :
-                                              currentNavStatus === 'In Port' ? "bg-emerald-50 text-emerald-800 border-emerald-200" :
-                                              (currentNavStatus === 'At Anchor' || currentNavStatus === 'Anchor') ? "bg-amber-50 text-amber-800 border-amber-200" :
+                                              (currentNavStatus === 'In Port' || currentNavStatus === 'At port' || currentNavStatus === 'At Port') ? "bg-emerald-50 text-emerald-800 border-emerald-200" :
+                                              (currentNavStatus === 'At Anchor' || currentNavStatus === 'Anchor' || currentNavStatus === 'Anchorage') ? "bg-amber-50 text-amber-800 border-amber-200" :
                                               currentNavStatus === 'Drifting' ? "bg-purple-50 text-purple-800 border-purple-200" :
+                                              currentNavStatus === 'Transiting' ? "bg-cyan-50 text-cyan-800 border-cyan-200" :
                                               "bg-slate-50 text-slate-700 border-slate-200"
                                             )}
                                           >
                                             <option value="" className="bg-white text-slate-700 font-medium">Select Nav Status</option>
                                             <option value="At sea" className="bg-white text-slate-800 font-medium">At sea</option>
+                                            <option value="At port" className="bg-white text-slate-800 font-medium">At port</option>
                                             <option value="In Port" className="bg-white text-slate-800 font-medium">In Port</option>
+                                            <option value="Anchorage" className="bg-white text-slate-800 font-medium">Anchorage</option>
                                             <option value="At Anchor" className="bg-white text-slate-800 font-medium">At Anchor</option>
                                             <option value="Drifting" className="bg-white text-slate-800 font-medium">Drifting</option>
+                                            <option value="Transiting" className="bg-white text-slate-800 font-medium">Transiting</option>
                                           </select>
 
-                                          {(currentNavStatus === 'At Anchor' || currentNavStatus === 'Anchor') && (
+                                          {(currentNavStatus === 'At Anchor' || currentNavStatus === 'Anchor' || currentNavStatus === 'Anchorage') && (
                                             <div className="pt-1">
                                               <div className="flex items-center gap-1 mb-0.5">
                                                 <Anchor className="w-3 h-3 text-amber-600" />
@@ -4618,9 +4671,12 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                           >
                             <option value="">Select Status</option>
                             <option value="At sea">At sea</option>
+                            <option value="At port">At port</option>
                             <option value="In Port">In Port</option>
+                            <option value="Anchorage">Anchorage</option>
                             <option value="At Anchor">At Anchor</option>
                             <option value="Drifting">Drifting</option>
+                            <option value="Transiting">Transiting</option>
                           </select>
                         </div>
                         <div className="space-y-1">
@@ -4637,7 +4693,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                         </div>
                       </div>
 
-                      {(routeForm.route_status === 'At Anchor' || routeForm.route_status === 'Anchor') && (
+                      {(routeForm.route_status === 'At Anchor' || routeForm.route_status === 'Anchor' || routeForm.route_status === 'Anchorage') && (
                         <div className="space-y-1">
                           <label className="text-[9px] font-bold uppercase text-amber-700 ml-1 flex items-center gap-1">
                             <Anchor className="w-3 h-3 text-amber-600" />
@@ -4748,8 +4804,8 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                         <div>
                           <p className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Nav Status</p>
                           <p className="text-xs font-bold text-slate-900">
-                            {selectedVessel.route_status === 'Anchor' ? 'At Anchor' : (selectedVessel.route_status || 'Not Set')}
-                            {(selectedVessel.route_status === 'At Anchor' || selectedVessel.route_status === 'Anchor') && selectedVessel.shackles && (
+                            {selectedVessel.route_status === 'Anchor' || selectedVessel.route_status === 'Anchorage' ? 'At Anchor' : (selectedVessel.route_status || 'Not Set')}
+                            {(selectedVessel.route_status === 'At Anchor' || selectedVessel.route_status === 'Anchor' || selectedVessel.route_status === 'Anchorage') && selectedVessel.shackles && (
                               <span className="block text-[10px] font-normal text-amber-700 mt-0.5">
                                 Shackles: {selectedVessel.shackles}
                               </span>

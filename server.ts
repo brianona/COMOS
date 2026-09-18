@@ -1122,6 +1122,7 @@ async function startServer() {
         position_lat VARCHAR(50),
         distance_to_go VARCHAR(50),
         cargo_status VARCHAR(50),
+        report_type VARCHAR(50) NULL,
         rob_hsfo DECIMAL(10, 2),
         rob_lsfo DECIMAL(10, 2),
         rob_mgo DECIMAL(10, 2),
@@ -1132,6 +1133,7 @@ async function startServer() {
         foc_mdo DECIMAL(10, 2),
         attachment_id INT,
         weather_notation VARCHAR(255) NULL,
+        weather_direction VARCHAR(100) NULL,
         swell_scale_21 VARCHAR(255) NULL,
         wind_scale VARCHAR(255) NULL,
         wave_scale VARCHAR(255) NULL,
@@ -2121,6 +2123,43 @@ async function startServer() {
     } catch (e) {}
 
     try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN weather_direction VARCHAR(100) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE noon_reports ADD COLUMN report_type VARCHAR(50) NULL');
+    } catch (e) {}
+
+    try {
+      // Backfill auto-computed consumption for existing noon reports if zero or null
+      const [vesselsWithNoon]: any = await pool.query('SELECT DISTINCT vessel_id FROM noon_reports WHERE deleted_at IS NULL');
+      for (const v of vesselsWithNoon) {
+        const [vReports]: any = await pool.execute(
+          'SELECT id, utc_date_time, rob_hsfo, rob_lsfo, rob_mgo, rob_mdo, foc_hsfo, foc_lsfo, foc_mgo, foc_mdo FROM noon_reports WHERE vessel_id = ? AND deleted_at IS NULL ORDER BY utc_date_time ASC',
+          [v.vessel_id]
+        );
+        for (let i = 1; i < vReports.length; i++) {
+          const curr = vReports[i];
+          const prev = vReports[i - 1];
+          if (Number(curr.foc_hsfo || 0) === 0 && Number(curr.foc_lsfo || 0) === 0 && Number(curr.foc_mgo || 0) === 0 && Number(curr.foc_mdo || 0) === 0) {
+            const chsfo = Math.max(0, Number(prev.rob_hsfo || 0) - Number(curr.rob_hsfo || 0));
+            const clsfo = Math.max(0, Number(prev.rob_lsfo || 0) - Number(curr.rob_lsfo || 0));
+            const cmgo = Math.max(0, Number(prev.rob_mgo || 0) - Number(curr.rob_mgo || 0));
+            const cmdo = Math.max(0, Number(prev.rob_mdo || 0) - Number(curr.rob_mdo || 0));
+            if (chsfo > 0 || clsfo > 0 || cmgo > 0 || cmdo > 0) {
+              await pool.execute(
+                'UPDATE noon_reports SET foc_hsfo = ?, foc_lsfo = ?, foc_mgo = ?, foc_mdo = ? WHERE id = ?',
+                [chsfo, clsfo, cmgo, cmdo, curr.id]
+              );
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error during noon reports FOC backfill:', e);
+    }
+
+    try {
       await pool.query('ALTER TABLE noon_reports ADD COLUMN swell_scale_21 VARCHAR(255) NULL');
     } catch (e) {}
 
@@ -2208,6 +2247,32 @@ async function startServer() {
         console.log('Sync completed.');
       } catch (e: any) {
         console.error('Error syncing next_port:', e.message);
+      }
+
+      // Sync vessel's next_port, eta_atb, and route_status with latest noon report
+      try {
+        console.log('Syncing vessels next_port, eta_atb, and route_status with latest noon reports...');
+        await pool.query(`
+          UPDATE vessels v
+          JOIN (
+              SELECT nr1.vessel_id, nr1.destination_port, nr1.eta_utc, nr1.report_type
+              FROM noon_reports nr1
+              JOIN (
+                  SELECT vessel_id, MAX(utc_date_time) as max_utc
+                  FROM noon_reports
+                  WHERE deleted_at IS NULL
+                  GROUP BY vessel_id
+              ) nr2 ON nr1.vessel_id = nr2.vessel_id AND nr1.utc_date_time = nr2.max_utc
+              WHERE nr1.deleted_at IS NULL
+          ) latest_noon ON v.id = latest_noon.vessel_id
+          SET 
+            v.next_port = COALESCE(NULLIF(latest_noon.destination_port, ''), v.next_port),
+            v.eta_atb = COALESCE(NULLIF(latest_noon.eta_utc, ''), v.eta_atb),
+            v.route_status = COALESCE(NULLIF(latest_noon.report_type, ''), v.route_status)
+        `);
+        console.log('Noon report route sync completed.');
+      } catch (e: any) {
+        console.error('Error syncing noon route info:', e.message);
       }
 
     // Seed initial data if empty
@@ -2707,17 +2772,63 @@ async function startServer() {
 
   const syncVesselNextPort = async (vesselId: number) => {
     try {
-      const [latest]: any = await pool.execute(
-        'SELECT arrival_port FROM arrival_reports WHERE vessel_id = ? AND deleted_at IS NULL ORDER BY utc_date_time DESC LIMIT 1',
+      // Check if there is a more recent noon report with destination_port
+      const [noonLatest]: any = await pool.execute(
+        'SELECT destination_port, eta_utc, utc_date_time FROM noon_reports WHERE vessel_id = ? AND deleted_at IS NULL AND (destination_port IS NOT NULL AND destination_port != "") ORDER BY utc_date_time DESC LIMIT 1',
         [vesselId]
       );
-      if (latest.length > 0) {
+      const [latest]: any = await pool.execute(
+        'SELECT arrival_port, utc_date_time FROM arrival_reports WHERE vessel_id = ? AND deleted_at IS NULL ORDER BY utc_date_time DESC LIMIT 1',
+        [vesselId]
+      );
+
+      if (noonLatest.length > 0 && (!latest.length || new Date(noonLatest[0].utc_date_time) >= new Date(latest[0].utc_date_time))) {
+        await pool.execute('UPDATE vessels SET next_port = ? WHERE id = ?', [noonLatest[0].destination_port, vesselId]);
+      } else if (latest.length > 0) {
         await pool.execute('UPDATE vessels SET next_port = ? WHERE id = ?', [latest[0].arrival_port, vesselId]);
+      } else if (noonLatest.length > 0) {
+        await pool.execute('UPDATE vessels SET next_port = ? WHERE id = ?', [noonLatest[0].destination_port, vesselId]);
       } else {
         await pool.execute('UPDATE vessels SET next_port = NULL WHERE id = ?', [vesselId]);
       }
     } catch (err) {
       console.error(`Failed to sync next_port for vessel ${vesselId}:`, err);
+    }
+  };
+
+  const syncVesselRouteFromNoonReport = async (
+    vesselId: number, 
+    destinationPort?: string | null, 
+    etaUtc?: string | null,
+    reportType?: string | null
+  ) => {
+    try {
+      const routeUpdates: string[] = [];
+      const routeParams: any[] = [];
+
+      if (destinationPort && destinationPort.trim() !== '') {
+        routeUpdates.push('next_port = ?');
+        routeParams.push(destinationPort.trim());
+      }
+      if (etaUtc && etaUtc.trim() !== '') {
+        routeUpdates.push('eta_atb = ?');
+        routeParams.push(etaUtc.trim());
+      }
+      if (reportType && reportType.trim() !== '') {
+        routeUpdates.push('route_status = ?');
+        routeParams.push(reportType.trim());
+      }
+
+      if (routeUpdates.length > 0) {
+        routeParams.push(vesselId);
+        await pool.execute(
+          `UPDATE vessels SET ${routeUpdates.join(', ')} WHERE id = ?`,
+          routeParams
+        );
+        console.log(`[NoonReport] Automatically updated vessel ${vesselId} route: next_port=${destinationPort || '(unchanged)'}, eta_atb=${etaUtc || '(unchanged)'}, route_status=${reportType || '(unchanged)'}`);
+      }
+    } catch (err) {
+      console.error(`Failed to auto-update vessel route from noon report for vessel ${vesselId}:`, err);
     }
   };
 
@@ -6208,6 +6319,242 @@ async function startServer() {
     }
   });
 
+  app.post('/api/sms/orders/merge', authenticate, async (req: any, res) => {
+    if (req.user.role === 'vessel') {
+      return res.status(403).json({ error: 'Vessel users are not authorized to merge order lists' });
+    }
+
+    const { targetOrderId, sourceOrderIds, label, deadlineDate, instructions } = req.body;
+
+    if (!targetOrderId) {
+      return res.status(400).json({ error: 'Target order ID is required' });
+    }
+
+    if (!Array.isArray(sourceOrderIds) || sourceOrderIds.length === 0) {
+      return res.status(400).json({ error: 'At least one source order to merge must be provided' });
+    }
+
+    // Filter out targetOrderId if included and remove duplicates
+    const cleanSourceIds: string[] = Array.from(new Set(sourceOrderIds.filter((id: string) => id && id !== targetOrderId)));
+    if (cleanSourceIds.length === 0) {
+      return res.status(400).json({ error: 'Cannot merge an order into itself. Please select at least one different source order.' });
+    }
+
+    const allOrderIds = [targetOrderId, ...cleanSourceIds];
+
+    try {
+      // 1. Verify target order exists
+      const [targetRows]: any = await pool.execute(
+        'SELECT id, label, deadline_date, instructions, created_by_id, created_by_name FROM sms_orders WHERE id = ? AND deleted_at IS NULL',
+        [targetOrderId]
+      );
+      if (targetRows.length === 0) {
+        return res.status(404).json({ error: 'Target order not found or has been deleted' });
+      }
+      const targetOrder = targetRows[0];
+
+      // 2. Verify source orders exist
+      const sourcePlaceholders = cleanSourceIds.map(() => '?').join(',');
+      const [sourceOrders]: any = await pool.query(
+        `SELECT id, label, deadline_date, instructions, created_by_id, created_by_name FROM sms_orders WHERE id IN (${sourcePlaceholders}) AND deleted_at IS NULL`,
+        cleanSourceIds
+      );
+      if (sourceOrders.length === 0) {
+        return res.status(404).json({ error: 'None of the selected source orders were found or they have been deleted' });
+      }
+
+      // 3. Permission verification for PIC users
+      const picInfo = await getPicUserTeamVessels(pool, req.user);
+      if (picInfo.hasFilter) {
+        const allPlaceholders = allOrderIds.map(() => '?').join(',');
+        const [oVessels]: any = await pool.query(
+          `SELECT order_id, vessel_id, vessel_name FROM sms_order_vessels WHERE order_id IN (${allPlaceholders}) AND deleted_at IS NULL`,
+          allOrderIds
+        );
+        for (const oId of allOrderIds) {
+          const vList = oVessels.filter((v: any) => v.order_id === oId);
+          if (vList.length > 0) {
+            const hasTeamVessel = vList.some((v: any) =>
+              isVesselUnderPicTeam(v.vessel_id, v.vessel_name, picInfo.teamVessels)
+            );
+            if (!hasTeamVessel) {
+              return res.status(403).json({ error: 'Forbidden: You can only merge orders assigned to vessels under your team' });
+            }
+          }
+        }
+      }
+
+      // 4. Begin database transaction
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+
+        // Target order fields
+        const finalLabel = (label && String(label).trim()) || targetOrder.label;
+        const finalDeadline = (deadlineDate && String(deadlineDate).trim()) || targetOrder.deadline_date;
+
+        let finalInstructions = instructions;
+        if (finalInstructions === undefined) {
+          const sourceNotes = sourceOrders
+            .map((so: any) => (so.instructions && so.instructions.trim()) ? `[From ${so.label}]:\n${so.instructions.trim()}` : null)
+            .filter(Boolean);
+          if (targetOrder.instructions && targetOrder.instructions.trim()) {
+            finalInstructions = [targetOrder.instructions.trim(), ...sourceNotes].join('\n\n');
+          } else {
+            finalInstructions = sourceNotes.join('\n\n');
+          }
+        }
+
+        await conn.execute(
+          'UPDATE sms_orders SET label = ?, deadline_date = ?, instructions = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [finalLabel, finalDeadline, finalInstructions || '', targetOrderId]
+        );
+
+        // Merge vessels: get existing target vessels
+        const [existingVessels]: any = await conn.execute(
+          'SELECT vessel_id, vessel_name, status, completed_at FROM sms_order_vessels WHERE order_id = ? AND deleted_at IS NULL',
+          [targetOrderId]
+        );
+        const existingVesselKeySet = new Set(
+          existingVessels.map((v: any) => String(v.vessel_id).toLowerCase().trim())
+        );
+
+        // Fetch source vessels
+        const [sourceVessels]: any = await conn.query(
+          `SELECT vessel_id, vessel_name, status, completed_at FROM sms_order_vessels WHERE order_id IN (${sourcePlaceholders}) AND deleted_at IS NULL`,
+          cleanSourceIds
+        );
+
+        for (const sv of sourceVessels) {
+          const key = String(sv.vessel_id).toLowerCase().trim();
+          if (!existingVesselKeySet.has(key)) {
+            await conn.execute(
+              'INSERT INTO sms_order_vessels (order_id, vessel_id, vessel_name, status, completed_at) VALUES (?, ?, ?, ?, ?)',
+              [targetOrderId, String(sv.vessel_id), sv.vessel_name, sv.status || 'Pending', sv.completed_at || null]
+            );
+            existingVesselKeySet.add(key);
+          }
+        }
+
+        // Merge items: fetch existing target items
+        const [targetItems]: any = await conn.execute(
+          'SELECT id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order FROM sms_order_items WHERE order_id = ? AND deleted_at IS NULL ORDER BY sort_order ASC, id ASC',
+          [targetOrderId]
+        );
+
+        const targetItemMap = new Map<string, any>();
+        let maxSortOrder = 0;
+        for (const ti of targetItems) {
+          if (ti.form_code) targetItemMap.set(ti.form_code.toLowerCase().trim(), ti);
+          if (ti.form_id) targetItemMap.set(String(ti.form_id), ti);
+          if (ti.sort_order > maxSortOrder) maxSortOrder = ti.sort_order;
+        }
+
+        const [sourceItems]: any = await conn.query(
+          `SELECT id, order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order FROM sms_order_items WHERE order_id IN (${sourcePlaceholders}) AND deleted_at IS NULL ORDER BY sort_order ASC, id ASC`,
+          cleanSourceIds
+        );
+
+        // Map each source item id -> target item id
+        const sourceItemToTargetItem = new Map<number, number>();
+
+        for (const si of sourceItems) {
+          const codeKey = si.form_code ? si.form_code.toLowerCase().trim() : '';
+          const idKey = si.form_id ? String(si.form_id) : '';
+          const match = (codeKey && targetItemMap.get(codeKey)) || (idKey && targetItemMap.get(idKey));
+
+          if (match) {
+            sourceItemToTargetItem.set(si.id, match.id);
+          } else {
+            maxSortOrder++;
+            const [ins]: any = await conn.execute(
+              'INSERT INTO sms_order_items (order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [
+                targetOrderId,
+                si.form_id,
+                si.form_code,
+                si.category || '1. Monthly',
+                si.description || '',
+                si.form_date || null,
+                si.type || 'Form',
+                si.is_hira ? 1 : 0,
+                si.remove_filename_restriction ? 1 : 0,
+                si.allowed_file_types || null,
+                si.template_file_name || null,
+                maxSortOrder
+              ]
+            );
+            const newItemId = ins.insertId;
+            sourceItemToTargetItem.set(si.id, newItemId);
+            if (codeKey) targetItemMap.set(codeKey, { id: newItemId, ...si });
+            if (idKey) targetItemMap.set(idKey, { id: newItemId, ...si });
+          }
+        }
+
+        // Re-point all source uploads to target order and mapped item ID
+        const [sourceUploads]: any = await conn.query(
+          `SELECT id, order_id, item_id, form_code, form_id FROM sms_order_uploads WHERE order_id IN (${sourcePlaceholders}) AND deleted_at IS NULL`,
+          cleanSourceIds
+        );
+
+        for (const up of sourceUploads) {
+          let mappedItemId = up.item_id ? sourceItemToTargetItem.get(up.item_id) : null;
+          if (!mappedItemId) {
+            const codeKey = up.form_code ? up.form_code.toLowerCase().trim() : '';
+            const idKey = up.form_id ? String(up.form_id) : '';
+            const match = (codeKey && targetItemMap.get(codeKey)) || (idKey && targetItemMap.get(idKey));
+            if (match) mappedItemId = match.id;
+          }
+
+          await conn.execute(
+            'UPDATE sms_order_uploads SET order_id = ?, item_id = COALESCE(?, item_id) WHERE id = ?',
+            [targetOrderId, mappedItemId || null, up.id]
+          );
+        }
+
+        // Soft delete source orders and their old assignments/items
+        await conn.query(
+          `UPDATE sms_orders SET deleted_at = CURRENT_TIMESTAMP WHERE id IN (${sourcePlaceholders})`,
+          cleanSourceIds
+        );
+        await conn.query(
+          `UPDATE sms_order_vessels SET deleted_at = CURRENT_TIMESTAMP WHERE order_id IN (${sourcePlaceholders})`,
+          cleanSourceIds
+        );
+        await conn.query(
+          `UPDATE sms_order_items SET deleted_at = CURRENT_TIMESTAMP WHERE order_id IN (${sourcePlaceholders})`,
+          cleanSourceIds
+        );
+
+        await conn.commit();
+        conn.release();
+
+        const sourceTitles = sourceOrders.map((s: any) => `"${s.label}" (ID: ${s.id})`).join(', ');
+        await logAudit(
+          req.user.id,
+          req.user.username,
+          'MERGE_SMS_ORDERS',
+          `Merged orders [${sourceTitles}] into target order "${finalLabel}" (ID: ${targetOrderId}) with ${sourceUploads.length} document(s) transferred`
+        );
+
+        res.json({
+          success: true,
+          targetOrderId,
+          mergedSourceCount: sourceOrders.length,
+          transferredUploadsCount: sourceUploads.length,
+          message: `Successfully merged ${sourceOrders.length} order(s) into "${finalLabel}".`
+        });
+      } catch (txErr: any) {
+        await conn.rollback();
+        conn.release();
+        throw txErr;
+      }
+    } catch (e: any) {
+      console.error('Error merging SMS orders:', e);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.delete('/api/sms/orders/:id', authenticate, async (req: any, res) => {
     if (req.user.role === 'vessel') {
       return res.status(403).json({ error: 'Vessel users cannot delete order lists' });
@@ -8570,6 +8917,7 @@ Generated by COMOS System
         position_lat,
         distance_to_go,
         cargo_status,
+        report_type,
         rob_hsfo,
         rob_lsfo,
         rob_mgo,
@@ -8579,6 +8927,7 @@ Generated by COMOS System
         foc_mgo,
         foc_mdo,
         weather_notation,
+        weather_direction,
         swell_scale_21,
         wind_scale,
         wave_scale,
@@ -8600,6 +8949,31 @@ Generated by COMOS System
       if (!vessel_id) {
         return res.status(400).json({ error: 'Vessel ID is required' });
       }
+
+      // Ensure auto-computed consumption is determined if missing or 0
+      let finalFocHsfo = foc_hsfo !== undefined && foc_hsfo !== null && foc_hsfo !== '' ? Number(foc_hsfo) : null;
+      let finalFocLsfo = foc_lsfo !== undefined && foc_lsfo !== null && foc_lsfo !== '' ? Number(foc_lsfo) : null;
+      let finalFocMgo = foc_mgo !== undefined && foc_mgo !== null && foc_mgo !== '' ? Number(foc_mgo) : null;
+      let finalFocMdo = foc_mdo !== undefined && foc_mdo !== null && foc_mdo !== '' ? Number(foc_mdo) : null;
+
+      if (finalFocHsfo === null || finalFocLsfo === null || finalFocMgo === null || finalFocMdo === null || (finalFocHsfo === 0 && finalFocLsfo === 0 && finalFocMgo === 0 && finalFocMdo === 0)) {
+        const [prevReports]: any = await pool.execute(
+          'SELECT rob_hsfo, rob_lsfo, rob_mgo, rob_mdo FROM noon_reports WHERE vessel_id = ? AND utc_date_time < ? AND deleted_at IS NULL ORDER BY utc_date_time DESC LIMIT 1',
+          [vessel_id, utc_date_time]
+        );
+        if (prevReports.length > 0) {
+          const prev = prevReports[0];
+          if (finalFocHsfo === null || finalFocHsfo === 0) finalFocHsfo = Math.max(0, Number(prev.rob_hsfo || 0) - Number(rob_hsfo || 0));
+          if (finalFocLsfo === null || finalFocLsfo === 0) finalFocLsfo = Math.max(0, Number(prev.rob_lsfo || 0) - Number(rob_lsfo || 0));
+          if (finalFocMgo === null || finalFocMgo === 0) finalFocMgo = Math.max(0, Number(prev.rob_mgo || 0) - Number(rob_mgo || 0));
+          if (finalFocMdo === null || finalFocMdo === 0) finalFocMdo = Math.max(0, Number(prev.rob_mdo || 0) - Number(rob_mdo || 0));
+        }
+      }
+
+      finalFocHsfo = finalFocHsfo || 0;
+      finalFocLsfo = finalFocLsfo || 0;
+      finalFocMgo = finalFocMgo || 0;
+      finalFocMdo = finalFocMdo || 0;
 
       // Fetch vessel's current thresholds as fallback/default
       const [vesselRows]: any = await pool.execute(
@@ -8642,25 +9016,28 @@ Generated by COMOS System
       await pool.execute(`
         INSERT INTO noon_reports (
           vessel_id, user_id, voyage_number, utc_date_time, position_long, position_lat,
-          distance_to_go, cargo_status, rob_hsfo, rob_lsfo, rob_mgo, rob_mdo,
+          distance_to_go, cargo_status, report_type, rob_hsfo, rob_lsfo, rob_mgo, rob_mdo,
           foc_hsfo, foc_lsfo, foc_mgo, foc_mdo, attachment_id,
-          weather_notation, swell_scale_21, wind_scale, wave_scale, weather_image, remarks,
+          weather_notation, weather_direction, swell_scale_21, wind_scale, wave_scale, weather_image, remarks,
           destination_port, eta_utc, agent_details,
           charterer_min_hsfo, charterer_max_hsfo, charterer_min_lsfo, charterer_max_lsfo,
           charterer_min_mgo, charterer_max_mgo, charterer_min_mdo, charterer_max_mdo
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         vessel_id, req.user.id, voyage_number, utc_date_time, position_long, position_lat,
-        distance_to_go, cargo_status, 
+        distance_to_go, cargo_status, report_type || 'At sea', 
         rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0,
-        foc_hsfo || 0, foc_lsfo || 0, foc_mgo || 0, foc_mdo || 0,
+        finalFocHsfo, finalFocLsfo, finalFocMgo, finalFocMdo,
         attachmentId,
-        weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null, weather_image || null,
+        weather_notation || null, weather_direction || null, swell_scale_21 || null, wind_scale || null, wave_scale || null, weather_image || null,
         remarks || null,
         destination_port || null, eta_utc && eta_utc.trim() !== '' ? eta_utc : null, agent_details || null,
         cMinHsfo, cMaxHsfo, cMinLsfo, cMaxLsfo,
         cMinMgo, cMaxMgo, cMinMdo, cMaxMdo
       ]);
+
+      // Automatically update the vessel's current route next_port, ETA Arrival, and navigational status based on the submitted Noon to Noon report
+      await syncVesselRouteFromNoonReport(Number(vessel_id), destination_port, eta_utc, report_type);
 
       await logAudit(req.user.id, req.user.username, 'CREATE_NOON_REPORT', `Created noon report for vessel ID ${vessel_id}`);
       res.json({ success: true });
@@ -8700,6 +9077,7 @@ Generated by COMOS System
         position_lat,
         distance_to_go,
         cargo_status,
+        report_type,
         rob_hsfo,
         rob_lsfo,
         rob_mgo,
@@ -8709,6 +9087,7 @@ Generated by COMOS System
         foc_mgo,
         foc_mdo,
         weather_notation,
+        weather_direction,
         swell_scale_21,
         wind_scale,
         wave_scale,
@@ -8735,6 +9114,31 @@ Generated by COMOS System
         [id]
       );
       const reportVesselId = oldReport.length > 0 ? oldReport[0].vessel_id : null;
+
+      // Ensure auto-computed consumption is recorded if not provided or 0
+      let finalFocHsfo = foc_hsfo !== undefined && foc_hsfo !== null && foc_hsfo !== '' ? Number(foc_hsfo) : null;
+      let finalFocLsfo = foc_lsfo !== undefined && foc_lsfo !== null && foc_lsfo !== '' ? Number(foc_lsfo) : null;
+      let finalFocMgo = foc_mgo !== undefined && foc_mgo !== null && foc_mgo !== '' ? Number(foc_mgo) : null;
+      let finalFocMdo = foc_mdo !== undefined && foc_mdo !== null && foc_mdo !== '' ? Number(foc_mdo) : null;
+
+      if (reportVesselId && (finalFocHsfo === null || finalFocLsfo === null || finalFocMgo === null || finalFocMdo === null || (finalFocHsfo === 0 && finalFocLsfo === 0 && finalFocMgo === 0 && finalFocMdo === 0))) {
+        const [prevReports]: any = await pool.execute(
+          'SELECT rob_hsfo, rob_lsfo, rob_mgo, rob_mdo FROM noon_reports WHERE vessel_id = ? AND utc_date_time < ? AND id != ? AND deleted_at IS NULL ORDER BY utc_date_time DESC LIMIT 1',
+          [reportVesselId, utc_date_time, id]
+        );
+        if (prevReports.length > 0) {
+          const prev = prevReports[0];
+          if (finalFocHsfo === null || finalFocHsfo === 0) finalFocHsfo = Math.max(0, Number(prev.rob_hsfo || 0) - Number(rob_hsfo || 0));
+          if (finalFocLsfo === null || finalFocLsfo === 0) finalFocLsfo = Math.max(0, Number(prev.rob_lsfo || 0) - Number(rob_lsfo || 0));
+          if (finalFocMgo === null || finalFocMgo === 0) finalFocMgo = Math.max(0, Number(prev.rob_mgo || 0) - Number(rob_mgo || 0));
+          if (finalFocMdo === null || finalFocMdo === 0) finalFocMdo = Math.max(0, Number(prev.rob_mdo || 0) - Number(rob_mdo || 0));
+        }
+      }
+
+      finalFocHsfo = finalFocHsfo || 0;
+      finalFocLsfo = finalFocLsfo || 0;
+      finalFocMgo = finalFocMgo || 0;
+      finalFocMdo = finalFocMdo || 0;
 
       // Fetch vessel's current thresholds as fallback
       let vMinHsfo = null, vMaxHsfo = null, vMinLsfo = null, vMaxLsfo = null, vMinMgo = null, vMaxMgo = null, vMinMdo = null, vMaxMdo = null;
@@ -8796,10 +9200,10 @@ Generated by COMOS System
       await pool.execute(`
         UPDATE noon_reports SET
           voyage_number = ?, utc_date_time = ?, position_long = ?, position_lat = ?,
-          distance_to_go = ?, cargo_status = ?, rob_hsfo = ?, rob_lsfo = ?,
+          distance_to_go = ?, cargo_status = ?, report_type = ?, rob_hsfo = ?, rob_lsfo = ?,
           rob_mgo = ?, rob_mdo = ?, foc_hsfo = ?, foc_lsfo = ?,
           foc_mgo = ?, foc_mdo = ?, attachment_id = ?,
-          weather_notation = ?, swell_scale_21 = ?, wind_scale = ?, wave_scale = ?,
+          weather_notation = ?, weather_direction = ?, swell_scale_21 = ?, wind_scale = ?, wave_scale = ?,
           weather_image = ?, remarks = ?,
           destination_port = ?, eta_utc = ?, agent_details = ?,
           charterer_min_hsfo = ?, charterer_max_hsfo = ?, charterer_min_lsfo = ?, charterer_max_lsfo = ?,
@@ -8807,17 +9211,22 @@ Generated by COMOS System
         WHERE id = ?
       `, [
         voyage_number, utc_date_time, position_long, position_lat,
-        distance_to_go, cargo_status, 
+        distance_to_go, cargo_status, report_type || 'At sea',
         rob_hsfo || 0, rob_lsfo || 0, rob_mgo || 0, rob_mdo || 0,
-        foc_hsfo || 0, foc_lsfo || 0, foc_mgo || 0, foc_mdo || 0,
+        finalFocHsfo, finalFocLsfo, finalFocMgo, finalFocMdo,
         attachmentId,
-        weather_notation || null, swell_scale_21 || null, wind_scale || null, wave_scale || null,
+        weather_notation || null, weather_direction || null, swell_scale_21 || null, wind_scale || null, wave_scale || null,
         weather_image || null, remarks || null,
         destination_port || null, eta_utc && eta_utc.trim() !== '' ? eta_utc : null, agent_details || null,
         cMinHsfo, cMaxHsfo, cMinLsfo, cMaxLsfo,
         cMinMgo, cMaxMgo, cMinMdo, cMaxMdo,
         id
       ]);
+
+      // Automatically update the vessel's current route next_port, ETA Arrival, and navigational status based on the updated Noon to Noon report
+      if (reportVesselId) {
+        await syncVesselRouteFromNoonReport(Number(reportVesselId), destination_port, eta_utc, report_type);
+      }
 
       await logAudit(req.user.id, req.user.username, 'UPDATE_NOON_REPORT', `Updated noon report ID ${id}`);
       res.json({ success: true });
@@ -9537,7 +9946,22 @@ Generated by COMOS System
 
   app.delete('/api/noon-reports/:id', authenticate, isTeamPicOrAdmin, async (req: any, res) => {
     try {
+      const [rows]: any = await pool.execute('SELECT vessel_id FROM noon_reports WHERE id = ?', [req.params.id]);
+      const vId = rows[0]?.vessel_id;
+
       await pool.execute('UPDATE noon_reports SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
+
+      if (vId) {
+        // Re-sync with latest active noon report
+        const [latest]: any = await pool.execute(
+          'SELECT destination_port, eta_utc, report_type FROM noon_reports WHERE vessel_id = ? AND deleted_at IS NULL ORDER BY utc_date_time DESC LIMIT 1',
+          [vId]
+        );
+        if (latest.length > 0) {
+          await syncVesselRouteFromNoonReport(Number(vId), latest[0].destination_port, latest[0].eta_utc, latest[0].report_type);
+        }
+      }
+
       await logAudit(req.user.id, req.user.username, 'SOFT_DELETE_NOON_REPORT', `Soft deleted noon report ID ${req.params.id}`);
       res.json({ success: true });
     } catch (e: any) {

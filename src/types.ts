@@ -186,6 +186,7 @@ export interface NoonReport {
   position_lat: string;
   distance_to_go: string;
   cargo_status: string;
+  report_type?: string | null;
   rob_hsfo: number;
   rob_lsfo: number;
   rob_mgo: number;
@@ -199,6 +200,7 @@ export interface NoonReport {
   attachment_id?: number;
   attachment_name?: string;
   weather_notation?: string | null;
+  weather_direction?: string | null;
   swell_scale_21?: string | null;
   wind_scale?: string | null;
   wave_scale?: string | null;

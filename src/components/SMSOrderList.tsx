@@ -45,7 +45,10 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
-  Loader2
+  Loader2,
+  MoreVertical,
+  SlidersHorizontal,
+  GitMerge
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { validateFileAgainstForm, ValidationResult } from '../utils/smsValidation';
@@ -56,6 +59,7 @@ import { DocLegacyViewer } from './DocLegacyViewer';
 import { ExcelViewer } from './ExcelViewer';
 import { PptxViewer } from './PptxViewer';
 import { SMSDirectUploadModal } from './SMSDirectUploadModal';
+import { MergeOrdersModal } from './MergeOrdersModal';
 import { useRealtimeAutoRefresh } from '../services/realtimeSync';
 
 interface Vessel {
@@ -133,6 +137,8 @@ interface OrderUpload {
   replace_requested_at?: string | null;
   replace_requested_by?: string | null;
   replace_reason?: string | null;
+  is_read?: boolean;
+  read_at?: string | null;
 }
 
 interface SMSOrder {
@@ -355,7 +361,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   const [refreshing, setRefreshing] = useState(false);
 
   // Filters
-  const [orderTypeFilter, setOrderTypeFilter] = useState<'order_lists_only' | 'direct_uploads_only' | 'all'>('order_lists_only');
+  const [orderTypeFilter, setOrderTypeFilter] = useState<'order_lists_only' | 'direct_uploads_only' | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('All');
   const [vesselFilter, setVesselFilter] = useState<string>('All');
@@ -368,6 +374,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
   const [selectedOrderForInspection, setSelectedOrderForInspection] = useState<SMSOrder | null>(null);
   const [activeVesselTabInDetail, setActiveVesselTabInDetail] = useState<string>('');
   const [isTemplatesModalOpen, setIsTemplatesModalOpen] = useState(false);
+  const [selectedOrderIdsForMerge, setSelectedOrderIdsForMerge] = useState<string[]>([]);
+  const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [downloadingZipOrderId, setDownloadingZipOrderId] = useState<string | null>(null);
   const [downloadingTemplatesZipOrderId, setDownloadingTemplatesZipOrderId] = useState<string | null>(null);
@@ -696,7 +704,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     return userVisibleOrders.filter(o => o.id.startsWith('ord_direct_')).length;
   }, [userVisibleOrders]);
 
-  // Orders filtered by the view filter: 'order_lists_only' (default) vs 'direct_uploads_only' vs 'all'
+  // Orders filtered by the view filter: 'all' (default) vs 'order_lists_only' vs 'direct_uploads_only'
   const typeFilteredOrders = useMemo(() => {
     return userVisibleOrders.filter(order => {
       if (orderTypeFilter === 'order_lists_only' && order.id.startsWith('ord_direct_')) {
@@ -1863,21 +1871,19 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
       )}
 
       {/* Main Header Banner */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-3xl border border-slate-100 shadow-xs relative overflow-hidden">
-        <div className="absolute right-0 top-0 translate-x-12 -translate-y-12 w-44 h-44 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
-        
-        <div className="space-y-1.5 relative z-10">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-[10px] font-black uppercase tracking-wider mb-1 border border-blue-200/50">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-5 sm:p-6 rounded-2xl border border-slate-200/80 shadow-xs relative overflow-hidden">
+        <div className="space-y-1">
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-blue-50 text-blue-700 rounded-full text-[10px] font-bold uppercase tracking-wider border border-blue-200/60">
             <CheckSquare className="w-3 h-3 text-blue-600" />
-            SMS Order List
+            Safety Management System
           </div>
-          <h2 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-2.5">
-            Safety Management System (SMS) - Order List
+          <h2 className="text-xl sm:text-2xl font-black text-slate-800 tracking-tight">
+            SMS Orders &amp; Reporting
           </h2>
           <p className="text-xs text-slate-500 max-w-2xl leading-relaxed">
             {isVesselUser
-              ? 'View requested SMS reporting order packages assigned to your vessel, monitor deadlines, and submit verified completed checklists and documents.'
-              : 'Create targeted checklist and form submission orders for vessels, monitor fleet compliance progress, download uploaded archives, and manage reusable order templates.'}
+              ? 'Review requested SMS checklists assigned to your vessel, monitor due dates, and submit verified compliance files.'
+              : 'Dispatch checklist orders to fleet vessels, monitor submission progress, download archives, and manage compliance.'}
           </p>
         </div>
 
@@ -1885,20 +1891,21 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           <button
             onClick={() => { setRefreshing(true); fetchOrders(true); }}
             disabled={refreshing}
-            className="p-2.5 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-2xl border border-slate-200 transition-colors flex items-center gap-1.5 text-xs font-bold disabled:opacity-50 cursor-pointer"
+            className="p-2.5 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors flex items-center gap-1.5 text-xs font-bold disabled:opacity-50 cursor-pointer"
             title="Refresh Order List"
           >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-blue-600' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-blue-600' : ''}`} />
             <span className="hidden sm:inline">Refresh</span>
           </button>
 
-          {/* Upload Without Order Button - Available to all vessels and management */}
+          {/* Upload Without Order Button (Disabled) */}
           <button
-            onClick={() => setIsDirectUploadModalOpen(true)}
-            className="px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl transition-all shadow-xs hover:shadow-md flex items-center gap-2 text-xs font-black tracking-wide cursor-pointer"
-            title="Upload completed SMS checklists, inspection reports or voyage documents directly without an office order"
+            type="button"
+            disabled
+            className="px-3.5 py-2 text-slate-400 bg-slate-100 border border-slate-200/80 rounded-xl transition-all text-xs font-bold flex items-center gap-2 cursor-not-allowed shadow-none opacity-60 select-none"
+            title="Direct upload is disabled"
           >
-            <Upload className="w-4 h-4 stroke-[2.5]" />
+            <Upload className="w-3.5 h-3.5 text-slate-400" />
             <span>Upload Without Order</span>
           </button>
 
@@ -1907,26 +1914,44 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               {totalUncheckedCount > 0 && (
                 <button
                   onClick={handleMarkAllOrdersChecked}
-                  className="px-3.5 py-2.5 text-amber-900 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 rounded-2xl border border-amber-300/80 transition-all shadow-xs flex items-center gap-2 text-xs font-black tracking-wide"
-                  title="Mark all pending vessel uploads across all orders as read for your account"
+                  className="px-3.5 py-2 text-amber-900 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 rounded-xl border border-amber-300/80 transition-all text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  title="Mark all pending vessel uploads as read"
                 >
-                  <CheckSquare className="w-4 h-4 text-amber-600" />
+                  <CheckSquare className="w-3.5 h-3.5 text-amber-600" />
                   <span>Mark All Read ({totalUncheckedCount})</span>
                 </button>
               )}
 
               <button
                 onClick={() => setIsTemplatesModalOpen(true)}
-                className="px-3.5 py-2.5 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-2xl border border-slate-200 transition-all shadow-xs flex items-center gap-2 text-xs font-bold"
-                title="Manage reusable order templates saved by yourself"
+                className="px-3.5 py-2 text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 rounded-xl border border-slate-200 transition-all text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                title="Manage reusable order templates"
               >
-                <BookmarkPlus className="w-4 h-4 text-blue-600" />
+                <BookmarkPlus className="w-3.5 h-3.5 text-blue-600" />
                 <span>Templates</span>
                 {userVisibleTemplates.length > 0 && (
-                  <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded-full text-[10px] font-black border border-blue-200">
+                  <span className="px-1.5 py-0.2 bg-blue-50 text-blue-700 rounded-full text-[10px] font-black border border-blue-200">
                     {userVisibleTemplates.length}
                   </span>
                 )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsMergeModalOpen(true)}
+                className={`px-3.5 py-2 border rounded-xl transition-all flex items-center gap-1.5 text-xs font-bold cursor-pointer ${
+                  selectedOrderIdsForMerge.length >= 2
+                    ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100 shadow-2xs'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                }`}
+                title="Merge multiple order lists into one consolidated order"
+              >
+                <GitMerge className="w-3.5 h-3.5 text-blue-600" />
+                <span>
+                  {selectedOrderIdsForMerge.length >= 2
+                    ? `Merge Selected (${selectedOrderIdsForMerge.length})`
+                    : 'Merge Orders'}
+                </span>
               </button>
 
               <button
@@ -1934,10 +1959,10 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                   setEditingOrder(null);
                   setIsCreateModalOpen(true);
                 }}
-                className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl transition-all shadow-sm hover:shadow-md flex items-center gap-2 text-xs font-black tracking-wide"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-all shadow-xs hover:shadow flex items-center gap-1.5 text-xs font-bold cursor-pointer"
               >
-                <Plus className="w-4 h-4 stroke-[3]" />
-                <span>Create Order List</span>
+                <Plus className="w-3.5 h-3.5" />
+                <span>Create Order</span>
               </button>
             </>
           )}
@@ -1946,18 +1971,18 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
 
       {/* Upload Failed Notification Banner with Direct Retry Action */}
       {lastFailedUpload && (
-        <div className="bg-rose-50 border-2 border-rose-300/80 rounded-2xl p-4.5 shadow-sm space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
+        <div className="bg-rose-50 border border-rose-300 rounded-2xl p-4 shadow-xs space-y-2.5 animate-in fade-in duration-150">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-start gap-3 flex-1 min-w-0">
-              <div className="w-9 h-9 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0 mt-0.5">
-                <AlertCircle className="w-5 h-5 text-rose-600" />
+              <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0 mt-0.5">
+                <AlertCircle className="w-4 h-4 text-rose-600" />
               </div>
               <div className="space-y-0.5 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h4 className="text-xs font-black text-rose-900 uppercase tracking-wide">
                     Upload Failed ({lastFailedUpload.type === 'bulk' ? 'Bulk Upload' : lastFailedUpload.formItem?.form_code || 'Form Item'})
                   </h4>
-                  <span className="px-2 py-0.5 bg-rose-200/70 text-rose-900 rounded-md text-[10px] font-black">
+                  <span className="px-2 py-0.2 bg-rose-200/70 text-rose-900 rounded-md text-[10px] font-black">
                     {lastFailedUpload.fileNames.length} file(s) • {lastFailedUpload.totalSize}
                   </span>
                 </div>
@@ -1972,10 +1997,9 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 <button
                   type="button"
                   onClick={() => window.location.reload()}
-                  className="px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-black tracking-wide flex items-center gap-1.5 shadow-xs hover:shadow-md transition-all cursor-pointer"
-                  title="Refresh the page in your browser"
+                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
                 >
-                  <RefreshCw className="w-3.5 h-3.5" />
+                  <RefreshCw className="w-3 h-3" />
                   <span>Refresh Browser</span>
                 </button>
               )}
@@ -1984,11 +2008,10 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 type="button"
                 disabled={uploadProgress}
                 onClick={handleRetryUpload}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-400 text-white rounded-xl text-xs font-black tracking-wide flex items-center gap-2 shadow-sm hover:shadow-md transition-all cursor-pointer"
-                title="Retry the previous upload immediately"
+                className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
               >
-                <RotateCcw className={`w-3.5 h-3.5 ${uploadProgress ? 'animate-spin' : ''}`} />
-                <span>{uploadProgress ? 'Retrying Upload...' : 'Retry Upload'}</span>
+                <RotateCcw className={`w-3 h-3 ${uploadProgress ? 'animate-spin' : ''}`} />
+                <span>{uploadProgress ? 'Retrying...' : 'Retry Upload'}</span>
               </button>
 
               <button
@@ -1998,218 +2021,152 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                   setUploadErrorMessage(null);
                   setUploadDetailedErrors([]);
                 }}
-                className="p-2 text-rose-600 hover:text-rose-900 hover:bg-rose-100 rounded-xl transition-colors cursor-pointer"
-                title="Dismiss failure notice"
+                className="p-1.5 text-rose-600 hover:text-rose-900 hover:bg-rose-100 rounded-lg transition-colors cursor-pointer"
+                title="Dismiss"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
           </div>
 
-          {/* Suggestion notice for repeated "Failed to fetch" errors */}
           {lastFailedUpload.suggestion && (
-            <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-start gap-2.5 text-xs text-amber-950 font-medium leading-relaxed">
-              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <div className="space-y-1 flex-1">
-                <div className="font-bold text-amber-900 text-xs flex items-center gap-1.5">
-                  <span>Connection Issue Troubleshooting:</span>
-                </div>
-                <div>{lastFailedUpload.suggestion}</div>
-              </div>
+            <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2 text-xs text-amber-950 font-medium leading-relaxed">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+              <div>{lastFailedUpload.suggestion}</div>
             </div>
           )}
         </div>
       )}
 
-      {/* KPI / Metric Summary Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-slate-400">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider">
-              {orderTypeFilter === 'order_lists_only' ? 'Total Order Lists' : orderTypeFilter === 'direct_uploads_only' ? 'Direct Uploads' : 'Total Items'}
-            </span>
-            <Layers className="w-4 h-4 text-slate-400" />
+      {/* Unified Navigation & Filter Toolbar (Streamlined, non-cluttered control center) */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-3.5 sm:p-4 shadow-2xs space-y-3">
+        {/* Row 1: View Modes & Interactive Status Filter Metrics */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          {/* View Mode Segmented Control */}
+          <div className="inline-flex items-center p-1 bg-slate-100/90 rounded-xl border border-slate-200/60 shrink-0">
+            <button
+              type="button"
+              onClick={() => setOrderTypeFilter('all')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                orderTypeFilter === 'all'
+                  ? 'bg-white text-blue-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>All</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                orderTypeFilter === 'all' ? 'bg-blue-50 text-blue-700' : 'bg-slate-200/70 text-slate-600'
+              }`}>
+                {userVisibleOrders.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setOrderTypeFilter('order_lists_only')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                orderTypeFilter === 'order_lists_only'
+                  ? 'bg-white text-blue-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <CheckSquare className="w-3.5 h-3.5" />
+              <span>Order Lists</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                orderTypeFilter === 'order_lists_only' ? 'bg-blue-50 text-blue-700' : 'bg-slate-200/70 text-slate-600'
+              }`}>
+                {orderListsCount}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setOrderTypeFilter('direct_uploads_only')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                orderTypeFilter === 'direct_uploads_only'
+                  ? 'bg-white text-teal-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <FolderPlus className="w-3.5 h-3.5" />
+              <span>Direct Uploads</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                orderTypeFilter === 'direct_uploads_only' ? 'bg-teal-50 text-teal-700' : 'bg-slate-200/70 text-slate-600'
+              }`}>
+                {directUploadsCount}
+              </span>
+            </button>
           </div>
-          <div className="text-2xl font-black text-slate-800">{stats.total}</div>
-          <div className="text-[11px] text-slate-500 font-medium">
-            {orderTypeFilter === 'direct_uploads_only' 
-              ? 'Direct vessel submissions' 
-              : isVesselUser ? 'Assigned to your vessel' : 'Active fleet orders'}
+
+          {/* Interactive Status Metrics (Quick 1-Click Status Filter Tabs) */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0">
+            {[
+              { id: 'All', label: 'All', count: stats.total, dot: null },
+              { id: 'Completed', label: 'Completed', count: stats.completed, dot: 'bg-emerald-500' },
+              { id: 'Pending', label: 'Pending', count: stats.pending, dot: 'bg-amber-500' },
+              { id: 'Overdue', label: 'Overdue', count: stats.overdue, dot: 'bg-rose-500' }
+            ].map(item => {
+              const isActive = statusFilter === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setStatusFilter(item.id)}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer border ${
+                    isActive
+                      ? 'bg-slate-800 text-white border-slate-800 shadow-2xs'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200/70 hover:border-slate-300'
+                  }`}
+                >
+                  {item.dot && <span className={`w-2 h-2 rounded-full ${item.dot} shrink-0`} />}
+                  <span>{item.label}</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${
+                    isActive ? 'bg-white/20 text-white' : 'bg-slate-200/80 text-slate-700'
+                  }`}>
+                    {item.count}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-emerald-500">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider">Completed</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-          </div>
-          <div className="text-2xl font-black text-emerald-700">{stats.completed}</div>
-          <div className="text-[11px] text-emerald-600 font-medium">
-            {isVesselUser ? 'All files submitted' : 'Fully submitted vessels'}
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-amber-500">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider">Pending</span>
-            <Clock className="w-4 h-4 text-amber-500" />
-          </div>
-          <div className="text-2xl font-black text-amber-700">{stats.pending}</div>
-          <div className="text-[11px] text-amber-600 font-medium">
-            Awaiting required uploads
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs space-y-1">
-          <div className="flex items-center justify-between text-rose-500">
-            <span className="text-[11px] font-extrabold uppercase tracking-wider">Overdue</span>
-            <AlertCircle className="w-4 h-4 text-rose-500" />
-          </div>
-          <div className="text-2xl font-black text-rose-700">{stats.overdue}</div>
-          <div className="text-[11px] text-rose-600 font-medium">
-            Past specified deadline
-          </div>
-        </div>
-      </div>
-
-      {/* Filter and Search Controls */}
-      <div className="bg-white p-4.5 rounded-2xl border border-slate-100 shadow-2xs space-y-3.5">
-        {/* Source / Type Filter: Order Lists Only (Default) vs Direct Uploads from Vessels Only vs All */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100/90 pb-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">
-              View:
-            </span>
-            <div className="inline-flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/70">
-              <button
-                type="button"
-                onClick={() => setOrderTypeFilter('order_lists_only')}
-                className={`px-3 py-1.5 text-xs font-black rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
-                  orderTypeFilter === 'order_lists_only'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="View standard SMS order packages (Default view)"
-              >
-                <CheckSquare className="w-3.5 h-3.5" />
-                <span>Order Lists Only</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
-                  orderTypeFilter === 'order_lists_only' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-700'
-                }`}>
-                  {orderListsCount}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setOrderTypeFilter('direct_uploads_only')}
-                className={`px-3 py-1.5 text-xs font-black rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
-                  orderTypeFilter === 'direct_uploads_only'
-                    ? 'bg-teal-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="View reports and checklists uploaded directly from vessels without prior office order"
-              >
-                <FolderPlus className="w-3.5 h-3.5" />
-                <span>Direct Uploads from Vessels Only</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
-                  orderTypeFilter === 'direct_uploads_only' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-700'
-                }`}>
-                  {directUploadsCount}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setOrderTypeFilter('all')}
-                className={`px-3 py-1.5 text-xs font-black rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
-                  orderTypeFilter === 'all'
-                    ? 'bg-slate-800 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`}
-                title="View both order lists and direct vessel uploads combined"
-              >
-                <Layers className="w-3.5 h-3.5" />
-                <span>All ({userVisibleOrders.length})</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-slate-500 font-medium">
-              Showing <strong>{filteredOrders.length}</strong> {orderTypeFilter === 'order_lists_only' ? 'order list(s)' : orderTypeFilter === 'direct_uploads_only' ? 'direct upload(s)' : 'item(s)'}
-            </span>
-            {(searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All' || orderTypeFilter !== 'order_lists_only') && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchQuery('');
-                  setStatusFilter('All');
-                  setVesselFilter('All');
-                  setTeamFilter('All');
-                  setOrderTypeFilter('order_lists_only');
-                }}
-                className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500 hover:text-rose-600 px-2 py-1 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
-                title="Reset all search queries and filters to default (Order Lists Only)"
-              >
-                <RotateCcw className="w-3 h-3" />
-                Reset
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Search, Status, Vessel & Team Filters */}
-        <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between">
+        {/* Row 2: Search Input and Secondary Selectors */}
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
           <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               placeholder={
                 orderTypeFilter === 'direct_uploads_only'
-                  ? "Search direct uploads by vessel, report description, or submitter..."
+                  ? "Search direct uploads by vessel, report, or submitter..."
                   : isVesselUser 
                   ? "Search orders by label, form code or instructions..." 
-                  : "Search orders by label, vessel, form code, or created by..."
+                  : "Search orders by label, vessel, form code, or creator..."
               }
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+              className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
             />
             {searchQuery && (
               <button 
                 onClick={() => setSearchQuery('')}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                title="Clear search"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
 
-          <div className="flex items-center gap-2 overflow-x-auto pb-1 md:pb-0">
-            {/* Status filter */}
-            <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-slate-200">
-              {['All', 'Pending', 'Completed', 'Overdue'].map((status) => (
-                <button
-                  key={status}
-                  onClick={() => setStatusFilter(status)}
-                  className={`px-3 py-1 text-[11px] font-bold rounded-lg transition-all whitespace-nowrap cursor-pointer ${
-                    statusFilter === status
-                      ? 'bg-white text-blue-700 shadow-xs'
-                      : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  {status}
-                </button>
-              ))}
-            </div>
-
-            {/* Vessel Filter (Non-Vessel Only) */}
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            {/* Vessel Filter (Office Only) */}
             {isManagementOrAdmin && (
               <select
                 value={vesselFilter}
                 onChange={(e) => setVesselFilter(e.target.value)}
-                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
               >
                 <option value="All">All Vessels</option>
                 {vessels.map(v => (
@@ -2218,12 +2175,12 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               </select>
             )}
 
-            {/* Team Filter (Non-Vessel Only) */}
+            {/* Team Filter (Office Only) */}
             {isManagementOrAdmin && teams.length > 0 && (
               <select
                 value={teamFilter}
                 onChange={(e) => setTeamFilter(e.target.value)}
-                className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
               >
                 <option value="All">All Teams</option>
                 {teams.map(t => (
@@ -2231,47 +2188,9 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 ))}
               </select>
             )}
-          </div>
-        </div>
-      </div>
 
-      {/* Main Order List Display */}
-      {loading ? (
-        <div className="bg-white p-12 rounded-3xl border border-slate-100 text-center space-y-3">
-          <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-xs font-bold text-slate-500">Loading SMS order packages...</p>
-        </div>
-      ) : filteredOrders.length === 0 ? (
-        <div className="bg-white p-12 rounded-3xl border border-slate-100 text-center space-y-4">
-          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto ${
-            orderTypeFilter === 'direct_uploads_only' ? 'bg-teal-50 text-teal-600' : 'bg-blue-50 text-blue-500'
-          }`}>
-            {orderTypeFilter === 'direct_uploads_only' ? (
-              <FolderPlus className="w-7 h-7 stroke-[1.8]" />
-            ) : (
-              <CheckSquare className="w-7 h-7 stroke-[1.8]" />
-            )}
-          </div>
-          <div className="space-y-1">
-            <h3 className="text-base font-black text-slate-800">
-              {orderTypeFilter === 'direct_uploads_only'
-                ? 'No Direct Vessel Uploads Found'
-                : orderTypeFilter === 'order_lists_only'
-                ? 'No SMS Order Lists Found'
-                : 'No SMS Orders or Submissions Found'}
-            </h3>
-            <p className="text-xs text-slate-500 max-w-md mx-auto">
-              {searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All'
-                ? `No items match your active search and filter criteria (${orderTypeFilter === 'order_lists_only' ? 'Order Lists Only' : orderTypeFilter === 'direct_uploads_only' ? 'Direct Uploads Only' : 'All'}). Try clearing search or resetting filters.`
-                : orderTypeFilter === 'direct_uploads_only'
-                ? 'No direct submissions from vessels without order have been uploaded yet. Vessels can click "Upload Without Order" to submit checklists anytime.'
-                : isVesselUser
-                ? 'There are currently no active SMS form orders assigned to your vessel.'
-                : 'No SMS order lists have been created yet. Click "Create Order List" above to dispatch requirements to vessels.'}
-            </p>
-          </div>
-          <div className="flex items-center justify-center gap-2 pt-2 flex-wrap">
-            {(searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All' || orderTypeFilter !== 'order_lists_only') && (
+            {/* Reset Filter Button */}
+            {(searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All' || orderTypeFilter !== 'all') && (
               <button
                 type="button"
                 onClick={() => {
@@ -2279,57 +2198,81 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                   setStatusFilter('All');
                   setVesselFilter('All');
                   setTeamFilter('All');
-                  setOrderTypeFilter('order_lists_only');
+                  setOrderTypeFilter('all');
                 }}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-rose-600 px-2.5 py-1.5 rounded-xl hover:bg-rose-50 transition-colors cursor-pointer"
+                title="Reset all filters"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                Reset to Default View (Order Lists Only)
+                <span>Reset</span>
               </button>
             )}
-            {orderTypeFilter === 'order_lists_only' && directUploadsCount > 0 && (
+          </div>
+        </div>
+      </div>
+
+      {/* Main Order List Display */}
+      {loading ? (
+        <div className="bg-white p-12 rounded-2xl border border-slate-200/80 text-center space-y-3">
+          <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-xs font-bold text-slate-500">Loading SMS orders...</p>
+        </div>
+      ) : filteredOrders.length === 0 ? (
+        <div className="bg-white p-12 rounded-2xl border border-slate-200/80 text-center space-y-3">
+          <div className={`w-12 h-12 rounded-xl flex items-center justify-center mx-auto ${
+            orderTypeFilter === 'direct_uploads_only'
+              ? 'bg-teal-50 text-teal-600'
+              : orderTypeFilter === 'order_lists_only'
+              ? 'bg-blue-50 text-blue-600'
+              : 'bg-slate-100 text-slate-600'
+          }`}>
+            {orderTypeFilter === 'direct_uploads_only' ? (
+              <FolderPlus className="w-6 h-6" />
+            ) : orderTypeFilter === 'order_lists_only' ? (
+              <CheckSquare className="w-6 h-6" />
+            ) : (
+              <Layers className="w-6 h-6" />
+            )}
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-base font-bold text-slate-800">
+              {orderTypeFilter === 'direct_uploads_only'
+                ? 'No Direct Vessel Uploads Found'
+                : orderTypeFilter === 'order_lists_only'
+                ? 'No SMS Order Lists Found'
+                : 'No Orders or Submissions Found'}
+            </h3>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              {searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All'
+                ? 'No items match your active search and filter criteria. Try clearing search or resetting filters.'
+                : orderTypeFilter === 'direct_uploads_only'
+                ? 'No direct submissions from vessels have been uploaded yet.'
+                : isVesselUser
+                ? 'There are currently no active SMS form orders assigned to your vessel.'
+                : 'No SMS order lists have been created yet. Click "Create Order" to dispatch requirements to vessels.'}
+            </p>
+          </div>
+          <div className="flex items-center justify-center gap-2 pt-2 flex-wrap">
+            {(searchQuery || statusFilter !== 'All' || vesselFilter !== 'All' || teamFilter !== 'All' || orderTypeFilter !== 'all') && (
               <button
                 type="button"
-                onClick={() => setOrderTypeFilter('direct_uploads_only')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
-              >
-                <FolderPlus className="w-3.5 h-3.5" />
-                View Direct Vessel Uploads ({directUploadsCount})
-              </button>
-            )}
-            {orderTypeFilter === 'direct_uploads_only' && orderListsCount > 0 && (
-              <button
-                type="button"
-                onClick={() => setOrderTypeFilter('order_lists_only')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
-              >
-                <CheckSquare className="w-3.5 h-3.5" />
-                View Order Lists Only ({orderListsCount})
-              </button>
-            )}
-            <button
-              onClick={() => setIsDirectUploadModalOpen(true)}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-sm hover:shadow transition-all cursor-pointer"
-            >
-              <Upload className="w-4 h-4" />
-              Upload Files Without Order
-            </button>
-            {isManagementOrAdmin && (
-              <button
                 onClick={() => {
-                  setEditingOrder(null);
-                  setIsCreateModalOpen(true);
+                  setSearchQuery('');
+                  setStatusFilter('All');
+                  setVesselFilter('All');
+                  setTeamFilter('All');
+                  setOrderTypeFilter('all');
                 }}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-sm hover:shadow transition-all cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
               >
-                <Plus className="w-4 h-4" />
-                Create Order List
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reset Filters</span>
               </button>
             )}
           </div>
         </div>
       ) : (
-        <div className="space-y-3.5">
+        <div className="space-y-3">
           {filteredOrders.map((order) => {
             const isDeadlinePassed = order.deadlineDate && new Date(order.deadlineDate) < new Date(new Date().setHours(0, 0, 0, 0));
             const totalForms = order.items?.length || 0;
@@ -2351,6 +2294,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             const myVerifiedCount = order.items?.filter(item => myUploads.some(u => checkFormUploadMatch(u, item))).length || 0;
             
             const isMyVesselDone = isVesselUser && (myVessel?.status === 'Completed' || (myVessel?.submittedCount || 0) >= totalForms || (totalForms > 0 && myVerifiedCount >= totalForms));
+            
             // Calculate uploaded files per vessel and overall progress
             let totalUploadedFilesCount = 0;
             let completedVesselsCount = 0;
@@ -2386,286 +2330,299 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               ? myUploads.some(u => Boolean(u.replace_requested_at))
               : hasAnyReplacementReq;
 
+            const unreadCountForOrder = (order.uploads || []).filter(u => !u.is_read && !u.checked_at).length;
+
             return (
               <div
                 key={order.id}
-                className={`rounded-2xl border transition-all p-5 space-y-4 ${
-                  myHasReplacementReq
-                    ? 'bg-gradient-to-r from-rose-50/90 via-rose-50/40 to-white border-2 border-rose-300/90 shadow-md shadow-rose-100 hover:border-rose-400'
-                    : 'bg-white border-slate-100 shadow-2xs hover:shadow-sm hover:border-slate-200'
+                onClick={() => {
+                  setSelectedOrderForInspection(order);
+                  if (order.vessels.length > 0) {
+                    setActiveVesselTabInDetail(order.vessels[0].vessel_name);
+                  }
+                }}
+                className={`group bg-white rounded-2xl border transition-all p-5 space-y-4 cursor-pointer ${
+                  selectedOrderIdsForMerge.includes(order.id)
+                    ? 'border-blue-400 bg-blue-50/15 shadow-sm ring-2 ring-blue-500/25'
+                    : myHasReplacementReq
+                    ? 'border-rose-300 bg-rose-50/15 shadow-2xs hover:shadow-md hover:border-rose-400'
+                    : 'border-slate-200/90 shadow-2xs hover:shadow-md hover:border-blue-300'
                 }`}
               >
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                  {/* Left Column: Label, Due date, creator */}
-                  <div className="space-y-1.5 flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className="text-base font-black text-slate-800 tracking-tight truncate">
-                        {order.label}
-                      </h3>
-
-                      {/* Status Badges */}
-                      {myHasReplacementReq && (
-                        <span className="px-2.5 py-0.5 bg-rose-100 text-rose-900 border border-rose-300 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1 shadow-2xs animate-pulse">
-                          <RefreshCw className="w-3 h-3 text-rose-600 animate-spin" style={{ animationDuration: '4s' }} />
-                          File Revision Requested
-                        </span>
-                      )}
-
-                      {order.id.startsWith('ord_direct_') ? (
-                        <span className="px-2.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200/80 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
-                          <FolderPlus className="w-3 h-3 text-teal-600" />
-                          Direct Submission
-                        </span>
-                      ) : (
-                        <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
-                          <CheckSquare className="w-3 h-3 text-blue-600" />
-                          Order List
-                        </span>
-                      )}
-
-                      {isFullyCompleted ? (
-                        <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200/60 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                          Completed
-                        </span>
-                      ) : isDeadlinePassed ? (
-                        <span className="px-2.5 py-0.5 bg-rose-50 text-rose-700 border border-rose-200/60 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
-                          <AlertCircle className="w-3 h-3 text-rose-600" />
-                          Overdue
-                        </span>
-                      ) : (
-                        <span className="px-2.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200/60 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-amber-600" />
-                          Pending Submission
-                        </span>
-                      )}
-
-                      <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md flex items-center gap-1">
-                        <Calendar className="w-3 h-3 text-slate-400" />
-                        Deadline: {order.deadlineDate}
-                      </span>
-                    </div>
-
-                    {order.instructions && (
-                      <p className="text-xs text-slate-600 line-clamp-1 leading-relaxed">
-                        <span className="font-bold text-slate-700">Instructions:</span> {order.instructions}
-                      </p>
+                {/* Header Row: Title, Status Badge, Due Date, and Actions */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 flex-wrap min-w-0 flex-1">
+                    {/* Merge Selection Checkbox (Office Only) */}
+                    {isManagementOrAdmin && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedOrderIdsForMerge(prev =>
+                            prev.includes(order.id) ? prev.filter(id => id !== order.id) : [...prev, order.id]
+                          );
+                        }}
+                        className={`p-1 rounded-lg border transition-all cursor-pointer shrink-0 ${
+                          selectedOrderIdsForMerge.includes(order.id)
+                            ? 'bg-blue-600 border-blue-600 text-white shadow-2xs'
+                            : 'border-slate-300 hover:border-blue-400 text-transparent hover:text-slate-300 bg-white'
+                        }`}
+                        title={selectedOrderIdsForMerge.includes(order.id) ? 'Deselect order' : 'Select order for merging'}
+                      >
+                        <CheckSquare className="w-3.5 h-3.5" />
+                      </button>
                     )}
 
-                    <div className="flex items-center gap-3 text-[11px] text-slate-400 font-medium flex-wrap pt-0.5">
-                      <span>Created by <strong className="text-slate-600">{order.createdByName}</strong></span>
-                      <span>•</span>
-                      <span>Assigned to <strong className="text-slate-700">{order.vessels.length} vessel(s)</strong></span>
-                      <span>•</span>
-                      <span><strong className="text-slate-700">{totalForms} forms/checklists</strong> required</span>
-                    </div>
+                    <h3 className="text-base font-bold text-slate-900 tracking-tight group-hover:text-blue-700 transition-colors truncate">
+                      {order.label}
+                    </h3>
+
+                    {/* Status Badge */}
+                    {myHasReplacementReq ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-200">
+                        <AlertTriangle className="w-3 h-3 text-rose-600" />
+                        Revision Required
+                      </span>
+                    ) : isFullyCompleted ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200/80">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        Completed
+                      </span>
+                    ) : isDeadlinePassed ? (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-rose-50 text-rose-700 border border-rose-200/70">
+                        <Clock className="w-3 h-3 text-rose-600" />
+                        Overdue
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-amber-50 text-amber-800 border border-amber-200/70">
+                        <Clock className="w-3 h-3 text-amber-600" />
+                        Pending
+                      </span>
+                    )}
+
+                    {/* Direct Upload / Order Package Pill */}
+                    {order.id.startsWith('ord_direct_') && (
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-teal-50 text-teal-700 border border-teal-200">
+                        Direct Submission
+                      </span>
+                    )}
                   </div>
 
-                  {/* Right Column: Progress & Action Buttons */}
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
-                    {/* Progress Indicator */}
-                    <div 
-                      className="bg-slate-50 px-4 py-2.5 rounded-xl border border-slate-100 min-w-[170px] space-y-1.5"
-                      title={
-                        !isVesselUser && order.vessels.length > 1
-                          ? `${completedVesselsCount} of ${order.vessels.length} vessels completed all required files (${submittedCount}/${totalTarget} total files, ${percent}%)`
-                          : `${submittedCount} of ${totalTarget} required files uploaded (${percent}%)`
-                      }
+                  {/* Due Date & Action Cluster */}
+                  <div className="flex items-center gap-2.5 shrink-0 self-start sm:self-center" onClick={(e) => e.stopPropagation()}>
+                    <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg border ${
+                      isDeadlinePassed && !isFullyCompleted
+                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                        : 'bg-slate-50 text-slate-600 border-slate-200'
+                    }`}>
+                      <Calendar className="w-3.5 h-3.5" />
+                      <span>Due {order.deadlineDate}</span>
+                    </span>
+
+                    {/* Open Order Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedOrderForInspection(order);
+                        if (order.vessels.length > 0) {
+                          setActiveVesselTabInDetail(order.vessels[0].vessel_name);
+                        }
+                      }}
+                      className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
                     >
-                      <div className="flex items-center justify-between text-[11px] font-extrabold">
-                        <span className="text-slate-500 uppercase tracking-wide">
-                          {isVesselUser 
-                            ? 'Your Progress' 
-                            : order.vessels.length > 1 
-                              ? 'Files Progress' 
-                              : 'Upload Progress'}
-                        </span>
-                        <span className={isFullyCompleted ? 'text-emerald-700 font-black' : 'text-blue-700 font-black'}>
-                          {submittedCount} / {totalTarget} ({percent}%)
-                        </span>
-                      </div>
-                      <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
-                        <div 
-                          className={`h-full rounded-full transition-all duration-500 ${
-                            isFullyCompleted ? 'bg-emerald-500' : 'bg-blue-600'
-                          }`}
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
-                    </div>
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>{isVesselUser ? 'Open & Upload' : 'Open Order'}</span>
+                    </button>
 
-                    {/* Actions */}
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <button
-                        onClick={() => {
-                          setSelectedOrderForInspection(order);
-                          if (order.vessels.length > 0) {
-                            setActiveVesselTabInDetail(order.vessels[0].vessel_name);
-                          }
-                        }}
-                        className="px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-black tracking-wide transition-colors flex items-center gap-1.5 shadow-2xs"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        <span>{isVesselUser ? 'Open & Upload' : 'View & Upload'}</span>
-                      </button>
-
-                      {isManagementOrAdmin && (order.uploads || []).some(u => !u.is_read && !u.checked_at) && (
+                    {/* Secondary Actions Menu */}
+                    <div className="flex items-center gap-1 border-l border-slate-200 pl-1.5">
+                      {/* Mark Read */}
+                      {isManagementOrAdmin && unreadCountForOrder > 0 && (
                         <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleMarkOrderChecked(order.id);
-                          }}
-                          className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl text-xs font-bold tracking-wide transition-colors flex items-center gap-1.5 shadow-2xs border border-amber-300"
-                          title="Mark all uploaded files in this order as read for your account"
+                          type="button"
+                          onClick={() => handleMarkOrderChecked(order.id)}
+                          className="p-1.5 text-amber-700 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 rounded-lg border border-amber-200 transition-colors cursor-pointer"
+                          title={`Mark ${unreadCountForOrder} document(s) as read`}
                         >
                           <CheckSquare className="w-3.5 h-3.5 text-amber-600" />
-                          <span className="hidden sm:inline">Mark Read</span>
                         </button>
                       )}
 
+                      {/* Templates ZIP */}
                       <button
+                        type="button"
                         onClick={() => handleDownloadOrderTemplatesZip(order.id, order.label)}
                         disabled={downloadingTemplatesZipOrderId === order.id}
-                        className={`px-3 py-2 rounded-xl text-xs font-bold tracking-wide transition-colors flex items-center gap-1.5 shadow-2xs border ${
-                          downloadingTemplatesZipOrderId === order.id
-                            ? 'bg-blue-50 text-blue-700 border-blue-300 cursor-not-allowed'
-                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 border-slate-200'
-                        }`}
-                        title={downloadingTemplatesZipOrderId === order.id ? "Preparing template package..." : "Download all blank form templates for this order in ZIP"}
+                        className="p-1.5 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors cursor-pointer"
+                        title="Download blank templates (ZIP)"
                       >
                         {downloadingTemplatesZipOrderId === order.id ? (
                           <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />
                         ) : (
                           <FolderDown className="w-3.5 h-3.5 text-blue-600" />
                         )}
-                        <span className="hidden sm:inline">{downloadingTemplatesZipOrderId === order.id ? 'Packaging...' : 'Templates'}</span>
                       </button>
 
+                      {/* Uploads ZIP (Office only) */}
                       {isManagementOrAdmin && (
-                        <>
-                          <button
-                            onClick={() => handleDownloadZip(order.id, order.label)}
-                            disabled={downloadingZipOrderId === order.id}
-                            className={`p-2 rounded-xl border transition-colors ${
-                              downloadingZipOrderId === order.id
-                                ? 'bg-blue-50 text-blue-700 border-blue-300 cursor-not-allowed shadow-inner'
-                                : 'text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 border-slate-200'
-                            }`}
-                            title={downloadingZipOrderId === order.id ? "Downloading of uploaded files is processing..." : "Download all vessel uploads in ZIP"}
-                          >
-                            {downloadingZipOrderId === order.id ? (
-                              <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
-                            ) : (
-                              <FolderDown className="w-4 h-4 text-slate-600" />
-                            )}
-                          </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadZip(order.id, order.label)}
+                          disabled={downloadingZipOrderId === order.id}
+                          className="p-1.5 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors cursor-pointer"
+                          title="Download submitted files (ZIP)"
+                        >
+                          {downloadingZipOrderId === order.id ? (
+                            <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />
+                          ) : (
+                            <Download className="w-3.5 h-3.5 text-slate-600" />
+                          )}
+                        </button>
+                      )}
 
-                          <button
-                            onClick={() => {
-                              setEditingOrder(order);
-                              setIsCreateModalOpen(true);
-                            }}
-                            className="p-2 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors"
-                            title="Edit Order"
-                          >
-                            <Edit3 className="w-4 h-4 text-slate-600" />
-                          </button>
+                      {/* Edit (Office only) */}
+                      {isManagementOrAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingOrder(order);
+                            setIsCreateModalOpen(true);
+                          }}
+                          className="p-1.5 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors cursor-pointer"
+                          title="Edit Order"
+                        >
+                          <Edit3 className="w-3.5 h-3.5 text-slate-600" />
+                        </button>
+                      )}
 
-                          <button
-                            onClick={() => requestDeleteOrder(order.id, order.label)}
-                            className="p-2 text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-xl border border-rose-200 transition-colors"
-                            title="Delete Order"
-                          >
-                            <Trash2 className="w-4 h-4 text-rose-600" />
-                          </button>
-                        </>
+                      {/* Merge Order (Office only) */}
+                      {isManagementOrAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedOrderIdsForMerge(prev =>
+                              prev.includes(order.id) ? prev : [order.id, ...prev]
+                            );
+                            setIsMergeModalOpen(true);
+                          }}
+                          className="p-1.5 text-slate-600 hover:text-blue-700 bg-slate-50 hover:bg-blue-50 rounded-lg border border-slate-200 hover:border-blue-200 transition-colors cursor-pointer"
+                          title="Merge with other orders"
+                        >
+                          <GitMerge className="w-3.5 h-3.5 text-blue-600" />
+                        </button>
+                      )}
+
+                      {/* Delete (Office only) */}
+                      {isManagementOrAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => requestDeleteOrder(order.id, order.label)}
+                          className="p-1.5 text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors cursor-pointer"
+                          title="Delete Order"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                        </button>
                       )}
                     </div>
                   </div>
                 </div>
 
-                {/* Sub-preview tags: Forms & Vessel Badges */}
-                <div className="pt-2 border-t border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 flex-wrap">
-                    <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Required Forms:</span>
-                    {sortByFormCode(order.items).slice(0, 6).map((item, idx) => {
-                      const itemUploaded = isVesselUser 
-                        ? myUploads.some(u => checkFormUploadMatch(u, item))
-                        : (order.uploads || []).some(u => checkFormUploadMatch(u, item));
-                      const itemHasReplaceReq = isVesselUser
-                        ? myUploads.some(u => checkFormUploadMatch(u, item) && Boolean(u.replace_requested_at))
-                        : (order.uploads || []).some(u => checkFormUploadMatch(u, item) && Boolean(u.replace_requested_at));
+                {/* Subtitle / Metadata Strip */}
+                <div className="flex items-center justify-between text-xs text-slate-500 flex-wrap gap-2 pt-0.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-slate-700">
+                      {order.vessels.length} {order.vessels.length === 1 ? 'Vessel' : 'Vessels'}
+                    </span>
+                    <span>•</span>
+                    <span>
+                      <strong className="text-slate-700">{totalForms}</strong> {totalForms === 1 ? 'Requirement' : 'Requirements'}
+                    </span>
+                    <span>•</span>
+                    <span>Issued by <strong className="text-slate-700">{order.createdByName}</strong></span>
+                  </div>
 
-                      return (
-                        <button
-                          key={idx}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handlePreviewTemplate(item.form_id, item.form_code, item.template_file_name);
-                          }}
-                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition-colors inline-flex items-center gap-1 cursor-pointer group/badge ${
-                            itemHasReplaceReq
-                              ? 'bg-rose-100 hover:bg-rose-200 text-rose-900 border-rose-300 hover:border-rose-400 font-black shadow-2xs'
-                              : itemUploaded
-                                ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200/80 hover:border-emerald-300'
-                                : 'bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 border-slate-200/60 hover:border-blue-300'
-                          }`}
-                          title={`Click to view/preview template for ${item.form_code}: ${item.description}${itemHasReplaceReq ? ' (Revision Requested!)' : itemUploaded ? ' (Uploaded)' : ' (Pending Upload)'}`}
-                        >
-                          {itemHasReplaceReq ? (
-                            <RefreshCw className="w-2.5 h-2.5 text-rose-600 shrink-0 animate-spin" style={{ animationDuration: '4s' }} />
-                          ) : itemUploaded ? (
-                            <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                          ) : null}
-                          <span>{item.form_code}</span>
-                          <Eye className="w-2.5 h-2.5 text-slate-400 group-hover/badge:text-blue-600 transition-colors" />
-                        </button>
-                      );
-                    })}
-                    {order.items.length > 6 && (
-                      <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-md text-[10px] font-bold">
-                        +{order.items.length - 6} more
+                  {/* Progress fraction and percentage */}
+                  <div className="flex items-center gap-2 font-medium">
+                    <span className="text-slate-500">Progress:</span>
+                    <span className={`font-bold ${isFullyCompleted ? 'text-emerald-700' : 'text-blue-700'}`}>
+                      {submittedCount} / {totalTarget} ({percent}%)
+                    </span>
+                  </div>
+                </div>
+
+                {/* Progress Bar */}
+                <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      isFullyCompleted ? 'bg-emerald-500' : 'bg-blue-600'
+                    }`}
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+
+                {/* Instructions snippet if present */}
+                {order.instructions && (
+                  <p className="text-xs text-slate-600 line-clamp-1 italic bg-slate-50/80 px-3 py-1.5 rounded-lg border border-slate-100">
+                    <span className="font-bold not-italic text-slate-700">Note:</span> {order.instructions}
+                  </p>
+                )}
+
+                {/* Bottom Row: Clean Scannable Summary */}
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                  <div className="flex items-center gap-3">
+                    {!isVesselUser && order.vessels.length > 1 && (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                        <Ship className="w-3.5 h-3.5 text-slate-400" />
+                        <span>{completedVesselsCount} of {order.vessels.length} vessels completed</span>
+                      </span>
+                    )}
+                    {isVesselUser && (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                        <Ship className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Assigned to {myVessel?.vessel_name || currentUser.username}</span>
                       </span>
                     )}
                   </div>
 
-                  {!isVesselUser && (
-                    <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 flex-wrap">
-                      <span className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Vessels:</span>
-                      {order.vessels.slice(0, 4).map((v, idx) => {
-                        const vUps = getVesselUploads(order.uploads, v, order.vessels);
-                        const vVerified = order.items?.filter(it => vUps.some(u => checkFormUploadMatch(u, it))).length || 0;
-                        const isVDone = v.status === 'Completed' || (totalForms > 0 && (vVerified >= totalForms || (v.submittedCount || 0) >= totalForms));
-                        const displayCount = isVDone ? totalForms : vVerified;
-                        const vHasReplaceReq = vUps.some(u => Boolean(u.replace_requested_at));
-
-                        return (
-                          <span
-                            key={idx}
-                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold border flex items-center gap-1 ${
-                              vHasReplaceReq
-                                ? 'bg-rose-100 text-rose-900 border-rose-300 font-black shadow-2xs'
-                                : isVDone
-                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
-                                  : 'bg-slate-50 text-slate-600 border-slate-200'
-                            }`}
-                          >
-                            {vHasReplaceReq && <RefreshCw className="w-2.5 h-2.5 text-rose-600 shrink-0 animate-spin" style={{ animationDuration: '4s' }} />}
-                            <span>{v.vessel_name} ({displayCount}/{totalForms})</span>
-                          </span>
-                        );
-                      })}
-                      {order.vessels.length > 4 && (
-                        <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded-md text-[10px] font-bold">
-                          +{order.vessels.length - 4} more
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  <span className="text-blue-600 font-semibold text-xs flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
+                    <span>View full checklist &amp; submissions</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </span>
                 </div>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Floating Selection & Merge Bar for Non-Vessel Users */}
+      {isManagementOrAdmin && selectedOrderIdsForMerge.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 backdrop-blur-md text-white px-5 py-3 rounded-2xl shadow-xl border border-slate-700 flex items-center gap-4 animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+            <span className="text-xs font-bold tracking-tight">
+              {selectedOrderIdsForMerge.length} {selectedOrderIdsForMerge.length === 1 ? 'order' : 'orders'} selected
+            </span>
+          </div>
+          <div className="h-4 w-px bg-slate-700" />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsMergeModalOpen(true)}
+              className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+              title={selectedOrderIdsForMerge.length < 2 ? 'Open merge dialog to pick a second order' : 'Merge selected orders'}
+            >
+              <GitMerge className="w-3.5 h-3.5" />
+              <span>{selectedOrderIdsForMerge.length >= 2 ? `Merge Selected (${selectedOrderIdsForMerge.length})` : 'Merge Order...'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedOrderIdsForMerge([])}
+              className="px-2.5 py-1.5 text-slate-400 hover:text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+            >
+              Clear
+            </button>
+          </div>
         </div>
       )}
 
@@ -2864,6 +2821,31 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             onStatusRefresh?.();
             setOrderTypeFilter('direct_uploads_only');
             showToast(`Successfully uploaded ${count} file(s) without order! Switched view to Direct Vessel Uploads.`, 'success');
+          }}
+        />
+      )}
+
+      {/* MODAL 5: MERGE ORDERS (Office / Non-vessel users) */}
+      {isMergeModalOpen && isManagementOrAdmin && (
+        <MergeOrdersModal
+          isOpen={isMergeModalOpen}
+          onClose={() => setIsMergeModalOpen(false)}
+          orders={userVisibleOrders}
+          initialSelectedOrderIds={selectedOrderIdsForMerge}
+          token={token}
+          onSuccess={(targetOrderId, label) => {
+            setIsMergeModalOpen(false);
+            setSelectedOrderIdsForMerge([]);
+            fetchOrders();
+            onStatusRefresh?.();
+            showToast(`Orders merged successfully into "${label}"!`, 'success');
+            const mergedOrder = orders.find(o => o.id === targetOrderId);
+            if (mergedOrder) {
+              setSelectedOrderForInspection(mergedOrder);
+              if (mergedOrder.vessels && mergedOrder.vessels.length > 0) {
+                setActiveVesselTabInDetail(mergedOrder.vessels[0].vessel_name);
+              }
+            }
           }}
         />
       )}
@@ -3542,6 +3524,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
   const isVesselDone = (totalRequired > 0 && verifiedCount >= totalRequired) || activeVessel?.status === 'Completed';
   const distinctUploaded = isVesselDone ? totalRequired : verifiedCount;
+  const progressPercent = totalRequired > 0 ? Math.round((distinctUploaded / totalRequired) * 100) : 0;
 
   // Filter and search checklist items
   const filteredChecklistItems = useMemo(() => {
@@ -3605,173 +3588,293 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-in fade-in duration-200">
-      <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
+      <div className="bg-white rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-200/80 w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden">
         {/* Modal Header */}
-        <div className="px-6 py-5 border-b border-slate-100 flex items-start justify-between gap-4 bg-slate-50/50">
-          <div className="space-y-1">
+        <div className="px-6 py-4.5 border-b border-slate-100 flex items-start justify-between gap-4 bg-white shrink-0">
+          <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               {order.id.startsWith('ord_direct_') ? (
-                <span className="px-2.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200/80 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                <span className="px-2.5 py-0.5 bg-teal-50 text-teal-700 border border-teal-200 rounded-full text-[10px] font-bold flex items-center gap-1">
                   <FolderPlus className="w-3 h-3 text-teal-600" />
-                  Direct Submission (No Order)
+                  Direct Submission
                 </span>
               ) : (
-                <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-full text-[10px] font-black uppercase tracking-wider">
+                <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-[10px] font-bold">
                   SMS Order Package
                 </span>
               )}
               {isVesselDone ? (
-                <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200/60 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                <span className="px-2.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-[10px] font-bold flex items-center gap-1">
                   <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                   Completed
                 </span>
               ) : (
-                <span className="px-2.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200/60 rounded-full text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+                <span className="px-2.5 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-full text-[10px] font-bold flex items-center gap-1">
                   <Clock className="w-3 h-3 text-amber-600" />
-                  Pending Upload
+                  Pending
+                </span>
+              )}
+              {revisionCount > 0 && (
+                <span className="px-2.5 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded-full text-[10px] font-bold flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 text-rose-600" />
+                  {revisionCount} Revision{revisionCount > 1 ? 's' : ''} Required
                 </span>
               )}
             </div>
-            <h2 className="text-xl font-black text-slate-800 tracking-tight">
+
+            <h2 className="text-lg sm:text-xl font-bold text-slate-900 tracking-tight truncate">
               {order.label}
             </h2>
+
             <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap">
-              <span className="flex items-center gap-1 font-bold text-slate-700">
+              <span className="flex items-center gap-1.5 font-medium text-slate-700">
                 <Calendar className="w-3.5 h-3.5 text-blue-600" />
-                Deadline: {order.deadlineDate}
+                Due {order.deadlineDate}
               </span>
               <span>•</span>
-              <span>Issued by: <strong>{order.createdByName}</strong></span>
+              <span>Issued by <strong className="text-slate-700 font-semibold">{order.createdByName}</strong></span>
               {activeVessel && (
                 <>
                   <span>•</span>
-                  <span>B2 Folder: <code className="text-[11px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-700 font-mono">sms_orders/{order.label.replace(/[^a-zA-Z0-9_-]/g, '_')}_{activeVessel.vessel_name.replace(/[^a-zA-Z0-9_-]/g, '_')}_{order.deadlineDate}</code></span>
+                  <span className="flex items-center gap-1 font-medium text-slate-700">
+                    <Ship className="w-3 h-3 text-slate-500" />
+                    {activeVessel.vessel_name}
+                  </span>
                 </>
               )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* Action Buttons in Header */}
+          <div className="flex items-center gap-2 shrink-0">
             {!isVesselUser && vesselUploads.some(u => !u.is_read && !u.checked_at) && (
               <button
                 onClick={() => onMarkOrderChecked?.(order.id, activeVessel ? activeVessel.vessel_id : undefined)}
-                className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl border border-amber-300/80 text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors"
-                title={`Mark all uploads for ${activeVessel?.vessel_name || 'this vessel'} as read for your account`}
+                className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl border border-amber-200 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                title={`Mark all uploads for ${activeVessel?.vessel_name || 'this vessel'} as read`}
               >
-                <CheckSquare className="w-4 h-4 text-amber-600" />
+                <CheckSquare className="w-3.5 h-3.5 text-amber-600" />
                 <span className="hidden sm:inline">Mark Read</span>
               </button>
             )}
+
+            {/* Templates ZIP Button */}
             <button
               onClick={() => onDownloadOrderTemplatesZip(order.id, order.label)}
               disabled={isDownloadingTemplatesZip}
-              className={`px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors ${
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
                 isDownloadingTemplatesZip
-                  ? 'bg-blue-50 text-blue-700 border-blue-300 cursor-not-allowed'
-                  : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200/70'
+                  ? 'bg-blue-50 text-blue-700 border-blue-200 cursor-wait'
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200 hover:border-slate-300'
               }`}
-              title={isDownloadingTemplatesZip ? "Preparing template files package..." : "Download all official blank templates for this order (ZIP)"}
+              title={isDownloadingTemplatesZip ? "Packaging blank templates..." : "Download blank templates (ZIP)"}
             >
               {isDownloadingTemplatesZip ? (
-                <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+                <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
               ) : (
-                <FolderDown className="w-4 h-4 text-blue-600 shrink-0" />
+                <FolderDown className="w-3.5 h-3.5 text-blue-600 shrink-0" />
               )}
-              <span className="hidden sm:inline">
-                {isDownloadingTemplatesZip ? 'Packaging Templates...' : 'Templates (ZIP)'}
+              <span className="hidden md:inline">
+                {isDownloadingTemplatesZip ? 'Packaging...' : 'Templates (ZIP)'}
               </span>
             </button>
+
+            {/* Uploads ZIP Button */}
             <button
               onClick={() => onDownloadZip(order.id, order.label, activeVessel ? activeVessel.vessel_id : undefined)}
               disabled={isDownloadingZip}
-              className={`px-3 py-2 rounded-xl border text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all ${
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
                 isDownloadingZip
-                  ? 'bg-blue-50 text-blue-700 border-blue-300 cursor-not-allowed shadow-inner'
-                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+                  ? 'bg-blue-50 text-blue-700 border-blue-300 shadow-inner cursor-wait'
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200 hover:border-slate-300'
               }`}
-              title={isDownloadingZip ? "Downloading of uploaded files is processing..." : "Download all vessel uploads as ZIP"}
+              title={isDownloadingZip ? "Downloading of uploaded files is processing... Packaging files into ZIP" : "Download all uploaded vessel files (ZIP)"}
             >
               {isDownloadingZip ? (
-                <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+                <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />
               ) : (
-                <FolderDown className="w-4 h-4 text-slate-600 shrink-0" />
+                <Download className="w-3.5 h-3.5 text-slate-600 shrink-0" />
               )}
-              <span className="hidden sm:inline">
+              <span className="hidden md:inline">
                 {isDownloadingZip ? 'Downloading ZIP...' : 'Uploads ZIP'}
               </span>
             </button>
+
             {!isVesselUser && !order.id.startsWith('ord_direct_') && onEditOrder && (
               <button
                 onClick={() => onEditOrder(order)}
-                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl border border-slate-200 text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-colors"
-                title="Edit this SMS Order List"
+                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl border border-slate-200 transition-colors cursor-pointer"
+                title="Edit Order"
               >
-                <Edit3 className="w-4 h-4 text-slate-600" />
-                <span className="hidden sm:inline">Edit Order</span>
+                <Edit3 className="w-4 h-4" />
               </button>
             )}
+
             <button
               onClick={onClose}
-              className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors"
+              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer ml-1"
+              title="Close modal"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Informative Processing Alert Banners for ZIP Downloads */}
+        {/* Informative Processing Alert Banner for ZIP Downloads */}
         {isDownloadingZip && (
-          <div className="bg-gradient-to-r from-blue-50 via-sky-50 to-blue-50 border-b border-blue-200 px-6 py-3.5 flex items-center justify-between gap-3 text-xs text-blue-900 animate-in fade-in slide-in-from-top-2 duration-150 shrink-0 shadow-2xs">
+          <div className="bg-blue-50 border-b border-blue-200/80 px-6 py-3 flex items-center justify-between gap-3 text-xs text-blue-900 animate-in fade-in shrink-0">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-7 h-7 rounded-lg bg-blue-100/90 text-blue-700 flex items-center justify-center shrink-0 border border-blue-200">
-                <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+              <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
               </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 min-w-0">
-                <span className="font-black text-blue-950">Downloading of uploaded files is processing:</span>
-                <span className="text-blue-800 font-medium">Packaging files into a ZIP archive from storage. Download will start automatically once ready.</span>
+              <div className="min-w-0">
+                <span className="font-bold text-blue-950">Downloading of uploaded files is processing:</span>{' '}
+                <span className="text-blue-800">
+                  Packaging vessel files into a ZIP archive from storage. Your download will start automatically once ready.
+                </span>
               </div>
             </div>
-            <span className="px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200/80 rounded-full shrink-0">
+            <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 rounded-md shrink-0">
               Processing ZIP
             </span>
           </div>
         )}
 
         {isDownloadingTemplatesZip && (
-          <div className="bg-gradient-to-r from-blue-50 via-sky-50 to-blue-50 border-b border-blue-200 px-6 py-3.5 flex items-center justify-between gap-3 text-xs text-blue-900 animate-in fade-in slide-in-from-top-2 duration-150 shrink-0 shadow-2xs">
+          <div className="bg-blue-50 border-b border-blue-200/80 px-6 py-3 flex items-center justify-between gap-3 text-xs text-blue-900 animate-in fade-in shrink-0">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-7 h-7 rounded-lg bg-blue-100/90 text-blue-700 flex items-center justify-center shrink-0 border border-blue-200">
-                <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+              <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
               </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 min-w-0">
-                <span className="font-black text-blue-950">Packaging templates:</span>
-                <span className="text-blue-800 font-medium">Downloading and compressing official form templates into a ZIP package. Please wait...</span>
+              <div className="min-w-0">
+                <span className="font-bold text-blue-950">Packaging blank templates:</span>{' '}
+                <span className="text-blue-800">
+                  Downloading and compressing official templates into a ZIP package. Please wait...
+                </span>
               </div>
             </div>
-            <span className="px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200/80 rounded-full shrink-0">
+            <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-700 border border-blue-200 rounded-md shrink-0">
               Packaging ZIP
             </span>
           </div>
         )}
 
-        {/* Modal Body */}
-        <div className="p-6 overflow-y-auto space-y-6 flex-1">
-          {/* Validation Error Banner (Prominently displayed inside the modal) */}
+        {/* Multi-Vessel Tab Switcher (if more than 1 vessel) */}
+        {!isVesselUser && order.vessels.length > 1 && (
+          <div className="px-6 py-2.5 bg-slate-50 border-b border-slate-100 flex items-center gap-2 overflow-x-auto shrink-0">
+            <span className="text-xs font-semibold text-slate-500 shrink-0 mr-1">Vessel:</span>
+            {order.vessels.map((v) => {
+              const vUploads = getVesselUploads(order.uploads, v, order.vessels);
+              const vVerified = order.items.filter(formItem => 
+                vUploads.some(u => checkFormUploadMatch(u, formItem))
+              ).length;
+              const isDone = (totalRequired > 0 && vVerified >= totalRequired) || v.status === 'Completed' || (v.submittedCount || 0) >= totalRequired;
+              const vSubmittedCount = isDone ? totalRequired : vVerified;
+              const isActive = activeVessel?.vessel_name === v.vessel_name;
+              const vHasReplaceReq = vUploads.some(u => Boolean(u.replace_requested_at));
+
+              return (
+                <button
+                  key={v.vessel_id || v.vessel_name}
+                  onClick={() => setActiveVesselTab(v.vessel_name)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 shrink-0 border cursor-pointer ${
+                    isActive
+                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                      : 'bg-white text-slate-600 hover:text-slate-900 border-slate-200 hover:border-slate-300'
+                  }`}
+                >
+                  <Ship className={`w-3.5 h-3.5 ${isActive ? 'text-blue-300' : 'text-slate-400'}`} />
+                  <span>{v.vessel_name}</span>
+                  {vHasReplaceReq && (
+                    <span className="w-2 h-2 rounded-full bg-rose-500" title="Revision requested" />
+                  )}
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-bold ${
+                    isActive ? 'bg-white/20 text-white' : isDone ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
+                  }`}>
+                    {vSubmittedCount}/{totalRequired}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Executive Metrics & Progress Strip */}
+        <div className="px-6 py-3.5 bg-slate-50/90 border-b border-slate-100 shrink-0">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            {/* Vessel & On-Behalf Indicator */}
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-blue-100/80 text-blue-700 flex items-center justify-center shrink-0">
+                <Ship className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Target Vessel</div>
+                <div className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                  <span>{activeVessel?.vessel_name || 'Vessel'}</span>
+                  {!isVesselUser && (
+                    <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.2 rounded">
+                      Office / Uploading on behalf
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 4 Clean Scannable Metric Tiles */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="px-3 py-1 bg-white rounded-xl border border-slate-200/80 text-center min-w-[65px]">
+                <div className="text-[10px] font-bold text-slate-400 uppercase">Total</div>
+                <div className="text-xs font-black text-slate-800">{totalRequired}</div>
+              </div>
+
+              <div className="px-3 py-1 bg-white rounded-xl border border-emerald-200/80 text-center min-w-[65px]">
+                <div className="text-[10px] font-bold text-emerald-600 uppercase">Uploaded</div>
+                <div className="text-xs font-black text-emerald-700">{distinctUploaded}</div>
+              </div>
+
+              <div className="px-3 py-1 bg-white rounded-xl border border-amber-200/80 text-center min-w-[65px]">
+                <div className="text-[10px] font-bold text-amber-600 uppercase">Pending</div>
+                <div className="text-xs font-black text-amber-700">{Math.max(0, totalRequired - verifiedCount)}</div>
+              </div>
+
+              {revisionCount > 0 && (
+                <div className="px-3 py-1 bg-rose-50 rounded-xl border border-rose-200 text-center min-w-[65px]">
+                  <div className="text-[10px] font-bold text-rose-600 uppercase">Revisions</div>
+                  <div className="text-xs font-black text-rose-700">{revisionCount}</div>
+                </div>
+              )}
+
+              {/* Progress bar tile */}
+              <div className="px-3.5 py-1.5 bg-white rounded-xl border border-slate-200/80 min-w-[130px] space-y-1">
+                <div className="flex items-center justify-between text-[10px] font-bold">
+                  <span className="text-slate-400 uppercase">Progress</span>
+                  <span className={isVesselDone ? 'text-emerald-700' : 'text-blue-700'}>{progressPercent}%</span>
+                </div>
+                <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      isVesselDone ? 'bg-emerald-500' : 'bg-blue-600'
+                    }`}
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Modal Scrollable Body */}
+        <div className="p-5 sm:p-6 overflow-y-auto space-y-4 flex-1 bg-slate-50/40">
+          {/* Error Banner */}
           {(uploadErrorMessage || (uploadDetailedErrors && uploadDetailedErrors.length > 0)) && (
-            <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4.5 space-y-2.5 animate-in fade-in duration-150 shadow-xs">
+            <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 space-y-2.5 animate-in fade-in">
               <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0 mt-0.5">
-                    <AlertCircle className="w-5 h-5 text-rose-600" />
-                  </div>
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                   <div>
-                    <h4 className="text-xs font-black text-rose-900 uppercase tracking-wide">
-                      Document Verification / File Mismatch Error
-                    </h4>
+                    <h4 className="text-xs font-bold text-rose-900">Upload Verification Error</h4>
                     {uploadErrorMessage && (
-                      <p className="text-xs text-rose-800 font-semibold mt-0.5 leading-relaxed">
-                        {uploadErrorMessage}
-                      </p>
+                      <p className="text-xs text-rose-800 font-medium mt-0.5">{uploadErrorMessage}</p>
                     )}
                   </div>
                 </div>
@@ -3779,65 +3882,36 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   <button
                     type="button"
                     onClick={onClearUploadError}
-                    className="text-rose-400 hover:text-rose-700 p-1 rounded-lg hover:bg-rose-100 transition-colors shrink-0"
-                    title="Dismiss error notice"
+                    className="text-rose-400 hover:text-rose-700 p-1 rounded-lg hover:bg-rose-100 transition-colors"
                   >
-                    <X className="w-4 h-4" />
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>
 
               {uploadDetailedErrors && uploadDetailedErrors.length > 0 && (
-                <div className="bg-white/80 rounded-xl p-3.5 border border-rose-200/80 space-y-1.5 text-xs text-rose-900">
-                  <div className="text-[10px] font-black uppercase text-rose-700 tracking-wider">
-                    Rejected File Details ({uploadDetailedErrors.length}):
-                  </div>
-                  <ul className="list-disc list-inside space-y-1 text-[11px] font-medium leading-relaxed max-h-40 overflow-y-auto pr-1">
+                <div className="bg-white/80 rounded-lg p-3 border border-rose-200/70 text-xs text-rose-900 max-h-36 overflow-y-auto">
+                  <ul className="list-disc list-inside space-y-0.5 text-[11px] font-medium">
                     {uploadDetailedErrors.map((err, i) => (
-                      <li key={i} className="text-rose-800">{err}</li>
+                      <li key={i}>{err}</li>
                     ))}
                   </ul>
                 </div>
               )}
 
-              {/* Suggestion notice for repeated "Failed to fetch" errors */}
-              {lastFailedUpload?.suggestion && (
-                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl flex items-start gap-2.5 text-xs text-amber-950 font-medium leading-relaxed">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                  <div className="space-y-1.5 flex-1">
-                    <div className="font-bold text-amber-900 text-xs flex items-center gap-1.5">
-                      <span>Connection Issue Troubleshooting:</span>
-                    </div>
-                    <div>{lastFailedUpload.suggestion}</div>
-                    <div className="pt-1 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => window.location.reload()}
-                        className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-black tracking-wide flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
-                        title="Refresh the page in your browser"
-                      >
-                        <RefreshCw className="w-3.5 h-3.5" />
-                        <span>Refresh Browser</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Retry Button in Error Banner */}
               {lastFailedUpload && onRetryUpload && (
-                <div className="pt-1 flex items-center justify-between gap-3 border-t border-rose-200/60">
-                  <div className="text-[11px] text-rose-800 font-medium">
-                    Previous upload attempt had <strong className="font-bold">{lastFailedUpload.fileNames.length} file(s)</strong> ({lastFailedUpload.totalSize}).
-                  </div>
+                <div className="pt-2 flex items-center justify-between gap-3 border-t border-rose-200/60">
+                  <span className="text-[11px] text-rose-800">
+                    Failed attempt: <strong>{lastFailedUpload.fileNames.length} file(s)</strong> ({lastFailedUpload.totalSize})
+                  </span>
                   <button
                     type="button"
                     disabled={uploadProgress}
                     onClick={onRetryUpload}
-                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-400 text-white rounded-xl text-xs font-black tracking-wide flex items-center gap-2 shadow-xs transition-colors cursor-pointer shrink-0"
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-400 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
-                    <RotateCcw className={`w-3.5 h-3.5 ${uploadProgress ? 'animate-spin' : ''}`} />
-                    <span>{uploadProgress ? 'Retrying Upload...' : `Retry Upload (${lastFailedUpload.fileNames.length} files)`}</span>
+                    <RotateCcw className={`w-3 h-3 ${uploadProgress ? 'animate-spin' : ''}`} />
+                    <span>{uploadProgress ? 'Retrying...' : 'Retry Upload'}</span>
                   </button>
                 </div>
               )}
@@ -3846,117 +3920,38 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
           {/* Validation Progress Notice */}
           {uploadProgress && uploadValidationMessage && (
-            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex items-center gap-3 animate-in fade-in duration-150">
-              <RefreshCw className="w-5 h-5 text-blue-600 animate-spin shrink-0" />
-              <div className="space-y-0.5">
-                <span className="text-xs font-black text-blue-900">Document Verification in Progress</span>
-                <p className="text-xs text-blue-700">{uploadValidationMessage}</p>
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 flex items-center gap-3 animate-in fade-in">
+              <Loader2 className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
+              <div className="text-xs">
+                <span className="font-bold text-blue-900">Validating &amp; Uploading Documents... </span>
+                <span className="text-blue-700">{uploadValidationMessage}</span>
               </div>
             </div>
           )}
 
-          {/* Instructions Notice Banner */}
+          {/* Order Instructions (if any) */}
           {order.instructions && (
-            <div className="bg-blue-50/70 border border-blue-200/70 rounded-2xl p-4 flex items-start gap-3">
-              <Info className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <h4 className="text-xs font-black text-blue-900 uppercase tracking-wide">Submission Instructions &amp; Requirements</h4>
-                <p className="text-xs text-blue-800 leading-relaxed font-medium">
-                  {order.instructions}
-                </p>
+            <div className="bg-blue-50/60 border border-blue-100 rounded-xl p-3 flex items-start gap-2.5 text-xs">
+              <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+              <div className="space-y-0.5 text-blue-900">
+                <span className="font-bold">Instructions: </span>
+                <span className="text-blue-800">{order.instructions}</span>
               </div>
             </div>
           )}
 
-          {/* Non-Vessel User Vessel Tabs */}
-          {!isVesselUser && order.vessels.length > 1 && (
-            <div className="space-y-2">
-              <label className="text-[11px] font-black uppercase text-slate-400 tracking-wider">
-                Select Vessel Inspection &amp; Upload Tab ({order.vessels.length} Target Vessels):
-              </label>
-              <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                {order.vessels.map((v) => {
-                  const vUploads = getVesselUploads(order.uploads, v, order.vessels);
-                  const vVerified = order.items.filter(formItem => 
-                    vUploads.some(u => checkFormUploadMatch(u, formItem))
-                  ).length;
-                  const isDone = (totalRequired > 0 && vVerified >= totalRequired) || v.status === 'Completed' || (v.submittedCount || 0) >= totalRequired;
-                  const vSubmittedCount = isDone ? totalRequired : vVerified;
-                  const isActive = activeVessel?.vessel_name === v.vessel_name;
-                  const vHasReplaceReq = vUploads.some(u => Boolean(u.replace_requested_at));
-
-                  return (
-                    <button
-                      key={v.vessel_id || v.vessel_name}
-                      onClick={() => setActiveVesselTab(v.vessel_name)}
-                      className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shrink-0 border ${
-                        vHasReplaceReq
-                          ? isActive
-                            ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
-                            : 'bg-rose-50 text-rose-900 border-rose-300 hover:bg-rose-100 font-black'
-                          : isActive
-                            ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                            : 'bg-white text-slate-600 hover:text-slate-900 border-slate-200 hover:bg-slate-50'
-                      }`}
-                    >
-                      <Ship className={`w-3.5 h-3.5 ${isActive ? 'text-white' : vHasReplaceReq ? 'text-rose-600' : 'text-slate-400'}`} />
-                      <span>{v.vessel_name}</span>
-                      {vHasReplaceReq && (
-                        <span className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wide ${
-                          isActive ? 'bg-white/20 text-white' : 'bg-rose-200 text-rose-950'
-                        }`}>
-                          Replace Req
-                        </span>
-                      )}
-                      <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-extrabold ${
-                        isActive ? 'bg-white/20 text-white' : isDone ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
-                      }`}>
-                        {vSubmittedCount}/{totalRequired}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Non-Vessel User Uploading on Behalf Banner */}
-          {!isVesselUser && activeVessel && (
-            <div className="bg-indigo-50/80 border border-indigo-200/90 rounded-2xl p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                  <Ship className="w-5 h-5" />
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-black text-indigo-950">
-                      Uploading on Behalf of Vessel:
-                    </span>
-                    <span className="px-2 py-0.5 bg-indigo-100 text-indigo-800 rounded-md text-xs font-extrabold border border-indigo-300/80">
-                      {activeVessel.vessel_name}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-indigo-700/90 mt-0.5">
-                    Files uploaded or dropped below will be registered directly for <strong>{activeVessel.vessel_name}</strong>.
-                    {order.vessels.length > 1 && ' Switch tabs above to view or upload documents for a different vessel.'}
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Bulk Drag-and-Drop Uploader */}
+          {/* Compact, Clean Bulk Drag-and-Drop Area */}
           <div
             onDragEnter={handleDrag}
             onDragLeave={handleDrag}
             onDragOver={handleDrag}
             onDrop={handleDrop}
-            className={`p-6 rounded-2xl border-2 border-dashed transition-all text-center space-y-2 relative overflow-hidden ${
+            className={`p-4 rounded-xl border-2 border-dashed transition-all flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left ${
               uploadProgress
-                ? 'border-slate-300 bg-slate-100/70 opacity-60 cursor-not-allowed pointer-events-none'
+                ? 'border-slate-200 bg-slate-100/50 opacity-60 pointer-events-none'
                 : dragActive 
-                  ? 'border-blue-500 bg-blue-50/60 scale-[1.01]' 
-                  : 'border-slate-200 bg-slate-50/50 hover:bg-slate-50'
+                  ? 'border-blue-500 bg-blue-50/70 scale-[1.005]' 
+                  : 'border-slate-200/90 bg-white hover:border-slate-300 hover:bg-slate-50/50'
             }`}
           >
             <input
@@ -3975,17 +3970,20 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 }
               }}
             />
-            <div className="w-12 h-12 bg-white shadow-2xs rounded-2xl flex items-center justify-center mx-auto text-blue-600 border border-slate-100">
-              <Upload className={`w-6 h-6 ${uploadProgress ? 'animate-bounce text-blue-600' : ''}`} />
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-100">
+                <Upload className={`w-4 h-4 ${uploadProgress ? 'animate-bounce text-blue-600' : ''}`} />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-800">
+                  {uploadProgress ? 'Uploading files...' : 'Bulk Upload Files or ZIP Archive'}
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Drag and drop files here, or browse. Validates form codes, descriptions, and formats automatically.
+                </p>
+              </div>
             </div>
-            <div className="space-y-0.5">
-              <p className="text-xs font-black text-slate-800">
-                {uploadProgress ? 'Checking & uploading documents...' : !isVesselUser && activeVessel ? `Bulk Drag & Drop Files or ZIP Package for ${activeVessel.vessel_name}` : 'Bulk Drag & Drop Files or ZIP Package'}
-              </p>
-              <p className="text-[11px] text-slate-500 max-w-md mx-auto">
-                Drop scanned checklists, reports or a pre-compiled ZIP folder here{!isVesselUser && activeVessel ? ` for ${activeVessel.vessel_name}` : ''}. The system validates form code, description, dates, and allowed file formats automatically.
-              </p>
-            </div>
+
             <button
               type="button"
               disabled={uploadProgress}
@@ -3996,435 +3994,363 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   fileInputRef.current.click();
                 }
               }}
-              className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold shadow-2xs transition-colors inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors shrink-0 cursor-pointer"
             >
-              <FolderArchive className="w-3.5 h-3.5 text-blue-600" />
-              <span>Browse &amp; Upload Files{!isVesselUser && activeVessel ? ` (${activeVessel.vessel_name})` : ''}</span>
+              Browse Files
             </button>
           </div>
 
-          {/* Form Requirements & Uploaded Files Breakdown */}
-          <div className="space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <h3 className="text-xs font-black uppercase tracking-wider text-slate-500">
-                  Required SMS Forms &amp; Checklist Items ({order.items.length})
-                </h3>
-                {checklistSearch.trim() && (
-                  <p className="text-[11px] text-blue-600 font-semibold mt-0.5">
-                    Found {filteredChecklistItems.length} matching item{filteredChecklistItems.length === 1 ? '' : 's'} for &ldquo;{checklistSearch.trim()}&rdquo;
-                  </p>
-                )}
-                {checklistFilter === 'revision' && !checklistSearch.trim() && (
-                  <p className="text-[11px] text-rose-600 font-bold mt-0.5 flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3 text-rose-600" />
-                    <span>Showing {filteredChecklistItems.length} item{filteredChecklistItems.length === 1 ? '' : 's'} requiring revision/replacement</span>
-                  </p>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-600 bg-slate-50 border border-slate-200/80 px-2.5 py-1 rounded-lg">
-                  Status: <strong className={isVesselDone ? 'text-emerald-600' : 'text-amber-600'}>{distinctUploaded} of {totalRequired} Uploaded</strong>
-                </span>
-              </div>
-            </div>
-
-            {/* Checklist Search & Quick Filter Controls */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 bg-slate-50/80 p-2.5 rounded-2xl border border-slate-200/80">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  value={checklistSearch}
-                  onChange={(e) => setChecklistSearch(e.target.value)}
-                  placeholder="Search checklist items by form code, title, category, revision note, or file..."
-                  className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs font-medium placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all shadow-2xs"
-                />
-                {checklistSearch && (
-                  <button
-                    type="button"
-                    onClick={() => setChecklistSearch('')}
-                    className="p-1 text-slate-400 hover:text-slate-600 absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md hover:bg-slate-100 cursor-pointer"
-                    title="Clear search"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-
-              {/* Status Filter Tabs */}
-              <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs shrink-0 flex-wrap sm:flex-nowrap">
+          {/* Search & Filter Toolbar */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-1">
+            {/* Search input */}
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={checklistSearch}
+                onChange={(e) => setChecklistSearch(e.target.value)}
+                placeholder="Search checklist items or uploaded files..."
+                className="w-full pl-8 pr-8 py-1.5 bg-white border border-slate-200 rounded-xl text-xs font-medium placeholder:text-slate-400 focus:outline-hidden focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all shadow-2xs"
+              />
+              {checklistSearch && (
                 <button
                   type="button"
-                  onClick={() => setChecklistFilter('all')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    checklistFilter === 'all'
-                      ? 'bg-slate-800 text-white shadow-2xs'
+                  onClick={() => setChecklistSearch('')}
+                  className="p-1 text-slate-400 hover:text-slate-600 absolute right-2 top-1/2 -translate-y-1/2 rounded-md"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            {/* Segmented Filter Pills */}
+            <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs shrink-0 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setChecklistFilter('all')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  checklistFilter === 'all'
+                    ? 'bg-slate-900 text-white'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                }`}
+              >
+                All ({order.items.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setChecklistFilter('pending')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer ${
+                  checklistFilter === 'pending'
+                    ? 'bg-amber-600 text-white'
+                    : 'text-amber-700 hover:bg-amber-50'
+                }`}
+              >
+                <Clock className="w-3 h-3" />
+                Pending ({totalRequired - verifiedCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setChecklistFilter('uploaded')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer ${
+                  checklistFilter === 'uploaded'
+                    ? 'bg-emerald-600 text-white'
+                    : 'text-emerald-700 hover:bg-emerald-50'
+                }`}
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                Uploaded ({verifiedCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setChecklistFilter('revision')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer ${
+                  checklistFilter === 'revision'
+                    ? 'bg-rose-600 text-white'
+                    : revisionCount > 0
+                      ? 'text-rose-700 bg-rose-50'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-                  }`}
-                >
-                  All ({order.items.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChecklistFilter('pending')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
-                    checklistFilter === 'pending'
-                      ? 'bg-amber-600 text-white shadow-2xs'
-                      : 'text-amber-700 hover:bg-amber-50'
-                  }`}
-                >
-                  <Clock className="w-3 h-3" />
-                  Pending ({totalRequired - verifiedCount})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChecklistFilter('uploaded')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer ${
-                    checklistFilter === 'uploaded'
-                      ? 'bg-emerald-600 text-white shadow-2xs'
-                      : 'text-emerald-700 hover:bg-emerald-50'
-                  }`}
-                >
-                  <CheckCircle2 className="w-3 h-3" />
-                  Uploaded ({verifiedCount})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChecklistFilter('revision')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                    checklistFilter === 'revision'
-                      ? 'bg-rose-600 text-white shadow-2xs'
-                      : revisionCount > 0
-                        ? 'text-rose-700 hover:bg-rose-100 bg-rose-50/80 border border-rose-200 font-black'
-                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-                  }`}
-                  title={revisionCount > 0 ? `${revisionCount} file(s) require replacement / revision` : 'Filter files requiring revision'}
-                >
-                  <AlertTriangle className={`w-3 h-3 ${checklistFilter === 'revision' ? 'text-white' : revisionCount > 0 ? 'text-rose-600' : 'text-slate-400'}`} />
-                  <span>Revision Required ({revisionCount})</span>
-                  {revisionCount > 0 && checklistFilter !== 'revision' && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse shrink-0" />
-                  )}
-                </button>
-              </div>
+                }`}
+              >
+                <AlertTriangle className={`w-3 h-3 ${checklistFilter === 'revision' ? 'text-white' : revisionCount > 0 ? 'text-rose-600' : 'text-slate-400'}`} />
+                <span>Revisions ({revisionCount})</span>
+              </button>
             </div>
+          </div>
 
-            {/* Checklist Items List or Empty Search State */}
-            {filteredChecklistItems.length === 0 ? (
-              <div className="py-12 px-4 text-center bg-white border border-slate-200/80 rounded-2xl space-y-3 shadow-2xs">
-                <div className="w-12 h-12 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-center mx-auto text-slate-400">
-                  <Search className="w-6 h-6" />
-                </div>
-                <div className="space-y-1">
-                  <h4 className="text-sm font-bold text-slate-800">No matching checklist items found</h4>
-                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                    {checklistSearch.trim()
-                      ? `No checklist requirements matched "${checklistSearch.trim()}". Check spelling or reset search.`
-                      : checklistFilter === 'revision'
-                        ? 'No files currently require revision or replacement for this vessel.'
-                        : 'No checklist items match the selected status filter.'}
-                  </p>
-                </div>
-                {(checklistSearch.trim() || checklistFilter !== 'all') && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setChecklistSearch('');
-                      setChecklistFilter('all');
-                    }}
-                    className="px-4 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-colors cursor-pointer inline-flex items-center gap-1.5"
+          {/* Checklist Items List */}
+          {filteredChecklistItems.length === 0 ? (
+            <div className="py-10 px-4 text-center bg-white border border-slate-200/80 rounded-xl space-y-2 shadow-2xs">
+              <p className="text-xs font-bold text-slate-700">No matching checklist requirements</p>
+              <p className="text-[11px] text-slate-500">
+                {checklistSearch.trim() ? `No items matched "${checklistSearch.trim()}"` : 'No items match the selected filter.'}
+              </p>
+              {(checklistSearch.trim() || checklistFilter !== 'all') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChecklistSearch('');
+                    setChecklistFilter('all');
+                  }}
+                  className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium transition-colors cursor-pointer mt-1"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {filteredChecklistItems.map((formItem, idx) => {
+                const itemUploads = vesselUploads.filter(u => checkFormUploadMatch(u, formItem));
+                const hasUploaded = itemUploads.length > 0;
+                const reqUp = itemUploads.find(u => Boolean(u.replace_requested_at));
+                const isThisItemUploading = uploadProgress && uploadingForFormId === String(formItem.id ?? formItem.form_id ?? formItem.form_code);
+
+                return (
+                  <div
+                    key={idx}
+                    className={`bg-white rounded-2xl border transition-all p-4 sm:p-5 space-y-3.5 shadow-2xs ${
+                      reqUp
+                        ? 'border-rose-300 bg-rose-50/15 shadow-xs'
+                        : hasUploaded
+                          ? 'border-emerald-200/90'
+                          : 'border-slate-200/80 hover:border-slate-300'
+                    }`}
                   >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    Reset Search &amp; Filters
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="divide-y divide-slate-100 border border-slate-200/80 rounded-2xl overflow-hidden bg-white shadow-2xs">
-                {filteredChecklistItems.map((formItem, idx) => {
-                  const itemUploads = vesselUploads.filter(u => checkFormUploadMatch(u, formItem));
-                  const hasUploaded = itemUploads.length > 0;
-
-                  return (
-                    <div
-                      key={idx}
-                      className={`p-4.5 transition-colors space-y-3 ${
-                        hasUploaded
-                          ? 'bg-emerald-50/35 hover:bg-emerald-50/55 border-l-4 border-l-emerald-500'
-                          : 'bg-amber-50/20 hover:bg-amber-50/40 border-l-4 border-l-amber-400'
-                      }`}
-                    >
-                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                      <div className="space-y-1 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {/* Upload Status Badge */}
-                          {hasUploaded ? (
-                            <span className="px-2.5 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300/80 rounded-md text-[10px] font-black flex items-center gap-1 shadow-2xs">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              Uploaded ({itemUploads.length})
-                            </span>
+                    {/* Item Row: Status, Info, and Primary Actions */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        {/* Status Icon Indicator */}
+                        <div className="shrink-0 mt-0.5">
+                          {reqUp ? (
+                            <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center border border-rose-200" title="Revision requested">
+                              <AlertTriangle className="w-4 h-4 text-rose-600" />
+                            </div>
+                          ) : hasUploaded ? (
+                            <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center border border-emerald-200" title="Document uploaded">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            </div>
                           ) : (
-                            <span className="px-2.5 py-0.5 bg-amber-100/70 text-amber-800 border border-amber-300/70 rounded-md text-[10px] font-bold flex items-center gap-1">
-                              <Clock className="w-3 h-3 text-amber-600" />
-                              Pending Upload
-                            </span>
-                          )}
-
-                          <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/50 rounded-md text-[11px] font-black">
-                            {formItem.form_code}
-                          </span>
-                          <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
-                            {formItem.category}
-                          </span>
-                          {formItem.form_date && (
-                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200/60 rounded-md text-[10px] font-bold flex items-center gap-1">
-                              <Calendar className="w-3 h-3 text-emerald-600" />
-                              Date: {formItem.form_date}
-                            </span>
-                          )}
-                          {formItem.is_hira && (
-                            <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200/60 rounded-md text-[10px] font-bold flex items-center gap-1">
-                              <Sparkles className="w-3 h-3 text-amber-600" />
-                              Multiple Files Allowed
-                            </span>
-                          )}
-                          {formItem.allowed_file_types && formItem.allowed_file_types.length > 0 && (
-                            <span className="text-[10px] text-slate-400 font-bold">
-                              Allowed: {formItem.allowed_file_types.join(', ')}
-                            </span>
+                            <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center border border-amber-200" title="Pending upload">
+                              <Clock className="w-4 h-4 text-amber-600" />
+                            </div>
                           )}
                         </div>
-                        <p className="text-xs font-bold text-slate-800 leading-snug">
-                          {formItem.description}
-                        </p>
+
+                        {/* Title & Metadata */}
+                        <div className="space-y-1 min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono font-bold text-xs bg-slate-100 text-slate-800 px-2 py-0.5 rounded-md border border-slate-200/70">
+                              {formItem.form_code}
+                            </span>
+                            <span className="text-xs font-semibold text-slate-500">
+                              {formItem.category}
+                            </span>
+                            {formItem.form_date && (
+                              <span className="text-[11px] text-slate-400 flex items-center gap-1 font-mono">
+                                <Calendar className="w-3 h-3" />
+                                {formItem.form_date}
+                              </span>
+                            )}
+                            {formItem.is_hira && (
+                              <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200/80 px-1.5 py-0.2 rounded">
+                                Multi-file
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="text-xs sm:text-sm font-bold text-slate-900 leading-snug">
+                            {formItem.description}
+                          </p>
+                        </div>
                       </div>
 
-                      {/* Actions for this specific form: View/Download Template + Upload */}
-                      <div className="shrink-0 flex items-center gap-2 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={() => onPreviewTemplate(formItem.form_id, formItem.form_code, formItem.template_file_name)}
-                          className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-900 rounded-xl text-xs font-bold tracking-wide flex items-center gap-1.5 shadow-2xs transition-colors border border-indigo-200/80 cursor-pointer"
-                          title={`View blank template for ${formItem.form_code} in browser without downloading`}
-                        >
-                          <Eye className="w-3.5 h-3.5 text-indigo-600" />
-                          <span>View Template</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => onDownloadTemplate(formItem.form_id, formItem.form_code, formItem.template_file_name)}
-                          className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 rounded-xl text-xs font-bold tracking-wide flex items-center gap-1.5 shadow-2xs transition-colors border border-slate-200 cursor-pointer"
-                          title={`Download official blank template for ${formItem.form_code}`}
-                        >
-                          <Download className="w-3.5 h-3.5 text-blue-600" />
-                          <span>Download Template</span>
-                        </button>
-
-                        {lastFailedUpload && lastFailedUpload.type === 'single' && lastFailedUpload.formItem && (lastFailedUpload.formItem.form_id === formItem.form_id || lastFailedUpload.formItem.form_code === formItem.form_code) && (
+                      {/* Right Action Cluster */}
+                      <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+                        {/* Blank Template Preview/Download */}
+                        <div className="flex items-center bg-slate-50 rounded-xl border border-slate-200/80 p-0.5">
                           <button
                             type="button"
-                            disabled={uploadProgress}
-                            onClick={() => onRetryUpload?.()}
-                            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-400 text-white rounded-xl text-xs font-black tracking-wide flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
-                            title="Retry uploading previous file(s) for this form"
+                            onClick={() => onPreviewTemplate(formItem.form_id, formItem.form_code, formItem.template_file_name)}
+                            className="px-2.5 py-1 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                            title="View blank template"
                           >
-                            <RotateCcw className={`w-3.5 h-3.5 ${uploadProgress ? 'animate-spin' : ''}`} />
-                            <span>Retry ({lastFailedUpload.fileNames.length})</span>
+                            <Eye className="w-3.5 h-3.5 text-slate-500" />
+                            <span>Template</span>
                           </button>
-                        )}
+                          <button
+                            type="button"
+                            onClick={() => onDownloadTemplate(formItem.form_id, formItem.form_code, formItem.template_file_name)}
+                            className="p-1 text-slate-500 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer border-l border-slate-200/60"
+                            title="Download blank template file"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
 
-                        {(() => {
-                          const isThisItemUploading = uploadProgress && uploadingForFormId === String(formItem.id ?? formItem.form_id ?? formItem.form_code);
-                          return (
-                            <label 
-                              className={`px-3 py-1.5 rounded-xl text-xs font-black tracking-wide flex items-center gap-1.5 shadow-2xs transition-all ${
-                                uploadProgress
-                                  ? isThisItemUploading
-                                    ? 'bg-blue-100 text-blue-800 border border-blue-300 cursor-wait opacity-90 pointer-events-none shadow-none'
-                                    : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-50 pointer-events-none shadow-none'
-                                  : 'bg-blue-50 hover:bg-blue-100 text-blue-700 cursor-pointer'
-                              }`} 
-                              title={
-                                uploadProgress
-                                  ? isThisItemUploading
-                                    ? 'Uploading file for this form...'
-                                    : 'Upload is currently in progress. Please wait for it to complete.'
-                                  : formItem.is_hira 
-                                    ? 'Upload one or more files for this form' 
-                                    : hasUploaded 
-                                      ? 'Replace existing file' 
-                                      : 'Upload file for this form'
+                        {/* Upload / Replace Action */}
+                        <label
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs ${
+                            uploadProgress
+                              ? isThisItemUploading
+                                ? 'bg-blue-100 text-blue-800 border border-blue-300 cursor-wait'
+                                : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-50 pointer-events-none'
+                              : hasUploaded && !formItem.is_hira
+                                ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
+                                : 'bg-blue-600 hover:bg-blue-700 text-white'
+                          }`}
+                          title={hasUploaded && !formItem.is_hira ? 'Upload replacement file' : 'Upload file for this requirement'}
+                        >
+                          {isThisItemUploading ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-700" />
+                              <span>Uploading...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-3.5 h-3.5" />
+                              <span>{hasUploaded && !formItem.is_hira ? 'Replace' : formItem.is_hira && hasUploaded ? 'Add File' : 'Upload'}</span>
+                            </>
+                          )}
+                          <input
+                            type="file"
+                            disabled={uploadProgress}
+                            multiple={Boolean(formItem.is_hira)}
+                            accept={formItem.allowed_file_types && formItem.allowed_file_types.length > 0 ? formItem.allowed_file_types.join(',') : '.pdf,.docx,.doc,.xlsx,.xls,.csv,.jpg,.jpeg,.png,.webp'}
+                            className="hidden"
+                            onChange={(e) => {
+                              if (uploadProgress) return;
+                              if (e.target.files && e.target.files.length > 0) {
+                                const selected = Array.from(e.target.files);
+                                e.target.value = '';
+                                onFileUpload(order.id, formItem, selected, activeVessel ? { id: activeVessel.vessel_id, name: activeVessel.vessel_name } : undefined);
                               }
-                            >
-                              {isThisItemUploading ? (
-                                <>
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-700" />
-                                  <span>Uploading...</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Upload className="w-3.5 h-3.5" />
-                                  <span>{hasUploaded && !formItem.is_hira ? 'Replace File' : formItem.is_hira ? 'Upload File(s)' : 'Upload File'}</span>
-                                </>
-                              )}
-                              <input
-                                type="file"
-                                disabled={uploadProgress}
-                                multiple={Boolean(formItem.is_hira)}
-                                accept={formItem.allowed_file_types && formItem.allowed_file_types.length > 0 ? formItem.allowed_file_types.join(',') : '.pdf,.docx,.doc,.xlsx,.xls,.csv,.jpg,.jpeg,.png,.webp'}
-                                className="hidden"
-                                onChange={(e) => {
-                                  if (uploadProgress) return;
-                                  if (e.target.files && e.target.files.length > 0) {
-                                    const selected = Array.from(e.target.files);
-                                    e.target.value = '';
-                                    onFileUpload(order.id, formItem, selected, activeVessel ? { id: activeVessel.vessel_id, name: activeVessel.vessel_name } : undefined);
-                                  }
-                                }}
-                              />
-                            </label>
-                          );
-                        })()}
+                            }}
+                          />
+                        </label>
                       </div>
                     </div>
 
-                    {/* Uploaded File List for this item */}
-                    {hasUploaded ? (
-                      <div className="bg-white rounded-xl p-3 border border-emerald-200/80 space-y-2 shadow-2xs">
-                        <div className="text-[10px] font-black uppercase text-emerald-700 tracking-wider flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Uploaded Document ({itemUploads.length})</span>
+                    {/* Uploaded Files Section */}
+                    {hasUploaded && (
+                      <div className="pt-2.5 border-t border-slate-100 space-y-2">
+                        {/* Revision Notice Banner */}
+                        {reqUp && (
+                          <div className="bg-rose-50/90 p-3 rounded-xl border border-rose-200 text-rose-900 text-xs flex items-start gap-2.5">
+                            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                            <div className="min-w-0">
+                              <span className="font-bold">Revision Requested by {reqUp.replace_requested_by || 'Management'}: </span>
+                              <span className="italic font-medium">&ldquo;{reqUp.replace_reason || 'Please upload a revised copy.'}&rdquo;</span>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                            <FileText className="w-3.5 h-3.5 text-blue-600" />
+                            Uploaded file(s)
+                          </span>
+                          {itemUploads.length > 1 && (
+                            <span className="text-[10px] text-slate-400 font-semibold">
+                              {itemUploads.length} files
+                            </span>
+                          )}
                         </div>
 
-                        {/* Vessel replacement warning box */}
-                        {(() => {
-                          const reqUp = itemUploads.find(u => Boolean(u.replace_requested_at));
-                          if (!reqUp) return null;
-                          return (
-                            <div className="bg-rose-50 p-2.5 rounded-xl border border-rose-200/90 text-rose-800 text-xs font-medium flex items-start gap-2.5 shadow-2xs my-1">
-                              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                              <div className="flex-1 min-w-0">
-                                <p className="font-bold text-rose-950 flex items-center gap-1.5">
-                                  <span>Revision Requested by Management</span>
-                                  <span className="px-1.5 py-0.2 bg-rose-200 text-rose-900 rounded text-[9px] font-black uppercase">Action Required</span>
-                                </p>
-                                <p className="text-[11px] text-rose-800 mt-0.5 font-semibold">
-                                  "{reqUp.replace_reason || 'Please re-upload a clear and revised copy.'}"
-                                </p>
-                                <p className="text-[10px] text-rose-500 mt-0.5">
-                                  Requested by {reqUp.replace_requested_by || 'Management'}
-                                  {reqUp.replace_requested_at && ` on ${new Date(reqUp.replace_requested_at).toLocaleDateString()}`}
-                                </p>
-                              </div>
-                            </div>
-                          );
-                        })()}
-
+                        {/* File Rows */}
                         <div className="space-y-1.5">
                           {itemUploads.map((up) => (
                             <div
                               key={up.id}
-                              className={`p-2.5 rounded-lg border flex items-center justify-between gap-3 text-xs ${
-                                up.replace_requested_at 
-                                  ? 'bg-rose-50/70 border-rose-200/80' 
-                                  : 'bg-emerald-50/40 border-emerald-200/60'
+                              className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 text-xs transition-colors ${
+                                up.replace_requested_at
+                                  ? 'bg-rose-50/70 border-rose-200'
+                                  : 'bg-slate-50/80 border-slate-200/70 hover:bg-slate-100/60'
                               }`}
                             >
                               <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                                <FileText className={`w-4 h-4 shrink-0 ${up.replace_requested_at ? 'text-rose-600' : 'text-emerald-600'}`} />
+                                <span className="px-2 py-0.5 rounded-md bg-blue-100/90 text-blue-800 text-[10px] font-bold shrink-0 border border-blue-200/60 tracking-tight">
+                                  Uploaded file(s)
+                                </span>
+                                <FileText className={`w-4 h-4 shrink-0 ${up.replace_requested_at ? 'text-rose-600' : 'text-blue-600'}`} />
                                 <span className="font-bold text-slate-800 truncate" title={up.file_name}>
                                   {up.file_name}
                                 </span>
-                                <span className="text-[11px] text-slate-500 font-mono shrink-0">
+                                <span className="text-[11px] text-slate-500 shrink-0 font-mono">
                                   ({up.file_size})
                                 </span>
-                                <span className="text-[10px] text-slate-400 shrink-0 hidden sm:inline">
+                                <span className="text-[11px] text-slate-400 shrink-0 hidden md:inline">
                                   by {up.uploaded_by} • {new Date(up.uploaded_at).toLocaleDateString()}
                                 </span>
                               </div>
 
-                              <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-                                {/* Revision Request status badge / action button */}
+                              <div className="flex items-center gap-1 shrink-0">
+                                {/* Revision Status / Trigger */}
                                 {up.replace_requested_at ? (
-                                  <div className="flex items-center gap-1">
-                                    <span
-                                      className="px-2 py-0.5 bg-rose-100 text-rose-800 border border-rose-300 rounded-md text-[10px] font-black flex items-center gap-1"
-                                      title={up.replace_reason ? `Reason: ${up.replace_reason}` : 'Revision requested'}
+                                  !isVesselUser && onCancelReplacementRequest && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onCancelReplacementRequest(up.id)}
+                                      className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
                                     >
-                                      <AlertTriangle className="w-3 h-3 text-rose-600" />
-                                      <span>Revision Requested</span>
-                                    </span>
-                                    {!isVesselUser && onCancelReplacementRequest && (
-                                      <button
-                                        type="button"
-                                        onClick={() => onCancelReplacementRequest(up.id)}
-                                        className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-md text-[10px] font-bold transition-colors cursor-pointer"
-                                        title="Cancel revision request"
-                                      >
-                                        Cancel Request
-                                      </button>
-                                    )}
-                                  </div>
+                                      Cancel Request
+                                    </button>
+                                  )
                                 ) : (
                                   !isVesselUser && onRequestReplacement && (
                                     <button
                                       type="button"
                                       onClick={() => onRequestReplacement(up.id, up.file_name)}
-                                      className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 hover:border-rose-300 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
-                                      title="Request vessel to replace this file"
+                                      className="px-2 py-1 text-rose-700 hover:bg-rose-100/60 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                      title="Request revision"
                                     >
-                                      <RefreshCw className="w-3 h-3 text-rose-600" />
-                                      <span>Request Revision</span>
+                                      Request Revision
                                     </button>
                                   )
                                 )}
+
+                                {/* Read status */}
                                 {up.is_read || up.checked_at ? (
-                                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-300/80 rounded-md text-[10px] font-black flex items-center gap-1">
-                                    <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                                    <span>Read</span>
+                                  <span className="text-[10px] text-emerald-700 font-bold px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200/80 hidden sm:inline-block">
+                                    Verified
                                   </span>
                                 ) : !isVesselUser ? (
                                   <button
                                     type="button"
                                     onClick={() => onMarkSingleUploadChecked?.(up.id)}
-                                    className="px-2.5 py-1 bg-amber-100 hover:bg-emerald-100 text-amber-900 hover:text-emerald-900 border border-amber-300 hover:border-emerald-400 rounded-lg text-[10px] font-black flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
-                                    title="Mark this uploaded document as read for your account"
+                                    className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                    title="Mark document as read"
                                   >
-                                    <CheckSquare className="w-3 h-3 text-amber-700" />
-                                    <span>Mark Read</span>
+                                    Mark Read
                                   </button>
-                                ) : (
-                                  <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10px] font-medium">
-                                    Pending Review
-                                  </span>
-                                )}
+                                ) : null}
 
+                                {/* View File */}
                                 <button
                                   type="button"
                                   onClick={() => onPreviewUpload(up.id, up.file_name, up.file_mimetype, formItem.form_code, activeVessel?.vessel_name, up.is_read || Boolean(up.checked_at))}
-                                  className="px-2.5 py-1 text-slate-700 hover:text-blue-700 hover:bg-blue-50 bg-white border border-slate-200/80 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors shadow-2xs cursor-pointer"
-                                  title="View document in browser without downloading"
+                                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer"
+                                  title="View document"
                                 >
                                   <Eye className="w-3.5 h-3.5 text-blue-600" />
-                                  <span>View</span>
                                 </button>
 
+                                {/* Download File */}
                                 <button
                                   type="button"
                                   onClick={() => onDownloadUpload(up.id, up.file_name)}
-                                  className="p-1.5 text-slate-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                                  title="Download this file"
+                                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer"
+                                  title="Download file"
                                 >
                                   <Download className="w-3.5 h-3.5" />
                                 </button>
+
+                                {/* Delete File */}
                                 {(isVesselUser || isManagementOrAdmin) && (
                                   <button
                                     type="button"
                                     onClick={() => onDeleteUpload(up.id, up.file_name)}
-                                    className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                                    title="Delete uploaded file"
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                    title="Delete file"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
@@ -4434,11 +4360,6 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           ))}
                         </div>
                       </div>
-                    ) : (
-                      <div className="bg-amber-50/60 rounded-xl px-3 py-2.5 border border-amber-200/60 text-[11px] text-amber-800 font-medium flex items-center gap-1.5">
-                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        <span>File yet to be uploaded for this requirement.</span>
-                      </div>
                     )}
                   </div>
                 );
@@ -4446,18 +4367,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </div>
           )}
         </div>
-      </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
+        <div className="px-6 py-3.5 border-t border-slate-100 bg-white flex items-center justify-between shrink-0">
           <div className="text-xs text-slate-500 font-medium">
-            Progress: <strong className="text-slate-800">{distinctUploaded} of {totalRequired} forms verified</strong>
+            <span className="text-slate-800 font-semibold">{distinctUploaded} of {totalRequired}</span> forms completed for {activeVessel?.vessel_name || 'vessel'}
           </div>
           <button
             onClick={onClose}
-            className="px-5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-black tracking-wide transition-colors"
+            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer"
           >
-            Close Workspace
+            Close
           </button>
         </div>
       </div>

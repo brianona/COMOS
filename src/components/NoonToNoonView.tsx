@@ -4,7 +4,7 @@ import {
   RotateCcw, Check, CheckCircle2, CheckSquare, Clock, Trash2, File as FileIcon, X, Eye, 
   ChevronDown, ArrowUp, ArrowDown, ArrowLeft, ArrowUpDown, AlertCircle, 
   RefreshCw, MapPin, Activity, Anchor, Download, Droplets, Waves, 
-  Camera, Image, Fuel, Info, Edit2, FileText
+  Camera, Image, Fuel, Info, Edit2, FileText, Compass, Wind, Gauge, BarChart2, CheckCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, parseISO } from "date-fns";
@@ -23,26 +23,32 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
   }) => {
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const initialVesselId = String(user.vessel_id || (vessels[0]?.id ? String(vessels[0].id) : ''));
+  const initialVessel = vessels.find(v => String(v.id) === initialVesselId);
   const defaultForm = {
-    vessel_id: String(user.vessel_id || (vessels[0]?.id ? String(vessels[0].id) : '')),
+    vessel_id: initialVesselId,
     utc_date_time: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
     position_long: '',
     position_lat: '',
     distance_to_go: '',
     cargo_status: 'ballast',
+    report_type: (initialVessel?.route_status === 'At Anchor' || initialVessel?.route_status === 'Anchor') ? 'Anchorage' :
+                 (initialVessel?.route_status === 'In Port' || initialVessel?.route_status === 'In port') ? 'At port' :
+                 (initialVessel?.route_status || 'At sea'),
     rob_hsfo: '0',
     rob_lsfo: '0',
     rob_mgo: '0',
     rob_mdo: '0',
     voyage_number: '',
     weather_notation: '',
+    weather_direction: '',
     swell_scale_21: '',
     wind_scale: '',
     wave_scale: '',
     weather_image: '',
     remarks: '',
-    destination_port: '',
-    eta_utc: '',
+    destination_port: initialVessel?.next_port || '',
+    eta_utc: initialVessel?.eta_atb ? initialVessel.eta_atb.replace(' ', 'T').substring(0, 16) : '',
     agent_details: '',
     charterer_min_hsfo: '',
     charterer_max_hsfo: '',
@@ -54,9 +60,29 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
     charterer_max_mdo: ''
   };
   const [form, setForm] = useState(defaultForm);
+
+  const handleVesselChange = (newVesselId: string) => {
+    const v = vessels.find(x => String(x.id) === newVesselId);
+    setForm(prev => ({
+      ...prev,
+      vessel_id: newVesselId,
+      ...(!editingId ? {
+        destination_port: v?.next_port || '',
+        eta_utc: v?.eta_atb ? v.eta_atb.replace(' ', 'T').substring(0, 16) : '',
+        report_type: (v?.route_status === 'At Anchor' || v?.route_status === 'Anchor') ? 'Anchorage' :
+                     (v?.route_status === 'In Port' || v?.route_status === 'In port') ? 'At port' :
+                     (v?.route_status || 'At sea')
+      } : {})
+    }));
+  };
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
   const [vesselFilter, setVesselFilter] = useState<string>('');
+  const [dateFilter, setDateFilter] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [cargoStatusFilter, setCargoStatusFilter] = useState<string>('all');
+  const [reportTypeFilter, setReportTypeFilter] = useState<string>('all');
+  const [selectedReportForDetails, setSelectedReportForDetails] = useState<NoonReport | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [isThresholdEditing, setIsThresholdEditing] = useState(false);
 
@@ -205,21 +231,114 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
   };
 
   const filteredReports = React.useMemo(() => {
-    return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
-  }, [reports, vesselFilter]);
+    return reports.filter(r => {
+      if (vesselFilter !== '' && String(r.vessel_id) !== vesselFilter) return false;
+      if (cargoStatusFilter !== 'all' && r.cargo_status?.toLowerCase() !== cargoStatusFilter.toLowerCase()) return false;
+      if (reportTypeFilter !== 'all' && r.report_type?.toLowerCase() !== reportTypeFilter.toLowerCase()) return false;
+      if (dateFilter) {
+        let matchesExactDate = false;
+        if (r.utc_date_time) {
+          if (r.utc_date_time.startsWith(dateFilter)) {
+            matchesExactDate = true;
+          } else {
+            try {
+              const parsed = parseISO(r.utc_date_time);
+              if (!isNaN(parsed.getTime())) {
+                matchesExactDate = format(parsed, 'yyyy-MM-dd') === dateFilter;
+              }
+            } catch {
+              matchesExactDate = r.utc_date_time.slice(0, 10) === dateFilter;
+            }
+          }
+        }
+        if (!matchesExactDate) return false;
+      }
+      if (searchQuery.trim() !== '') {
+        const q = searchQuery.toLowerCase().trim();
+        const matchesVoyage = r.voyage_number?.toLowerCase().includes(q);
+        const matchesPort = r.destination_port?.toLowerCase().includes(q);
+        const matchesRemarks = r.remarks?.toLowerCase().includes(q);
+        const matchesAgent = r.agent_details?.toLowerCase().includes(q);
+        const matchesWeather = r.weather_notation?.toLowerCase().includes(q) || r.weather_direction?.toLowerCase().includes(q);
+        const matchesVessel = r.vessel_name?.toLowerCase().includes(q);
+        const matchesReportType = r.report_type?.toLowerCase().includes(q);
+
+        let matchesDate = false;
+        if (r.utc_date_time) {
+          try {
+            const parsed = parseISO(r.utc_date_time);
+            if (!isNaN(parsed.getTime())) {
+              const d1 = format(parsed, 'yyyy-MM-dd');
+              const d2 = format(parsed, 'MMM dd, yyyy').toLowerCase();
+              const d3 = format(parsed, 'MMMM dd, yyyy').toLowerCase();
+              const d4 = format(parsed, 'MMM dd').toLowerCase();
+              const d5 = format(parsed, 'dd MMM yyyy').toLowerCase();
+              const d6 = format(parsed, 'yyyy-MM').toLowerCase();
+              matchesDate = d1.includes(q) || d2.includes(q) || d3.includes(q) || d4.includes(q) || d5.includes(q) || d6.includes(q);
+            }
+          } catch {
+            // fallback
+          }
+          if (!matchesDate) {
+            matchesDate = r.utc_date_time.toLowerCase().includes(q);
+          }
+        }
+
+        if (!matchesVoyage && !matchesPort && !matchesRemarks && !matchesAgent && !matchesWeather && !matchesVessel && !matchesDate && !matchesReportType) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [reports, vesselFilter, cargoStatusFilter, reportTypeFilter, dateFilter, searchQuery]);
+
+  const historyStats = React.useMemo(() => {
+    if (!filteredReports || filteredReports.length === 0) {
+      return { totalReports: 0, avgHsfo: '0.00', avgTotalFoc: '0.00', latestReport: null };
+    }
+    let totalHsfo = 0;
+    let totalAllFoc = 0;
+    filteredReports.forEach(r => {
+      const h = Number(r.foc_hsfo || 0);
+      const l = Number(r.foc_lsfo || 0);
+      const mg = Number(r.foc_mgo || 0);
+      const md = Number(r.foc_mdo || 0);
+      totalHsfo += h;
+      totalAllFoc += (h + l + mg + md);
+    });
+    const avgHsfo = (totalHsfo / filteredReports.length).toFixed(2);
+    const avgTotalFoc = (totalAllFoc / filteredReports.length).toFixed(2);
+    const sorted = [...filteredReports].sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
+    return {
+      totalReports: filteredReports.length,
+      avgHsfo,
+      avgTotalFoc,
+      latestReport: sorted[0] || null
+    };
+  }, [filteredReports]);
 
   const foc_computation = React.useMemo(() => {
     // If no reports yet, we can't auto compute FOC relative to previous ROB
-    if (reports.length === 0) return { hsfo: '0.00', lsfo: '0.00', mgo: '0.00', mdo: '0.00' };
+    if (!reports || reports.length === 0) {
+      return { hsfo: '0.00', lsfo: '0.00', mgo: '0.00', mdo: '0.00', total: '0.00', baselineDate: null };
+    }
     
     // Sort reports by date to find the previous one for THIS vessel
+    const currentFormTime = form.utc_date_time ? new Date(form.utc_date_time).getTime() : Date.now();
     const vesselReports = reports
       .filter(r => String(r.vessel_id) === String(form.vessel_id) && r.id !== editingId)
       .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
     
-    if (vesselReports.length === 0) return { hsfo: '0.00', lsfo: '0.00', mgo: '0.00', mdo: '0.00' };
+    // Prioritize report strictly before the current report timestamp
+    let prev = vesselReports.find(r => new Date(r.utc_date_time).getTime() < currentFormTime);
+    if (!prev && vesselReports.length > 0) {
+      prev = vesselReports[0];
+    }
     
-    const prev = vesselReports[0]; // Most recent
+    if (!prev) {
+      return { hsfo: '0.00', lsfo: '0.00', mgo: '0.00', mdo: '0.00', total: '0.00', baselineDate: null };
+    }
+    
     const current = {
       hsfo: parseFloat(form.rob_hsfo) || 0,
       lsfo: parseFloat(form.rob_lsfo) || 0,
@@ -227,13 +346,27 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
       mdo: parseFloat(form.rob_mdo) || 0,
     };
     
+    const hsfo = Math.max(0, Number(prev.rob_hsfo || 0) - current.hsfo).toFixed(2);
+    const lsfo = Math.max(0, Number(prev.rob_lsfo || 0) - current.lsfo).toFixed(2);
+    const mgo = Math.max(0, Number(prev.rob_mgo || 0) - current.mgo).toFixed(2);
+    const mdo = Math.max(0, Number(prev.rob_mdo || 0) - current.mdo).toFixed(2);
+    const total = (parseFloat(hsfo) + parseFloat(lsfo) + parseFloat(mgo) + parseFloat(mdo)).toFixed(2);
+
     return {
-      hsfo: Math.max(0, prev.rob_hsfo - current.hsfo).toFixed(2),
-      lsfo: Math.max(0, prev.rob_lsfo - current.lsfo).toFixed(2),
-      mgo: Math.max(0, prev.rob_mgo - current.mgo).toFixed(2),
-      mdo: Math.max(0, prev.rob_mdo - current.mdo).toFixed(2),
+      hsfo,
+      lsfo,
+      mgo,
+      mdo,
+      total,
+      baselineDate: prev.utc_date_time,
+      prevRob: {
+        hsfo: prev.rob_hsfo,
+        lsfo: prev.rob_lsfo,
+        mgo: prev.rob_mgo,
+        mdo: prev.rob_mdo,
+      }
     };
-  }, [form, reports, editingId]);
+  }, [form.rob_hsfo, form.rob_lsfo, form.rob_mgo, form.rob_mdo, form.vessel_id, form.utc_date_time, reports, editingId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -253,7 +386,7 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
         if ((key === 'utc_date_time' || key === 'eta_utc') && val) {
           formData.append(key, String(val).replace('T', ' '));
         } else {
-          formData.append(key, String(val));
+          formData.append(key, String(val ?? ''));
         }
       });
       
@@ -320,11 +453,13 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
       position_lat: report.position_lat,
       distance_to_go: report.distance_to_go,
       cargo_status: report.cargo_status,
+      report_type: report.report_type || 'At sea',
       rob_hsfo: String(report.rob_hsfo),
       rob_lsfo: String(report.rob_lsfo),
       rob_mgo: String(report.rob_mgo),
       rob_mdo: String(report.rob_mdo),
       weather_notation: report.weather_notation || '',
+      weather_direction: report.weather_direction || '',
       swell_scale_21: report.swell_scale_21 || '',
       wind_scale: report.wind_scale || '',
       wave_scale: report.wave_scale || '',
@@ -420,7 +555,7 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                     ) : (
                       <select
                         value={form.vessel_id}
-                        onChange={(e) => setForm({ ...form, vessel_id: e.target.value })}
+                        onChange={(e) => handleVesselChange(e.target.value)}
                         required
                         className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
                       >
@@ -503,21 +638,28 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Cargo Status</label>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                      Report Type <span className="text-[10px] text-blue-500 font-normal lowercase">(syncs navigational status)</span>
+                    </label>
                     <select 
-                      value={form.cargo_status}
-                      onChange={(e) => setForm({ ...form, cargo_status: e.target.value })}
+                      value={form.report_type}
+                      onChange={(e) => setForm({ ...form, report_type: e.target.value })}
                       className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
                     >
-                      <option value="ballast">BALLAST</option>
-                      <option value="laden">LADEN</option>
+                      <option value="At sea">At sea</option>
+                      <option value="At port">At port</option>
+                      <option value="Anchorage">Anchorage</option>
+                      <option value="Drifting">Drifting</option>
+                      <option value="Transiting">Transiting</option>
                     </select>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Destination Port</label>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                      Destination Port <span className="text-[10px] text-blue-500 font-normal lowercase">(updates current route)</span>
+                    </label>
                     <input 
                       type="text" 
                       placeholder="e.g. Singapore"
@@ -527,7 +669,9 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">ETA (UTC)</label>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+                      ETA (UTC) <span className="text-[10px] text-blue-500 font-normal lowercase">(updates current route)</span>
+                    </label>
                     <input 
                       type="datetime-local" 
                       value={form.eta_utc}
@@ -583,54 +727,88 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
               </div>
 
               <div className="space-y-6">
-                <div className="bg-blue-50/30 p-6 rounded-2xl border border-blue-100">
-                  <h4 className="text-sm font-bold text-blue-900 mb-4 flex items-center gap-2">
-                    <Activity className="w-4 h-4" />
-                    Fuel Statistics & Consumption (Noon-to-Noon)
-                  </h4>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
-                      <span>Fuel Type</span>
-                      <div>
-                        <span>Current ROB / Consumption based on previous report ROB</span>
-                        {currentVessel && (
-                          <span className="block text-blue-600 text-[9px] font-bold mt-0.5 normal-case tracking-normal">
-                            Vessel Limit: {currentVessel.min_fuel_consumption || 'N/A'} - {currentVessel.max_fuel_consumption || 'N/A'}
-                          </span>
-                        )}
-                      </div>
+                <div className="bg-blue-50/40 p-6 rounded-2xl border border-blue-100 shadow-sm">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                    <h4 className="text-sm font-bold text-blue-900 flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-blue-600" />
+                      Fuel Statistics & Auto-Computed Consumption (24h)
+                    </h4>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total FOC:</span>
+                      <span className="px-2.5 py-1 bg-blue-600 text-white font-mono font-bold text-xs rounded-lg shadow-sm">
+                        {foc_computation.total} MT
+                      </span>
+                    </div>
+                  </div>
+
+                  {foc_computation.baselineDate ? (
+                    <div className="mb-4 px-3.5 py-2 bg-blue-100/70 border border-blue-200 rounded-xl flex items-center justify-between text-xs text-blue-900">
+                      <span className="flex items-center gap-1.5 font-medium">
+                        <Clock className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                        Baseline ROB from: <strong className="font-bold">{format(parseISO(foc_computation.baselineDate), 'MMM dd, HH:mm')} UTC</strong>
+                      </span>
+                      <span className="text-[11px] text-blue-700 font-semibold hidden md:inline">
+                        Auto-computed: (Prior ROB - Current ROB)
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="mb-4 px-3.5 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-center gap-2">
+                      <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                      <span>Initial report for vessel: baseline ROB will be established upon submission.</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-12 gap-3 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
+                      <div className="col-span-3">Fuel Type</div>
+                      <div className="col-span-5">Current ROB (MT)</div>
+                      <div className="col-span-4 text-right">Auto-Computed FOC (MT)</div>
                     </div>
                     {[
                       { key: 'hsfo', label: 'HSFO', rob: 'rob_hsfo' },
                       { key: 'lsfo', label: 'LSFO', rob: 'rob_lsfo' },
                       { key: 'mgo', label: 'MGO', rob: 'rob_mgo' },
                       { key: 'mdo', label: 'MDO', rob: 'rob_mdo' },
-                    ].map(f => (
-                      <div key={f.key} className="grid grid-cols-2 gap-4 items-center">
-                        <span className="text-sm font-bold text-slate-700">{f.label}</span>
-                        <div className="flex gap-2">
-                          <input 
-                            type="number" 
-                            step="0.01"
-                            value={(form as any)[f.rob]}
-                            onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
-                            className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
-                          />
-                          <div 
-                            className={`w-24 px-2 py-1.5 text-xs font-bold rounded-lg flex items-center justify-center whitespace-nowrap ${
-                              isFocOutsideLimits((foc_computation as any)[f.key], (form as any)[`charterer_min_${f.key}`], (form as any)[`charterer_max_${f.key}`])
-                                ? 'bg-red-100 text-red-700 border border-red-200'
-                                : 'bg-blue-100 text-blue-700'
-                            }`} 
-                            title={`Consumption based on previous report ROB (Charterer Threshold: ${(form as any)[`charterer_min_${f.key}`] || 'N/A'} - ${(form as any)[`charterer_max_${f.key}`] || 'N/A'})`}
-                          >
-                            {(foc_computation as any)[f.key]}
+                    ].map(f => {
+                      const computedFoc = (foc_computation as any)[f.key];
+                      const isOutside = isFocOutsideLimits(computedFoc, (form as any)[`charterer_min_${f.key}`], (form as any)[`charterer_max_${f.key}`]);
+                      return (
+                        <div key={f.key} className="grid grid-cols-12 gap-3 items-center bg-white p-2.5 rounded-xl border border-blue-100">
+                          <div className="col-span-3">
+                            <span className="text-sm font-bold text-slate-800">{f.label}</span>
+                            {(form as any)[`charterer_min_${f.key}`] || (form as any)[`charterer_max_${f.key}`] ? (
+                              <span className="block text-[10px] text-slate-400 font-medium">
+                                Threshold: {(form as any)[`charterer_min_${f.key}`] || 0} - {(form as any)[`charterer_max_${f.key}`] || '∞'}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="col-span-5">
+                            <input 
+                              type="number" 
+                              step="0.01"
+                              value={(form as any)[f.rob]}
+                              onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
+                              className="w-full px-3 py-1.5 bg-slate-50 border border-blue-200 rounded-lg text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                            />
+                          </div>
+                          <div className="col-span-4 flex items-center justify-end">
+                            <div 
+                              className={`px-3 py-1.5 text-xs font-mono font-bold rounded-lg flex items-center gap-1 shadow-sm whitespace-nowrap ${
+                                isOutside
+                                  ? 'bg-red-50 text-red-700 border border-red-200'
+                                  : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              }`} 
+                              title={`Auto-computed FOC: ${computedFoc} MT`}
+                            >
+                              <span>{computedFoc} MT</span>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
-                    <div className="text-[10px] text-slate-400 italic px-2">
-                      * FOC is auto-computed based on previous report's ROB.
+                      );
+                    })}
+                    <div className="text-[11px] text-slate-500 font-medium italic pt-1 flex items-center gap-1.5">
+                      <CheckCircle className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                      <span>Auto-computed consumption is recorded directly in database and retrievable in the History tab.</span>
                     </div>
                   </div>
                 </div>
@@ -798,21 +976,24 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
 
             {/* Weather Conditions Section */}
             <div className="border-t border-slate-100 pt-8 mt-6">
-              <h4 className="text-sm font-bold text-blue-900 mb-4 flex items-center gap-2">
-                <Waves className="w-4 h-4 text-blue-600" />
-                Weather Conditions
-              </h4>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="text-sm font-bold text-blue-900 flex items-center gap-2">
+                  <Waves className="w-4 h-4 text-blue-600" />
+                  Weather & Environmental Conditions
+                </h4>
+                <span className="text-xs font-medium text-slate-400">Record atmospheric, wind, and sea conditions</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
                 {/* Weather Notation dropdown */}
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Weather Notation</label>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Weather Notation</label>
                   <select
                     value={form.weather_notation}
                     onChange={(e) => setForm({ ...form, weather_notation: e.target.value })}
                     required
-                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
                   >
-                    <option value="">Select Weather Notation</option>
+                    <option value="">Select Notation</option>
                     <option value="Blue Sky (Cloud 0~2)">Blue Sky (Cloud 0~2)</option>
                     <option value="Fine but Cloudy (Cloud 3~7)">Fine but Cloudy (Cloud 3~7)</option>
                     <option value="Cloudy (8~10)">Cloudy (8~10)</option>
@@ -835,39 +1016,56 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                   </select>
                 </div>
 
-                {/* Swell Scale21 dropdown */}
+                {/* Wind Direction input box */}
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Swell Scale</label>
-                  <select
-                    value={form.swell_scale_21}
-                    onChange={(e) => setForm({ ...form, swell_scale_21: e.target.value })}
-                    required
-                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
-                  >
-                    <option value="">Select Swell Scale</option>
-                    <option value="No Swell">No Swell</option>
-                    <option value="Low Swell - Short or Average">Low Swell - Short or Average</option>
-                    <option value="Low Swell - Long">Low Swell - Long</option>
-                    <option value="Moderate - Short">Moderate - Short</option>
-                    <option value="Moderate - Average">Moderate - Average</option>
-                    <option value="Moderate - Long">Moderate - Long</option>
-                    <option value="Heavy Swell - Short">Heavy Swell - Short</option>
-                    <option value="Heavy Swell - Average">Heavy Swell - Average</option>
-                    <option value="Heavy Swell - Long">Heavy Swell - Long</option>
-                    <option value="Confused Swell">Confused Swell</option>
-                  </select>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1 flex items-center gap-1">
+                    <Compass className="w-3.5 h-3.5 text-blue-600" />
+                    Wind Direction
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      list="noon-wind-directions"
+                      placeholder="e.g. NE, 045°, ESE"
+                      value={form.weather_direction || ''}
+                      onChange={(e) => setForm({ ...form, weather_direction: e.target.value })}
+                      className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none uppercase"
+                    />
+                    <datalist id="noon-wind-directions">
+                      <option value="N">North (N)</option>
+                      <option value="NNE">North-Northeast (NNE)</option>
+                      <option value="NE">Northeast (NE)</option>
+                      <option value="ENE">East-Northeast (ENE)</option>
+                      <option value="E">East (E)</option>
+                      <option value="ESE">East-Southeast (ESE)</option>
+                      <option value="SE">Southeast (SE)</option>
+                      <option value="SSE">South-Southeast (SSE)</option>
+                      <option value="S">South (S)</option>
+                      <option value="SSW">South-Southwest (SSW)</option>
+                      <option value="SW">Southwest (SW)</option>
+                      <option value="WSW">West-Southwest (WSW)</option>
+                      <option value="W">West (W)</option>
+                      <option value="WNW">West-Northwest (WNW)</option>
+                      <option value="NW">Northwest (NW)</option>
+                      <option value="NNW">North-Northwest (NNW)</option>
+                      <option value="VARIABLE">Variable</option>
+                    </datalist>
+                  </div>
                 </div>
 
                 {/* Beaufort Scale dropdown */}
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Beaufort Scale</label>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1 flex items-center gap-1">
+                    <Wind className="w-3.5 h-3.5 text-blue-600" />
+                    Beaufort Scale
+                  </label>
                   <select
                     value={form.wind_scale}
                     onChange={(e) => setForm({ ...form, wind_scale: e.target.value })}
                     required
-                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
                   >
-                    <option value="">Select Beaufort Scale</option>
+                    <option value="">Select Beaufort</option>
                     <option value="BF 0 - Calm (0~0.2 m/s)">BF 0 - Calm (0~0.2 m/s)</option>
                     <option value="BF 1 - Light Air (0.3~1.5 m/s)">BF 1 - Light Air (0.3~1.5 m/s)</option>
                     <option value="BF 2 - Light Breeze (1.6~3.3 m/s)">BF 2 - Light Breeze (1.6~3.3 m/s)</option>
@@ -884,14 +1082,37 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                   </select>
                 </div>
 
+                {/* Swell Scale21 dropdown */}
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Swell Scale</label>
+                  <select
+                    value={form.swell_scale_21}
+                    onChange={(e) => setForm({ ...form, swell_scale_21: e.target.value })}
+                    required
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
+                  >
+                    <option value="">Select Swell Scale</option>
+                    <option value="No Swell">No Swell</option>
+                    <option value="Low Swell - Short or Average">Low Swell - Short/Avg</option>
+                    <option value="Low Swell - Long">Low Swell - Long</option>
+                    <option value="Moderate - Short">Moderate - Short</option>
+                    <option value="Moderate - Average">Moderate - Average</option>
+                    <option value="Moderate - Long">Moderate - Long</option>
+                    <option value="Heavy Swell - Short">Heavy Swell - Short</option>
+                    <option value="Heavy Swell - Average">Heavy Swell - Average</option>
+                    <option value="Heavy Swell - Long">Heavy Swell - Long</option>
+                    <option value="Confused Swell">Confused Swell</option>
+                  </select>
+                </div>
+
                 {/* Wave Scale dropdown */}
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Wave Scale</label>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">Wave Scale</label>
                   <select
                     value={form.wave_scale}
                     onChange={(e) => setForm({ ...form, wave_scale: e.target.value })}
                     required
-                    className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
                   >
                     <option value="">Select Wave Scale</option>
                     <option value="Calm (Classy)">Calm (Classy)</option>
@@ -978,202 +1199,843 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
           </div>
         </form>
       ) : (
-        <div className="space-y-4">
-          <div className="flex justify-end px-6">
-            <div className="flex items-center gap-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Filter Vessel:</label>
-              <select 
-                value={vesselFilter}
-                onChange={(e) => setVesselFilter(e.target.value)}
-                className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
-              >
-                <option value="">All Vessels</option>
-                {vessels.map(v => (
-                  <option key={v.id} value={String(v.id)}>{v.name}</option>
-                ))}
-              </select>
+        <div className="space-y-6">
+          {/* Executive Summary Metrics */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Reports Logged</p>
+                <p className="text-2xl font-black text-slate-900 mt-1">{historyStats.totalReports}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {vesselFilter ? 'For selected vessel' : 'Across all fleet vessels'}
+                </p>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <FileText className="w-6 h-6" />
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Avg Daily HSFO FOC</p>
+                <p className="text-2xl font-black text-blue-700 mt-1 font-mono">{historyStats.avgHsfo} <span className="text-sm font-semibold">MT</span></p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Computed 24h average</p>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <Fuel className="w-6 h-6" />
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Avg Total Daily FOC</p>
+                <p className="text-2xl font-black text-emerald-700 mt-1 font-mono">{historyStats.avgTotalFoc} <span className="text-sm font-semibold">MT</span></p>
+                <p className="text-[11px] text-slate-500 mt-0.5">All fuel types combined</p>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                <Activity className="w-6 h-6" />
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Latest Report</p>
+                {historyStats.latestReport ? (
+                  <>
+                    <p className="text-sm font-bold text-slate-900 mt-1 truncate max-w-[150px]">
+                      {historyStats.latestReport.vessel_name}
+                    </p>
+                    <p className="text-[11px] font-mono text-slate-500 mt-0.5">
+                      {format(parseISO(historyStats.latestReport.utc_date_time), 'MMM dd, HH:mm')} UTC
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm font-medium text-slate-400 mt-1">No reports logged</p>
+                )}
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                <Clock className="w-6 h-6" />
+              </div>
             </div>
           </div>
+
+          {/* Filter & Search Bar */}
+          <div className="bg-white p-4 rounded-2xl border border-blue-100 shadow-sm flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Vessel Filter */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                  <Ship className="w-3.5 h-3.5 text-blue-600" />
+                  Vessel:
+                </label>
+                <select 
+                  value={vesselFilter}
+                  onChange={(e) => setVesselFilter(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                >
+                  <option value="">All Vessels ({reports.length})</option>
+                  {vessels.map(v => {
+                    const count = reports.filter(r => String(r.vessel_id) === String(v.id)).length;
+                    return (
+                      <option key={v.id} value={String(v.id)}>{v.name} ({count})</option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              {/* Cargo Status Filter */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Cargo:</label>
+                <select
+                  value={cargoStatusFilter}
+                  onChange={(e) => setCargoStatusFilter(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none uppercase"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="ballast">Ballast</option>
+                  <option value="laden">Laden</option>
+                </select>
+              </div>
+
+              {/* Report Type Filter */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Type:</label>
+                <select
+                  value={reportTypeFilter}
+                  onChange={(e) => setReportTypeFilter(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                >
+                  <option value="all">All Types</option>
+                  <option value="At sea">At sea</option>
+                  <option value="At port">At port</option>
+                  <option value="Anchorage">Anchorage</option>
+                  <option value="Drifting">Drifting</option>
+                  <option value="Transiting">Transiting</option>
+                </select>
+              </div>
+
+              {/* Search by Date */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                  Date:
+                </label>
+                <div className="relative flex items-center">
+                  <input
+                    type="date"
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className={`px-3 py-1.5 bg-slate-50 border rounded-xl text-xs font-bold transition-all focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer ${
+                      dateFilter
+                        ? 'border-blue-500 bg-blue-50/60 text-blue-900 pr-7 shadow-xs'
+                        : 'border-slate-200 text-slate-700 hover:border-slate-300'
+                    }`}
+                    title="Filter reports by date"
+                  />
+                  {dateFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setDateFilter('')}
+                      className="absolute right-1.5 p-0.5 text-slate-400 hover:text-rose-600 rounded transition-colors cursor-pointer"
+                      title="Clear date filter"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Reset All Filters Button */}
+              {(vesselFilter || cargoStatusFilter !== 'all' || reportTypeFilter !== 'all' || dateFilter || searchQuery) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVesselFilter('');
+                    setCargoStatusFilter('all');
+                    setReportTypeFilter('all');
+                    setDateFilter('');
+                    setSearchQuery('');
+                  }}
+                  className="px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 rounded-xl border border-rose-200 transition-colors flex items-center gap-1 cursor-pointer"
+                  title="Reset all filters"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset</span>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              {/* Search Bar */}
+              <div className="relative flex-1 sm:w-64">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search date, voyage, port, weather..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                />
+                {searchQuery && (
+                  <button 
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <span className="text-xs font-semibold text-slate-400 whitespace-nowrap">
+                {filteredReports.length} {filteredReports.length === 1 ? 'report' : 'reports'}
+              </span>
+            </div>
+          </div>
+
+          {/* History Data Table */}
           <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-left">
+              <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                    <th className="px-6 py-4">Date & Time (UTC)</th>
-                    <th className="px-6 py-4">Vessel</th>
-                    <th className="px-6 py-4">Voyage</th>
-                    <th className="px-6 py-4">Position</th>
-                    <th className="px-6 py-4">Destination</th>
-                    <th className="px-6 py-4">ETA (UTC)</th>
-                    <th className="px-6 py-4">Agent</th>
-                    <th className="px-6 py-4">DTG</th>
-                    <th className="px-6 py-4">Cargo</th>
-                    <th className="px-6 py-4">Weather</th>
-                    <th className="px-6 py-4 animate-pulse-subtle">Remarks</th>
-                    <th className="px-6 py-4">HSFO ROB</th>
-                    <th className="px-6 py-4">Daily FOC (HSFO)</th>
-                    <th className="px-6 py-4">Attachment</th>
-                    <th className="px-6 py-4">Actions</th>
+                  <tr className="bg-slate-50/80 border-b border-slate-100 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                    <th className="px-5 py-3.5 whitespace-nowrap">Date & Vessel</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Position & DTG</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Route & ETA (UTC)</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Weather & Wind Direction</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Auto-Computed FOC (24h)</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">ROB On Board</th>
+                    <th className="px-5 py-3.5 text-right whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-blue-50 text-sm">
-                  {filteredReports.map(report => (
-                  <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
-                    <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
-                    <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
-                    <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
-                    <td className="px-6 py-4 font-mono text-xs">{report.position_lat} / {report.position_long}</td>
-                    <td className="px-6 py-4 font-bold text-slate-700">{report.destination_port || '-'}</td>
-                    <td className="px-6 py-4 font-mono text-xs">
-                      {report.eta_utc ? format(parseISO(report.eta_utc), 'MMM dd, HH:mm') : '-'}
-                    </td>
-                    <td className="px-6 py-4 text-xs max-w-[150px] truncate" title={report.agent_details || ''}>
-                      {report.agent_details || '-'}
-                    </td>
-                    <td className="px-6 py-4">{report.distance_to_go} nm</td>
-                    <td className="px-6 py-4 uppercase text-[10px] font-bold text-slate-500">{report.cargo_status}</td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        {report.weather_image && (
-                          <button
-                            type="button"
-                            onClick={() => setPreviewImage(report.weather_image || null)}
-                            className="relative group cursor-pointer flex-shrink-0"
-                            title="Click to view full photo"
-                          >
-                            <img 
-                              src={report.weather_image} 
-                              className="w-10 h-10 object-cover rounded-lg border border-slate-200 group-hover:border-blue-500 transition-all shadow-sm"
-                              alt="Weather thumbnail"
-                              referrerPolicy="no-referrer"
-                            />
-                            <div className="absolute inset-0 bg-black/10 group-hover:bg-black/0 rounded-lg transition-all" />
-                          </button>
-                        )}
-                        {report.weather_notation ? (
-                          <div className="space-y-0.5 max-w-[150px]">
-                            <div className="text-xs font-semibold text-slate-800 truncate" title={`Notation: ${report.weather_notation}`}>
-                              {report.weather_notation}
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {filteredReports.map(report => {
+                    const totalFoc = (
+                      Number(report.foc_hsfo || 0) + 
+                      Number(report.foc_lsfo || 0) + 
+                      Number(report.foc_mgo || 0) + 
+                      Number(report.foc_mdo || 0)
+                    ).toFixed(2);
+                    const isHsfoOutside = isFocOutsideLimits(String(report.foc_hsfo), report.charterer_min_hsfo, report.charterer_max_hsfo);
+
+                    return (
+                      <tr 
+                        key={report.id} 
+                        className="hover:bg-blue-50/40 transition-colors group cursor-pointer"
+                        onClick={() => setSelectedReportForDetails(report)}
+                      >
+                        {/* Date & Vessel */}
+                        <td className="px-5 py-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-slate-900">
+                              <Calendar className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                              {format(parseISO(report.utc_date_time), 'MMM dd, yyyy')}
+                              <span className="text-slate-400 font-normal">
+                                {format(parseISO(report.utc_date_time), 'HH:mm')} UTC
+                              </span>
                             </div>
-                            {(report.wind_scale || report.swell_scale_21 || report.wave_scale) && (
-                              <div className="text-[10px] text-slate-400 font-medium truncate" title={`Swell: ${report.swell_scale_21 || ''} | Wind: ${report.wind_scale || ''} | Wave: ${report.wave_scale || ''}`}>
-                                {report.wind_scale ? `${report.wind_scale.split(' ')[0]}` : ''}
-                                {report.swell_scale_21 ? ` &bull; ${report.swell_scale_21.split(' ')[0]}` : ''}
+                            <div className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                              <span>{report.vessel_name}</span>
+                              {report.voyage_number && (
+                                <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-mono font-semibold">
+                                  {report.voyage_number}
+                                </span>
+                              )}
+                              <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider ${
+                                report.cargo_status === 'laden' 
+                                  ? 'bg-blue-100 text-blue-800' 
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {report.cargo_status}
+                              </span>
+                              {report.report_type && (
+                                <span className="px-2 py-0.5 rounded-md text-[9px] font-bold tracking-wide bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                  {report.report_type}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Position & DTG */}
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1 font-mono text-xs text-slate-700 font-semibold">
+                              <MapPin className="w-3.5 h-3.5 text-rose-500 flex-shrink-0" />
+                              <span>{report.position_lat} / {report.position_long}</span>
+                            </div>
+                            <div className="text-xs text-slate-500 flex items-center gap-1">
+                              <span className="font-medium">DTG:</span>
+                              <strong className="font-mono font-bold text-slate-800">{report.distance_to_go} nm</strong>
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Route & ETA */}
+                        <td className="px-5 py-4">
+                          <div className="space-y-1 max-w-[180px]">
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 truncate" title={report.destination_port || 'No destination'}>
+                              <Anchor className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                              <span>{report.destination_port || '-'}</span>
+                            </div>
+                            <div className="text-[11px] font-mono text-slate-500">
+                              ETA: {report.eta_utc ? format(parseISO(report.eta_utc), 'MMM dd, HH:mm') : '-'}
+                            </div>
+                            {report.agent_details && (
+                              <div className="text-[10px] text-slate-400 truncate" title={report.agent_details}>
+                                Agt: {report.agent_details}
                               </div>
                             )}
                           </div>
-                        ) : (
-                          !report.weather_image && <span className="text-xs text-slate-400">-</span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 text-slate-600 max-w-[150px] truncate" title={report.remarks || ''}>
-                      {report.remarks || <span className="text-slate-400">-</span>}
-                    </td>
-                    <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
-                    <td className={`px-6 py-4 font-mono font-bold ${
-                      isFocOutsideLimits(String(report.foc_hsfo), report.charterer_min_hsfo, report.charterer_max_hsfo)
-                        ? 'text-red-600'
-                        : 'text-blue-600'
-                    }`} title={isFocOutsideLimits(String(report.foc_hsfo), report.charterer_min_hsfo, report.charterer_max_hsfo) ? `Outside Charterer Threshold (${report.charterer_min_hsfo || 'N/A'} - ${report.charterer_max_hsfo || 'N/A'})` : `Charterer Threshold: ${report.charterer_min_hsfo || 'N/A'} - ${report.charterer_max_hsfo || 'N/A'}`}>
-                      -{report.foc_hsfo}
-                    </td>
-                    <td className="px-6 py-4">
-                      {report.attachment_id && (
-                        <a 
-                          href={new URL(`/api/noon-attachments/${report.attachment_id}?token=${token}`, window.location.href).href}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1.5 text-blue-600 hover:underline font-bold"
-                        >
-                          <FileText className="w-4 h-4" />
-                          {report.attachment_name || 'View Report'}
-                        </a>
-                      )}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-1">
-                        {canEditReport(report) && (
-                          <button 
-                            onClick={() => handleEdit(report)}
-                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                            title="Edit Report"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                        )}
-                        {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
-                          <button 
-                            onClick={() => handleDelete(report.id)}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                            title="Delete Report"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {isLoading ? (
-                  <tr>
-                    <td colSpan={9} className="px-6 py-16 text-center">
-                      <div className="flex flex-col items-center justify-center gap-3">
-                        <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
-                        <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Noon to Noon Reports...</span>
-                      </div>
-                    </td>
-                  </tr>
-                ) : reports.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="px-6 py-12 text-center text-slate-400 font-medium">
-                      No noon reports found.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    )}
+                        </td>
 
-    {previewImage && (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 p-4 animate-fade-in">
-        <div className="relative bg-white max-w-4xl w-full rounded-2xl overflow-hidden shadow-2xl flex flex-col">
-          <div className="bg-slate-900 px-6 py-4 text-white flex justify-between items-center border-b border-slate-800">
-            <h3 className="font-bold text-base flex items-center gap-2">
-              <Waves className="w-5 h-5 text-blue-400" />
-              Weather Conditions Snapshot
-            </h3>
-            <button
-              type="button"
-              onClick={() => setPreviewImage(null)}
-              className="p-1.5 hover:bg-slate-800 rounded-xl transition-all cursor-pointer text-slate-400 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-          <div className="p-6 bg-slate-100 flex items-center justify-center max-h-[70vh] overflow-y-auto">
-            <img 
-              src={previewImage} 
-              className="max-h-[60vh] max-w-full rounded-xl object-contain shadow-md" 
-              alt="Full Weather Snapshot" 
-              referrerPolicy="no-referrer"
-            />
-          </div>
-          <div className="bg-slate-50 px-6 py-4 flex justify-end">
-            <button
-              type="button"
-              onClick={() => setPreviewImage(null)}
-              className="px-5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-sm font-bold transition-all cursor-pointer"
-            >
-              Close Preview
-            </button>
+                        {/* Weather & Direction */}
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-3">
+                            {report.weather_image && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPreviewImage(report.weather_image || null);
+                                }}
+                                className="relative group/img flex-shrink-0 cursor-pointer"
+                                title="Click to view full photo"
+                              >
+                                <img 
+                                  src={report.weather_image} 
+                                  className="w-10 h-10 object-cover rounded-lg border border-slate-200 group-hover/img:border-blue-500 transition-all shadow-sm"
+                                  alt="Weather thumbnail"
+                                  referrerPolicy="no-referrer"
+                                />
+                                <div className="absolute inset-0 bg-black/10 group-hover/img:bg-black/0 rounded-lg transition-all" />
+                              </button>
+                            )}
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {report.weather_notation ? (
+                                  <span className="text-xs font-semibold text-slate-800 truncate max-w-[140px]" title={report.weather_notation}>
+                                    {report.weather_notation}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-slate-400">-</span>
+                                )}
+                                
+                                {/* Wind Direction Badge */}
+                                {report.weather_direction && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-md text-[11px] font-bold tracking-wide" title={`Wind Direction: ${report.weather_direction}`}>
+                                    <Compass className="w-3 h-3 text-blue-600" />
+                                    {report.weather_direction}
+                                  </span>
+                                )}
+                              </div>
+                              {(report.wind_scale || report.swell_scale_21) && (
+                                <div className="text-[10px] text-slate-500 font-medium">
+                                  {report.wind_scale ? report.wind_scale.split(' - ')[0] : ''}
+                                  {report.wind_scale && report.swell_scale_21 ? ' • ' : ''}
+                                  {report.swell_scale_21 ? report.swell_scale_21.split(' - ')[0] : ''}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Auto-Computed Fuel Consumption (FOC) */}
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Total FOC:</span>
+                              <span className="px-2 py-0.5 bg-slate-900 text-white font-mono font-bold text-xs rounded-md shadow-sm">
+                                {totalFoc} MT
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span 
+                                className={`font-mono text-xs font-bold px-1.5 py-0.5 rounded ${
+                                  isHsfoOutside 
+                                    ? 'bg-red-100 text-red-700 border border-red-200' 
+                                    : 'bg-blue-50 text-blue-700 border border-blue-100'
+                                }`} 
+                                title={isHsfoOutside ? `HSFO FOC outside limit (${report.charterer_min_hsfo || '0'} - ${report.charterer_max_hsfo || '∞'})` : 'HSFO FOC within limit'}
+                              >
+                                HSFO: {report.foc_hsfo ?? '0.00'}
+                              </span>
+                              {Number(report.foc_lsfo || 0) > 0 && (
+                                <span className="font-mono text-[11px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                                  LSFO: {report.foc_lsfo}
+                                </span>
+                              )}
+                              {(Number(report.foc_mgo || 0) > 0 || Number(report.foc_mdo || 0) > 0) && (
+                                <span className="font-mono text-[11px] font-semibold text-slate-500">
+                                  {Number(report.foc_mgo || 0) > 0 ? `MGO: ${report.foc_mgo}` : ''}
+                                  {Number(report.foc_mgo || 0) > 0 && Number(report.foc_mdo || 0) > 0 ? ' • ' : ''}
+                                  {Number(report.foc_mdo || 0) > 0 ? `MDO: ${report.foc_mdo}` : ''}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Remaining ROB */}
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <div className="space-y-0.5 font-mono text-xs">
+                            <div className="font-bold text-slate-900">
+                              HSFO: <span className="text-blue-700">{report.rob_hsfo} MT</span>
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              LSFO: {report.rob_lsfo} • MGO: {report.rob_mgo}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Actions */}
+                        <td className="px-5 py-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-1.5">
+                            {/* View Details */}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedReportForDetails(report)}
+                              className="p-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                              title="View Full Report Details"
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+
+                            {/* Scanned Report Attachment */}
+                            {report.attachment_id && (
+                              <a 
+                                href={new URL(`/api/noon-attachments/${report.attachment_id}?token=${token}`, window.location.href).href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                                title={report.attachment_name ? `Download ${report.attachment_name}` : "Download Scanned Report"}
+                              >
+                                <FileText className="w-4 h-4" />
+                              </a>
+                            )}
+
+                            {/* Edit */}
+                            {canEditReport(report) && (
+                              <button 
+                                onClick={() => handleEdit(report)}
+                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                                title="Edit Report"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                            )}
+
+                            {/* Delete */}
+                            {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
+                              <button 
+                                onClick={() => handleDelete(report.id)}
+                                className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+                                title="Delete Report"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {isLoading ? (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-16 text-center">
+                        <div className="flex flex-col items-center justify-center gap-3">
+                          <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
+                          <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Noon to Noon Reports...</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : filteredReports.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-16 text-center">
+                        <div className="flex flex-col items-center justify-center gap-2">
+                          <Activity className="w-8 h-8 text-slate-300" />
+                          <p className="text-sm font-bold text-slate-700">No matching noon reports found</p>
+                          <p className="text-xs text-slate-400">Try adjusting your filters or search terms.</p>
+                          {(vesselFilter || cargoStatusFilter !== 'all' || dateFilter || searchQuery) && (
+                            <button
+                              onClick={() => {
+                                setVesselFilter('');
+                                setCargoStatusFilter('all');
+                                setDateFilter('');
+                                setSearchQuery('');
+                              }}
+                              className="mt-2 text-xs font-bold text-blue-600 hover:underline cursor-pointer"
+                            >
+                              Reset all filters
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
-      </div>
-    )}
+      )}
+
+      {/* Comprehensive Report Details Modal */}
+      {selectedReportForDetails && (
+        <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 overflow-y-auto animate-fade-in">
+          <div className="relative bg-white max-w-3xl w-full rounded-3xl shadow-2xl border border-blue-100 overflow-hidden my-8">
+            {/* Modal Header */}
+            <div className="bg-slate-900 text-white px-6 py-5 flex items-center justify-between">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Ship className="w-5 h-5 text-blue-400" />
+                  <h3 className="text-lg font-bold">{selectedReportForDetails.vessel_name}</h3>
+                  {selectedReportForDetails.voyage_number && (
+                    <span className="px-2.5 py-0.5 bg-slate-800 text-blue-300 rounded-lg text-xs font-mono font-bold">
+                      {selectedReportForDetails.voyage_number}
+                    </span>
+                  )}
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+                    selectedReportForDetails.cargo_status === 'laden' 
+                      ? 'bg-blue-500 text-white' 
+                      : 'bg-amber-500 text-white'
+                  }`}>
+                    {selectedReportForDetails.cargo_status}
+                  </span>
+                  {selectedReportForDetails.report_type && (
+                    <span className="px-2.5 py-0.5 rounded text-[10px] font-bold tracking-wide bg-indigo-600 text-white">
+                      {selectedReportForDetails.report_type}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-400 font-mono flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5" />
+                  {format(parseISO(selectedReportForDetails.utc_date_time), 'EEEE, MMMM dd, yyyy • HH:mm')} UTC
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {canEditReport(selectedReportForDetails) && (
+                  <button
+                    onClick={() => {
+                      const rep = selectedReportForDetails;
+                      setSelectedReportForDetails(null);
+                      handleEdit(rep);
+                    }}
+                    className="p-2 bg-slate-800 hover:bg-slate-700 text-blue-300 rounded-xl transition-all"
+                    title="Edit Report"
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSelectedReportForDetails(null)}
+                  className="p-2 hover:bg-slate-800 text-slate-400 hover:text-white rounded-xl transition-all"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              {/* Navigation & Position Section */}
+              <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
+                  <MapPin className="w-4 h-4 text-blue-600" />
+                  Navigation & Route Status
+                </h4>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Latitude</span>
+                    <span className="font-mono font-bold text-slate-800 text-sm">{selectedReportForDetails.position_lat}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Longitude</span>
+                    <span className="font-mono font-bold text-slate-800 text-sm">{selectedReportForDetails.position_long}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Distance To Go</span>
+                    <span className="font-mono font-bold text-blue-700 text-sm">{selectedReportForDetails.distance_to_go} nm</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Report Type</span>
+                    <span className="font-bold text-indigo-700 text-sm">{selectedReportForDetails.report_type || 'At sea'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Destination</span>
+                    <span className="font-bold text-slate-800 text-sm">{selectedReportForDetails.destination_port || '-'}</span>
+                  </div>
+                </div>
+
+                {(selectedReportForDetails.eta_utc || selectedReportForDetails.agent_details) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3 pt-3 border-t border-slate-200/60 text-xs">
+                    {selectedReportForDetails.eta_utc && (
+                      <div>
+                        <span className="text-slate-400 font-medium">Estimated Arrival (ETA):</span>{' '}
+                        <strong className="font-mono text-slate-800">
+                          {format(parseISO(selectedReportForDetails.eta_utc), 'MMM dd, yyyy • HH:mm')} UTC
+                        </strong>
+                      </div>
+                    )}
+                    {selectedReportForDetails.agent_details && (
+                      <div>
+                        <span className="text-slate-400 font-medium">Port Agent:</span>{' '}
+                        <strong className="text-slate-800">{selectedReportForDetails.agent_details}</strong>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Auto-Computed Fuel Statistics & ROB Section */}
+              <div className="bg-blue-50/40 p-5 rounded-2xl border border-blue-100">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-blue-900 flex items-center gap-1.5">
+                    <Activity className="w-4 h-4 text-blue-600" />
+                    Fuel Statistics & Auto-Computed 24h Consumption
+                  </h4>
+                  <span className="px-2.5 py-1 bg-blue-600 text-white font-mono font-bold text-xs rounded-lg shadow-sm">
+                    Total FOC: {(
+                      Number(selectedReportForDetails.foc_hsfo || 0) + 
+                      Number(selectedReportForDetails.foc_lsfo || 0) + 
+                      Number(selectedReportForDetails.foc_mgo || 0) + 
+                      Number(selectedReportForDetails.foc_mdo || 0)
+                    ).toFixed(2)} MT
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs bg-white rounded-xl border border-blue-100 overflow-hidden">
+                    <thead className="bg-blue-50/60 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="px-4 py-2.5">Fuel Type</th>
+                        <th className="px-4 py-2.5">Auto-Computed 24h FOC</th>
+                        <th className="px-4 py-2.5">Remaining ROB</th>
+                        <th className="px-4 py-2.5">Charterer Threshold</th>
+                        <th className="px-4 py-2.5">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-blue-50">
+                      {[
+                        { 
+                          label: 'HSFO', 
+                          foc: selectedReportForDetails.foc_hsfo, 
+                          rob: selectedReportForDetails.rob_hsfo, 
+                          min: selectedReportForDetails.charterer_min_hsfo, 
+                          max: selectedReportForDetails.charterer_max_hsfo 
+                        },
+                        { 
+                          label: 'LSFO', 
+                          foc: selectedReportForDetails.foc_lsfo, 
+                          rob: selectedReportForDetails.rob_lsfo, 
+                          min: selectedReportForDetails.charterer_min_lsfo, 
+                          max: selectedReportForDetails.charterer_max_lsfo 
+                        },
+                        { 
+                          label: 'MGO', 
+                          foc: selectedReportForDetails.foc_mgo, 
+                          rob: selectedReportForDetails.rob_mgo, 
+                          min: selectedReportForDetails.charterer_min_mgo, 
+                          max: selectedReportForDetails.charterer_max_mgo 
+                        },
+                        { 
+                          label: 'MDO', 
+                          foc: selectedReportForDetails.foc_mdo, 
+                          rob: selectedReportForDetails.rob_mdo, 
+                          min: selectedReportForDetails.charterer_min_mdo, 
+                          max: selectedReportForDetails.charterer_max_mdo 
+                        }
+                      ].map(fuel => {
+                        const isOutside = isFocOutsideLimits(String(fuel.foc), fuel.min, fuel.max);
+                        return (
+                          <tr key={fuel.label} className="hover:bg-slate-50/60">
+                            <td className="px-4 py-2.5 font-bold text-slate-800">{fuel.label}</td>
+                            <td className="px-4 py-2.5 font-mono font-bold text-slate-900">
+                              {fuel.foc ? `${fuel.foc} MT` : '0.00 MT'}
+                            </td>
+                            <td className="px-4 py-2.5 font-mono text-slate-700">
+                              {fuel.rob} MT
+                            </td>
+                            <td className="px-4 py-2.5 text-slate-500 font-mono text-[11px]">
+                              {fuel.min || fuel.max ? `${fuel.min || 0} - ${fuel.max || '∞'}` : 'N/A'}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              {fuel.min || fuel.max ? (
+                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  isOutside 
+                                    ? 'bg-red-100 text-red-700' 
+                                    : 'bg-emerald-100 text-emerald-700'
+                                }`}>
+                                  {isOutside ? 'Exceeded' : 'Within Limits'}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">-</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Weather & Environmental Conditions Section */}
+              <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
+                  <Waves className="w-4 h-4 text-blue-600" />
+                  Weather & Environmental Conditions
+                </h4>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Weather Notation</span>
+                    <span className="font-bold text-slate-800 text-sm">{selectedReportForDetails.weather_notation || '-'}</span>
+                  </div>
+
+                  {/* Wind Direction with Compass */}
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block flex items-center gap-1">
+                      <Compass className="w-3.5 h-3.5 text-blue-600" />
+                      Wind Direction
+                    </span>
+                    {selectedReportForDetails.weather_direction ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-100 text-blue-800 rounded-lg text-xs font-bold mt-0.5" title="Wind Direction">
+                        <Compass className="w-3.5 h-3.5" />
+                        {selectedReportForDetails.weather_direction}
+                      </span>
+                    ) : (
+                      <span className="font-medium text-slate-400 text-sm">-</span>
+                    )}
+                  </div>
+
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block flex items-center gap-1">
+                      <Wind className="w-3.5 h-3.5 text-blue-600" />
+                      Beaufort Scale
+                    </span>
+                    <span className="font-medium text-slate-800 text-xs">{selectedReportForDetails.wind_scale || '-'}</span>
+                  </div>
+
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Swell / Wave</span>
+                    <span className="font-medium text-slate-800 text-xs">
+                      {selectedReportForDetails.swell_scale_21 || '-'} 
+                      {selectedReportForDetails.wave_scale ? ` / ${selectedReportForDetails.wave_scale}` : ''}
+                    </span>
+                  </div>
+                </div>
+
+                {selectedReportForDetails.weather_image && (
+                  <div className="mt-4 pt-3 border-t border-slate-200/60">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block mb-2">Weather Photo</span>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewImage(selectedReportForDetails.weather_image || null)}
+                      className="group inline-flex items-center gap-3 p-2 bg-white rounded-xl border border-slate-200 hover:border-blue-500 transition-all text-left"
+                    >
+                      <img 
+                        src={selectedReportForDetails.weather_image} 
+                        className="w-16 h-16 object-cover rounded-lg shadow-sm" 
+                        alt="Weather condition snapshot" 
+                        referrerPolicy="no-referrer"
+                      />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800 group-hover:text-blue-600 transition-colors">Click to view full snapshot</p>
+                        <p className="text-[10px] text-slate-400">Captured at noon UTC</p>
+                      </div>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Remarks & Scanned Attachment */}
+              <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 space-y-4">
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5">
+                    <MessageSquare className="w-4 h-4 text-blue-600" />
+                    Master & Engineer Remarks
+                  </h4>
+                  <p className="text-sm text-slate-700 bg-white p-3 rounded-xl border border-slate-200/60 whitespace-pre-wrap">
+                    {selectedReportForDetails.remarks || 'No remarks provided for this report.'}
+                  </p>
+                </div>
+
+                {selectedReportForDetails.attachment_id && (
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5">
+                      <FileText className="w-4 h-4 text-blue-600" />
+                      Scanned ROB Document
+                    </h4>
+                    <a 
+                      href={new URL(`/api/noon-attachments/${selectedReportForDetails.attachment_id}?token=${token}`, window.location.href).href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all"
+                    >
+                      <Download className="w-4 h-4" />
+                      {selectedReportForDetails.attachment_name || 'Download Scanned Report'}
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 px-6 py-4 flex items-center justify-between border-t border-slate-100">
+              <span className="text-xs text-slate-400 font-medium">
+                Report ID: #{selectedReportForDetails.id}
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedReportForDetails(null)}
+                className="px-5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition-all"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full Snapshot Image Preview */}
+      {previewImage && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 p-4 animate-fade-in">
+          <div className="relative bg-white max-w-4xl w-full rounded-2xl overflow-hidden shadow-2xl flex flex-col">
+            <div className="bg-slate-900 px-6 py-4 text-white flex justify-between items-center border-b border-slate-800">
+              <h3 className="font-bold text-base flex items-center gap-2">
+                <Waves className="w-5 h-5 text-blue-400" />
+                Weather Conditions Snapshot
+              </h3>
+              <button
+                type="button"
+                onClick={() => setPreviewImage(null)}
+                className="p-1.5 hover:bg-slate-800 rounded-xl transition-all cursor-pointer text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 bg-slate-100 flex items-center justify-center max-h-[70vh] overflow-y-auto">
+              <img 
+                src={previewImage} 
+                className="max-h-[60vh] max-w-full rounded-xl object-contain shadow-md" 
+                alt="Full Weather Snapshot" 
+                referrerPolicy="no-referrer"
+              />
+            </div>
+            <div className="bg-slate-50 px-6 py-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setPreviewImage(null)}
+                className="px-5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-sm font-bold transition-all cursor-pointer"
+              >
+                Close Preview
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

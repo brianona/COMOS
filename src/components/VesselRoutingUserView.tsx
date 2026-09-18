@@ -98,13 +98,16 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
             >
               <option value="">Select Status</option>
               <option value="At sea">At sea</option>
+              <option value="At port">At port</option>
               <option value="In Port">In Port</option>
+              <option value="Anchorage">Anchorage</option>
               <option value="At Anchor">At Anchor</option>
               <option value="Drifting">Drifting</option>
+              <option value="Transiting">Transiting</option>
             </select>
           </div>
 
-          {currentNavStatus === 'At Anchor' && (
+          {(currentNavStatus === 'At Anchor' || currentNavStatus === 'Anchor' || currentNavStatus === 'Anchorage') && (
             <div>
               <label className="text-[10px] font-bold uppercase text-amber-600 block mb-1">Number of Shackles</label>
               <input
