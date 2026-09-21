@@ -291,18 +291,27 @@ const INITIAL_UPLOADS: VesselUpload[] = [
 ];
 
 export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode: initialMode = 'management', flags = [], onPendingAckCountChange, onNavigateMode }) => {
-  const [activeMode, setActiveMode] = useState<'overview' | 'management' | 'reporting' | 'acknowledgement'>(initialMode);
+  const isVesselUser = currentUser?.role === 'vessel';
+  const effectiveInitialMode = (isVesselUser && (initialMode === 'reporting' || initialMode === 'management')) 
+    ? 'overview' 
+    : initialMode;
+  const [activeMode, setActiveMode] = useState<'overview' | 'management' | 'reporting' | 'acknowledgement'>(effectiveInitialMode);
 
   useEffect(() => {
-    setActiveMode(initialMode);
-  }, [initialMode]);
+    if (isVesselUser && (initialMode === 'reporting' || initialMode === 'management')) {
+      setActiveMode('overview');
+    } else {
+      setActiveMode(initialMode);
+    }
+  }, [initialMode, isVesselUser]);
 
-  const mode = activeMode;
+  const mode = isVesselUser && (activeMode === 'reporting' || activeMode === 'management') ? 'overview' : activeMode;
 
   const handleNavigateMode = (targetMode: 'overview' | 'management' | 'reporting' | 'acknowledgement') => {
-    setActiveMode(targetMode);
+    const finalMode = (isVesselUser && (targetMode === 'reporting' || targetMode === 'management')) ? 'overview' : targetMode;
+    setActiveMode(finalMode);
     if (onNavigateMode) {
-      onNavigateMode(targetMode);
+      onNavigateMode(finalMode);
     }
   };
 
@@ -327,7 +336,6 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
         }));
   }, [externalVessels]);
 
-  const isVesselUser = currentUser?.role === 'vessel';
   const isAdmin = currentUser?.role === 'admin';
   const userTeamIds: number[] = useMemo(() => {
     return Array.isArray(currentUser?.team_ids) ? currentUser.team_ids.map(Number) : [];
@@ -4287,17 +4295,17 @@ startxref
               </div>
 
               {/* Quick Navigation Links */}
-              <div className="pt-2 border-t border-slate-100 space-y-2">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Quick Navigation</label>
-                <div className="flex flex-col gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => handleNavigateMode('reporting')}
-                    className="w-full py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-                  >
-                    <Send className="w-3.5 h-3.5" /> Go to SMS Reporting Terminal
-                  </button>
-                  {currentUser?.role !== 'vessel' && (
+              {currentUser?.role !== 'vessel' && (
+                <div className="pt-2 border-t border-slate-100 space-y-2">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Quick Navigation</label>
+                  <div className="flex flex-col gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleNavigateMode('reporting')}
+                      className="w-full py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                    >
+                      <Send className="w-3.5 h-3.5" /> Go to SMS Reporting Terminal
+                    </button>
                     <button
                       type="button"
                       onClick={() => handleNavigateMode('management')}
@@ -4305,9 +4313,9 @@ startxref
                     >
                       <FileText className="w-3.5 h-3.5" /> Go to SMS Management
                     </button>
-                  )}
+                  </div>
                 </div>
-              </div>
+              )}
 
 
             </div>
@@ -4788,18 +4796,20 @@ startxref
             <span>SMS Manual & Catalog</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => handleNavigateMode('reporting')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
-              mode === 'reporting'
-                ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-            }`}
-          >
-            <Send className="w-4 h-4" />
-            <span>SMS Reporting</span>
-          </button>
+          {currentUser?.role !== 'vessel' && (
+            <button
+              type="button"
+              onClick={() => handleNavigateMode('reporting')}
+              className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
+                mode === 'reporting'
+                  ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Send className="w-4 h-4" />
+              <span>SMS Reporting</span>
+            </button>
+          )}
 
           {currentUser?.role !== 'vessel' && (
             <>
@@ -5342,7 +5352,7 @@ startxref
         {mode === 'management' && managementTab === 'submitted_files' && renderSubmittedFilesAccordion()}
 
         {/* NEW REVOLUTIONARY SMS REPORTING WORKSPACE */}
-        {mode === 'reporting' && (
+        {mode === 'reporting' && currentUser?.role !== 'vessel' && (
           <div className="space-y-6 animate-in fade-in duration-300">
             {/* Top Control Bar & Simulator */}
             <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-xl border border-slate-800 flex flex-col lg:flex-row gap-6 items-start lg:items-center justify-between">

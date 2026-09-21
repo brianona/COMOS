@@ -64,7 +64,10 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
 
   const setView = useCallback((newView: ViewType | ((prev: ViewType) => ViewType)) => {
     setRawView(currentView => {
-      const targetView = typeof newView === 'function' ? newView(currentView) : newView;
+      let targetView = typeof newView === 'function' ? newView(currentView) : newView;
+      if (user.role === 'vessel' && (targetView === 'sms_reporting' || targetView === 'sms')) {
+        targetView = 'sms_overview';
+      }
       if (targetView !== currentView) {
         setViewHistory(prev => {
           if (prev.length > 0 && prev[prev.length - 1] === currentView) return prev;
@@ -78,7 +81,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       }
       return targetView;
     });
-  }, []);
+  }, [user.role]);
 
   const handleGoBack = useCallback(() => {
     setViewHistory(prev => {
@@ -99,16 +102,29 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
 
   useEffect(() => {
     const handlePopState = (event: PopStateEvent) => {
-      const hashView = window.location.hash.replace('#', '') as ViewType;
+      let hashView = window.location.hash.replace('#', '') as ViewType;
+      if (user.role === 'vessel' && (hashView === 'sms_reporting' || hashView === 'sms')) {
+        hashView = 'sms_overview';
+      }
       if (hashView && hashView !== view) {
         setRawView(hashView);
       } else if (event.state?.view) {
-        setRawView(event.state.view as ViewType);
+        let stateView = event.state.view as ViewType;
+        if (user.role === 'vessel' && (stateView === 'sms_reporting' || stateView === 'sms')) {
+          stateView = 'sms_overview';
+        }
+        setRawView(stateView);
       }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [view]);
+  }, [view, user.role]);
+
+  useEffect(() => {
+    if (user.role === 'vessel' && (view === 'sms_reporting' || view === 'sms')) {
+      setView('sms_overview');
+    }
+  }, [user.role, view, setView]);
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -4408,15 +4424,15 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 flags={flags} 
                 onPendingAckCountChange={setPendingAckCount}
                 onNavigateMode={(targetMode) => {
-                  if (targetMode === 'management') setView('sms');
+                  if (targetMode === 'management') setView(user.role === 'vessel' ? 'sms_overview' : 'sms');
                   else if (targetMode === 'overview') setView('sms_overview');
-                  else if (targetMode === 'reporting') setView('sms_reporting');
+                  else if (targetMode === 'reporting') setView(user.role === 'vessel' ? 'sms_overview' : 'sms_reporting');
                 }}
               />
             </div>
           )}
 
-          {view === 'sms' && (
+          {view === 'sms' && user.role !== 'vessel' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
               <SMSView 
                 vessels={vessels} 
@@ -4428,13 +4444,13 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 onNavigateMode={(targetMode) => {
                   if (targetMode === 'management') setView('sms');
                   else if (targetMode === 'overview') setView('sms_overview');
-                  else if (targetMode === 'reporting') setView('sms_reporting');
+                  else if (targetMode === 'reporting') setView(user.role === 'vessel' ? 'sms_overview' : 'sms_reporting');
                 }}
               />
             </div>
           )}
 
-          {view === 'sms_reporting' && (
+          {view === 'sms_reporting' && user.role !== 'vessel' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
               <SMSView 
                 vessels={vessels} 

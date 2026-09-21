@@ -246,12 +246,14 @@ export const SidebarContent = ({
                     <FileText className="w-3.5 h-3.5 shrink-0" /> SMS Management
                   </button>
                 )}
-                <button 
-                  onClick={() => { setView('sms_reporting'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'sms_reporting')}
-                >
-                  <Send className="w-3.5 h-3.5 shrink-0" /> SMS Reporting
-                </button>
+                {user.role !== 'vessel' && (
+                  <button 
+                    onClick={() => { setView('sms_reporting'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'sms_reporting')}
+                  >
+                    <Send className="w-3.5 h-3.5 shrink-0" /> SMS Reporting
+                  </button>
+                )}
                 <button 
                   onClick={() => { setView('sms_order_list'); setIsSidebarOpen(false); }}
                   className={getOrderListItemClass(view === 'sms_order_list')}

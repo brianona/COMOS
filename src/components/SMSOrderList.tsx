@@ -4082,7 +4082,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         )}
 
         {/* Executive Metrics & Progress Strip */}
-        <div className="px-6 py-3.5 bg-slate-50/90 border-b border-slate-100 shrink-0">
+        <div className="px-6 py-3.5 bg-slate-50 border-b border-slate-100 shrink-0">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
             {/* Vessel & On-Behalf Indicator */}
             <div className="flex items-center gap-2.5">
@@ -4543,56 +4543,68 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           {itemUploads.map((up) => (
                             <div
                               key={up.id}
-                              className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 text-xs transition-colors ${
+                              className={`p-2.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs transition-colors ${
                                 up.replace_requested_at
                                   ? 'bg-rose-50/70 border-rose-200'
                                   : 'bg-slate-50/80 border-slate-200/70 hover:bg-slate-100/60'
                               }`}
                             >
-                              <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                                <span className="px-2 py-0.5 rounded-md bg-blue-100/90 text-blue-800 text-[10px] font-bold shrink-0 border border-blue-200/60 tracking-tight">
-                                  Uploaded file(s)
-                                </span>
-                                <FileText className={`w-4 h-4 shrink-0 ${up.replace_requested_at ? 'text-rose-600' : 'text-blue-600'}`} />
-                                <span className="font-bold text-slate-800 truncate" title={up.file_name}>
-                                  {up.file_name}
-                                </span>
-                                <span className="text-[11px] text-slate-500 shrink-0 font-mono">
-                                  ({up.file_size})
-                                </span>
-                                <span className="text-[11px] text-slate-400 shrink-0 hidden md:inline">
-                                  by {up.uploaded_by} • {new Date(up.uploaded_at).toLocaleDateString()}
-                                </span>
+                              <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
+                                <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                                  up.replace_requested_at ? 'bg-rose-100 text-rose-600' : 'bg-blue-100 text-blue-600'
+                                }`}>
+                                  <FileText className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <span className="font-bold text-slate-800 truncate" title={up.file_name}>
+                                      {up.file_name}
+                                    </span>
+                                    <span className="text-[10px] text-slate-500 shrink-0 font-mono">
+                                      ({up.file_size})
+                                    </span>
+                                  </div>
+                                  <div className="text-[10px] text-slate-400 truncate">
+                                    by {up.uploaded_by} • {new Date(up.uploaded_at).toLocaleDateString()}
+                                  </div>
+                                </div>
                               </div>
 
-                              <div className="flex items-center gap-1 shrink-0">
+                              <div className="flex items-center gap-1.5 shrink-0 flex-wrap self-end sm:self-center">
                                 {/* Revision Status / Trigger */}
                                 {up.replace_requested_at ? (
-                                  !isVesselUser && onCancelReplacementRequest && (
-                                    <button
-                                      type="button"
-                                      onClick={() => onCancelReplacementRequest(up.id)}
-                                      className="px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
-                                    >
-                                      Cancel Request
-                                    </button>
-                                  )
+                                  <div className="flex items-center gap-1">
+                                    <span className="px-2 py-0.5 bg-rose-100 text-rose-700 border border-rose-200 rounded-md text-[10px] font-bold flex items-center gap-1" title={up.replace_reason || "Revision requested"}>
+                                      <AlertTriangle className="w-3 h-3 text-rose-600" />
+                                      <span>Revision Requested</span>
+                                    </span>
+                                    {!isVesselUser && onCancelReplacementRequest && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onCancelReplacementRequest(up.id)}
+                                        className="px-2 py-0.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md text-[10px] font-bold transition-colors cursor-pointer"
+                                      >
+                                        Cancel
+                                      </button>
+                                    )}
+                                  </div>
                                 ) : (
                                   !isVesselUser && onRequestReplacement && (
                                     <button
                                       type="button"
                                       onClick={() => onRequestReplacement(up.id, up.file_name)}
-                                      className="px-2 py-1 text-rose-700 hover:bg-rose-100/60 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                      className="px-2.5 py-1 text-rose-700 hover:bg-rose-100/70 bg-rose-50 border border-rose-200/60 rounded-lg text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1"
                                       title="Request revision"
                                     >
-                                      Request Revision
+                                      <RefreshCw className="w-3 h-3 text-rose-600" />
+                                      <span>Request Revision</span>
                                     </button>
                                   )
                                 )}
 
                                 {/* Read status */}
                                 {up.is_read || up.checked_at ? (
-                                  <span className="text-[10px] text-emerald-700 font-bold px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200/80 hidden sm:inline-block">
+                                  <span className="text-[10px] text-emerald-700 font-bold px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200/80 inline-block">
                                     Verified
                                   </span>
                                 ) : !isVesselUser ? (
@@ -4610,7 +4622,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => onPreviewUpload(up.id, up.file_name, up.file_mimetype, formItem.form_code, activeVessel?.vessel_name, up.is_read || Boolean(up.checked_at))}
-                                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer"
+                                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer border border-transparent hover:border-slate-200"
                                   title="View document"
                                 >
                                   <Eye className="w-3.5 h-3.5 text-blue-600" />
@@ -4620,7 +4632,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                 <button
                                   type="button"
                                   onClick={() => onDownloadUpload(up.id, up.file_name)}
-                                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer"
+                                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer border border-transparent hover:border-slate-200"
                                   title="Download file"
                                 >
                                   <Download className="w-3.5 h-3.5" />
