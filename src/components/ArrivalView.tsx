@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { 
   Ship, Calendar, Plus, Upload, MessageSquare, Search, Filter, 
-  RotateCcw, Check, CheckCircle2, Clock, Trash2, File as FileIcon, X, ChevronDown, ArrowUp, 
+  RotateCcw, Check, CheckCircle, CheckCircle2, Clock, Trash2, File as FileIcon, X, ChevronDown, ArrowUp, 
   ArrowDown, ArrowLeft, ArrowUpDown, AlertCircle, RefreshCw, MapPin, 
   Activity, Anchor, Download, Droplets, Fuel, Info, FileText, Edit2
 } from "lucide-react";
@@ -40,10 +40,23 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
     rob_mgo: '0',
     rob_mdo: '0',
     rob_fw: '0',
+    foc_sea_hsfo: '0',
+    foc_sea_lsfo: '0',
+    foc_sea_mgo: '0',
+    foc_sea_mdo: '0',
     departure_hsfo: '0',
     departure_lsfo: '0',
     departure_mgo: '0',
     departure_mdo: '0',
+    departure_fw: '0',
+    charterer_min_hsfo: '',
+    charterer_max_hsfo: '',
+    charterer_min_lsfo: '',
+    charterer_max_lsfo: '',
+    charterer_min_mgo: '',
+    charterer_max_mgo: '',
+    charterer_min_mdo: '',
+    charterer_max_mdo: '',
     agent_detail: 'FILLIN'
   };
   const [form, setForm] = useState(defaultForm);
@@ -54,6 +67,25 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
   const filteredReports = React.useMemo(() => {
     return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
   }, [reports, vesselFilter]);
+
+  useEffect(() => {
+    if (!editingId && form.vessel_id) {
+      const selectedVessel = vessels.find(v => String(v.id) === String(form.vessel_id));
+      if (selectedVessel) {
+        setForm(f => ({
+          ...f,
+          charterer_min_hsfo: selectedVessel.charterer_min_hsfo || '',
+          charterer_max_hsfo: selectedVessel.charterer_max_hsfo || '',
+          charterer_min_lsfo: selectedVessel.charterer_min_lsfo || '',
+          charterer_max_lsfo: selectedVessel.charterer_max_lsfo || '',
+          charterer_min_mgo: selectedVessel.charterer_min_mgo || '',
+          charterer_max_mgo: selectedVessel.charterer_max_mgo || '',
+          charterer_min_mdo: selectedVessel.charterer_min_mdo || '',
+          charterer_max_mdo: selectedVessel.charterer_max_mdo || ''
+        }));
+      }
+    }
+  }, [form.vessel_id, editingId, vessels]);
 
   useEffect(() => {
     if (departureReports && form.vessel_id && !editingId) {
@@ -80,38 +112,154 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
           console.error("Error computing time at sea:", e);
         }
 
-        setForm(prev => ({
-          ...prev,
-          departure_hsfo: String(latest.rob_hsfo),
-          departure_lsfo: String(latest.rob_lsfo),
-          departure_mgo: String(latest.rob_mgo),
-          departure_mdo: String(latest.rob_mdo),
-          total_time_at_sea: timeAtSea || prev.total_time_at_sea
-        }));
+        setForm(prev => {
+          const newDepHsfo = String(latest.rob_hsfo ?? 0);
+          const newDepLsfo = String(latest.rob_lsfo ?? 0);
+          const newDepMgo = String(latest.rob_mgo ?? 0);
+          const newDepMdo = String(latest.rob_mdo ?? 0);
+
+          const curFocHsfo = parseFloat(prev.foc_sea_hsfo) || 0;
+          const curFocLsfo = parseFloat(prev.foc_sea_lsfo) || 0;
+          const curFocMgo = parseFloat(prev.foc_sea_mgo) || 0;
+          const curFocMdo = parseFloat(prev.foc_sea_mdo) || 0;
+
+          const curRobHsfo = parseFloat(prev.rob_hsfo) || 0;
+          const curRobLsfo = parseFloat(prev.rob_lsfo) || 0;
+          const curRobMgo = parseFloat(prev.rob_mgo) || 0;
+          const curRobMdo = parseFloat(prev.rob_mdo) || 0;
+
+          const nextRobHsfo = (curRobHsfo === 0 && curFocHsfo === 0) 
+            ? newDepHsfo 
+            : (curRobHsfo === 0 ? String(Math.max(0, parseFloat(newDepHsfo) - curFocHsfo).toFixed(2)) : prev.rob_hsfo);
+          const nextRobLsfo = (curRobLsfo === 0 && curFocLsfo === 0) 
+            ? newDepLsfo 
+            : (curRobLsfo === 0 ? String(Math.max(0, parseFloat(newDepLsfo) - curFocLsfo).toFixed(2)) : prev.rob_lsfo);
+          const nextRobMgo = (curRobMgo === 0 && curFocMgo === 0) 
+            ? newDepMgo 
+            : (curRobMgo === 0 ? String(Math.max(0, parseFloat(newDepMgo) - curFocMgo).toFixed(2)) : prev.rob_mgo);
+          const nextRobMdo = (curRobMdo === 0 && curFocMdo === 0) 
+            ? newDepMdo 
+            : (curRobMdo === 0 ? String(Math.max(0, parseFloat(newDepMgo) - curFocMdo).toFixed(2)) : prev.rob_mdo);
+
+          return {
+            ...prev,
+            departure_hsfo: newDepHsfo,
+            departure_lsfo: newDepLsfo,
+            departure_mgo: newDepMgo,
+            departure_mdo: newDepMdo,
+            rob_hsfo: nextRobHsfo,
+            rob_lsfo: nextRobLsfo,
+            rob_mgo: nextRobMgo,
+            rob_mdo: nextRobMdo,
+            total_time_at_sea: timeAtSea || prev.total_time_at_sea
+          };
+        });
       }
     }
   }, [form.vessel_id, form.utc_date_time, departureReports, editingId]);
 
   const foc_computation = React.useMemo(() => {
-    const departure = {
-      hsfo: parseFloat(form.departure_hsfo) || 0,
-      lsfo: parseFloat(form.departure_lsfo) || 0,
-      mgo: parseFloat(form.departure_mgo) || 0,
-      mdo: parseFloat(form.departure_mdo) || 0,
-    };
-    const arrival = {
+    const currentFormTime = form.utc_date_time ? new Date(form.utc_date_time).getTime() : Date.now();
+    const vesselDepartures = (departureReports || [])
+      .filter(r => String(r.vessel_id) === String(form.vessel_id))
+      .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
+
+    let prev = vesselDepartures.find(r => new Date(r.utc_date_time).getTime() < currentFormTime);
+    if (!prev && vesselDepartures.length > 0) {
+      prev = vesselDepartures[0];
+    }
+
+    const baselineHsfo = (parseFloat(form.departure_hsfo) || 0) || Number(prev?.rob_hsfo || 0);
+    const baselineLsfo = (parseFloat(form.departure_lsfo) || 0) || Number(prev?.rob_lsfo || 0);
+    const baselineMgo = (parseFloat(form.departure_mgo) || 0) || Number(prev?.rob_mgo || 0);
+    const baselineMdo = (parseFloat(form.departure_mdo) || 0) || Number(prev?.rob_mdo || 0);
+
+    const current = {
       hsfo: parseFloat(form.rob_hsfo) || 0,
       lsfo: parseFloat(form.rob_lsfo) || 0,
       mgo: parseFloat(form.rob_mgo) || 0,
       mdo: parseFloat(form.rob_mdo) || 0,
     };
+
+    const hsfo = Math.max(0, baselineHsfo - current.hsfo).toFixed(2);
+    const lsfo = Math.max(0, baselineLsfo - current.lsfo).toFixed(2);
+    const mgo = Math.max(0, baselineMgo - current.mgo).toFixed(2);
+    const mdo = Math.max(0, baselineMdo - current.mdo).toFixed(2);
+    const total = (parseFloat(hsfo) + parseFloat(lsfo) + parseFloat(mgo) + parseFloat(mdo)).toFixed(2);
+
     return {
-      hsfo: Math.max(0, departure.hsfo - arrival.hsfo).toFixed(2),
-      lsfo: Math.max(0, departure.lsfo - arrival.lsfo).toFixed(2),
-      mgo: Math.max(0, departure.mgo - arrival.mgo).toFixed(2),
-      mdo: Math.max(0, departure.mdo - arrival.mdo).toFixed(2),
+      hsfo,
+      lsfo,
+      mgo,
+      mdo,
+      total,
+      baselineDate: prev?.utc_date_time || null,
+      prevRob: {
+        hsfo: baselineHsfo,
+        lsfo: baselineLsfo,
+        mgo: baselineMgo,
+        mdo: baselineMdo,
+      }
     };
-  }, [form]);
+  }, [form.rob_hsfo, form.rob_lsfo, form.rob_mgo, form.rob_mdo, form.departure_hsfo, form.departure_lsfo, form.departure_mgo, form.departure_mdo, form.vessel_id, form.utc_date_time, departureReports]);
+
+  const handleAutoComputeRob = () => {
+    setForm(prev => ({
+      ...prev,
+      rob_hsfo: Math.max(0, (parseFloat(prev.departure_hsfo) || 0) - (parseFloat(prev.foc_sea_hsfo) || 0)).toFixed(2),
+      rob_lsfo: Math.max(0, (parseFloat(prev.departure_lsfo) || 0) - (parseFloat(prev.foc_sea_lsfo) || 0)).toFixed(2),
+      rob_mgo: Math.max(0, (parseFloat(prev.departure_mgo) || 0) - (parseFloat(prev.foc_sea_mgo) || 0)).toFixed(2),
+      rob_mdo: Math.max(0, (parseFloat(prev.departure_mdo) || 0) - (parseFloat(prev.foc_sea_mdo) || 0)).toFixed(2),
+    }));
+  };
+
+  const handleFocChange = (fuelKey: 'hsfo' | 'lsfo' | 'mgo' | 'mdo', val: string) => {
+    const depKey = `departure_${fuelKey}` as keyof typeof form;
+    const robKey = `rob_${fuelKey}` as keyof typeof form;
+    const focKey = `foc_sea_${fuelKey}` as keyof typeof form;
+    
+    const depVal = parseFloat(form[depKey] as string) || 0;
+    const focVal = parseFloat(val) || 0;
+    const newRob = Math.max(0, depVal - focVal).toFixed(2);
+    
+    setForm(prev => ({
+      ...prev,
+      [focKey]: val,
+      [robKey]: newRob
+    }));
+  };
+
+  const handleRobChange = (fuelKey: 'hsfo' | 'lsfo' | 'mgo' | 'mdo', val: string) => {
+    const depKey = `departure_${fuelKey}` as keyof typeof form;
+    const robKey = `rob_${fuelKey}` as keyof typeof form;
+    const focKey = `foc_sea_${fuelKey}` as keyof typeof form;
+    
+    const depVal = parseFloat(form[depKey] as string) || 0;
+    const robVal = parseFloat(val) || 0;
+    const newFoc = Math.max(0, depVal - robVal).toFixed(2);
+    
+    setForm(prev => ({
+      ...prev,
+      [robKey]: val,
+      [focKey]: newFoc
+    }));
+  };
+
+  const handleDepartureChange = (fuelKey: 'hsfo' | 'lsfo' | 'mgo' | 'mdo', val: string) => {
+    const depKey = `departure_${fuelKey}` as keyof typeof form;
+    const robKey = `rob_${fuelKey}` as keyof typeof form;
+    const focKey = `foc_sea_${fuelKey}` as keyof typeof form;
+    
+    const depVal = parseFloat(val) || 0;
+    const focVal = parseFloat(form[focKey] as string) || 0;
+    const newRob = Math.max(0, depVal - focVal).toFixed(2);
+    
+    setForm(prev => ({
+      ...prev,
+      [depKey]: val,
+      [robKey]: newRob
+    }));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -135,10 +283,32 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
         }
       });
       
-      formData.append('foc_sea_hsfo', foc_computation.hsfo);
-      formData.append('foc_sea_lsfo', foc_computation.lsfo);
-      formData.append('foc_sea_mgo', foc_computation.mgo);
-      formData.append('foc_sea_mdo', foc_computation.mdo);
+      // Auto-compute final ROB and FOC values to ensure database persistence
+      const calculatedRobHsfo = form.rob_hsfo || '0';
+      const calculatedRobLsfo = form.rob_lsfo || '0';
+      const calculatedRobMgo = form.rob_mgo || '0';
+      const calculatedRobMdo = form.rob_mdo || '0';
+
+      const calculatedFocHsfo = foc_computation.hsfo;
+      const calculatedFocLsfo = foc_computation.lsfo;
+      const calculatedFocMgo = foc_computation.mgo;
+      const calculatedFocMdo = foc_computation.mdo;
+
+      formData.set('rob_hsfo', String(calculatedRobHsfo));
+      formData.set('rob_lsfo', String(calculatedRobLsfo));
+      formData.set('rob_mgo', String(calculatedRobMgo));
+      formData.set('rob_mdo', String(calculatedRobMdo));
+      formData.set('rob_fw', String(form.rob_fw || 0));
+
+      formData.set('foc_sea_hsfo', String(calculatedFocHsfo));
+      formData.set('foc_sea_lsfo', String(calculatedFocLsfo));
+      formData.set('foc_sea_mgo', String(calculatedFocMgo));
+      formData.set('foc_sea_mdo', String(calculatedFocMdo));
+
+      formData.set('departure_hsfo', String(foc_computation.prevRob.hsfo));
+      formData.set('departure_lsfo', String(foc_computation.prevRob.lsfo));
+      formData.set('departure_mgo', String(foc_computation.prevRob.mgo));
+      formData.set('departure_mdo', String(foc_computation.prevRob.mdo));
 
       if (file) {
         formData.append('report_file', file);
@@ -208,10 +378,23 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
       rob_mgo: String(report.rob_mgo),
       rob_mdo: String(report.rob_mdo),
       rob_fw: String(report.rob_fw),
-      departure_hsfo: String(report.rob_hsfo + report.foc_sea_hsfo), // Approx from report
-      departure_lsfo: String(report.rob_lsfo + report.foc_sea_lsfo),
-      departure_mgo: String(report.rob_mgo + report.foc_sea_mgo),
-      departure_mdo: String(report.rob_mdo + report.foc_sea_mdo),
+      foc_sea_hsfo: String(report.foc_sea_hsfo ?? 0),
+      foc_sea_lsfo: String(report.foc_sea_lsfo ?? 0),
+      foc_sea_mgo: String(report.foc_sea_mgo ?? 0),
+      foc_sea_mdo: String(report.foc_sea_mdo ?? 0),
+      departure_hsfo: String(Number(report.rob_hsfo || 0) + Number(report.foc_sea_hsfo || 0)),
+      departure_lsfo: String(Number(report.rob_lsfo || 0) + Number(report.foc_sea_lsfo || 0)),
+      departure_mgo: String(Number(report.rob_mgo || 0) + Number(report.foc_sea_mgo || 0)),
+      departure_mdo: String(Number(report.rob_mdo || 0) + Number(report.foc_sea_mdo || 0)),
+      departure_fw: '0',
+      charterer_min_hsfo: (report as any).charterer_min_hsfo || '',
+      charterer_max_hsfo: (report as any).charterer_max_hsfo || '',
+      charterer_min_lsfo: (report as any).charterer_min_lsfo || '',
+      charterer_max_lsfo: (report as any).charterer_max_lsfo || '',
+      charterer_min_mgo: (report as any).charterer_min_mgo || '',
+      charterer_max_mgo: (report as any).charterer_max_mgo || '',
+      charterer_min_mdo: (report as any).charterer_min_mdo || '',
+      charterer_max_mdo: (report as any).charterer_max_mdo || '',
       agent_detail: report.agent_detail
     });
     setActiveTab('form');
@@ -457,12 +640,11 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
                     />
                   </div>
                 )}
-              </div>
 
-              <div className="space-y-6">
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">ROB Event Type</label>
+                  <label id="lbl-rob-type" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">ROB Event Type</label>
                   <select 
+                    id="select-rob-type"
                     value={form.rob_type}
                     onChange={(e) => setForm({ ...form, rob_type: e.target.value })}
                     className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
@@ -474,12 +656,12 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Scanned ROB Report</label>
+                  <label id="lbl-scanned-rob" className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Scanned ROB Report</label>
                   <div className="flex items-center gap-3">
-                    <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
+                    <label id="btn-upload-report-label" className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-50 border-2 border-dashed border-blue-100 rounded-2xl cursor-pointer hover:bg-blue-100/50 transition-colors">
                       <Upload className="w-4 h-4 text-blue-600" />
                       <span className="text-sm font-bold text-blue-700">{file ? file.name : 'Upload Report'}</span>
-                      <input type="file" className="hidden" onChange={(e) => {
+                      <input id="input-report-file" type="file" className="hidden" onChange={(e) => {
                         const f = e.target.files?.[0] || null;
                         if (f && f.size > MAX_FILE_SIZE) {
                           notify('error', 'File is too large (max 20MB)');
@@ -490,77 +672,124 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
                       }} />
                     </label>
                     {file && (
-                      <button onClick={() => setFile(null)} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors">
+                      <button id="btn-remove-report-file" onClick={() => setFile(null)} className="p-3 bg-red-50 text-red-500 rounded-xl hover:bg-red-100 transition-colors">
                         <Trash2 className="w-4 h-4" />
                       </button>
                     )}
                   </div>
                 </div>
+              </div>
 
-                <div className="bg-blue-50/30 p-6 rounded-2xl border border-blue-100">
-                  <h4 className="text-sm font-bold text-blue-900 mb-4 flex items-center gap-2">
-                    <Activity className="w-4 h-4" />
-                    Fuel Statistics & Consumption (At Sea)
-                  </h4>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-3 gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
-                      <span>Fuel Type</span>
-                      <span>Dep. ROB</span>
-                      <div>
-                        <span>Arr. ROB / Consumption based on previous report ROB</span>
-                        {currentVessel && (
-                          <span className="block text-blue-600 text-[9px] font-bold mt-0.5 normal-case tracking-normal">
-                            Vessel Limit: {currentVessel.min_fuel_consumption || 'N/A'} - {currentVessel.max_fuel_consumption || 'N/A'}
-                          </span>
-                        )}
-                      </div>
+              <div className="space-y-6">
+                <div className="bg-blue-50/40 p-6 rounded-2xl border border-blue-100 shadow-sm">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+                    <h4 className="text-sm font-bold text-blue-900 flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-blue-600" />
+                      Fuel Statistics & Auto-Computed Consumption (24h)
+                    </h4>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total FOC:</span>
+                      <span className="px-2.5 py-1 bg-blue-600 text-white font-mono font-bold text-xs rounded-lg shadow-sm">
+                        {foc_computation.total} MT
+                      </span>
                     </div>
+                  </div>
+
+                  {foc_computation.baselineDate ? (
+                    <div className="mb-4 px-3.5 py-2 bg-blue-100/70 border border-blue-200 rounded-xl flex items-center justify-between text-xs text-blue-900">
+                      <span className="flex items-center gap-1.5 font-medium">
+                        <Clock className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                        Baseline ROB from: <strong className="font-bold">{format(parseISO(foc_computation.baselineDate), 'MMM dd, HH:mm')} UTC</strong>
+                      </span>
+                      <span className="text-[11px] text-blue-700 font-semibold hidden md:inline">
+                        Auto-computed: (Prior ROB - Current ROB)
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="mb-4 px-3.5 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-center gap-2">
+                      <Info className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                      <span>Initial report for vessel: baseline ROB will be established upon submission.</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-12 gap-3 text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">
+                      <div className="col-span-3">Fuel Type</div>
+                      <div className="col-span-5">Current ROB (MT)</div>
+                      <div className="col-span-4 text-right">Auto-Computed FOC (MT)</div>
+                    </div>
+
                     {[
-                      { key: 'hsfo', label: 'HSFO', departure: 'departure_hsfo', rob: 'rob_hsfo' },
-                      { key: 'lsfo', label: 'LSFO', departure: 'departure_lsfo', rob: 'rob_lsfo' },
-                      { key: 'mgo', label: 'MGO', departure: 'departure_mgo', rob: 'rob_mgo' },
-                      { key: 'mdo', label: 'MDO', departure: 'departure_mdo', rob: 'rob_mdo' },
-                    ].map(f => (
-                      <div key={f.key} className="grid grid-cols-3 gap-4 items-center">
-                        <span className="text-sm font-bold text-slate-700">{f.label}</span>
+                      { key: 'hsfo', label: 'HSFO', rob: 'rob_hsfo' },
+                      { key: 'lsfo', label: 'LSFO', rob: 'rob_lsfo' },
+                      { key: 'mgo', label: 'MGO', rob: 'rob_mgo' },
+                      { key: 'mdo', label: 'MDO', rob: 'rob_mdo' },
+                    ].map(f => {
+                      const computedFoc = (foc_computation as any)[f.key];
+                      const isOutside = isFocOutsideLimits(
+                        computedFoc, 
+                        (form as any)[`charterer_min_${f.key}`] || currentVessel?.min_fuel_consumption, 
+                        (form as any)[`charterer_max_${f.key}`] || currentVessel?.max_fuel_consumption
+                      );
+                      return (
+                        <div key={f.key} className="grid grid-cols-12 gap-3 items-center bg-white p-2.5 rounded-xl border border-blue-100">
+                          <div className="col-span-3">
+                            <span className="text-sm font-bold text-slate-800">{f.label}</span>
+                            {(form as any)[`charterer_min_${f.key}`] || (form as any)[`charterer_max_${f.key}`] || currentVessel?.min_fuel_consumption || currentVessel?.max_fuel_consumption ? (
+                              <span className="block text-[10px] text-slate-400 font-medium">
+                                Threshold: {(form as any)[`charterer_min_${f.key}`] || currentVessel?.min_fuel_consumption || 0} - {(form as any)[`charterer_max_${f.key}`] || currentVessel?.max_fuel_consumption || '∞'}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="col-span-5">
+                            <input 
+                              type="number" 
+                              step="0.01"
+                              value={(form as any)[f.rob]}
+                              onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
+                              className="w-full px-3 py-1.5 bg-slate-50 border border-blue-200 rounded-lg text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                              placeholder="0.00"
+                            />
+                          </div>
+                          <div className="col-span-4 flex items-center justify-end">
+                            <div 
+                              className={`px-3 py-1.5 text-xs font-mono font-bold rounded-lg flex items-center gap-1 shadow-sm whitespace-nowrap ${
+                                isOutside
+                                  ? 'bg-red-50 text-red-700 border border-red-200'
+                                  : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              }`} 
+                              title={`Auto-computed FOC: ${computedFoc} MT`}
+                            >
+                              <span>{computedFoc} MT</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    <div className="grid grid-cols-12 gap-3 items-center bg-white p-2.5 rounded-xl border border-blue-100">
+                      <div className="col-span-3">
+                        <span className="text-sm font-bold text-slate-800">FW</span>
+                        <span className="block text-[10px] text-slate-400 font-medium">Fresh Water</span>
+                      </div>
+                      <div className="col-span-5">
                         <input 
                           type="number" 
                           step="0.01"
-                          value={(form as any)[f.departure]}
-                          onChange={(e) => setForm({ ...form, [f.departure]: e.target.value })}
-                          className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
+                          value={form.rob_fw}
+                          onChange={(e) => setForm({ ...form, rob_fw: e.target.value })}
+                          className="w-full px-3 py-1.5 bg-slate-50 border border-blue-200 rounded-lg text-sm font-mono font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                          placeholder="0.00"
                         />
-                        <div className="flex gap-2">
-                          <input 
-                            type="number" 
-                            step="0.01"
-                            value={(form as any)[f.rob]}
-                            onChange={(e) => setForm({ ...form, [f.rob]: e.target.value })}
-                            className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-bold"
-                          />
-                          <div 
-                            className={`w-20 px-2 py-1.5 text-xs font-bold rounded-lg flex items-center justify-center whitespace-nowrap ${
-                              isFocOutsideLimits((foc_computation as any)[f.key], currentVessel?.min_fuel_consumption, currentVessel?.max_fuel_consumption)
-                                ? 'bg-red-100 text-red-700 border border-red-200'
-                                : 'bg-blue-100 text-blue-700'
-                            }`}
-                            title={`Consumption based on previous report ROB (Vessel Limit: ${currentVessel?.min_fuel_consumption || 'N/A'} - ${currentVessel?.max_fuel_consumption || 'N/A'})`}
-                          >
-                            {(foc_computation as any)[f.key]}
-                          </div>
-                        </div>
                       </div>
-                    ))}
-                    <div className="grid grid-cols-3 gap-4 items-center pt-2 border-t border-blue-100">
-                      <span className="text-sm font-bold text-slate-700">FW</span>
-                      <div />
-                      <input 
-                        type="number" 
-                        step="0.01"
-                        value={form.rob_fw}
-                        onChange={(e) => setForm({ ...form, rob_fw: e.target.value })}
-                        className="w-full px-3 py-1.5 bg-white border border-blue-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
-                      />
+                      <div className="col-span-4 flex items-center justify-end">
+                        <span className="text-xs text-slate-400 italic">ROB Only</span>
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-500 font-medium italic pt-1 flex items-center gap-1.5">
+                      <CheckCircle className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                      <span>Auto-computed consumption is recorded directly in database and retrievable in the History tab.</span>
                     </div>
                   </div>
                 </div>

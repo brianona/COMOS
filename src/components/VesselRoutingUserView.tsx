@@ -21,6 +21,7 @@ interface Vessel {
   team_id?: number;
   team_name?: string;
   has_photo?: boolean;
+  next_port?: string | null;
 }
 
 interface VesselRoutingUserViewProps {
@@ -42,6 +43,7 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
 }) => {
   const currentNavStatus = form.route_status || '';
   const currentLoadStatus = form.loading_status || (latestOperationType === 'DISCHARGING' ? 'Ballast' : 'Laden');
+  const nextPortValue = form.next_port !== undefined ? form.next_port : (vessel.next_port || '');
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto" id="vessel-routing-user-view">
@@ -81,7 +83,7 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
               <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
-                value={form.next_port || ''}
+                value={nextPortValue}
                 onChange={e => onUpdateRow(vessel.id, 'next_port', e.target.value)}
                 placeholder="e.g. Rotterdam, Singapore"
                 className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
@@ -136,8 +138,11 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
             <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Estimated Time of Arrival (ETA)</label>
             <input
               type="datetime-local"
-              value={form.eta_date ? form.eta_date.slice(0, 16) : ''}
-              onChange={e => onUpdateRow(vessel.id, 'eta_date', e.target.value)}
+              value={form.eta_atb ? form.eta_atb.slice(0, 16) : (form.eta_date ? form.eta_date.slice(0, 16) : '')}
+              onChange={e => {
+                onUpdateRow(vessel.id, 'eta_atb', e.target.value);
+                onUpdateRow(vessel.id, 'eta_date', e.target.value);
+              }}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
             />
           </div>
@@ -146,8 +151,11 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
             <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Estimated Time of Departure (ETD)</label>
             <input
               type="datetime-local"
-              value={form.etd_date ? form.etd_date.slice(0, 16) : ''}
-              onChange={e => onUpdateRow(vessel.id, 'etd_date', e.target.value)}
+              value={form.etd_atd ? form.etd_atd.slice(0, 16) : (form.etd_date ? form.etd_date.slice(0, 16) : '')}
+              onChange={e => {
+                onUpdateRow(vessel.id, 'etd_atd', e.target.value);
+                onUpdateRow(vessel.id, 'etd_date', e.target.value);
+              }}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
             />
           </div>
@@ -157,8 +165,11 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
           <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Routing Remarks & Cargo Details</label>
           <textarea
             rows={3}
-            value={form.remarks || ''}
-            onChange={e => onUpdateRow(vessel.id, 'remarks', e.target.value)}
+            value={form.remark_from_vessel !== undefined ? form.remark_from_vessel : (form.remarks || '')}
+            onChange={e => {
+              onUpdateRow(vessel.id, 'remark_from_vessel', e.target.value);
+              onUpdateRow(vessel.id, 'remarks', e.target.value);
+            }}
             placeholder="Enter any relevant voyage notes, charterer instructions, or operational constraints..."
             className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
           />

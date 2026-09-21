@@ -336,6 +336,259 @@ export const getVesselUploads = (uploads: any[] | undefined, targetVessel: any, 
   });
 };
 
+export interface OrderVesselsTooltipProps {
+  vessels: OrderVessel[];
+  totalForms?: number;
+  orderUploads?: OrderUpload[];
+  orderItems?: OrderItem[];
+  children?: React.ReactNode;
+  position?: 'top' | 'bottom';
+  className?: string;
+}
+
+export const OrderVesselsTooltip: React.FC<OrderVesselsTooltipProps> = ({
+  vessels,
+  totalForms = 0,
+  orderUploads = [],
+  orderItems = [],
+  children,
+  position = 'bottom',
+  className = '',
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleMouseEnter = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    setIsOpen(true);
+  };
+
+  const handleMouseLeave = () => {
+    timeoutRef.current = setTimeout(() => {
+      setIsOpen(false);
+    }, 180);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  const vesselNames = vessels.map(v => v.vessel_name).filter(Boolean);
+  const titleText = vesselNames.length > 0 ? `Assigned Vessels: ${vesselNames.join(', ')}` : 'No vessels assigned';
+
+  return (
+    <div
+      className={`relative inline-block ${className}`}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      onClick={(e) => {
+        e.stopPropagation();
+        setIsOpen(prev => !prev);
+      }}
+    >
+      <span
+        className="font-semibold text-slate-700 hover:text-blue-600 underline decoration-dotted decoration-slate-300 hover:decoration-blue-500 underline-offset-2 transition-colors cursor-help inline-flex items-center gap-1"
+        title={titleText}
+      >
+        {children || `${vessels.length} ${vessels.length === 1 ? 'Vessel' : 'Vessels'}`}
+      </span>
+
+      {isOpen && (
+        <div
+          className={`absolute left-0 ${
+            position === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'
+          } z-50 w-72 sm:w-80 max-w-[calc(100vw-2.5rem)] bg-slate-900/95 backdrop-blur-md text-slate-100 rounded-xl shadow-2xl border border-slate-700/80 p-3 animate-in fade-in zoom-in-95 duration-150 pointer-events-auto cursor-default`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Subtle Pointer Arrow */}
+          <div
+            className={`absolute left-4 w-2 h-2 bg-slate-900 border-slate-700 rotate-45 ${
+              position === 'top' ? '-bottom-1 border-r border-b' : '-top-1 border-l border-t'
+            }`}
+          />
+
+          {/* Header */}
+          <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+              <Ship className="w-3.5 h-3.5 text-blue-400" />
+              <span>Assigned Vessels ({vessels.length})</span>
+            </div>
+            {totalForms > 0 && (
+              <span className="text-[10px] text-slate-400 font-medium">
+                {totalForms} {totalForms === 1 ? 'req' : 'reqs'}/vessel
+              </span>
+            )}
+          </div>
+
+          {/* Vessel List */}
+          {vessels.length === 0 ? (
+            <p className="text-xs text-slate-400 italic py-1">No vessels assigned to this order.</p>
+          ) : (
+            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1 select-text">
+              {vessels.map((v, idx) => {
+                const vUps = getVesselUploads(orderUploads, v, vessels);
+                const vVerified = orderItems.length > 0
+                  ? orderItems.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length
+                  : (v.submittedCount || 0);
+                const isVDone = v.status === 'Completed' || (totalForms > 0 && (vVerified >= totalForms || (v.submittedCount || 0) >= totalForms));
+                const distinctCount = isVDone ? totalForms : vVerified;
+
+                return (
+                  <div
+                    key={v.vessel_id || idx}
+                    className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/50 text-xs transition-colors"
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isVDone ? 'bg-emerald-400' : 'bg-blue-400'}`} />
+                      <span className="font-semibold text-slate-200 truncate" title={v.vessel_name}>
+                        {v.vessel_name || 'Unnamed Vessel'}
+                      </span>
+                    </div>
+
+                    <div className="shrink-0 flex items-center gap-1.5">
+                      {totalForms > 0 && (
+                        <span className="text-[10px] font-mono text-slate-400 font-medium">
+                          {distinctCount}/{totalForms}
+                        </span>
+                      )}
+                      {isVDone ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                          <CheckCircle2 className="w-2.5 h-2.5" />
+                          Completed
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800">
+                          <Clock className="w-2.5 h-2.5" />
+                          Pending
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export interface OrderRequirementsTooltipProps {
+  items: OrderItem[];
+  children?: React.ReactNode;
+  position?: 'top' | 'bottom';
+  className?: string;
+}
+
+export const OrderRequirementsTooltip: React.FC<OrderRequirementsTooltipProps> = ({
+  items,
+  children,
+  position = 'bottom',
+  className = '',
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleMouseEnter = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    setIsOpen(true);
+  };
+
+  const handleMouseLeave = () => {
+    timeoutRef.current = setTimeout(() => {
+      setIsOpen(false);
+    }, 180);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  const formCodes = items.map(item => item.form_code || item.form_id).filter(Boolean);
+  const titleText = formCodes.length > 0 ? `Required Form Codes: ${formCodes.join(', ')}` : 'No requirements';
+
+  return (
+    <div
+      className={`relative inline-block ${className}`}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      onClick={(e) => {
+        e.stopPropagation();
+        setIsOpen(prev => !prev);
+      }}
+    >
+      <span
+        className="text-slate-700 hover:text-blue-600 underline decoration-dotted decoration-slate-300 hover:decoration-blue-500 underline-offset-2 transition-colors cursor-help inline-flex items-center gap-1"
+        title={titleText}
+      >
+        {children || (
+          <>
+            <strong className="text-slate-700">{items.length}</strong> {items.length === 1 ? 'Requirement' : 'Requirements'}
+          </>
+        )}
+      </span>
+
+      {isOpen && (
+        <div
+          className={`absolute left-0 ${
+            position === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'
+          } z-50 w-80 sm:w-96 max-w-[calc(100vw-2.5rem)] bg-slate-900/95 backdrop-blur-md text-slate-100 rounded-xl shadow-2xl border border-slate-700/80 p-3 animate-in fade-in zoom-in-95 duration-150 pointer-events-auto cursor-default`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Subtle Pointer Arrow */}
+          <div
+            className={`absolute left-4 w-2 h-2 bg-slate-900 border-slate-700 rotate-45 ${
+              position === 'top' ? '-bottom-1 border-r border-b' : '-top-1 border-l border-t'
+            }`}
+          />
+
+          {/* Header */}
+          <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-800">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+              <FileCheck className="w-3.5 h-3.5 text-blue-400" />
+              <span>Required Form Codes ({items.length})</span>
+            </div>
+            <span className="text-[10px] text-slate-400 font-mono font-medium">To be submitted</span>
+          </div>
+
+          {/* Items List */}
+          {items.length === 0 ? (
+            <p className="text-xs text-slate-400 italic py-1">No required form codes specified.</p>
+          ) : (
+            <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1 select-text">
+              {items.map((item, idx) => (
+                <div
+                  key={item.id || item.form_id || idx}
+                  className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/50 text-xs transition-colors"
+                >
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <span className="px-2 py-0.5 rounded bg-blue-950 text-blue-300 font-mono font-bold text-[11px] border border-blue-800/70 shrink-0">
+                      {item.form_code || item.form_id}
+                    </span>
+                    <span className="text-slate-300 text-xs truncate" title={item.description || item.category}>
+                      {item.description || item.category || 'Form item'}
+                    </span>
+                  </div>
+                  {item.type && (
+                    <span className="text-[10px] text-slate-400 shrink-0 font-medium px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700/60">
+                      {item.type}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 interface SMSOrderListProps {
   vessels: Vessel[];
   currentUser: CurrentUser;
@@ -2530,13 +2783,26 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 {/* Subtitle / Metadata Strip */}
                 <div className="flex items-center justify-between text-xs text-slate-500 flex-wrap gap-2 pt-0.5">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-slate-700">
-                      {order.vessels.length} {order.vessels.length === 1 ? 'Vessel' : 'Vessels'}
-                    </span>
+                    <OrderVesselsTooltip
+                      vessels={order.vessels}
+                      totalForms={totalForms}
+                      orderUploads={order.uploads}
+                      orderItems={order.items}
+                      position="bottom"
+                    >
+                      <span className="font-semibold text-slate-700 hover:text-blue-600">
+                        {order.vessels.length} {order.vessels.length === 1 ? 'Vessel' : 'Vessels'}
+                      </span>
+                    </OrderVesselsTooltip>
                     <span>•</span>
-                    <span>
-                      <strong className="text-slate-700">{totalForms}</strong> {totalForms === 1 ? 'Requirement' : 'Requirements'}
-                    </span>
+                    <OrderRequirementsTooltip
+                      items={order.items || []}
+                      position="bottom"
+                    >
+                      <span>
+                        <strong className="text-slate-700">{totalForms}</strong> {totalForms === 1 ? 'Requirement' : 'Requirements'}
+                      </span>
+                    </OrderRequirementsTooltip>
                     <span>•</span>
                     <span>Issued by <strong className="text-slate-700">{order.createdByName}</strong></span>
                   </div>
@@ -2571,16 +2837,32 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
                   <div className="flex items-center gap-3">
                     {!isVesselUser && order.vessels.length > 1 && (
-                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-                        <Ship className="w-3.5 h-3.5 text-slate-400" />
-                        <span>{completedVesselsCount} of {order.vessels.length} vessels completed</span>
-                      </span>
+                      <OrderVesselsTooltip
+                        vessels={order.vessels}
+                        totalForms={totalForms}
+                        orderUploads={order.uploads}
+                        orderItems={order.items}
+                        position="top"
+                      >
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                          <Ship className="w-3.5 h-3.5 text-slate-400" />
+                          <span>{completedVesselsCount} of {order.vessels.length} vessels completed</span>
+                        </span>
+                      </OrderVesselsTooltip>
                     )}
                     {isVesselUser && (
-                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-                        <Ship className="w-3.5 h-3.5 text-slate-400" />
-                        <span>Assigned to {myVessel?.vessel_name || currentUser.username}</span>
-                      </span>
+                      <OrderVesselsTooltip
+                        vessels={order.vessels}
+                        totalForms={totalForms}
+                        orderUploads={order.uploads}
+                        orderItems={order.items}
+                        position="top"
+                      >
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                          <Ship className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Assigned to {myVessel?.vessel_name || currentUser.username}</span>
+                        </span>
+                      </OrderVesselsTooltip>
                     )}
                   </div>
 

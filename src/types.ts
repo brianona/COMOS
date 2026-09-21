@@ -124,6 +124,11 @@ export interface DepartureReport {
   voyage_number: string;
   utc_date_time: string;
   departure_port: string;
+  destination_port?: string | null;
+  next_port?: string | null;
+  port?: string | null;
+  atd_utc?: string | null;
+  cargo?: string | null;
   eu_uk_status: string;
   position_long: string;
   position_lat: string;
@@ -152,6 +157,8 @@ export interface ArrivalReport {
   voyage_number: string;
   utc_date_time: string;
   arrival_port: string;
+  atb_utc?: string | null;
+  cargo?: string | null;
   eu_uk_status: string;
   position_long: string;
   position_lat: string;
@@ -185,6 +192,7 @@ export interface NoonReport {
   position_long: string;
   position_lat: string;
   distance_to_go: string;
+  speed_over_ground?: number | string | null;
   cargo_status: string;
   report_type?: string | null;
   rob_hsfo: number;
@@ -226,6 +234,7 @@ export interface OtherReport {
   voyage_number: string;
   utc_date_time: string;
   port: string;
+  subject?: string | null;
   eu_uk_status: string;
   position_long: string;
   position_lat: string;

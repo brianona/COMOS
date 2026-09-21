@@ -14,10 +14,11 @@ import {
   Trash2, 
   Layers, 
   Loader2, 
-  Info,
-  Check,
-  Sparkles
+  Info, 
+  Check, 
+  Sparkles 
 } from 'lucide-react';
+import { OrderVesselsTooltip, OrderRequirementsTooltip } from './SMSOrderList';
 
 interface OrderVessel {
   id?: number;
@@ -438,14 +439,29 @@ export const MergeOrdersModal: React.FC<MergeOrdersModalProps> = ({
 
                       {/* Order Info Pills */}
                       <div className="flex items-center gap-2 text-[11px] text-slate-500 flex-wrap">
-                        <span className="inline-flex items-center gap-1 bg-slate-100/80 px-2 py-0.5 rounded-md font-medium text-slate-700">
-                          <Ship className="w-3 h-3 text-slate-500" />
-                          {order.vessels.length} {order.vessels.length === 1 ? 'vessel' : 'vessels'}
-                        </span>
-                        <span className="inline-flex items-center gap-1 bg-slate-100/80 px-2 py-0.5 rounded-md font-medium text-slate-700">
-                          <FileText className="w-3 h-3 text-slate-500" />
-                          {order.items.length} {order.items.length === 1 ? 'item' : 'items'}
-                        </span>
+                        <OrderVesselsTooltip
+                          vessels={order.vessels}
+                          totalForms={order.items.length}
+                          orderUploads={order.uploads}
+                          orderItems={order.items}
+                          position="bottom"
+                        >
+                          <span className="inline-flex items-center gap-1 bg-slate-100/80 px-2 py-0.5 rounded-md font-medium text-slate-700 hover:text-blue-600 cursor-help">
+                            <Ship className="w-3 h-3 text-slate-500" />
+                            {order.vessels.length} {order.vessels.length === 1 ? 'vessel' : 'vessels'}
+                          </span>
+                        </OrderVesselsTooltip>
+
+                        <OrderRequirementsTooltip
+                          items={order.items}
+                          position="bottom"
+                        >
+                          <span className="inline-flex items-center gap-1 bg-slate-100/80 px-2 py-0.5 rounded-md font-medium text-slate-700 hover:text-blue-600 cursor-help">
+                            <FileText className="w-3 h-3 text-slate-500" />
+                            {order.items.length} {order.items.length === 1 ? 'item' : 'items'}
+                          </span>
+                        </OrderRequirementsTooltip>
+
                         <span className="inline-flex items-center gap-1 bg-slate-100/80 px-2 py-0.5 rounded-md font-medium text-slate-700">
                           <Upload className="w-3 h-3 text-slate-500" />
                           {uploadCount} {uploadCount === 1 ? 'upload' : 'uploads'}

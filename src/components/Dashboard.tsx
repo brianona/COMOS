@@ -451,34 +451,115 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [tempPreviewUrl, setTempPreviewUrl] = useState<string | null>(null);
   const sidePanelContentRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    // Correctly initialize routing form when vessels change
-    const initialForm: Record<number, Partial<Vessel>> = {};
-    vessels.forEach(v => {
-      // Find latest arrival port for this vessel to use as autofill for next_port if empty
-      const latestArrival = [...arrivalReports]
-        .filter(r => r.vessel_id === v.id)
-        .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
-      
-      const isLadenBallast = v.route_status === 'Laden' || v.route_status === 'Ballast';
-      const defaultLoadingStatus = v.loading_status || (isLadenBallast ? v.route_status : '');
-      const defaultRouteStatus = isLadenBallast ? '' : (v.route_status || '');
+  const getLatestDestinationPort = useCallback((vessel: Vessel) => {
+    if (vessel.next_port && vessel.next_port.trim() !== '') {
+      return vessel.next_port;
+    }
+    const candidates: { port: string; time: number }[] = [];
 
-      initialForm[v.id] = {
-        next_port: v.next_port || latestArrival?.arrival_port || '',
-        route_status: defaultRouteStatus,
-        shackles: v.shackles != null ? String(v.shackles) : '',
-        loading_status: defaultLoadingStatus,
-        eta_atb: v.eta_atb || '',
-        etb: v.etb || '',
-        etd_atd: v.etd_atd || '',
-        cargo: v.cargo || '',
-        operation_type: v.operation_type || latestArrival?.operation_type || '',
-        remark_from_vessel: v.remark_from_vessel || ''
-      };
+    const noonList = noonReports.filter(r => r.vessel_id === vessel.id && r.destination_port && r.destination_port.trim() !== '');
+    if (noonList.length > 0) {
+      const sorted = [...noonList].sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
+      candidates.push({ port: sorted[0].destination_port!, time: new Date(sorted[0].utc_date_time).getTime() });
+    }
+
+    const arrList = arrivalReports.filter(r => r.vessel_id === vessel.id && r.arrival_port && r.arrival_port.trim() !== '');
+    if (arrList.length > 0) {
+      const sorted = [...arrList].sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime());
+      candidates.push({ port: sorted[0].arrival_port!, time: new Date(sorted[0].utc_date_time).getTime() });
+    }
+
+    const depList = departureReports.filter(r => r.vessel_id === vessel.id && ((r.destination_port && r.destination_port.trim() !== '') || ((r as any).next_port && (r as any).next_port.trim() !== '')));
+    if (depList.length > 0) {
+      const sorted = [...depList].sort((a, b) => new Date(b.utc_date_time || (b as any).atd_utc || 0).getTime() - new Date(a.utc_date_time || (a as any).atd_utc || 0).getTime());
+      const port = sorted[0].destination_port || (sorted[0] as any).next_port;
+      candidates.push({ port, time: new Date(sorted[0].utc_date_time || (sorted[0] as any).atd_utc || 0).getTime() });
+    }
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => b.time - a.time);
+      return candidates[0].port;
+    }
+
+    return '';
+  }, [noonReports, arrivalReports, departureReports]);
+
+  const isVesselModified = useCallback((v: Vessel, formState?: Record<number, Partial<Vessel>>) => {
+    const form = formState ? formState[v.id] : routingForm[v.id];
+    if (!form) return false;
+    const origShackles = v.shackles != null ? String(v.shackles) : '';
+    const formShackles = form.shackles != null ? String(form.shackles) : '';
+    const origPort = v.next_port || getLatestDestinationPort(v) || '';
+    return (
+      (form.next_port !== undefined && (form.next_port || '') !== origPort) ||
+      (form.route_status !== undefined && (form.route_status || '') !== (v.route_status || '')) ||
+      (form.shackles !== undefined && formShackles !== origShackles) ||
+      (form.loading_status !== undefined && (form.loading_status || '') !== (v.loading_status || '')) ||
+      (form.eta_atb !== undefined && (form.eta_atb || '') !== (v.eta_atb || '')) ||
+      (form.etb !== undefined && (form.etb || '') !== (v.etb || '')) ||
+      (form.etd_atd !== undefined && (form.etd_atd || '') !== (v.etd_atd || '')) ||
+      (form.cargo !== undefined && (form.cargo || '') !== (v.cargo || '')) ||
+      (form.operation_type !== undefined && (form.operation_type || '') !== (v.operation_type || '')) ||
+      (form.remark_from_vessel !== undefined && (form.remark_from_vessel || '') !== (v.remark_from_vessel || ''))
+    );
+  }, [routingForm, getLatestDestinationPort]);
+
+  useEffect(() => {
+    // Correctly initialize and safely synchronize routing form without wiping destination ports
+    setRoutingForm(prev => {
+      const nextForm = { ...prev };
+      vessels.forEach(v => {
+        const existing = prev[v.id];
+        const latestArrival = [...arrivalReports]
+          .filter(r => r.vessel_id === v.id)
+          .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
+        
+        const fallbackPort = getLatestDestinationPort(v);
+        const isLadenBallast = v.route_status === 'Laden' || v.route_status === 'Ballast';
+        const defaultLoadingStatus = v.loading_status || (isLadenBallast ? v.route_status : '');
+        const defaultRouteStatus = isLadenBallast ? '' : (v.route_status || '');
+
+        if (!existing) {
+          nextForm[v.id] = {
+            next_port: fallbackPort || '',
+            route_status: defaultRouteStatus,
+            shackles: v.shackles != null ? String(v.shackles) : '',
+            loading_status: defaultLoadingStatus,
+            eta_atb: v.eta_atb || '',
+            etb: v.etb || '',
+            etd_atd: v.etd_atd || '',
+            cargo: v.cargo || '',
+            operation_type: v.operation_type || latestArrival?.operation_type || '',
+            remark_from_vessel: v.remark_from_vessel || ''
+          };
+        } else {
+          const modified = isVesselModified(v, prev);
+          if (modified) {
+            // Preserve user's in-progress changes; fill next_port if it was previously empty and now available
+            if (!existing.next_port && fallbackPort) {
+              nextForm[v.id] = { ...existing, next_port: fallbackPort };
+            }
+          } else {
+            // Not modified by user: update from database/reports, but NEVER replace a non-empty port with empty!
+            const portToUse = v.next_port || fallbackPort || existing.next_port || '';
+            nextForm[v.id] = {
+              next_port: portToUse,
+              route_status: defaultRouteStatus || existing.route_status || '',
+              shackles: v.shackles != null ? String(v.shackles) : (existing.shackles || ''),
+              loading_status: defaultLoadingStatus || existing.loading_status || '',
+              eta_atb: v.eta_atb || existing.eta_atb || '',
+              etb: v.etb || existing.etb || '',
+              etd_atd: v.etd_atd || existing.etd_atd || '',
+              cargo: v.cargo || existing.cargo || '',
+              operation_type: v.operation_type || latestArrival?.operation_type || existing.operation_type || '',
+              remark_from_vessel: v.remark_from_vessel || existing.remark_from_vessel || ''
+            };
+          }
+        }
+      });
+      return nextForm;
     });
-    setRoutingForm(initialForm);
-  }, [vessels, arrivalReports]);
+  }, [vessels, arrivalReports, noonReports, departureReports, getLatestDestinationPort, isVesselModified]);
 
   const handleUpdateRoutingRow = (vesselId: number, field: string, value: string) => {
     setRoutingForm(prev => ({
@@ -543,25 +624,6 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     }
   };
 
-  const isVesselModified = useCallback((v: Vessel) => {
-    const form = routingForm[v.id];
-    if (!form) return false;
-    const origShackles = v.shackles != null ? String(v.shackles) : '';
-    const formShackles = form.shackles != null ? String(form.shackles) : '';
-    return (
-      (form.next_port || '') !== (v.next_port || '') ||
-      (form.route_status || '') !== (v.route_status || '') ||
-      formShackles !== origShackles ||
-      (form.loading_status || '') !== (v.loading_status || '') ||
-      (form.eta_atb || '') !== (v.eta_atb || '') ||
-      (form.etb || '') !== (v.etb || '') ||
-      (form.etd_atd || '') !== (v.etd_atd || '') ||
-      (form.cargo || '') !== (v.cargo || '') ||
-      (form.operation_type || '') !== (v.operation_type || '') ||
-      (form.remark_from_vessel || '') !== (v.remark_from_vessel || '')
-    );
-  }, [routingForm]);
-
   const modifiedVesselsCount = React.useMemo(() => {
     return vessels.filter(v => isVesselModified(v)).length;
   }, [vessels, isVesselModified]);
@@ -592,7 +654,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       const owner = v.owner || 'Other';
       const currentStatus = form.route_status || v.route_status || '';
       const currentLoading = form.loading_status || v.loading_status || '';
-      const currentPort = form.next_port || v.next_port || '';
+      const currentPort = form.next_port !== undefined ? form.next_port : (v.next_port || getLatestDestinationPort(v) || '');
       const currentCargo = form.cargo || v.cargo || '';
 
       if (routingSearch) {
@@ -2021,12 +2083,16 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                       onClick={() => {
                                         setSelectedVessel(v);
                                         setRouteForm({
-                                          next_port: v.next_port || '',
+                                          next_port: v.next_port || getLatestDestinationPort(v) || '',
                                           route_status: v.route_status || '',
+                                          loading_status: v.loading_status || '',
+                                          operation_type: v.operation_type || '',
                                           eta_atb: v.eta_atb || '',
                                           etb: v.etb || '',
                                           etd_atd: v.etd_atd || '',
-                                          cargo: v.cargo || ''
+                                          cargo: v.cargo || '',
+                                          shackles: v.shackles != null ? String(v.shackles) : '',
+                                          remark_from_vessel: v.remark_from_vessel || ''
                                         });
                                         setIsEditingRoute(true);
                                       }}
@@ -3162,7 +3228,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                     .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
                                     
                                   setRouteForm({
-                                    next_port: v.next_port || latestArrival?.arrival_port || '',
+                                    next_port: v.next_port || getLatestDestinationPort(v) || latestArrival?.arrival_port || '',
                                     route_status: v.route_status === 'Anchor' ? 'At Anchor' : (v.route_status || ''),
                                     loading_status: v.loading_status || '',
                                     operation_type: v.operation_type || '',
@@ -4080,6 +4146,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                 const modified = isVesselModified(v);
                                 const currentNavStatus = form.route_status || '';
                                 const currentLoadStatus = form.loading_status || '';
+                                const nextPortVal = form.next_port !== undefined ? form.next_port : (v.next_port || getLatestDestinationPort(v) || '');
 
                                 return (
                                   <tr 
@@ -4127,7 +4194,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                           <label className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">Next Port</label>
                                           <input 
                                             type="text"
-                                            value={form.next_port || ''}
+                                            value={nextPortVal}
                                             onChange={e => handleUpdateRoutingRow(v.id, 'next_port', e.target.value)}
                                             className="w-full px-2.5 py-1.5 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
                                             placeholder="Enter next port..."
@@ -4628,7 +4695,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                             .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())[0];
                             
                           setRouteForm({
-                            next_port: selectedVessel.next_port || latestArrival?.arrival_port || '',
+                            next_port: selectedVessel.next_port || getLatestDestinationPort(selectedVessel) || latestArrival?.arrival_port || '',
                             route_status: selectedVessel.route_status === 'Anchor' ? 'At Anchor' : (selectedVessel.route_status || ''),
                             loading_status: selectedVessel.loading_status || '',
                             operation_type: selectedVessel.operation_type || '',
