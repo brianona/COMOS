@@ -3333,16 +3333,24 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                               <div className="space-y-1">
                                 <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Operation Type</label>
                                 <select 
-                                  value={routeForm.operation_type}
+                                  value={
+                                    routeForm.operation_type?.toUpperCase() === 'DISCHARGING AND LOADING'
+                                      ? 'Discharging and Loading'
+                                      : routeForm.operation_type
+                                  }
                                   onChange={e => setRouteForm({...routeForm, operation_type: e.target.value})}
                                   className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
                                 >
                                   <option value="">Select Operation</option>
                                   <option value="LOADING">LOADING</option>
                                   <option value="DISCHARGING">DISCHARGING</option>
+                                  <option value="Discharging and Loading">Discharging and Loading</option>
                                   <option value="BUNKERING">BUNKERING</option>
                                   <option value="ship-to-ship cargo operation">SHIP-TO-SHIP</option>
                                   <option value="Others">Others</option>
+                                  {routeForm.operation_type && !['', 'LOADING', 'DISCHARGING', 'Discharging and Loading', 'BUNKERING', 'ship-to-ship cargo operation', 'Others'].includes(routeForm.operation_type) && routeForm.operation_type.toUpperCase() !== 'DISCHARGING AND LOADING' && (
+                                    <option value={routeForm.operation_type}>{routeForm.operation_type}</option>
+                                  )}
                                 </select>
                               </div>
 
@@ -4288,16 +4296,24 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                         <div>
                                           <label className="text-[9px] font-bold uppercase text-slate-400 block mb-0.5">Operation Type</label>
                                           <select 
-                                            value={form.operation_type || ''}
+                                            value={
+                                              form.operation_type?.toUpperCase() === 'DISCHARGING AND LOADING'
+                                                ? 'Discharging and Loading'
+                                                : (form.operation_type || '')
+                                            }
                                             onChange={e => handleUpdateRoutingRow(v.id, 'operation_type', e.target.value)}
                                             className="w-full px-2.5 py-1.5 bg-slate-50/80 hover:bg-slate-100/80 focus:bg-white border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all cursor-pointer"
                                           >
                                             <option value="">Select Operation</option>
                                             <option value="LOADING">LOADING</option>
                                             <option value="DISCHARGING">DISCHARGING</option>
+                                            <option value="Discharging and Loading">Discharging and Loading</option>
                                             <option value="BUNKERING">BUNKERING</option>
                                             <option value="ship-to-ship cargo operation">SHIP-TO-SHIP</option>
                                             <option value="Others">Others</option>
+                                            {form.operation_type && !['', 'LOADING', 'DISCHARGING', 'Discharging and Loading', 'BUNKERING', 'ship-to-ship cargo operation', 'Others'].includes(form.operation_type) && form.operation_type.toUpperCase() !== 'DISCHARGING AND LOADING' && (
+                                              <option value={form.operation_type}>{form.operation_type}</option>
+                                            )}
                                           </select>
                                         </div>
                                         <div>
@@ -4800,16 +4816,24 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                       <div className="space-y-1">
                         <label className="text-[9px] font-bold uppercase text-slate-400 ml-1">Operation Type</label>
                         <select 
-                          value={routeForm.operation_type}
+                          value={
+                            routeForm.operation_type?.toUpperCase() === 'DISCHARGING AND LOADING'
+                              ? 'Discharging and Loading'
+                              : routeForm.operation_type
+                          }
                           onChange={e => setRouteForm({...routeForm, operation_type: e.target.value})}
                           className="w-full px-3 py-1.5 bg-white border border-blue-100 rounded-lg text-xs focus:ring-2 focus:ring-blue-500/20 cursor-pointer font-medium text-slate-800"
                         >
                           <option value="">Select Operation</option>
                           <option value="LOADING">LOADING</option>
                           <option value="DISCHARGING">DISCHARGING</option>
+                          <option value="Discharging and Loading">Discharging and Loading</option>
                           <option value="BUNKERING">BUNKERING</option>
                           <option value="ship-to-ship cargo operation">SHIP-TO-SHIP</option>
                           <option value="Others">Others</option>
+                          {routeForm.operation_type && !['', 'LOADING', 'DISCHARGING', 'Discharging and Loading', 'BUNKERING', 'ship-to-ship cargo operation', 'Others'].includes(routeForm.operation_type) && routeForm.operation_type.toUpperCase() !== 'DISCHARGING AND LOADING' && (
+                            <option value={routeForm.operation_type}>{routeForm.operation_type}</option>
+                          )}
                         </select>
                       </div>
 

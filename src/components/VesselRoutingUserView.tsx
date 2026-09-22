@@ -42,7 +42,8 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
   latestOperationType
 }) => {
   const currentNavStatus = form.route_status || '';
-  const currentLoadStatus = form.loading_status || (latestOperationType === 'DISCHARGING' ? 'Ballast' : 'Laden');
+  const currentOperationType = form.operation_type !== undefined ? (form.operation_type || '') : (latestOperationType || '');
+  const currentLoadStatus = form.loading_status || (currentOperationType.toUpperCase() === 'DISCHARGING' ? 'Ballast' : 'Laden');
   const nextPortValue = form.next_port !== undefined ? form.next_port : (vessel.next_port || '');
 
   return (
@@ -131,6 +132,26 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
             >
               <option value="Laden">Laden</option>
               <option value="Ballast">Ballast</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Operation Type</label>
+            <select
+              value={currentOperationType}
+              onChange={e => onUpdateRow(vessel.id, 'operation_type', e.target.value)}
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+            >
+              <option value="">Select Operation</option>
+              <option value="Discharging">Discharging</option>
+              <option value="Loading">Loading</option>
+              <option value="DISCHARGING">DISCHARGING</option>
+              <option value="LOADING">LOADING</option>
+              <option value="Bunkering">Bunkering</option>
+              <option value="BUNKERING">BUNKERING</option>
+              <option value="Ship-to-Ship">Ship-to-Ship</option>
+              <option value="ship-to-ship cargo operation">SHIP-TO-SHIP</option>
+              <option value="Others">Others</option>
             </select>
           </div>
 

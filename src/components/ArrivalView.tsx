@@ -569,6 +569,7 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
                     >
                       <option value="LOADING">LOADING</option>
                       <option value="DISCHARGING">DISCHARGING</option>
+                      <option value="Discharging and Loading">Discharging and Loading</option>
                       <option value="BUNKERING">BUNKERING</option>
                       <option value="ship-to-ship cargo operation">SHIP-TO-SHIP CARGO OPERATION</option>
                       <option value="Others">Others</option>
