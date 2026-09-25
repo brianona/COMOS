@@ -482,6 +482,8 @@ export const DocxViewer: React.FC<DocxViewerProps> = ({
           <div
             className="transition-transform duration-100 origin-top bg-white text-slate-900 shadow-2xl rounded-xl p-8 sm:p-14 min-h-[600px] w-full max-w-4xl border border-slate-200/80 docx-container-styled"
             style={{
+              backgroundColor: '#ffffff',
+              color: '#0f172a',
               transform: `scale(${zoom / 100})`,
               transformOrigin: 'top center',
               marginBottom: `${Math.max(0, (zoom - 100) * 8)}px`
@@ -490,11 +492,16 @@ export const DocxViewer: React.FC<DocxViewerProps> = ({
             {viewEngine === 'mammoth' ? (
               <div 
                 ref={containerRef}
+                style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
                 className="mammoth-rendered-content prose prose-slate max-w-none text-slate-900 leading-relaxed font-sans"
                 dangerouslySetInnerHTML={{ __html: mammothHtml }}
               />
             ) : (
-              <div ref={containerRef} className="docx-body prose max-w-none text-slate-900" />
+              <div 
+                ref={containerRef} 
+                style={{ backgroundColor: '#ffffff', color: '#0f172a' }}
+                className="docx-body prose max-w-none text-slate-900" 
+              />
             )}
           </div>
         )}

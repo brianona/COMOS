@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { DocumentPreviewModal, PreviewModalState } from './DocumentPreviewModal';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -136,8 +137,132 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
   });
   const [editFormFiles, setEditFormFiles] = useState<{ id?: string; name: string; size: string; dataUrl?: string }[]>([]);
 
-  // Preview Modal State
-  const [previewFile, setPreviewFile] = useState<{ name: string; size: string; dataUrl?: string } | null>(null);
+  // Document Inline Preview Modal State (Same file previewer as SMS Order List)
+  const [previewModal, setPreviewModal] = useState<PreviewModalState | null>(null);
+
+  // Close Preview Modal and revoke object URL
+  const handleClosePreviewModal = () => {
+    if (previewModal?.blobUrl) {
+      window.URL.revokeObjectURL(previewModal.blobUrl);
+    }
+    setPreviewModal(null);
+  };
+
+  // Revoke object URL on unmount
+  useEffect(() => {
+    return () => {
+      if (previewModal?.blobUrl) {
+        window.URL.revokeObjectURL(previewModal.blobUrl);
+      }
+    };
+  }, [previewModal?.blobUrl]);
+
+  // Preview file using full viewer stack (PDF, Excel, Word, PPTX, Images, Text/CSV)
+  const handlePreviewFile = async (
+    file: { id?: string; name: string; size?: string; dataUrl?: string },
+    context?: { vesselName?: string; machinery?: string; date?: string }
+  ) => {
+    if (previewModal?.blobUrl) {
+      window.URL.revokeObjectURL(previewModal.blobUrl);
+    }
+
+    const fileName = file.name || 'document';
+    const sizeStr = file.size || '';
+    const vesselName = context?.vesselName;
+    const subtitle = context?.machinery 
+      ? `Lube Oil: ${context.machinery}` 
+      : 'Lube Oil Analysis Attachment';
+
+    setPreviewModal({
+      isOpen: true,
+      title: fileName,
+      fileName,
+      fileSize: sizeStr,
+      vesselName,
+      subtitle,
+      isTemplate: false,
+      loading: true,
+      error: null,
+      blobUrl: null,
+      blob: null,
+      arrayBuffer: null,
+      textContent: null
+    });
+
+    try {
+      let blob: Blob;
+      const fileUrl = file.dataUrl || '';
+
+      if (fileUrl.startsWith('data:')) {
+        // Staged data URI from file picker
+        const res = await fetch(fileUrl);
+        blob = await res.blob();
+      } else {
+        // Remote file path from API with auth
+        const targetUrl = fileUrl.startsWith('http') 
+          ? fileUrl 
+          : fileUrl.includes('?') 
+            ? `${fileUrl}&token=${encodeURIComponent(token)}`
+            : `${fileUrl}?token=${encodeURIComponent(token)}`;
+
+        const res = await fetch(targetUrl, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!res.ok) {
+          throw new Error(`Failed to load document (${res.status})`);
+        }
+        blob = await res.blob();
+      }
+
+      let arrayBuffer: ArrayBuffer | null = null;
+      try {
+        arrayBuffer = await blob.arrayBuffer();
+      } catch (abErr) {
+        console.warn('Could not extract arrayBuffer from blob:', abErr);
+      }
+
+      const blobUrl = window.URL.createObjectURL(blob);
+      const calculatedSize = blob.size > 1024 * 1024 
+        ? `${(blob.size / (1024 * 1024)).toFixed(2)} MB`
+        : `${Math.round(blob.size / 1024)} KB`;
+
+      let textContent: string | null = null;
+      const lowerName = fileName.toLowerCase();
+      const mime = blob.type || '';
+
+      if (
+        mime.startsWith('text/') ||
+        lowerName.endsWith('.txt') ||
+        lowerName.endsWith('.csv') ||
+        lowerName.endsWith('.json') ||
+        lowerName.endsWith('.log') ||
+        lowerName.endsWith('.xml')
+      ) {
+        try {
+          textContent = await blob.text();
+        } catch (e) {
+          console.error('Failed to parse text content:', e);
+        }
+      }
+
+      setPreviewModal(prev => prev ? {
+        ...prev,
+        blobUrl,
+        blob,
+        arrayBuffer,
+        fileSize: sizeStr || calculatedSize,
+        fileMimetype: mime,
+        textContent,
+        loading: false
+      } : null);
+    } catch (err: any) {
+      setPreviewModal(prev => prev ? {
+        ...prev,
+        loading: false,
+        error: err.message || 'Failed to load document for preview'
+      } : null);
+    }
+  };
 
   // Filter logs list
   const filteredLogs = logs.filter(log => {
@@ -472,9 +597,10 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
                             <div key={fIdx} className="flex items-center gap-1.5 text-xs">
                               <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                               <button
-                                onClick={() => setPreviewFile(file)}
-                                className="text-blue-600 hover:text-blue-800 hover:underline font-semibold truncate text-[11px] max-w-[140px]"
-                                title={file.name}
+                                type="button"
+                                onClick={() => handlePreviewFile(file, { vesselName: log.vesselName, machinery: log.machinerySampled, date: log.date })}
+                                className="text-blue-600 hover:text-blue-800 hover:underline font-semibold truncate text-[11px] max-w-[150px] text-left cursor-pointer"
+                                title={`Preview ${file.name}`}
                               >
                                 {file.name}
                               </button>
@@ -661,11 +787,16 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
                       {formFiles.map((file, idx) => (
                         <div key={idx} className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-100 rounded-xl text-xs">
                           <div className="flex items-center gap-2">
-                            <FileText className="w-4 h-4 text-blue-600" />
-                            <div>
-                              <p className="font-bold text-slate-700 truncate max-w-[200px]">{file.name}</p>
+                            <FileText className="w-4 h-4 text-blue-600 shrink-0" />
+                            <button
+                              type="button"
+                              onClick={() => handlePreviewFile(file, { machinery: formData.machinerySampled })}
+                              className="text-left hover:underline cursor-pointer group/f"
+                              title="Click to preview file"
+                            >
+                              <p className="font-bold text-slate-700 truncate max-w-[200px] group-hover/f:text-blue-600">{file.name}</p>
                               <p className="text-[10px] text-slate-400">{file.size}</p>
-                            </div>
+                            </button>
                           </div>
                           <button
                             type="button"
@@ -831,11 +962,16 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
                       {editFormFiles.map((file, idx) => (
                         <div key={idx} className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-100 rounded-xl text-xs">
                           <div className="flex items-center gap-2">
-                            <FileText className="w-4 h-4 text-blue-600" />
-                            <div>
-                              <p className="font-bold text-slate-700 truncate max-w-[200px]">{file.name}</p>
+                            <FileText className="w-4 h-4 text-blue-600 shrink-0" />
+                            <button
+                              type="button"
+                              onClick={() => handlePreviewFile(file, { machinery: editFormData.machinerySampled })}
+                              className="text-left hover:underline cursor-pointer group/f"
+                              title="Click to preview file"
+                            >
+                              <p className="font-bold text-slate-700 truncate max-w-[200px] group-hover/f:text-blue-600">{file.name}</p>
                               <p className="text-[10px] text-slate-400">{file.size}</p>
-                            </div>
+                            </button>
                           </div>
                           <button
                             type="button"
@@ -872,112 +1008,14 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
         )}
       </AnimatePresence>
 
-      {/* FILE PREVIEW MODAL */}
-      <AnimatePresence>
-        {previewFile && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setPreviewFile(null)}
-              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
-            />
-            
-            <motion.div
-              initial={{ scale: 0.95, y: 15, opacity: 0 }}
-              animate={{ scale: 1, y: 0, opacity: 1 }}
-              exit={{ scale: 0.95, y: 15, opacity: 0 }}
-              className="bg-white w-full max-w-4xl rounded-2xl border border-slate-100 shadow-2xl relative z-10 flex flex-col h-[85vh] overflow-hidden"
-            >
-              {/* Modal Header */}
-              <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-                <div className="flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-blue-600" />
-                  <div>
-                    <h3 className="text-sm font-black text-slate-800 truncate max-w-[320px] md:max-w-md" title={previewFile.name}>
-                      {previewFile.name}
-                    </h3>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">SIZE: {previewFile.size}</p>
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-2">
-                  {previewFile.dataUrl && (
-                    <a
-                      href={getFileUrl(previewFile.dataUrl)}
-                      download={previewFile.name}
-                      referrerPolicy="no-referrer"
-                      className="px-3.5 py-1.5 hover:bg-blue-50 hover:text-blue-700 border border-transparent rounded-lg text-xs font-black tracking-wider uppercase transition-all flex items-center gap-1.5"
-                    >
-                      <Download className="w-3.5 h-3.5" /> Download
-                    </a>
-                  )}
-                  <button
-                    onClick={() => setPreviewFile(null)}
-                    className="p-1.5 hover:bg-slate-100 text-slate-400 hover:text-slate-600 rounded-lg transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-
-              {/* View Content Frame */}
-              <div className="flex-1 bg-slate-100/40 relative overflow-hidden flex flex-col justify-between">
-                {previewFile.dataUrl ? (
-                  previewFile.dataUrl.startsWith('data:image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(previewFile.name) ? (
-                    <div className="flex-1 p-6 flex items-center justify-center overflow-auto">
-                      <img 
-                        src={getFileUrl(previewFile.dataUrl)} 
-                        alt={previewFile.name} 
-                        className="max-h-full max-w-full rounded-xl object-contain shadow-md border border-slate-100"
-                        referrerPolicy="no-referrer"
-                      />
-                    </div>
-                  ) : previewFile.dataUrl.startsWith('data:application/pdf') || /\.pdf$/i.test(previewFile.name) ? (
-                    <div className="flex-grow h-full w-full flex flex-col">
-                      <object 
-                        data={getFileUrl(previewFile.dataUrl)} 
-                        type="application/pdf" 
-                        className="w-full h-full border-none"
-                      >
-                        <div className="p-8 text-center flex flex-col items-center justify-center h-full">
-                          <FileText className="w-12 h-12 text-slate-300 mb-2" />
-                          <span className="text-sm font-bold text-slate-700">PDF Reader Unavailable Inline</span>
-                          <a 
-                            href={getFileUrl(previewFile.dataUrl)} 
-                            download={previewFile.name}
-                            className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black uppercase rounded-lg transition-all"
-                          >
-                            Download PDF to inspect
-                          </a>
-                        </div>
-                      </object>
-                    </div>
-                  ) : (
-                    <div className="flex-grow flex flex-col items-center justify-center p-8 text-center">
-                      <FileText className="w-12 h-12 text-slate-300 mb-3" />
-                      <span className="text-sm font-bold text-slate-700">Alternative File Format</span>
-                      <p className="text-[10px] text-slate-400 mt-1 max-w-xs mb-4">You may download and run this file configuration offline.</p>
-                      <a 
-                        href={getFileUrl(previewFile.dataUrl)} 
-                        download={previewFile.name}
-                        className="px-4 py-2 bg-blue-600 text-white text-xs font-black uppercase rounded-lg transition-all"
-                      >
-                        Download Asset File
-                      </a>
-                    </div>
-                  )
-                ) : (
-                  <div className="flex-1 p-6 flex items-center justify-center text-slate-400 text-xs italic">
-                    Binary or mock document format matches default test suite references.
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* DOCUMENT INLINE PREVIEW MODAL (Same file previewer as SMS Order List) */}
+      {previewModal?.isOpen && (
+        <DocumentPreviewModal
+          modal={previewModal}
+          onClose={handleClosePreviewModal}
+          token={token}
+        />
+      )}
     </div>
   );
 };

@@ -3,7 +3,8 @@ import {
   Ship, Calendar, Plus, Upload, MessageSquare, Search, Filter, 
   RotateCcw, Check, CheckCircle, CheckCircle2, Clock, Trash2, File as FileIcon, X, ChevronDown, ArrowUp, 
   ArrowDown, ArrowLeft, ArrowUpDown, AlertCircle, RefreshCw, MapPin, 
-  Activity, Anchor, Download, Droplets, Fuel, Info, FileText, Edit2
+  Activity, Anchor, Download, Droplets, Fuel, Info, FileText, Edit2,
+  Eye, Navigation, Compass, ExternalLink
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, parseISO } from "date-fns";
@@ -63,10 +64,98 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
   const [vesselFilter, setVesselFilter] = useState<string>('');
+  const [cargoStatusFilter, setCargoStatusFilter] = useState<string>('all');
+  const [operationTypeFilter, setOperationTypeFilter] = useState<string>('all');
+  const [dateFilter, setDateFilter] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedReportForDetails, setSelectedReportForDetails] = useState<ArrivalReport | null>(null);
 
   const filteredReports = React.useMemo(() => {
-    return reports.filter(r => vesselFilter === '' || String(r.vessel_id) === vesselFilter);
-  }, [reports, vesselFilter]);
+    return reports.filter(r => {
+      // Vessel filter
+      if (vesselFilter !== '' && String(r.vessel_id) !== vesselFilter) return false;
+
+      // Cargo status filter
+      if (cargoStatusFilter !== 'all' && (r.cargo_status || '').toLowerCase() !== cargoStatusFilter.toLowerCase()) {
+        return false;
+      }
+
+      // Operation type filter
+      if (operationTypeFilter !== 'all') {
+        const op = (r.operation_type || '').toUpperCase();
+        if (!op.includes(operationTypeFilter.toUpperCase())) {
+          return false;
+        }
+      }
+
+      // Date filter
+      if (dateFilter) {
+        try {
+          const reportDate = format(parseISO(r.utc_date_time), 'yyyy-MM-dd');
+          if (reportDate !== dateFilter) return false;
+        } catch (e) {
+          if (!r.utc_date_time.startsWith(dateFilter)) return false;
+        }
+      }
+
+      // Search query
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const matchesVoyage = (r.voyage_number || '').toLowerCase().includes(q);
+        const matchesPort = (r.arrival_port || '').toLowerCase().includes(q);
+        const matchesVessel = (r.vessel_name || '').toLowerCase().includes(q);
+        const matchesAgent = (r.agent_detail || '').toLowerCase().includes(q);
+        const matchesCargo = (r.cargo || '').toLowerCase().includes(q);
+        const matchesCargoStatus = (r.cargo_status || '').toLowerCase().includes(q);
+        const matchesOp = (r.operation_type || '').toLowerCase().includes(q);
+        const matchesRobType = (r.rob_type || '').toLowerCase().includes(q);
+        const matchesEuUk = (r.eu_uk_status || '').toLowerCase().includes(q);
+
+        let matchesDate = false;
+        try {
+          matchesDate = format(parseISO(r.utc_date_time), 'MMM dd, yyyy').toLowerCase().includes(q);
+        } catch (e) {
+          matchesDate = r.utc_date_time.toLowerCase().includes(q);
+        }
+
+        if (!matchesVoyage && !matchesPort && !matchesVessel && !matchesAgent && !matchesCargo && !matchesCargoStatus && !matchesOp && !matchesRobType && !matchesEuUk && !matchesDate) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [reports, vesselFilter, cargoStatusFilter, operationTypeFilter, dateFilter, searchQuery]);
+
+  const historyStats = React.useMemo(() => {
+    if (!filteredReports || filteredReports.length === 0) {
+      return { totalReports: 0, avgSeaHsfo: '0.00', avgTotalSeaFoc: '0.00', totalDistance: '0', latestReport: null };
+    }
+    let totalHsfo = 0;
+    let totalAllFoc = 0;
+    let totalDist = 0;
+    filteredReports.forEach(r => {
+      const h = Number(r.foc_sea_hsfo || 0);
+      const l = Number(r.foc_sea_lsfo || 0);
+      const mg = Number(r.foc_sea_mgo || 0);
+      const md = Number(r.foc_sea_mdo || 0);
+      totalHsfo += h;
+      totalAllFoc += (h + l + mg + md);
+      totalDist += Number(r.total_distance || 0);
+    });
+    const avgSeaHsfo = (totalHsfo / filteredReports.length).toFixed(2);
+    const avgTotalSeaFoc = (totalAllFoc / filteredReports.length).toFixed(2);
+    const totalDistance = totalDist.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    const latestReport = filteredReports[0] || null;
+
+    return {
+      totalReports: filteredReports.length,
+      avgSeaHsfo,
+      avgTotalSeaFoc,
+      totalDistance,
+      latestReport
+    };
+  }, [filteredReports]);
 
   useEffect(() => {
     if (!editingId && form.vessel_id) {
@@ -814,98 +903,439 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
           </div>
         </form>
       ) : (
-        <div className="space-y-4">
-          <div className="flex justify-end px-6">
-            <div className="flex items-center gap-2">
-              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Filter Vessel:</label>
-              <select 
-                value={vesselFilter}
-                onChange={(e) => setVesselFilter(e.target.value)}
-                className="px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
-              >
-                <option value="">All Vessels</option>
-                {vessels.map(v => (
-                  <option key={v.id} value={String(v.id)}>{v.name}</option>
-                ))}
-              </select>
+        <div className="space-y-6">
+          {/* Executive Summary Metrics */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Reports Logged</p>
+                <p className="text-2xl font-black text-slate-900 mt-1">{historyStats.totalReports}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {vesselFilter ? 'For selected vessel' : 'Across all fleet vessels'}
+                </p>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <FileText className="w-6 h-6" />
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Avg Sea HSFO FOC</p>
+                <p className="text-2xl font-black text-blue-700 mt-1 font-mono">{historyStats.avgSeaHsfo} <span className="text-sm font-semibold">MT</span></p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Computed sea passage average</p>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                <Fuel className="w-6 h-6" />
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Avg Total Sea FOC</p>
+                <p className="text-2xl font-black text-emerald-700 mt-1 font-mono">{historyStats.avgTotalSeaFoc} <span className="text-sm font-semibold">MT</span></p>
+                <p className="text-[11px] text-slate-500 mt-0.5">All fuel types combined</p>
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                <Activity className="w-6 h-6" />
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl border border-blue-100 shadow-sm flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Latest Arrival</p>
+                {historyStats.latestReport ? (
+                  <>
+                    <p className="text-sm font-bold text-slate-900 mt-1 truncate max-w-[150px]">
+                      {historyStats.latestReport.vessel_name}
+                    </p>
+                    <p className="text-[11px] font-mono text-slate-500 mt-0.5">
+                      {format(parseISO(historyStats.latestReport.utc_date_time), 'MMM dd, HH:mm')} UTC
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm font-medium text-slate-400 mt-1">No reports logged</p>
+                )}
+              </div>
+              <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                <Clock className="w-6 h-6" />
+              </div>
             </div>
           </div>
+
+          {/* Filter & Search Bar */}
+          <div className="bg-white p-4 rounded-2xl border border-blue-100 shadow-sm flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Vessel Filter */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                  <Ship className="w-3.5 h-3.5 text-blue-600" />
+                  Vessel:
+                </label>
+                <select 
+                  value={vesselFilter}
+                  onChange={(e) => setVesselFilter(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                >
+                  <option value="">All Vessels ({reports.length})</option>
+                  {vessels.map(v => {
+                    const count = reports.filter(r => String(r.vessel_id) === String(v.id)).length;
+                    return (
+                      <option key={v.id} value={String(v.id)}>{v.name} ({count})</option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              {/* Cargo Status Filter */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Cargo:</label>
+                <select
+                  value={cargoStatusFilter}
+                  onChange={(e) => setCargoStatusFilter(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none uppercase"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="ballast">Ballast</option>
+                  <option value="laden">Laden</option>
+                </select>
+              </div>
+
+              {/* Operation Type Filter */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Operation:</label>
+                <select
+                  value={operationTypeFilter}
+                  onChange={(e) => setOperationTypeFilter(e.target.value)}
+                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                >
+                  <option value="all">All Operations</option>
+                  <option value="LOADING">Loading</option>
+                  <option value="DISCHARGING">Discharging</option>
+                  <option value="DISCHARGING AND LOADING">Discharging & Loading</option>
+                  <option value="BUNKERING">Bunkering</option>
+                  <option value="ANCHORAGE">Anchorage</option>
+                  <option value="WAITING FOR BERTH">Waiting for Berth</option>
+                  <option value="REPAIRS / DRYDOCK">Repairs / Drydock</option>
+                </select>
+              </div>
+
+              {/* Search by Date */}
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                  <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                  Date:
+                </label>
+                <div className="relative flex items-center">
+                  <input
+                    type="date"
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className={`px-3 py-1.5 bg-slate-50 border rounded-xl text-xs font-bold transition-all focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer ${
+                      dateFilter
+                        ? 'border-blue-500 bg-blue-50/60 text-blue-900 pr-7 shadow-xs'
+                        : 'border-slate-200 text-slate-700 hover:border-slate-300'
+                    }`}
+                    title="Filter reports by date"
+                  />
+                  {dateFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setDateFilter('')}
+                      className="absolute right-1.5 p-0.5 text-slate-400 hover:text-rose-600 rounded transition-colors cursor-pointer"
+                      title="Clear date filter"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Reset All Filters Button */}
+              {(vesselFilter || cargoStatusFilter !== 'all' || operationTypeFilter !== 'all' || dateFilter || searchQuery) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVesselFilter('');
+                    setCargoStatusFilter('all');
+                    setOperationTypeFilter('all');
+                    setDateFilter('');
+                    setSearchQuery('');
+                  }}
+                  className="px-2.5 py-1.5 text-xs font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 rounded-xl border border-rose-200 transition-colors flex items-center gap-1 cursor-pointer"
+                  title="Reset all filters"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Reset</span>
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              {/* Search Bar */}
+              <div className="relative flex-1 sm:w-64">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search date, voyage, port, cargo..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 placeholder-slate-400 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                />
+                {searchQuery && (
+                  <button 
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <span className="text-xs font-semibold text-slate-400 whitespace-nowrap">
+                {filteredReports.length} {filteredReports.length === 1 ? 'report' : 'reports'}
+              </span>
+            </div>
+          </div>
+
+          {/* History Data Table */}
           <div className="bg-white rounded-3xl border border-blue-100 shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-left">
+              <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="bg-slate-50 text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                    <th className="px-6 py-4">Date & Time (UTC)</th>
-                    <th className="px-6 py-4">Vessel</th>
-                    <th className="px-6 py-4">Voyage</th>
-                    <th className="px-6 py-4">Arr. Port</th>
-                    <th className="px-6 py-4">EU/UK Status</th>
-                    <th className="px-6 py-4">Operation</th>
-                    <th className="px-6 py-4">Event Type</th>
-                    <th className="px-6 py-4">HSFO ROB</th>
-                    <th className="px-6 py-4">Sea FOC (HSFO)</th>
-                    <th className="px-6 py-4">Report Doc</th>
-                    <th className="px-6 py-4 text-right">Actions</th>
+                  <tr className="bg-slate-50/80 border-b border-slate-100 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                    <th className="px-5 py-3.5 whitespace-nowrap">Date & Vessel</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Arrival Port & Status</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Sea Passage & Position</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Auto-Computed Sea FOC</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Remaining ROB</th>
+                    <th className="px-5 py-3.5 whitespace-nowrap">Report Doc</th>
+                    <th className="px-5 py-3.5 text-right whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-blue-50 text-sm">
-                  {filteredReports.map(report => (
-                    <tr key={report.id} className="hover:bg-blue-50/30 transition-colors">
-                      <td className="px-6 py-4 font-mono">{format(parseISO(report.utc_date_time), 'MMM dd, HH:mm')}</td>
-                      <td className="px-6 py-4 font-bold">{report.vessel_name}</td>
-                      <td className="px-6 py-4 text-slate-500 font-medium">{report.voyage_number || '-'}</td>
-                      <td className="px-6 py-4">{report.arrival_port}</td>
-                      <td className="px-6 py-4 uppercase text-[10px] font-bold text-slate-500">{report.eu_uk_status}</td>
-                      <td className="px-6 py-4">
-                        <span className="px-2 py-1 bg-blue-50 text-blue-600 text-[10px] font-bold rounded-full uppercase">
-                          {report.operation_type}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 font-bold text-slate-700">{report.rob_type}</td>
-                      <td className="px-6 py-4 font-mono font-bold text-slate-900">{report.rob_hsfo}</td>
-                      <td className="px-6 py-4 font-mono font-bold text-blue-700">{report.foc_sea_hsfo}</td>
-                      <td className="px-6 py-4">
-                        {report.attachment_id ? (
-                          <a
-                            href={`/api/files/${report.attachment_id}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-xs font-bold transition-colors"
-                          >
-                            <FileText className="w-3.5 h-3.5" />
-                            <span>{report.attachment_name || 'View Doc'}</span>
-                          </a>
-                        ) : (
-                          <span className="text-xs text-slate-400">None</span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {canEditReport(report) && (
-                            <button 
-                              onClick={() => handleEdit(report)}
-                              className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                              title="Edit Report"
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {filteredReports.map(report => {
+                    const totalSeaFoc = (
+                      Number(report.foc_sea_hsfo || 0) + 
+                      Number(report.foc_sea_lsfo || 0) + 
+                      Number(report.foc_sea_mgo || 0) + 
+                      Number(report.foc_sea_mdo || 0)
+                    ).toFixed(2);
+                    const vessel = vessels.find(v => Number(v.id) === Number(report.vessel_id));
+                    const isHsfoOutside = isFocOutsideLimits(
+                      String(report.foc_sea_hsfo), 
+                      (report as any).charterer_min_hsfo || vessel?.charterer_min_hsfo, 
+                      (report as any).charterer_max_hsfo || vessel?.charterer_max_hsfo
+                    );
+
+                    return (
+                      <tr 
+                        key={report.id} 
+                        className="hover:bg-blue-50/40 transition-colors group cursor-pointer"
+                        onClick={() => setSelectedReportForDetails(report)}
+                      >
+                        {/* Date & Vessel */}
+                        <td className="px-5 py-4">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5 text-xs font-mono font-bold text-slate-900">
+                              <Calendar className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                              {format(parseISO(report.utc_date_time), 'MMM dd, yyyy')}
+                              <span className="text-slate-400 font-normal">
+                                {format(parseISO(report.utc_date_time), 'HH:mm')} UTC
+                              </span>
+                            </div>
+                            <div className="font-bold text-slate-800 text-sm flex items-center gap-2 flex-wrap">
+                              <span>{report.vessel_name}</span>
+                              {report.voyage_number && (
+                                <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-mono font-semibold">
+                                  {report.voyage_number}
+                                </span>
+                              )}
+                              <span className={`px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider ${
+                                report.cargo_status === 'laden' 
+                                  ? 'bg-blue-100 text-blue-800' 
+                                  : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {report.cargo_status || 'ballast'}
+                              </span>
+                              {report.operation_type && (
+                                <span className="px-2 py-0.5 rounded-md text-[9px] font-bold tracking-wide bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                  {report.operation_type}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Arrival Port & Status */}
+                        <td className="px-5 py-4">
+                          <div className="space-y-1 max-w-[190px]">
+                            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 truncate" title={report.arrival_port || 'No port'}>
+                              <Anchor className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                              <span>{report.arrival_port || '-'}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[11px] text-slate-500 font-medium">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                report.eu_uk_status === 'Yes' 
+                                  ? 'bg-amber-100 text-amber-800 border border-amber-200' 
+                                  : 'bg-slate-100 text-slate-600'
+                              }`}>
+                                EU/UK: {report.eu_uk_status || 'No'}
+                              </span>
+                              {report.atb_utc && (
+                                <span className="font-mono text-[10px] text-slate-400">
+                                  ATB: {format(parseISO(report.atb_utc), 'MMM dd, HH:mm')}
+                                </span>
+                              )}
+                            </div>
+                            {report.agent_detail && report.agent_detail !== 'FILLIN' && (
+                              <div className="text-[10px] text-slate-400 truncate" title={report.agent_detail}>
+                                Agt: {report.agent_detail}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Sea Passage & Position */}
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <div className="space-y-1">
+                            {(report.position_lat || report.position_long) ? (
+                              <div className="flex items-center gap-1 font-mono text-xs text-slate-700 font-semibold">
+                                <MapPin className="w-3.5 h-3.5 text-rose-500 flex-shrink-0" />
+                                <span>{report.position_lat || '-'} / {report.position_long || '-'}</span>
+                              </div>
+                            ) : (
+                              <div className="text-xs text-slate-400 font-mono">No coordinates</div>
+                            )}
+                            <div className="text-xs text-slate-500 flex items-center gap-1.5">
+                              <Navigation className="w-3 h-3 text-blue-500 flex-shrink-0" />
+                              <span className="font-medium">Sea:</span>
+                              <strong className="font-mono font-bold text-slate-800">{report.total_time_at_sea || '0h'}</strong>
+                              <span className="text-slate-300">•</span>
+                              <strong className="font-mono font-bold text-blue-700">{report.total_distance ? `${report.total_distance} nm` : '0 nm'}</strong>
+                            </div>
+                            {report.rob_type && (
+                              <span className="inline-block px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded text-[9px] font-bold uppercase tracking-wider">
+                                {report.rob_type}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Auto-Computed Fuel Consumption (Sea) */}
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Sea FOC:</span>
+                              <span className="px-2 py-0.5 bg-slate-900 text-white font-mono font-bold text-xs rounded-md shadow-sm">
+                                {totalSeaFoc} MT
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span 
+                                className={`font-mono text-xs font-bold px-1.5 py-0.5 rounded ${
+                                  isHsfoOutside 
+                                    ? 'bg-red-100 text-red-700 border border-red-200' 
+                                    : 'bg-blue-50 text-blue-700 border border-blue-100'
+                                }`} 
+                                title={isHsfoOutside ? `HSFO Sea FOC outside limit` : 'HSFO Sea FOC within limit'}
+                              >
+                                HSFO: {report.foc_sea_hsfo ?? '0.00'}
+                              </span>
+                              {Number(report.foc_sea_lsfo || 0) > 0 && (
+                                <span className="font-mono text-[11px] font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                                  LSFO: {report.foc_sea_lsfo}
+                                </span>
+                              )}
+                              {(Number(report.foc_sea_mgo || 0) > 0 || Number(report.foc_sea_mdo || 0) > 0) && (
+                                <span className="font-mono text-[11px] font-semibold text-slate-500">
+                                  {Number(report.foc_sea_mgo || 0) > 0 ? `MGO: ${report.foc_sea_mgo}` : ''}
+                                  {Number(report.foc_sea_mgo || 0) > 0 && Number(report.foc_sea_mdo || 0) > 0 ? ' • ' : ''}
+                                  {Number(report.foc_sea_mdo || 0) > 0 ? `MDO: ${report.foc_sea_mdo}` : ''}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Remaining ROB */}
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          <div className="space-y-0.5 font-mono text-xs">
+                            <div className="font-bold text-slate-900">
+                              HSFO: <span className="text-blue-700">{report.rob_hsfo} MT</span>
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              LSFO: {report.rob_lsfo} • MGO: {report.rob_mgo}
+                            </div>
+                            {(Number(report.rob_mdo || 0) > 0 || Number(report.rob_fw || 0) > 0) && (
+                              <div className="text-[10px] text-slate-400">
+                                {Number(report.rob_mdo || 0) > 0 ? `MDO: ${report.rob_mdo} ` : ''}
+                                {Number(report.rob_mdo || 0) > 0 && Number(report.rob_fw || 0) > 0 ? '• ' : ''}
+                                {Number(report.rob_fw || 0) > 0 ? `FW: ${report.rob_fw} MT` : ''}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Report Doc */}
+                        <td className="px-5 py-4 whitespace-nowrap">
+                          {report.attachment_id ? (
+                            <a
+                              href={`/api/files/${report.attachment_id}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 text-xs font-bold transition-colors shadow-xs border border-blue-100"
+                              title={`Download: ${report.attachment_name || 'Report Document'}`}
                             >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
+                              <FileText className="w-3.5 h-3.5 flex-shrink-0" />
+                              <span className="truncate max-w-[120px]">{report.attachment_name || 'View Doc'}</span>
+                            </a>
+                          ) : (
+                            <span className="text-xs text-slate-400 italic">None</span>
                           )}
-                          {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
-                            <button 
-                              onClick={() => handleDelete(report.id)}
-                              className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                              title="Delete Report"
+                        </td>
+
+                        {/* Actions */}
+                        <td className="px-5 py-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-1.5">
+                            {/* View Full Report Details */}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedReportForDetails(report)}
+                              className="p-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"
+                              title="View Full Report Details"
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <Eye className="w-4 h-4" />
                             </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                            {canEditReport(report) && (
+                              <button 
+                                type="button"
+                                onClick={() => handleEdit(report)}
+                                className="p-2 text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
+                                title="Edit Report"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                            )}
+                            {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
+                              <button 
+                                type="button"
+                                onClick={() => handleDelete(report.id)}
+                                className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
+                                title="Delete Report"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {isLoading ? (
                     <tr>
-                      <td colSpan={11} className="px-6 py-16 text-center">
+                      <td colSpan={7} className="px-6 py-16 text-center">
                         <div className="flex flex-col items-center justify-center gap-3">
                           <div className="w-8 h-8 border-4 border-blue-600/10 border-t-blue-600 rounded-full animate-spin" />
                           <span className="text-xs text-slate-500 font-bold tracking-wider uppercase animate-pulse">Retrieving Arrival Reports...</span>
@@ -914,8 +1344,8 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
                     </tr>
                   ) : filteredReports.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="px-6 py-12 text-center text-slate-400 font-medium">
-                        No reports found.
+                      <td colSpan={7} className="px-6 py-12 text-center text-slate-400 font-medium">
+                        No reports found matching your criteria.
                       </td>
                     </tr>
                   ) : null}
@@ -925,6 +1355,318 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
           </div>
         </div>
       )}
+
+      {/* Arrival Report Detailed Inspection Modal (Identical architecture to Noon-to-Noon) */}
+      <AnimatePresence>
+        {selectedReportForDetails && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col border border-slate-100"
+            >
+              {/* Modal Header */}
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shadow-xs">
+                    <Anchor className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-lg font-black text-slate-900">
+                        {selectedReportForDetails.vessel_name} - Arrival Report
+                      </h3>
+                      {selectedReportForDetails.voyage_number && (
+                        <span className="px-2 py-0.5 bg-slate-200/80 text-slate-700 rounded-md text-xs font-mono font-bold">
+                          {selectedReportForDetails.voyage_number}
+                        </span>
+                      )}
+                      <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
+                        selectedReportForDetails.cargo_status === 'laden' 
+                          ? 'bg-blue-100 text-blue-800' 
+                          : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {selectedReportForDetails.cargo_status || 'ballast'}
+                      </span>
+                      {selectedReportForDetails.operation_type && (
+                        <span className="px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wide bg-indigo-50 text-indigo-700 border border-indigo-200">
+                          {selectedReportForDetails.operation_type}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 font-mono mt-0.5 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                      {format(parseISO(selectedReportForDetails.utc_date_time), 'MMMM dd, yyyy • HH:mm')} UTC
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedReportForDetails(null)}
+                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-all cursor-pointer"
+                  title="Close inspection"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+                {/* Port & Sea Passage Status Section */}
+                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
+                    <Anchor className="w-4 h-4 text-blue-600" />
+                    Arrival Port & Passage Navigation
+                  </h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Arrival Port</span>
+                      <span className="font-bold text-slate-800 text-sm">{selectedReportForDetails.arrival_port || '-'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">EU / UK Status</span>
+                      <span className={`inline-block mt-0.5 px-2 py-0.5 rounded text-xs font-bold ${
+                        selectedReportForDetails.eu_uk_status === 'Yes' 
+                          ? 'bg-amber-100 text-amber-800 border border-amber-200' 
+                          : 'bg-slate-200/80 text-slate-700'
+                      }`}>
+                        {selectedReportForDetails.eu_uk_status || 'No'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Event / ROB Type</span>
+                      <span className="font-mono font-bold text-slate-800 text-sm">{selectedReportForDetails.rob_type || 'EOSP'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Actual Berthing (ATB)</span>
+                      <span className="font-mono font-bold text-blue-700 text-sm">
+                        {selectedReportForDetails.atb_utc ? format(parseISO(selectedReportForDetails.atb_utc), 'MMM dd, HH:mm') : '-'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Latitude</span>
+                      <span className="font-mono font-bold text-slate-800 text-sm">{selectedReportForDetails.position_lat || '-'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Longitude</span>
+                      <span className="font-mono font-bold text-slate-800 text-sm">{selectedReportForDetails.position_long || '-'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Time at Sea</span>
+                      <span className="font-mono font-bold text-slate-900 text-sm">{selectedReportForDetails.total_time_at_sea || '0h'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Steamed Distance</span>
+                      <span className="font-mono font-bold text-blue-700 text-sm">{selectedReportForDetails.total_distance ? `${selectedReportForDetails.total_distance} nm` : '0 nm'}</span>
+                    </div>
+                  </div>
+
+                  {(selectedReportForDetails.agent_detail || selectedReportForDetails.cargo) && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3 pt-3 border-t border-slate-200/60 text-xs">
+                      {selectedReportForDetails.agent_detail && selectedReportForDetails.agent_detail !== 'FILLIN' && (
+                        <div>
+                          <span className="text-slate-400 font-medium">Port Agent Details:</span>{' '}
+                          <strong className="text-slate-800">{selectedReportForDetails.agent_detail}</strong>
+                        </div>
+                      )}
+                      {selectedReportForDetails.cargo && (
+                        <div>
+                          <span className="text-slate-400 font-medium">Cargo Description:</span>{' '}
+                          <strong className="text-slate-800">{selectedReportForDetails.cargo}</strong>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Auto-Computed Fuel Statistics & ROB Section */}
+                <div className="bg-blue-50/40 p-5 rounded-2xl border border-blue-100">
+                  <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-blue-900 flex items-center gap-1.5">
+                      <Activity className="w-4 h-4 text-blue-600" />
+                      Fuel Statistics & Auto-Computed Sea Consumption
+                    </h4>
+                    <span className="px-2.5 py-1 bg-blue-600 text-white font-mono font-bold text-xs rounded-lg shadow-sm">
+                      Total Sea FOC: {(
+                        Number(selectedReportForDetails.foc_sea_hsfo || 0) + 
+                        Number(selectedReportForDetails.foc_sea_lsfo || 0) + 
+                        Number(selectedReportForDetails.foc_sea_mgo || 0) + 
+                        Number(selectedReportForDetails.foc_sea_mdo || 0)
+                      ).toFixed(2)} MT
+                    </span>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs bg-white rounded-xl border border-blue-100 overflow-hidden">
+                      <thead className="bg-blue-50/60 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        <tr>
+                          <th className="px-4 py-2.5">Fuel Type</th>
+                          <th className="px-4 py-2.5">Auto-Computed Sea FOC</th>
+                          <th className="px-4 py-2.5">Arrival ROB</th>
+                          <th className="px-4 py-2.5">Charterer Threshold</th>
+                          <th className="px-4 py-2.5">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-blue-50">
+                        {(() => {
+                          const v = vessels.find(item => Number(item.id) === Number(selectedReportForDetails.vessel_id));
+                          const fuels = [
+                            { 
+                              label: 'HSFO', 
+                              foc: selectedReportForDetails.foc_sea_hsfo, 
+                              rob: selectedReportForDetails.rob_hsfo, 
+                              min: (selectedReportForDetails as any).charterer_min_hsfo || v?.charterer_min_hsfo, 
+                              max: (selectedReportForDetails as any).charterer_max_hsfo || v?.charterer_max_hsfo 
+                            },
+                            { 
+                              label: 'LSFO', 
+                              foc: selectedReportForDetails.foc_sea_lsfo, 
+                              rob: selectedReportForDetails.rob_lsfo, 
+                              min: (selectedReportForDetails as any).charterer_min_lsfo || v?.charterer_min_lsfo, 
+                              max: (selectedReportForDetails as any).charterer_max_lsfo || v?.charterer_max_lsfo 
+                            },
+                            { 
+                              label: 'MGO', 
+                              foc: selectedReportForDetails.foc_sea_mgo, 
+                              rob: selectedReportForDetails.rob_mgo, 
+                              min: (selectedReportForDetails as any).charterer_min_mgo || v?.charterer_min_mgo, 
+                              max: (selectedReportForDetails as any).charterer_max_mgo || v?.charterer_max_mgo 
+                            },
+                            { 
+                              label: 'MDO', 
+                              foc: selectedReportForDetails.foc_sea_mdo, 
+                              rob: selectedReportForDetails.rob_mdo, 
+                              min: (selectedReportForDetails as any).charterer_min_mdo || v?.charterer_min_mdo, 
+                              max: (selectedReportForDetails as any).charterer_max_mdo || v?.charterer_max_mdo 
+                            }
+                          ];
+
+                          return fuels.map(fuel => {
+                            const isOutside = isFocOutsideLimits(String(fuel.foc), fuel.min, fuel.max);
+                            return (
+                              <tr key={fuel.label} className="hover:bg-slate-50/60">
+                                <td className="px-4 py-2.5 font-bold text-slate-800">{fuel.label}</td>
+                                <td className="px-4 py-2.5 font-mono font-bold text-slate-900">
+                                  {fuel.foc ? `${fuel.foc} MT` : '0.00 MT'}
+                                </td>
+                                <td className="px-4 py-2.5 font-mono text-slate-700">
+                                  {fuel.rob ?? 0} MT
+                                </td>
+                                <td className="px-4 py-2.5 text-slate-500 font-mono text-[11px]">
+                                  {fuel.min || fuel.max ? `${fuel.min || 0} - ${fuel.max || '∞'}` : 'N/A'}
+                                </td>
+                                <td className="px-4 py-2.5">
+                                  {fuel.min || fuel.max ? (
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                      isOutside 
+                                        ? 'bg-red-100 text-red-700' 
+                                        : 'bg-emerald-100 text-emerald-700'
+                                    }`}>
+                                      {isOutside ? 'Exceeded' : 'Within Limits'}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">-</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          });
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Fresh Water & Technical Data Section */}
+                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
+                    <Droplets className="w-4 h-4 text-blue-600" />
+                    Fresh Water & Passage Performance
+                  </h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Fresh Water ROB</span>
+                      <span className="font-mono font-bold text-slate-800 text-sm">
+                        {selectedReportForDetails.rob_fw ? `${selectedReportForDetails.rob_fw} MT` : '0 MT'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Total Steaming Time</span>
+                      <span className="font-mono font-bold text-slate-800 text-sm">
+                        {selectedReportForDetails.total_time_at_sea || '0h'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-bold uppercase text-slate-400 block">Passage Distance</span>
+                      <span className="font-mono font-bold text-blue-700 text-sm">
+                        {selectedReportForDetails.total_distance ? `${selectedReportForDetails.total_distance} nm` : '0 nm'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Attached Document Section */}
+                {selectedReportForDetails.attachment_id && (
+                  <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
+                      <FileText className="w-4 h-4 text-blue-600" />
+                      Attached Arrival Documentation
+                    </h4>
+                    <div className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-200">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
+                          <FileText className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-slate-800">
+                            {selectedReportForDetails.attachment_name || 'Arrival Report Attachment'}
+                          </p>
+                          <p className="text-[11px] text-slate-400">Attached file verification</p>
+                        </div>
+                      </div>
+                      <a
+                        href={`/api/files/${selectedReportForDetails.attachment_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-colors shadow-sm"
+                      >
+                        <Download className="w-4 h-4" />
+                        Download
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setSelectedReportForDetails(null)}
+                  className="px-5 py-2.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Close Inspection
+                </button>
+                {canEditReport(selectedReportForDetails) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const rep = selectedReportForDetails;
+                      setSelectedReportForDetails(null);
+                      handleEdit(rep);
+                    }}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                    Edit This Report
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

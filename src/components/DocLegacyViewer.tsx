@@ -13,13 +13,12 @@ import {
   Printer, 
   Loader2, 
   AlertTriangle,
-  Type,
-  AlignLeft,
-  ChevronDown,
-  ChevronUp,
-  Sparkles,
   BookOpen,
-  Info
+  Sparkles,
+  Rows,
+  Layers,
+  ChevronRight,
+  PenTool
 } from 'lucide-react';
 
 interface DocLegacyViewerProps {
@@ -27,6 +26,7 @@ interface DocLegacyViewerProps {
   blob?: Blob;
   arrayBuffer?: ArrayBuffer;
   title?: string;
+  fileName?: string;
   onDownload?: () => void;
 }
 
@@ -35,19 +35,32 @@ interface ParsedDocData {
   headers?: string;
   footers?: string;
   annotations?: string;
+  textboxes?: string;
   paragraphs: string[];
   wordCount: number;
   charCount: number;
   fallback?: boolean;
 }
 
+// Structured Document Block types for high-fidelity Word layout
+export type DocBlock = 
+  | { type: 'heading'; text: string; level: 1 | 2 | 3 }
+  | { type: 'table'; headers?: string[]; rows: string[][]; numCols: number }
+  | { type: 'keyValueGrid'; items: { label: string; value: string }[] }
+  | { type: 'signature'; items: { label: string; line?: string }[] }
+  | { type: 'bullet'; marker: string; text: string }
+  | { type: 'paragraph'; text: string }
+  | { type: 'pageBreak' };
+
 export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
   url,
   blob,
   arrayBuffer,
-  title = 'Document.doc',
+  title,
+  fileName,
   onDownload
 }) => {
+  const displayTitle = title || fileName || 'Document.doc';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [docData, setDocData] = useState<ParsedDocData | null>(null);
@@ -59,20 +72,19 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
   const [fontSize, setFontSize] = useState<'sm' | 'md' | 'lg'>('md');
   const [lineSpacing, setLineSpacing] = useState<'compact' | 'normal' | 'relaxed'>('normal');
   const [themeMode, setThemeMode] = useState<'white' | 'warm' | 'dark'>('white');
-  const [activeTab, setActiveTab] = useState<'document' | 'raw' | 'details'>('document');
+  const [viewMode, setViewMode] = useState<'paged' | 'flow'>('paged');
 
   // Client-side fallback extractor for binary CFBF / .doc stream / RTF
   const extractTextFromBinaryDoc = (buffer: ArrayBuffer): ParsedDocData => {
     const bytes = new Uint8Array(buffer);
-    const textChunks: string[] = [];
 
-    // Check if it is an RTF document masked as .doc
+    // 1. Check if it is an RTF document disguised as .doc
     try {
       const headerStr = String.fromCharCode(...Array.from(bytes.slice(0, 10)));
       if (headerStr.startsWith('{\\rtf')) {
         const fullStr = new TextDecoder('latin1').decode(buffer);
-        // Strip RTF control words and formatting
         const rtfCleaned = fullStr
+          .replace(/\\page\b/gi, '\n[PAGE_BREAK]\n')
           .replace(/\\par[d]?\b/gi, '\n')
           .replace(/\\line\b/gi, '\n')
           .replace(/\\tab\b/gi, '\t')
@@ -100,49 +112,67 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
       console.warn('RTF detection skipped:', e);
     }
 
-    // 1. Scan UTF-16LE text runs (Word 97-2004 primary character encoding in WordDocument stream)
+    // 2. Scan UTF-16LE text runs (Word 97-2004 primary character encoding)
+    const utf16Chunks: string[] = [];
     let currentUtf16 = '';
     for (let i = 0; i < bytes.length - 1; i += 2) {
       const code = bytes[i] | (bytes[i + 1] << 8);
-      if ((code >= 32 && code <= 126) || code === 10 || code === 13 || code === 9 || (code >= 160 && code <= 0x02AF)) {
+      if (code === 0x000c) {
+        if (currentUtf16.trim().length >= 2) utf16Chunks.push(currentUtf16);
+        utf16Chunks.push('\n[PAGE_BREAK]\n');
+        currentUtf16 = '';
+      } else if ((code >= 32 && code <= 126) || code === 10 || code === 13 || code === 9 || (code >= 160 && code <= 0x02AF)) {
         currentUtf16 += String.fromCharCode(code);
       } else {
         if (currentUtf16.length >= 3) {
-          textChunks.push(currentUtf16);
+          utf16Chunks.push(currentUtf16);
         }
         currentUtf16 = '';
       }
     }
     if (currentUtf16.length >= 3) {
-      textChunks.push(currentUtf16);
+      utf16Chunks.push(currentUtf16);
     }
 
-    // 2. Scan ASCII / Latin-1 8-bit text runs
-    let currentAscii = '';
-    for (let i = 0; i < bytes.length; i++) {
-      const b = bytes[i];
-      if ((b >= 32 && b <= 126) || b === 10 || b === 13 || b === 9 || (b >= 160 && b <= 255)) {
-        currentAscii += String.fromCharCode(b);
-      } else {
-        if (currentAscii.length >= 4) {
-          textChunks.push(currentAscii);
+    // Determine if UTF-16LE has high-quality document content
+    const utf16TotalLen = utf16Chunks.reduce((acc, c) => acc + c.length, 0);
+    let candidateChunks: string[] = [];
+
+    if (utf16TotalLen > 150) {
+      candidateChunks = utf16Chunks;
+    } else {
+      // 3. Fallback to 8-bit Latin-1 only if UTF-16 is empty
+      let currentAscii = '';
+      for (let i = 0; i < bytes.length; i++) {
+        const b = bytes[i];
+        if (b === 0x0c) {
+          if (currentAscii.trim().length >= 2) candidateChunks.push(currentAscii);
+          candidateChunks.push('\n[PAGE_BREAK]\n');
+          currentAscii = '';
+        } else if ((b >= 32 && b <= 126) || b === 10 || b === 13 || b === 9 || (b >= 160 && b <= 255)) {
+          currentAscii += String.fromCharCode(b);
+        } else {
+          if (currentAscii.length >= 4) {
+            candidateChunks.push(currentAscii);
+          }
+          currentAscii = '';
         }
-        currentAscii = '';
+      }
+      if (currentAscii.length >= 4) {
+        candidateChunks.push(currentAscii);
       }
     }
-    if (currentAscii.length >= 4) {
-      textChunks.push(currentAscii);
-    }
 
-    // Filter and sanitize text paragraphs
-    const OLE_NOISE = /^(Root Entry|WordDocument|1Table|0Table|Data|SummaryInformation|DocumentSummaryInformation|CompObj|ObjectPool|Microsoft Word Document|MSWordDoc|Word\.Document|StandardJet|Normal\.dotm?)/i;
+    // Filter and sanitize text paragraphs to prevent font tables & binary metadata leaking into latter pages
+    const NOISE_FILTER = /^(Root Entry|WordDocument|1Table|0Table|Data|SummaryInformation|DocumentSummaryInformation|CompObj|ObjectPool|Microsoft Word Document|MSWordDoc|Word\.Document|StandardJet|Normal\.dotm?|Times New Roman|Calibri|Arial|Cambria|Wingdings|Symbol|Segoe UI|Courier New|Heading \d|Default Paragraph Font|Table Normal|Body Text|No List)/i;
 
-    const rawLines = textChunks
+    const rawLines = candidateChunks
       .flatMap(chunk => chunk.split(/[\r\n]+/))
       .map(s => s.trim())
       .filter(s => {
         if (s.length < 2) return false;
-        if (OLE_NOISE.test(s)) return false;
+        if (s === '[PAGE_BREAK]') return true;
+        if (NOISE_FILTER.test(s)) return false;
         if (/^[^\w\s\(\)\[\]\{\}\.,:;'"\-\/]{4,}$/.test(s)) return false;
         return true;
       });
@@ -254,6 +284,7 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
                   headers: data.headers || '',
                   footers: data.footers || '',
                   annotations: data.annotations || '',
+                  textboxes: data.textboxes || '',
                   paragraphs: data.paragraphs || [],
                   wordCount: data.wordCount || 0,
                   charCount: data.charCount || 0,
@@ -309,23 +340,252 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
     window.print();
   };
 
-  // Group paragraphs into virtual pages (approx 500 words per page)
-  const virtualPages = useMemo(() => {
+  // Structured Block Parser: Converts flat paragraphs into semantic tables, headings, signatures, and grids
+  const parsedBlocks = useMemo(() => {
     if (!docData || docData.paragraphs.length === 0) return [];
-    
-    const pages: string[][] = [];
-    let currentPage: string[] = [];
-    let currentWords = 0;
 
-    docData.paragraphs.forEach(para => {
-      const words = para.split(/\s+/).length;
-      if (currentWords + words > 450 && currentPage.length > 0) {
+    const blocks: DocBlock[] = [];
+    const paragraphs = docData.paragraphs;
+    let i = 0;
+
+    const isTabular = (text: string) => {
+      const trimmed = text.trim();
+      if (trimmed.includes('\t')) return true;
+      // Also detect 2 or more column markers like " | " or double spaces between structured terms
+      if (/\s{3,}/.test(trimmed) && trimmed.split(/\s{3,}/).length >= 2 && trimmed.length < 250) {
+        return true;
+      }
+      return false;
+    };
+
+    const splitIntoCells = (text: string): string[] => {
+      if (text.includes('\t')) {
+        return text.split('\t').map(c => c.trim()).filter(Boolean);
+      }
+      return text.split(/\s{3,}/).map(c => c.trim()).filter(Boolean);
+    };
+
+    const isSignatureLine = (text: string) => {
+      const lower = text.toLowerCase();
+      const hasSigKeyword = /signature|signed|prepared by|approved by|reviewed by|chief engineer|master|superintendent|auditor|attendee/i.test(lower);
+      const hasSigLine = /_{3,}|\.{4,}|date:|name:|rank:/i.test(lower);
+      return hasSigKeyword || (hasSigLine && text.length < 120);
+    };
+
+    while (i < paragraphs.length) {
+      const p = paragraphs[i].trim();
+
+      // Explicit Page Break
+      if (p === '[PAGE_BREAK]' || p === '\x0c' || p === '\f') {
+        blocks.push({ type: 'pageBreak' });
+        i++;
+        continue;
+      }
+
+      // Check if this is a Signature Block (e.g. Master: ________ \t Chief Engineer: ________)
+      if (isSignatureLine(p)) {
+        const sigItems: { label: string; line?: string }[] = [];
+        const cells = splitIntoCells(p);
+        cells.forEach(cell => {
+          const colonIdx = cell.indexOf(':');
+          if (colonIdx !== -1) {
+            sigItems.push({
+              label: cell.substring(0, colonIdx).trim(),
+              line: cell.substring(colonIdx + 1).trim()
+            });
+          } else {
+            sigItems.push({ label: cell, line: '' });
+          }
+        });
+
+        if (sigItems.length > 0) {
+          blocks.push({ type: 'signature', items: sigItems });
+          i++;
+          continue;
+        }
+      }
+
+      // Check for Table (Consecutive tabular rows)
+      if (isTabular(p)) {
+        const tableRows: string[][] = [];
+        let maxCols = 0;
+
+        while (i < paragraphs.length && isTabular(paragraphs[i].trim())) {
+          const cells = splitIntoCells(paragraphs[i].trim());
+          if (cells.length > 0) {
+            tableRows.push(cells);
+            if (cells.length > maxCols) maxCols = cells.length;
+          }
+          i++;
+        }
+
+        if (tableRows.length > 0 && maxCols >= 2) {
+          // Normalize row column counts
+          const normalizedRows = tableRows.map(row => {
+            if (row.length < maxCols) {
+              return [...row, ...Array(maxCols - row.length).fill('')];
+            }
+            return row;
+          });
+
+          // Check if row 0 looks like a table header
+          const row0Text = normalizedRows[0].join(' ').toLowerCase();
+          const looksLikeHeader = 
+            /no\.?|item|description|area|action|status|remarks|target|date|name|rank|sign|qty|code|findings/i.test(row0Text) ||
+            normalizedRows[0].every(c => c === c.toUpperCase() && c.length < 40);
+
+          if (looksLikeHeader && normalizedRows.length > 1) {
+            blocks.push({
+              type: 'table',
+              headers: normalizedRows[0],
+              rows: normalizedRows.slice(1),
+              numCols: maxCols
+            });
+          } else {
+            blocks.push({
+              type: 'table',
+              rows: normalizedRows,
+              numCols: maxCols
+            });
+          }
+          continue;
+        }
+      }
+
+      // Check for Key-Value grid (e.g. "Vessel Name: OCEAN \t Voyage: 24-A" or "Date: 2026-05-22")
+      const kvMatches: { label: string; value: string }[] = [];
+      const parts = p.split(/\t+|\s{3,}/);
+      parts.forEach(part => {
+        const m = part.trim().match(/^([A-Za-z0-9\s\/\.\-–]{2,35}):\s*(.+)$/);
+        if (m) {
+          kvMatches.push({ label: m[1].trim(), value: m[2].trim() });
+        }
+      });
+
+      if (kvMatches.length > 0 && kvMatches.length === parts.length) {
+        blocks.push({ type: 'keyValueGrid', items: kvMatches });
+        i++;
+        continue;
+      }
+
+      // Check for Section Headings
+      const isHeading = 
+        (p.length < 90 && /^[A-Z0-9\s\.\-–—:]{4,}$/.test(p)) ||
+        (p.length < 80 && /^(SECTION|ARTICLE|CHAPTER|PART|FORM|CHECKLIST|REPORT|MEMORANDUM|ANNEX|SCHEDULE|AGENDA|MINUTES|SUMMARY|ACTION ITEMS?)\b/i.test(p)) ||
+        (p.length < 75 && /^(\d+\.){1,3}\s+[A-Z]/i.test(p));
+
+      if (isHeading) {
+        blocks.push({ type: 'heading', text: p, level: p.length < 40 ? 1 : 2 });
+        i++;
+        continue;
+      }
+
+      // Check for Bullet points / Checklists
+      const bulletMatch = p.match(/^([•\-\*–—\(\)\[\]\d+\.]{1,4})\s+(.+)$/);
+      if (bulletMatch && /^[•\-\*–—]|^\d+\.|^\[[ xX]?\]|^\([0-9a-zA-Z]\)/.test(p)) {
+        blocks.push({
+          type: 'bullet',
+          marker: bulletMatch[1].trim(),
+          text: bulletMatch[2].trim()
+        });
+        i++;
+        continue;
+      }
+
+      // Standard Paragraph
+      blocks.push({ type: 'paragraph', text: p });
+      i++;
+    }
+
+    return blocks;
+  }, [docData]);
+
+  // Height-based pagination algorithm: Prevents overflowing pages and guarantees balanced latter pages
+  const virtualPages = useMemo(() => {
+    if (parsedBlocks.length === 0) return [];
+
+    const pages: DocBlock[][] = [];
+    let currentPage: DocBlock[] = [];
+    let currentHeight = 0;
+    const MAX_PAGE_HEIGHT = 820; // Visual height budget for standard A4 printable sheet (px)
+
+    const estimateBlockHeight = (block: DocBlock): number => {
+      switch (block.type) {
+        case 'pageBreak':
+          return 9999;
+        case 'heading':
+          return 56;
+        case 'signature':
+          return 75;
+        case 'keyValueGrid':
+          return block.items.length > 2 ? 60 : 34;
+        case 'bullet':
+          return Math.max(26, Math.ceil(block.text.length / 75) * 22);
+        case 'paragraph':
+          return Math.max(24, Math.ceil(block.text.length / 85) * 20 + 12);
+        case 'table':
+          return (block.headers ? 40 : 0) + block.rows.length * 34 + 18;
+      }
+    };
+
+    parsedBlocks.forEach(block => {
+      if (block.type === 'pageBreak') {
+        if (currentPage.length > 0) {
+          pages.push(currentPage);
+          currentPage = [];
+          currentHeight = 0;
+        }
+        return;
+      }
+
+      const h = estimateBlockHeight(block);
+
+      // If block is a large table that exceeds remaining page space
+      if (block.type === 'table' && currentHeight + h > MAX_PAGE_HEIGHT && block.rows.length > 3) {
+        const availableHeight = MAX_PAGE_HEIGHT - currentHeight - (block.headers ? 40 : 0);
+        const rowsFit = Math.max(1, Math.floor(availableHeight / 34));
+
+        if (rowsFit >= 2 && rowsFit < block.rows.length) {
+          // Split table across pages cleanly
+          const pageRows = block.rows.slice(0, rowsFit);
+          const remainingRows = block.rows.slice(rowsFit);
+
+          currentPage.push({
+            type: 'table',
+            headers: block.headers,
+            rows: pageRows,
+            numCols: block.numCols
+          });
+          pages.push(currentPage);
+
+          // Continuation on next page with repeating headers
+          currentPage = [{
+            type: 'table',
+            headers: block.headers,
+            rows: remainingRows,
+            numCols: block.numCols
+          }];
+          currentHeight = (block.headers ? 40 : 0) + remainingRows.length * 34 + 18;
+          return;
+        }
+      }
+
+      // If block exceeds page height, start new page
+      if (currentHeight + h > MAX_PAGE_HEIGHT && currentPage.length > 0) {
+        // Keep heading with next content (orphan protection)
+        if (block.type === 'heading') {
+          pages.push(currentPage);
+          currentPage = [block];
+          currentHeight = h;
+          return;
+        }
+
         pages.push(currentPage);
-        currentPage = [para];
-        currentWords = words;
+        currentPage = [block];
+        currentHeight = h;
       } else {
-        currentPage.push(para);
-        currentWords += words;
+        currentPage.push(block);
+        currentHeight += h;
       }
     });
 
@@ -334,7 +594,7 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
     }
 
     return pages;
-  }, [docData]);
+  }, [parsedBlocks]);
 
   // Match counter for search term
   const matchCount = useMemo(() => {
@@ -343,79 +603,216 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
       const regex = new RegExp(searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
       const matches = docData.body.match(regex);
       return matches ? matches.length : 0;
-    } catch (e) {
+    } catch {
       return 0;
     }
   }, [searchTerm, docData]);
 
-  // Helper to render formatted paragraph with search highlighting and heading styles
-  const renderParagraph = (text: string, idx: number) => {
-    const trimmed = text.trim();
-    
-    // Check if this looks like a section heading (short, all caps or title casing)
-    const isHeading = 
-      (trimmed.length < 80 && /^[A-Z0-9\s\.\-–—:]{4,}$/.test(trimmed)) ||
-      (trimmed.length < 60 && /^(SECTION|ARTICLE|CHAPTER|PART|FORM|CHECKLIST|REPORT|MEMORANDUM|ANNEX|SCHEDULE)\s+[0-9A-Z\.\-]/i.test(trimmed));
-
-    // Check if this looks like a key-value or bullet item
-    const isBullet = /^[•\-\*–—\d+\.\)]\s+/.test(trimmed);
-    const isKeyValue = /^([A-Za-z\s]{2,30}):\s*(.+)$/.test(trimmed);
-
-    // Apply search highlighting
-    let content: React.ReactNode = text;
-    if (searchTerm.trim()) {
-      const parts = text.split(new RegExp(`(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
-      content = parts.map((part, pIdx) => {
-        if (part.toLowerCase() === searchTerm.toLowerCase()) {
-          return (
-            <mark key={pIdx} className="bg-amber-300 text-amber-950 font-bold px-1 rounded-xs">
-              {part}
-            </mark>
-          );
-        }
-        return part;
-      });
+  // Theme page styles
+  const getThemeClasses = () => {
+    switch (themeMode) {
+      case 'warm':
+        return {
+          container: 'bg-stone-900/90',
+          page: 'bg-[#fbf9f4] text-stone-900 border-stone-200/90 shadow-2xl'
+        };
+      case 'dark':
+        return {
+          container: 'bg-slate-950',
+          page: 'bg-slate-900 text-slate-100 border-slate-700 shadow-2xl'
+        };
+      default:
+        return {
+          container: 'bg-slate-850/90',
+          page: 'bg-white text-slate-900 border-slate-200/90 shadow-2xl'
+        };
     }
+  };
 
-    if (isHeading) {
-      return (
-        <h4 
-          key={idx} 
-          className="text-base sm:text-lg font-black text-slate-900 pt-5 pb-2 border-b border-slate-200 uppercase tracking-tight mt-4 first:mt-0"
-        >
-          {content}
-        </h4>
-      );
+  // Dynamic typography styles based on themeMode to guarantee 100% legibility & high contrast
+  const textStyles = useMemo(() => {
+    switch (themeMode) {
+      case 'dark':
+        return {
+          heading: 'text-white border-slate-700',
+          keyLabel: 'text-blue-400 font-bold',
+          keyValue: 'text-slate-100 font-medium',
+          keyBorder: 'border-slate-800',
+          bulletDot: 'bg-blue-400 text-blue-400',
+          body: 'text-slate-200',
+          headerBox: 'bg-blue-950/60 border-blue-800/80 text-blue-200',
+          pageHeaderFooter: 'border-slate-800 text-slate-400',
+          pageBg: '#0f172a',
+          pageText: '#f8fafc',
+          searchMark: 'bg-amber-400 text-slate-950 font-bold',
+          tableHeaderBg: 'bg-slate-800 text-slate-100 border-slate-700',
+          tableBorder: 'border-slate-700',
+          tableCellBorder: 'border-slate-800',
+          tableRowEven: 'bg-slate-900',
+          tableRowOdd: 'bg-slate-850/50',
+          sigLine: 'border-slate-700 text-slate-400',
+          cardBg: 'bg-slate-850 border-slate-800'
+        };
+      case 'warm':
+        return {
+          heading: 'text-stone-900 border-stone-300',
+          keyLabel: 'text-amber-900 font-bold',
+          keyValue: 'text-stone-800 font-medium',
+          keyBorder: 'border-stone-200/80',
+          bulletDot: 'bg-amber-600 text-amber-700',
+          body: 'text-stone-800',
+          headerBox: 'bg-amber-50 border-amber-200 text-amber-950',
+          pageHeaderFooter: 'border-stone-200 text-stone-500',
+          pageBg: '#fbf9f4',
+          pageText: '#1c1917',
+          searchMark: 'bg-amber-300 text-amber-950 font-bold',
+          tableHeaderBg: 'bg-[#f0e8dc] text-amber-950 border-stone-300',
+          tableBorder: 'border-stone-300',
+          tableCellBorder: 'border-stone-200',
+          tableRowEven: 'bg-[#fbf9f4]',
+          tableRowOdd: 'bg-[#f4ede3]/50',
+          sigLine: 'border-stone-300 text-stone-600',
+          cardBg: 'bg-[#f5efe6] border-stone-200'
+        };
+      case 'white':
+      default:
+        return {
+          heading: 'text-slate-900 border-slate-200',
+          keyLabel: 'text-slate-700 font-bold',
+          keyValue: 'text-slate-900 font-medium',
+          keyBorder: 'border-slate-200',
+          bulletDot: 'bg-blue-600 text-blue-600',
+          body: 'text-slate-800',
+          headerBox: 'bg-blue-50/80 border-blue-100 text-blue-900',
+          pageHeaderFooter: 'border-slate-200 text-slate-400',
+          pageBg: '#ffffff',
+          pageText: '#0f172a',
+          searchMark: 'bg-amber-300 text-amber-950 font-bold',
+          tableHeaderBg: 'bg-slate-100 text-slate-900 border-slate-300',
+          tableBorder: 'border-slate-300',
+          tableCellBorder: 'border-slate-200',
+          tableRowEven: 'bg-white',
+          tableRowOdd: 'bg-slate-50/70',
+          sigLine: 'border-slate-300 text-slate-500',
+          cardBg: 'bg-slate-50 border-slate-200'
+        };
     }
+  }, [themeMode]);
 
-    if (isKeyValue) {
-      const match = trimmed.match(/^([A-Za-z\s]{2,30}):\s*(.+)$/);
-      if (match && !searchTerm.trim()) {
+  // Helper to render text with search highlighting
+  const renderTextWithHighlight = (text: string) => {
+    if (!searchTerm.trim()) return text;
+    const parts = text.split(new RegExp(`(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
+    return parts.map((part, idx) => {
+      if (part.toLowerCase() === searchTerm.toLowerCase()) {
         return (
-          <div key={idx} className="flex flex-col sm:flex-row sm:items-baseline gap-1 py-1.5 border-b border-slate-100/80">
-            <span className="font-bold text-slate-700 sm:w-1/3 shrink-0 text-xs">{match[1]}:</span>
-            <span className="text-slate-800 font-medium flex-1 text-xs">{match[2]}</span>
-          </div>
+          <mark key={idx} className={`${textStyles.searchMark} px-1 rounded-xs`}>
+            {part}
+          </mark>
         );
       }
-    }
+      return part;
+    });
+  };
 
-    if (isBullet) {
-      return (
-        <div key={idx} className="flex items-start gap-2.5 py-1 pl-2">
-          <span className="w-1.5 h-1.5 rounded-full bg-blue-600 shrink-0 mt-2" />
-          <p className="text-slate-800 leading-relaxed font-normal flex-1">
-            {content}
+  // Render individual semantic blocks with authentic document styling
+  const renderBlock = (block: DocBlock, idx: number) => {
+    switch (block.type) {
+      case 'heading':
+        return (
+          <h4 
+            key={idx} 
+            className={`text-sm sm:text-base font-black pt-4 pb-2 border-b uppercase tracking-tight mt-4 first:mt-0 ${textStyles.heading}`}
+          >
+            {renderTextWithHighlight(block.text)}
+          </h4>
+        );
+
+      case 'table':
+        return (
+          <div key={idx} className={`my-3.5 overflow-x-auto rounded-lg border shadow-xs ${textStyles.tableBorder}`}>
+            <table className="w-full text-xs text-left border-collapse table-auto">
+              {block.headers && block.headers.length > 0 && (
+                <thead className={textStyles.tableHeaderBg}>
+                  <tr>
+                    {block.headers.map((h, cIdx) => (
+                      <th 
+                        key={cIdx} 
+                        className={`px-3 py-2 font-bold uppercase tracking-wider text-[11px] border-r last:border-r-0 ${textStyles.tableCellBorder}`}
+                      >
+                        {renderTextWithHighlight(h)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+              )}
+              <tbody className={`divide-y ${textStyles.tableCellBorder}`}>
+                {block.rows.map((row, rIdx) => (
+                  <tr key={rIdx} className={rIdx % 2 === 1 ? textStyles.tableRowOdd : textStyles.tableRowEven}>
+                    {row.map((cell, cIdx) => (
+                      <td 
+                        key={cIdx} 
+                        className={`px-3 py-2 align-top text-xs border-r last:border-r-0 ${textStyles.tableCellBorder}`}
+                      >
+                        {renderTextWithHighlight(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+
+      case 'signature':
+        return (
+          <div key={idx} className={`my-4 p-3.5 rounded-xl border grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 ${textStyles.cardBg}`}>
+            {block.items.map((item, sIdx) => (
+              <div key={sIdx} className="flex flex-col justify-end space-y-1.5">
+                <span className={`text-[11px] font-bold uppercase tracking-wider ${textStyles.keyLabel}`}>
+                  {item.label}
+                </span>
+                <div className={`border-b-2 pt-4 flex justify-between items-end text-xs font-medium ${textStyles.sigLine}`}>
+                  <span>{item.line || '_______________________'}</span>
+                  <PenTool className="w-3.5 h-3.5 opacity-40 shrink-0 mb-0.5" />
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+
+      case 'keyValueGrid':
+        return (
+          <div key={idx} className={`my-2 grid grid-cols-1 sm:grid-cols-2 gap-2 p-2.5 rounded-lg border ${textStyles.cardBg}`}>
+            {block.items.map((kv, kIdx) => (
+              <div key={kIdx} className="flex items-baseline gap-2 text-xs">
+                <span className={`shrink-0 font-bold ${textStyles.keyLabel}`}>{kv.label}:</span>
+                <span className={`flex-1 font-medium ${textStyles.keyValue}`}>{renderTextWithHighlight(kv.value)}</span>
+              </div>
+            ))}
+          </div>
+        );
+
+      case 'bullet':
+        return (
+          <div key={idx} className="flex items-start gap-2.5 py-1 pl-2">
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 mt-2 ${textStyles.bulletDot}`} />
+            <p className={`leading-relaxed font-normal flex-1 text-left ${textStyles.body}`}>
+              {renderTextWithHighlight(block.text)}
+            </p>
+          </div>
+        );
+
+      case 'paragraph':
+        return (
+          <p key={idx} className={`leading-relaxed font-normal my-2 text-left whitespace-pre-wrap ${textStyles.body}`}>
+            {renderTextWithHighlight(block.text)}
           </p>
-        </div>
-      );
-    }
+        );
 
-    return (
-      <p key={idx} className="text-slate-800 leading-relaxed font-normal my-2.5 text-justify">
-        {content}
-      </p>
-    );
+      default:
+        return null;
+    }
   };
 
   // Font family styles
@@ -445,27 +842,6 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
     }
   };
 
-  // Theme page styles
-  const getThemeClasses = () => {
-    switch (themeMode) {
-      case 'warm':
-        return {
-          container: 'bg-amber-950/20',
-          page: 'bg-[#faf8f5] text-amber-950 border-amber-200/80 shadow-md shadow-amber-950/5'
-        };
-      case 'dark':
-        return {
-          container: 'bg-slate-950',
-          page: 'bg-slate-900 text-slate-100 border-slate-800 shadow-xl'
-        };
-      default:
-        return {
-          container: 'bg-slate-800/80',
-          page: 'bg-white text-slate-900 border-slate-200 shadow-xl'
-        };
-    }
-  };
-
   const themeClasses = getThemeClasses();
 
   return (
@@ -478,16 +854,16 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-white truncate max-w-[280px] sm:max-w-md" title={title}>
-                {title}
+              <span className="text-xs font-bold text-white truncate max-w-[280px] sm:max-w-md" title={displayTitle}>
+                {displayTitle}
               </span>
               <span className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded-md bg-blue-500/20 text-blue-400 border border-blue-500/30 shrink-0">
-                Word 97-2004 (.DOC)
+                Word (.DOC)
               </span>
             </div>
             {docData && (
               <p className="text-[11px] text-slate-400 font-medium">
-                {docData.wordCount.toLocaleString()} words &bull; {docData.charCount.toLocaleString()} chars &bull; ~{virtualPages.length} {virtualPages.length === 1 ? 'page' : 'pages'}
+                {docData.wordCount.toLocaleString()} words &bull; {docData.charCount.toLocaleString()} chars &bull; {virtualPages.length} {virtualPages.length === 1 ? 'page' : 'pages'}
                 {docData.fallback && (
                   <span className="ml-2 text-amber-400 inline-flex items-center gap-1 font-semibold">
                     <Sparkles className="w-3 h-3" /> Direct Binary Stream
@@ -577,6 +953,32 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
 
         {/* View Layout & Formatting Options */}
         <div className="flex items-center gap-3">
+          {/* View Mode Toggle: Paged vs Flow */}
+          <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('paged')}
+              className={`flex items-center gap-1 px-2 py-1 text-[11px] font-bold rounded transition-colors ${
+                viewMode === 'paged' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+              }`}
+              title="Paged Document Layout (A4 format with page headers & footers)"
+            >
+              <Layers className="w-3 h-3" />
+              <span>Pages</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('flow')}
+              className={`flex items-center gap-1 px-2 py-1 text-[11px] font-bold rounded transition-colors ${
+                viewMode === 'flow' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+              }`}
+              title="Continuous Document Flow (Seamless reading for tables & forms)"
+            >
+              <Rows className="w-3 h-3" />
+              <span>Flow</span>
+            </button>
+          </div>
+
           {/* Zoom Controls */}
           <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5">
             <button
@@ -633,26 +1035,47 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
             </button>
           </div>
 
-          {/* Page Theme */}
-          <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-lg p-0.5">
+          {/* Page Theme Options: Classic White (Default), Warm, Night */}
+          <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-lg p-0.5" title="Page Background Appearance">
             <button
               type="button"
               onClick={() => setThemeMode('white')}
-              className={`w-5 h-5 rounded bg-white border ${themeMode === 'white' ? 'border-blue-500 ring-2 ring-blue-500/30' : 'border-slate-300'} transition-all`}
-              title="Classic White Page"
-            />
+              className={`px-2 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-all cursor-pointer ${
+                themeMode === 'white'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Classic Solid White Page (Recommended for maximum readability)"
+            >
+              <span className="w-2.5 h-2.5 rounded-full bg-white border border-slate-300 shrink-0" />
+              <span>White</span>
+            </button>
             <button
               type="button"
               onClick={() => setThemeMode('warm')}
-              className={`w-5 h-5 rounded bg-[#f4ece1] border ${themeMode === 'warm' ? 'border-amber-500 ring-2 ring-amber-500/30' : 'border-amber-300'} transition-all`}
-              title="Warm Paper Page"
-            />
+              className={`px-2 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-all cursor-pointer ${
+                themeMode === 'warm'
+                  ? 'bg-[#fbf9f4] text-stone-900 shadow-xs'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Warm Paper Background"
+            >
+              <span className="w-2.5 h-2.5 rounded-full bg-[#f4ece1] border border-amber-300 shrink-0" />
+              <span>Warm</span>
+            </button>
             <button
               type="button"
               onClick={() => setThemeMode('dark')}
-              className={`w-5 h-5 rounded bg-slate-800 border ${themeMode === 'dark' ? 'border-blue-400 ring-2 ring-blue-400/30' : 'border-slate-700'} transition-all`}
-              title="Night Mode"
-            />
+              className={`px-2 py-1 text-[11px] font-bold rounded flex items-center gap-1.5 transition-all cursor-pointer ${
+                themeMode === 'dark'
+                  ? 'bg-slate-850 text-white shadow-xs border border-slate-700'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="Night Mode Background"
+            >
+              <span className="w-2.5 h-2.5 rounded-full bg-slate-700 border border-slate-500 shrink-0" />
+              <span>Dark</span>
+            </button>
           </div>
         </div>
       </div>
@@ -691,35 +1114,89 @@ export const DocLegacyViewer: React.FC<DocLegacyViewerProps> = ({
             className="flex flex-col items-center gap-8 w-full transition-transform duration-150 origin-top"
             style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center' }}
           >
-            {virtualPages.map((pageParagraphs, pageIndex) => (
+            {/* Paged Mode: Authentic A4 Sheets with headers, footers & proper height */}
+            {viewMode === 'paged' ? (
+              virtualPages.map((pageBlocks, pageIndex) => (
+                <div 
+                  key={pageIndex}
+                  style={{
+                    backgroundColor: textStyles.pageBg,
+                    color: textStyles.pageText
+                  }}
+                  className={`w-full max-w-[820px] min-h-[1050px] p-8 sm:p-14 rounded-2xl border transition-all ${themeClasses.page} ${getFontFamilyClass()} ${getFontSizeClass()} ${getLineSpacingClass()} relative flex flex-col justify-between`}
+                >
+                  {/* Document Page Header */}
+                  <div className={`border-b pb-3 mb-6 flex justify-between items-center text-[10px] uppercase tracking-wider select-none font-semibold ${textStyles.pageHeaderFooter}`}>
+                    <span className="truncate max-w-xs">{displayTitle}</span>
+                    <span>Page {pageIndex + 1} of {virtualPages.length}</span>
+                  </div>
+
+                  {/* Page Body Content */}
+                  <div className="flex-1">
+                    {pageIndex === 0 && docData.headers && (
+                      <div className={`p-3.5 mb-5 rounded-xl border text-xs font-semibold ${textStyles.headerBox}`}>
+                        {docData.headers}
+                      </div>
+                    )}
+
+                    {pageBlocks.map((block, bIdx) => renderBlock(block, bIdx))}
+                  </div>
+
+                  {/* Page Footer */}
+                  <div className={`border-t pt-4 mt-8 flex justify-between items-center text-[10px] select-none font-medium ${textStyles.pageHeaderFooter}`}>
+                    <span className="truncate max-w-xs">
+                      {docData.footers ? docData.footers.trim().split('\n')[0] : 'Microsoft Word Document Preview'}
+                    </span>
+                    <span>— {pageIndex + 1} of {virtualPages.length} —</span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              /* Flow Mode: Seamless, uninterrupted continuous layout for reading large tables & reports */
               <div 
-                key={pageIndex}
-                className={`w-full max-w-[820px] min-h-[1050px] p-8 sm:p-14 rounded-2xl border transition-all ${themeClasses.page} ${getFontFamilyClass()} ${getFontSizeClass()} ${getLineSpacingClass()} relative flex flex-col justify-between`}
+                style={{
+                  backgroundColor: textStyles.pageBg,
+                  color: textStyles.pageText
+                }}
+                className={`w-full max-w-[860px] p-8 sm:p-14 rounded-2xl border transition-all ${themeClasses.page} ${getFontFamilyClass()} ${getFontSizeClass()} ${getLineSpacingClass()} relative flex flex-col`}
               >
-                {/* Document Page Header (First page title or running header) */}
-                <div className="border-b border-slate-200/80 pb-3 mb-6 flex justify-between items-center text-[10px] text-slate-400 uppercase tracking-wider select-none font-semibold">
-                  <span className="truncate max-w-xs">{title}</span>
-                  <span>Page {pageIndex + 1} of {virtualPages.length}</span>
+                {/* Continuous Flow Header */}
+                <div className={`border-b pb-3 mb-6 flex justify-between items-center text-[10px] uppercase tracking-wider select-none font-semibold ${textStyles.pageHeaderFooter}`}>
+                  <span className="truncate max-w-sm">{displayTitle}</span>
+                  <span>Continuous Flow &bull; {parsedBlocks.length} sections</span>
                 </div>
 
-                {/* Page Body Content */}
-                <div className="flex-1">
-                  {pageIndex === 0 && docData.headers && (
-                    <div className="p-3 mb-4 bg-blue-50/50 rounded-xl border border-blue-100 text-xs text-blue-900 font-semibold italic">
-                      {docData.headers}
-                    </div>
-                  )}
+                {docData.headers && (
+                  <div className={`p-3.5 mb-5 rounded-xl border text-xs font-semibold ${textStyles.headerBox}`}>
+                    {docData.headers}
+                  </div>
+                )}
 
-                  {pageParagraphs.map((para, pIdx) => renderParagraph(para, pIdx))}
+                {/* Render all blocks seamlessly */}
+                <div className="space-y-1">
+                  {parsedBlocks.map((block, bIdx) => {
+                    if (block.type === 'pageBreak') {
+                      return (
+                        <div key={bIdx} className="my-6 flex items-center gap-3">
+                          <div className={`flex-1 border-t border-dashed ${textStyles.keyBorder}`} />
+                          <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 font-bold">
+                            Section Break
+                          </span>
+                          <div className={`flex-1 border-t border-dashed ${textStyles.keyBorder}`} />
+                        </div>
+                      );
+                    }
+                    return renderBlock(block, bIdx);
+                  })}
                 </div>
 
-                {/* Page Footer */}
-                <div className="border-t border-slate-200/80 pt-4 mt-8 flex justify-between items-center text-[10px] text-slate-400 select-none font-medium">
-                  <span>Microsoft Word 97-2004 Document Preview</span>
-                  <span>— {pageIndex + 1} —</span>
+                {/* Flow Footer */}
+                <div className={`border-t pt-4 mt-8 flex justify-between items-center text-[10px] select-none font-medium ${textStyles.pageHeaderFooter}`}>
+                  <span>{docData.footers ? docData.footers.trim().split('\n')[0] : 'End of Document'}</span>
+                  <span>{docData.wordCount.toLocaleString()} words</span>
                 </div>
               </div>
-            ))}
+            )}
           </div>
         )}
       </div>

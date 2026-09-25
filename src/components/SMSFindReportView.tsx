@@ -150,10 +150,12 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
 
   // Toast notifications
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToast({ message, type });
-    setTimeout(() => setToast(null), 3500);
+    toastTimeoutRef.current = setTimeout(() => setToast(null), 20000);
   };
 
   const isVesselUser = currentUser?.role === 'vessel';
@@ -2088,10 +2090,18 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
       {/* TOAST NOTIFICATION */}
       {toast && (
         <div className="fixed bottom-6 right-6 z-[300] bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl border border-slate-800 flex items-center gap-3 text-xs font-bold animate-in slide-in-from-bottom-3 duration-200">
-          {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
-          {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-400" />}
-          {toast.type === 'info' && <Info className="w-4 h-4 text-blue-400" />}
-          <span>{toast.message}</span>
+          {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+          {toast.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+          {toast.type === 'info' && <Info className="w-4 h-4 text-blue-400 shrink-0" />}
+          <span className="flex-1">{toast.message}</span>
+          <button 
+            type="button" 
+            onClick={() => setToast(null)}
+            className="p-1 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors ml-1"
+            title="Dismiss notification"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
     </div>

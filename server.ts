@@ -2479,21 +2479,7 @@ async function startServer() {
         errorCode: (pool as any)?._dbErrorCode || null,
         tcpStatus: tcpCheck,
         webStatus: 'SKIPPED',
-        outboundIp: outboundIp,
-        diagnostics: {
-          resolvedDbHost,
-          dbUserUsed,
-          dbNameUsed,
-          dbPassSource,
-          dbPassLength,
-          dbPortUsed: port
-        },
-        config: {
-          host,
-          user: dbUserUsed,
-          database: dbNameUsed,
-          port
-        }
+        outboundIp: outboundIp
       });
     } catch (err: any) {
       console.error('CRITICAL ERROR in /api/db-status:', err);
@@ -5523,6 +5509,10 @@ async function startServer() {
     }
 
     if (teamIds.length === 0) {
+      // General office users without explicit team assignment have access to all vessels (no filter)
+      if (userObj.role === 'user') {
+        return { hasFilter: false, teamVessels: [], teamIds: [] };
+      }
       return { hasFilter: true, teamVessels: [], teamIds: [] };
     }
 
@@ -7069,9 +7059,10 @@ async function startServer() {
       }
       const order = orderRows[0];
 
-      let query = 'SELECT id, vessel_name, form_code, file_name, file_data FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL';
-      let params = [orderId];
-      if (vesselId) {
+      // Include vessel_id and order_id so matching and directory organization work reliably
+      let query = 'SELECT id, order_id, vessel_id, vessel_name, form_code, file_name, file_data FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL';
+      let params: any[] = [orderId];
+      if (vesselId && String(vesselId).trim() !== '' && String(vesselId).toLowerCase() !== 'all') {
         query += ' AND vessel_id = ?';
         params.push(String(vesselId));
       }
@@ -7084,36 +7075,83 @@ async function startServer() {
         );
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const picInfo = await getPicUserTeamVessels(pool, req.user);
-        if (picInfo.hasFilter) {
-          uploads = uploads.filter((u: any) =>
+        if (picInfo.hasFilter && picInfo.teamVessels.length > 0) {
+          const filtered = uploads.filter((u: any) =>
             isVesselUnderPicTeam(u.vessel_id, u.vessel_name, picInfo.teamVessels)
           );
+          if (filtered.length > 0) {
+            uploads = filtered;
+          } else if (uploads.length > 0 && req.user.role === 'user') {
+            // General office user: fallback to all order uploads if no team-specific match
+            console.log(`[download-zip] Office user ${req.user.username} (role: user) falling back to all order uploads (${uploads.length} files)`);
+          } else {
+            uploads = filtered;
+          }
         }
       }
-      if (uploads.length === 0) {
-        return res.status(404).json({ error: 'No files have been uploaded yet for your vessels in this order.' });
+
+      if (!uploads || uploads.length === 0) {
+        return res.status(404).json({ error: 'No files have been uploaded yet for this order.' });
       }
 
       const zip = new JSZip();
-      for (const up of uploads) {
-        try {
-          const fileBuf = await handleFileRetrieve(up.file_data);
-          const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
-          const vFolder = sanitize(up.vessel_name || 'Vessel');
-          zip.folder(vFolder)?.file(up.file_name, fileBuf);
-        } catch (err: any) {
-          console.error(`Failed to pack file ${up.file_name} into ZIP:`, err.message);
-        }
+      let packedCount = 0;
+      const usedPaths = new Set<string>();
+
+      // Batch parallel downloads to avoid timeouts when retrieving from Backblaze B2 / storage
+      const BATCH_SIZE = 8;
+      for (let i = 0; i < uploads.length; i += BATCH_SIZE) {
+        const batch = uploads.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          batch.map(async (up: any) => {
+            try {
+              if (!up.file_data) return;
+              const fileBuf = await handleFileRetrieve(up.file_data);
+              if (!fileBuf || fileBuf.length === 0) return;
+
+              const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9 _-]/g, '_').trim();
+              const vFolder = sanitize(up.vessel_name || `Vessel_${up.vessel_id || 'Unknown'}`);
+              const rawFileName = up.file_name || `upload_${up.id}`;
+
+              // Ensure duplicate filenames inside the same vessel folder don't collide
+              let filePath = `${vFolder}/${rawFileName}`;
+              let dupCounter = 1;
+              while (usedPaths.has(filePath.toLowerCase())) {
+                const dotIdx = rawFileName.lastIndexOf('.');
+                const base = dotIdx !== -1 ? rawFileName.substring(0, dotIdx) : rawFileName;
+                const ext = dotIdx !== -1 ? rawFileName.substring(dotIdx) : '';
+                filePath = `${vFolder}/${base}_(${dupCounter})${ext}`;
+                dupCounter++;
+              }
+              usedPaths.add(filePath.toLowerCase());
+
+              zip.file(filePath, fileBuf);
+              packedCount++;
+            } catch (err: any) {
+              console.error(`Failed to pack file ${up.file_name} into ZIP:`, err.message);
+            }
+          })
+        );
       }
 
-      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
-      const safeLabel = String(order.label || 'SMS_Order').replace(/[^a-zA-Z0-9_-]/g, '_');
+      if (packedCount === 0) {
+        return res.status(404).json({ error: 'No files could be packaged. The uploaded files may be missing or inaccessible.' });
+      }
+
+      const zipBuffer = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 6 }
+      });
+
+      const safeLabel = String(order.label || 'SMS_Order').replace(/[^a-zA-Z0-9 _-]/g, '_').trim();
       res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', `attachment; filename="${safeLabel}_Uploads.zip"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeLabel)}_Uploads.zip"`);
+      res.setHeader('Content-Length', zipBuffer.length);
       res.send(zipBuffer);
     } catch (e: any) {
       console.error('Error generating ZIP for SMS order:', e);
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: e.message || 'Failed to generate ZIP archive' });
     }
   });
 
@@ -7521,23 +7559,57 @@ async function startServer() {
       }
 
       const zip = new JSZip();
-      const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const sanitize = (s: string) => String(s || '').replace(/[^a-zA-Z0-9 _-]/g, '_').trim();
+      let packedCount = 0;
+      const usedPaths = new Set<string>();
 
-      for (const up of uploads) {
-        try {
-          const fileBuf = await handleFileRetrieve(up.file_data);
-          const orderFolder = sanitize(up.order_label || 'SMS_Order');
-          const vesselFolder = sanitize(up.vessel_name || 'Vessel');
-          zip.folder(`${orderFolder}/${vesselFolder}`)?.file(up.file_name, fileBuf);
-        } catch (err: any) {
-          console.error(`Failed to pack file ${up.file_name}:`, err.message);
-        }
+      const BATCH_SIZE = 8;
+      for (let i = 0; i < uploads.length; i += BATCH_SIZE) {
+        const batch = uploads.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          batch.map(async (up: any) => {
+            try {
+              if (!up.file_data) return;
+              const fileBuf = await handleFileRetrieve(up.file_data);
+              if (!fileBuf || fileBuf.length === 0) return;
+
+              const orderFolder = sanitize(up.order_label || 'SMS_Order');
+              const vesselFolder = sanitize(up.vessel_name || 'Vessel');
+              const rawFileName = up.file_name || `file_${up.id}`;
+
+              let filePath = `${orderFolder}/${vesselFolder}/${rawFileName}`;
+              let dupCounter = 1;
+              while (usedPaths.has(filePath.toLowerCase())) {
+                const dotIdx = rawFileName.lastIndexOf('.');
+                const base = dotIdx !== -1 ? rawFileName.substring(0, dotIdx) : rawFileName;
+                const ext = dotIdx !== -1 ? rawFileName.substring(dotIdx) : '';
+                filePath = `${orderFolder}/${vesselFolder}/${base}_(${dupCounter})${ext}`;
+                dupCounter++;
+              }
+              usedPaths.add(filePath.toLowerCase());
+
+              zip.file(filePath, fileBuf);
+              packedCount++;
+            } catch (err: any) {
+              console.error(`Failed to pack file ${up.file_name}:`, err.message);
+            }
+          })
+        );
       }
 
-      const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+      if (packedCount === 0) {
+        return res.status(404).json({ error: 'No files could be packaged. The uploaded files may be missing or inaccessible.' });
+      }
+
+      const zipBuffer = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 6 }
+      });
       const timestamp = new Date().toISOString().slice(0, 10);
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', `attachment; filename="SMS_Order_Reports_Batch_${timestamp}.zip"`);
+      res.setHeader('Content-Length', zipBuffer.length);
       res.send(zipBuffer);
     } catch (e: any) {
       console.error('Error generating batch ZIP for SMS reports:', e);
@@ -8252,12 +8324,12 @@ async function startServer() {
 
       // Distinct active users
       const [usersResult]: any = await pool.query(`
-        SELECT username, user_role, COUNT(*) as count 
+        SELECT username, MAX(user_role) as user_role, COUNT(*) as count 
         FROM audit_logs 
         WHERE username IS NOT NULL 
           AND username != '' 
           AND username != 'SYSTEM'
-        GROUP BY username, user_role 
+        GROUP BY username 
         ORDER BY count DESC 
         LIMIT 30
       `);
@@ -12337,15 +12409,30 @@ Generated by COMOS System
 
       try {
         const extracted = await wordExtractorInstance.extract(fileBuffer);
-        const body = extracted.getBody() || '';
-        const headers = extracted.getHeaders() || '';
-        const footers = extracted.getFooters() || '';
-        const annotations = extracted.getAnnotations() || '';
+        let body = extracted.getBody({ filterUnicode: true }) || '';
+        const headers = extracted.getHeaders({ includeFooters: false, filterUnicode: true }) || '';
+        const footers = extracted.getFooters({ filterUnicode: true }) || '';
+        const annotations = extracted.getAnnotations({ filterUnicode: true }) || '';
+        const textboxes = extracted.getTextboxes({ filterUnicode: true }) || '';
 
-        // Extract clean paragraphs
+        // If body has textboxes not already present, append cleanly
+        if (textboxes && textboxes.trim() && !body.includes(textboxes.trim().substring(0, 40))) {
+          body = body + '\n\n' + textboxes.trim();
+        }
+
+        // Preserve form feeds / page breaks
+        body = body.replace(/[\x0c\f]/g, '\n[PAGE_BREAK]\n');
+
+        // Extract clean paragraphs while preserving tabs \t for tables and structure
         const rawParagraphs = body
           .split(/\r?\n/)
-          .map((line: string) => line.trim())
+          .map((line: string) => {
+            // Trim outer whitespace but preserve internal tabs and structures
+            return line.replace(/^[\r\n\s]+|[\r\n\s]+$/g, (match) => {
+              // If it contains tabs, don't strip tabs entirely if they form columns
+              return '';
+            }).trim();
+          })
           .filter((line: string) => line.length > 0);
 
         return res.json({
@@ -12354,6 +12441,7 @@ Generated by COMOS System
           headers,
           footers,
           annotations,
+          textboxes,
           paragraphs: rawParagraphs,
           wordCount: body.trim() ? body.trim().split(/\s+/).length : 0,
           charCount: body.length
@@ -12362,28 +12450,49 @@ Generated by COMOS System
         console.warn('WordExtractor primary parsing error, attempting binary fallback:', extractorErr.message);
 
         // Binary fallback text extractor for Word 97-2004 CFBF / raw binary streams
-        const strAscii = fileBuffer.toString('latin1');
-        // Filter readable text runs
-        const matches = strAscii.match(/[\x20-\x7E\t\r\n]{4,}/g) || [];
-        const filteredText = matches
+        // First check UTF-16LE text runs (primary Word encoding)
+        const utf16Chunks: string[] = [];
+        for (let i = 0; i < fileBuffer.length - 1; i += 2) {
+          const code = fileBuffer[i] | (fileBuffer[i + 1] << 8);
+          if ((code >= 32 && code <= 126) || code === 10 || code === 13 || code === 9 || (code >= 160 && code <= 0x02AF)) {
+            utf16Chunks.push(String.fromCharCode(code));
+          } else {
+            utf16Chunks.push('\x00');
+          }
+        }
+        const utf16Str = utf16Chunks.join('');
+        const utf16Matches = (utf16Str.match(/[\x20-\x7E\t\r\n]{4,}/g) || [])
           .map(m => m.trim())
-          .filter(m => m.length > 3 && !m.startsWith('Root Entry') && !m.startsWith('WordDocument') && !m.startsWith('CompObj'))
-          .join('\n\n');
+          .filter(m => m.length > 3 && !/^(Root Entry|WordDocument|1Table|0Table|Data|SummaryInformation|CompObj|Normal\.dot|Times New Roman|Arial|Calibri)/i.test(m));
 
-        const paragraphs = filteredText
+        let candidateText = '';
+        if (utf16Matches.join(' ').length > 200) {
+          candidateText = utf16Matches.join('\n\n');
+        } else {
+          // Fall back to Latin-1
+          const strAscii = fileBuffer.toString('latin1');
+          const matches = strAscii.match(/[\x20-\x7E\t\r\n]{4,}/g) || [];
+          candidateText = matches
+            .map(m => m.trim())
+            .filter(m => m.length > 3 && !/^(Root Entry|WordDocument|1Table|0Table|Data|SummaryInformation|CompObj|Normal\.dot|Times New Roman|Arial|Calibri|Segoe UI|Symbol|Wingdings)/i.test(m))
+            .join('\n\n');
+        }
+
+        const paragraphs = candidateText
           .split(/\r?\n+/)
           .map(p => p.trim())
           .filter(p => p.length > 0);
 
         return res.json({
           success: true,
-          body: filteredText,
+          body: candidateText,
           headers: '',
           footers: '',
           annotations: '',
+          textboxes: '',
           paragraphs,
-          wordCount: filteredText.trim() ? filteredText.trim().split(/\s+/).length : 0,
-          charCount: filteredText.length,
+          wordCount: candidateText.trim() ? candidateText.trim().split(/\s+/).length : 0,
+          charCount: candidateText.length,
           fallback: true
         });
       }

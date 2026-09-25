@@ -45,7 +45,7 @@ export const Login = ({ onLogin, dbStatus, onRefreshDb }: { onLogin: (token: str
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (dbStatus && !dbStatus.connected) {
-      setError("Database is not connected. Please allow remote access in Hostinger or check configuration.");
+      setError("Database is not connected. Please check your connection or contact administrator.");
       return;
     }
     try {
@@ -84,7 +84,7 @@ export const Login = ({ onLogin, dbStatus, onRefreshDb }: { onLogin: (token: str
               <AlertTriangle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
               <div>
                 <h3 className="text-sm font-bold text-red-800">Database Connection Required</h3>
-                <p className="text-xs text-red-600 mt-1">{dbStatus.error || "Could not reach MySQL server (ETIMEDOUT)."}</p>
+                <p className="text-xs text-red-600 mt-1">{dbStatus.error || "Could not reach database server (ETIMEDOUT)."}</p>
               </div>
             </div>
             <button
@@ -99,55 +99,29 @@ export const Login = ({ onLogin, dbStatus, onRefreshDb }: { onLogin: (token: str
             </button>
           </div>
           
-          <div className="bg-white/70 p-3 rounded-xl border border-red-100">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-red-500 mb-2">Target Configuration</p>
-            <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-red-800">
-              <div>Host: <span className="font-bold">{dbStatus.config?.host || "localhost"}</span></div>
-              <div>Port: <span className="font-bold">{dbStatus.config?.port || 3306}</span></div>
-              <div>User: <span className="font-bold">{dbStatus.config?.user || "root"}</span></div>
-              <div>DB: <span className="font-bold">{dbStatus.config?.database || "vessel_cert"}</span></div>
-              <div className="col-span-2 mt-1 pt-2 border-t border-red-200/50 flex flex-col gap-1.5">
-                <div className="flex items-center justify-between">
-                  <span>Port 3306 (MySQL):</span>
-                  <span className={cn("font-bold px-1.5 py-0.5 rounded text-[9px]", dbStatus.tcpStatus === "OPEN" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700")}>
-                    {dbStatus.tcpStatus || "Checking..."}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between pt-1 border-t border-red-200/40">
-                  <span>App Outbound IP:</span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono font-bold text-red-900 bg-red-100/80 px-1.5 py-0.5 rounded">
-                      {dbStatus.outboundIp || "34.96.48.60"}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => handleCopyIp(dbStatus.outboundIp || "34.96.48.60")}
-                      className="px-1.5 py-0.5 bg-red-200/70 hover:bg-red-300/70 text-red-800 rounded text-[9px] font-bold transition-colors cursor-pointer"
-                      title="Copy Outbound IP"
-                    >
-                      {copiedIp ? "OK Copied" : "Copy"}
-                    </button>
-                  </div>
-                </div>
+          <div className="bg-white/70 p-3 rounded-xl border border-red-100 flex flex-col gap-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-red-700 font-medium">App Outbound IP:</span>
+              <div className="flex items-center gap-1.5">
+                <span className="font-mono font-bold text-red-900 bg-red-100/80 px-2 py-0.5 rounded text-xs">
+                  {dbStatus.outboundIp || "Detecting..."}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleCopyIp(dbStatus.outboundIp || "")}
+                  className="px-2 py-0.5 bg-red-200/70 hover:bg-red-300/70 text-red-800 rounded text-[10px] font-bold transition-colors cursor-pointer"
+                  title="Copy Outbound IP"
+                >
+                  {copiedIp ? "Copied" : "Copy"}
+                </button>
               </div>
             </div>
             {dbStatus.errorCode && (
-              <div className="mt-2 pt-2 border-t border-red-200/50 text-[10px] text-red-800">
-                Error Code: <span className="font-bold">{dbStatus.errorCode}</span>
+              <div className="flex items-center justify-between pt-2 border-t border-red-200/40 text-xs">
+                <span className="text-red-700 font-medium">Error Code:</span>
+                <span className="font-mono font-bold text-red-900">{dbStatus.errorCode}</span>
               </div>
             )}
-          </div>
-
-          <div className="text-[11px] text-red-700 space-y-1.5 bg-red-100/40 p-2.5 rounded-xl border border-red-200/50">
-            <p className="font-bold uppercase tracking-wider text-[10px] text-red-800">
-              How to fix in Hostinger (Remote MySQL):
-            </p>
-            <ol className="list-decimal pl-4 space-y-1 text-[10px] leading-relaxed">
-              <li>Log in to <strong>Hostinger hPanel</strong> &rarr; <strong>Databases</strong> &rarr; <strong>Remote MySQL</strong>.</li>
-              <li>In <em>IP (IPv4 or IPv6)</em>, enter <strong className="font-mono bg-red-200/60 px-1 rounded">%</strong> (or <span className="font-mono bg-red-200/60 px-1 rounded">{dbStatus.outboundIp || "34.96.48.60"}</span>).</li>
-              <li>Select database: <strong className="font-mono">{dbStatus.config?.database || "u525815427_COMOS"}</strong> and click <strong>Create</strong>.</li>
-              <li>Click <strong>Retry</strong> above once created &mdash; COMOS will connect instantly!</li>
-            </ol>
           </div>
         </motion.div>
       )}

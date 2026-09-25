@@ -61,6 +61,19 @@ import { useRealtimeAutoRefresh, useRealtimeStatus, realtimeSync } from "../serv
 export const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
   const [view, setRawView] = useState<ViewType>('dashboard');
   const [viewHistory, setViewHistory] = useState<ViewType[]>([]);
+  const prevViewRef = useRef<ViewType>(view);
+
+  // Safely record view navigation history without nested state updates
+  useEffect(() => {
+    if (prevViewRef.current !== view) {
+      const oldView = prevViewRef.current;
+      prevViewRef.current = view;
+      setViewHistory(prev => {
+        if (prev.length > 0 && prev[prev.length - 1] === oldView) return prev;
+        return [...prev, oldView].slice(-30);
+      });
+    }
+  }, [view]);
 
   const setView = useCallback((newView: ViewType | ((prev: ViewType) => ViewType)) => {
     setRawView(currentView => {
@@ -69,10 +82,6 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
         targetView = 'sms_overview';
       }
       if (targetView !== currentView) {
-        setViewHistory(prev => {
-          if (prev.length > 0 && prev[prev.length - 1] === currentView) return prev;
-          return [...prev, currentView].slice(-30);
-        });
         try {
           if (window.location.hash !== '#' + targetView) {
             window.history.pushState({ view: targetView }, '', '#' + targetView);
@@ -159,6 +168,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [arrivalReports, setArrivalReports] = useState<ArrivalReport[]>([]);
   const [noonReports, setNoonReports] = useState<NoonReport[]>([]);
   const [otherReports, setOtherReports] = useState<OtherReport[]>([]);
+  const [timelineTab, setTimelineTab] = useState<'all' | 'noon' | 'arrival' | 'departure'>('all');
   const [teams, setTeams] = useState<Team[]>([]);
   const [crewMembers, setCrewMembers] = useState<any[]>([]);
   const [auditRecords, setAuditRecords] = useState<any[]>([]);
@@ -500,12 +510,10 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     return '';
   }, [noonReports, arrivalReports, departureReports]);
 
-  const isVesselModified = useCallback((v: Vessel, formState?: Record<number, Partial<Vessel>>) => {
-    const form = formState ? formState[v.id] : routingForm[v.id];
+  const checkIsVesselModified = useCallback((v: Vessel, form: Partial<Vessel> | undefined, origPort: string) => {
     if (!form) return false;
     const origShackles = v.shackles != null ? String(v.shackles) : '';
     const formShackles = form.shackles != null ? String(form.shackles) : '';
-    const origPort = v.next_port || getLatestDestinationPort(v) || '';
     return (
       (form.next_port !== undefined && (form.next_port || '') !== origPort) ||
       (form.route_status !== undefined && (form.route_status || '') !== (v.route_status || '')) ||
@@ -518,11 +526,18 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       (form.operation_type !== undefined && (form.operation_type || '') !== (v.operation_type || '')) ||
       (form.remark_from_vessel !== undefined && (form.remark_from_vessel || '') !== (v.remark_from_vessel || ''))
     );
-  }, [routingForm, getLatestDestinationPort]);
+  }, []);
+
+  const isVesselModified = useCallback((v: Vessel, formState?: Record<number, Partial<Vessel>>) => {
+    const form = formState ? formState[v.id] : routingForm[v.id];
+    const origPort = v.next_port || getLatestDestinationPort(v) || '';
+    return checkIsVesselModified(v, form, origPort);
+  }, [routingForm, getLatestDestinationPort, checkIsVesselModified]);
 
   useEffect(() => {
     // Correctly initialize and safely synchronize routing form without wiping destination ports
     setRoutingForm(prev => {
+      let hasChanges = false;
       const nextForm = { ...prev };
       vessels.forEach(v => {
         const existing = prev[v.id];
@@ -534,8 +549,10 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
         const isLadenBallast = v.route_status === 'Laden' || v.route_status === 'Ballast';
         const defaultLoadingStatus = v.loading_status || (isLadenBallast ? v.route_status : '');
         const defaultRouteStatus = isLadenBallast ? '' : (v.route_status || '');
+        const origPort = v.next_port || fallbackPort || '';
 
         if (!existing) {
+          hasChanges = true;
           nextForm[v.id] = {
             next_port: fallbackPort || '',
             route_status: defaultRouteStatus,
@@ -549,16 +566,17 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
             remark_from_vessel: v.remark_from_vessel || ''
           };
         } else {
-          const modified = isVesselModified(v, prev);
+          const modified = checkIsVesselModified(v, existing, origPort);
           if (modified) {
             // Preserve user's in-progress changes; fill next_port if it was previously empty and now available
             if (!existing.next_port && fallbackPort) {
+              hasChanges = true;
               nextForm[v.id] = { ...existing, next_port: fallbackPort };
             }
           } else {
             // Not modified by user: update from database/reports, but NEVER replace a non-empty port with empty!
             const portToUse = v.next_port || fallbackPort || existing.next_port || '';
-            nextForm[v.id] = {
+            const newEntry = {
               next_port: portToUse,
               route_status: defaultRouteStatus || existing.route_status || '',
               shackles: v.shackles != null ? String(v.shackles) : (existing.shackles || ''),
@@ -570,12 +588,19 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
               operation_type: v.operation_type || latestArrival?.operation_type || existing.operation_type || '',
               remark_from_vessel: v.remark_from_vessel || existing.remark_from_vessel || ''
             };
+            const isDiff = Object.keys(newEntry).some(
+              k => (newEntry as any)[k] !== (existing as any)[k]
+            );
+            if (isDiff) {
+              hasChanges = true;
+              nextForm[v.id] = newEntry;
+            }
           }
         }
       });
-      return nextForm;
+      return hasChanges ? nextForm : prev;
     });
-  }, [vessels, arrivalReports, noonReports, departureReports, getLatestDestinationPort, isVesselModified]);
+  }, [vessels, arrivalReports, noonReports, departureReports, getLatestDestinationPort, checkIsVesselModified]);
 
   const handleUpdateRoutingRow = (vesselId: number, field: string, value: string) => {
     setRoutingForm(prev => ({
@@ -887,9 +912,9 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     const id = Date.now();
     setNotifications(prev => {
       const next = [...prev, { id, type, message }];
-      // Limit the number of toast messages to at most 3
-      if (next.length > 3) {
-        return next.slice(next.length - 3);
+      // Limit the number of concurrent toast messages to at most 5
+      if (next.length > 5) {
+        return next.slice(next.length - 5);
       }
       return next;
     });
@@ -2128,74 +2153,434 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
 
                   {/* Operational Voyage Timeline Log */}
                   <div className="bg-white rounded-2xl border border-blue-100/70 shadow-sm overflow-hidden">
-                    <div className="p-5 border-b border-blue-50/50 flex items-center justify-between">
+                    <div className="p-4 sm:p-5 border-b border-blue-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <div>
                         <h2 className="font-bold text-slate-900 flex items-center gap-2">
                           <Activity className="w-4 h-4 text-emerald-500" />
                           Vessel Voyage & Operations Timeline
                         </h2>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">Chronological timeline of arrival, departure, and noon-to-noon logs</p>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
+                          {timelineTab === 'all' && 'Chronological timeline of arrival, departure, and noon-to-noon logs'}
+                          {timelineTab === 'noon' && 'Timetable of Noon-to-Noon navigation, position, and fuel logs'}
+                          {timelineTab === 'arrival' && 'Timetable of vessel port arrivals and cargo operations'}
+                          {timelineTab === 'departure' && 'Timetable of vessel port departures and outward voyages'}
+                        </p>
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/60 self-start sm:self-auto">
                         <button 
-                          onClick={() => setView('noon_to_noon')}
-                          className="px-2 py-1 hover:bg-slate-50 rounded text-[10px] font-bold text-slate-500"
+                          onClick={() => setTimelineTab('all')}
+                          className={cn(
+                            "px-3 py-1 rounded-lg text-[10px] font-bold transition-all",
+                            timelineTab === 'all'
+                              ? "bg-white text-blue-600 shadow-xs"
+                              : "text-slate-500 hover:text-slate-900"
+                          )}
+                        >
+                          All
+                        </button>
+                        <button 
+                          onClick={() => setTimelineTab('noon')}
+                          className={cn(
+                            "px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1",
+                            timelineTab === 'noon'
+                              ? "bg-white text-blue-600 shadow-xs"
+                              : "text-slate-500 hover:text-slate-900"
+                          )}
                         >
                           Noon
+                          <span className={cn(
+                            "px-1.5 py-0.2 rounded-full text-[9px]",
+                            timelineTab === 'noon' ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-600"
+                          )}>
+                            {noonReports.length}
+                          </span>
                         </button>
-                        <span className="text-slate-200">|</span>
                         <button 
-                          onClick={() => setView('arrival')}
-                          className="px-2 py-1 hover:bg-slate-50 rounded text-[10px] font-bold text-slate-500"
+                          onClick={() => setTimelineTab('arrival')}
+                          className={cn(
+                            "px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1",
+                            timelineTab === 'arrival'
+                              ? "bg-white text-blue-600 shadow-xs"
+                              : "text-slate-500 hover:text-slate-900"
+                          )}
                         >
-                          Arrivals
+                          Arrival
+                          <span className={cn(
+                            "px-1.5 py-0.2 rounded-full text-[9px]",
+                            timelineTab === 'arrival' ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-600"
+                          )}>
+                            {arrivalReports.length}
+                          </span>
                         </button>
-                        <span className="text-slate-200">|</span>
                         <button 
-                          onClick={() => setView('departure')}
-                          className="px-2 py-1 hover:bg-slate-50 rounded text-[10px] font-bold text-slate-500"
+                          onClick={() => setTimelineTab('departure')}
+                          className={cn(
+                            "px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1",
+                            timelineTab === 'departure'
+                              ? "bg-white text-blue-600 shadow-xs"
+                              : "text-slate-500 hover:text-slate-900"
+                          )}
                         >
-                          Departures
+                          Departure
+                          <span className={cn(
+                            "px-1.5 py-0.2 rounded-full text-[9px]",
+                            timelineTab === 'departure' ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-600"
+                          )}>
+                            {departureReports.length}
+                          </span>
                         </button>
                       </div>
                     </div>
 
-                    <div className="p-5">
-                      <div className="relative border-l-2 border-blue-50 pl-4 space-y-6">
-                        {(() => {
-                          const compiledReports = [
-                            ...departureReports.map(r => ({ ...r, type: 'Departure', iconColor: 'bg-indigo-50 text-indigo-600', text: `Departed ${r.departure_port || 'Unknown'} for ${r.next_port || 'Unknown'}`, date: r.utc_date_time || r.atd_utc || r.created_at || '' })),
-                            ...arrivalReports.map(r => ({ ...r, type: 'Arrival', iconColor: 'bg-emerald-50 text-emerald-600', text: `Arrived at ${r.arrival_port || 'Unknown'} (${r.operation_type || 'Cargo Ops'})`, date: r.utc_date_time || r.atb_utc || r.created_at || '' })),
-                            ...noonReports.map(r => ({ ...r, type: 'Noon-to-Noon', iconColor: 'bg-amber-50 text-amber-600', text: `Noon-to-Noon report submitted (Speed: ${r.speed_over_ground || 'N/A'} kts)`, date: r.utc_date_time || r.created_at || '' })),
-                            ...otherReports.map(r => ({ ...r, type: 'Other Report', iconColor: 'bg-slate-50 text-slate-600', text: `Other report submitted: ${r.subject || 'Technical File'}`, date: r.utc_date_time || r.created_at || '' }))
-                          ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 5);
+                    {/* Tab 1: ALL - Default Chronological Timeline Table */}
+                    {timelineTab === 'all' && (
+                      <div className="p-5">
+                        <div className="relative border-l-2 border-blue-100/80 pl-4 space-y-6">
+                          {(() => {
+                            const safeFormatDateTime = (dateStr?: string | null) => {
+                              if (!dateStr) return 'N/A';
+                              try {
+                                const d = new Date(dateStr);
+                                if (isNaN(d.getTime())) return String(dateStr);
+                                return format(d, 'yyyy-MM-dd HH:mm');
+                              } catch (e) {
+                                return String(dateStr);
+                              }
+                            };
 
-                          if (compiledReports.length === 0) {
-                            return <p className="text-slate-400 text-xs italic text-center py-4">No voyage reports submitted recently.</p>;
-                          }
+                            const compiledReports = [
+                              ...departureReports.map(r => ({ 
+                                ...r, 
+                                type: 'Departure', 
+                                iconColor: 'bg-indigo-50 text-indigo-700 border border-indigo-100', 
+                                dotColor: 'bg-indigo-500',
+                                text: `Departed ${r.departure_port || 'Unknown'} for ${r.destination_port || r.next_port || 'Next Port'}`, 
+                                subtext: `Voyage ${r.voyage_number || 'N/A'} • ${r.operation_type || 'Departure Ops'} • ${r.cargo_status || 'Ballast'}`,
+                                date: r.utc_date_time || r.atd_utc || r.created_at || '',
+                                vesselName: r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || 'Vessel'
+                              })),
+                              ...arrivalReports.map(r => ({ 
+                                ...r, 
+                                type: 'Arrival', 
+                                iconColor: 'bg-emerald-50 text-emerald-700 border border-emerald-100', 
+                                dotColor: 'bg-emerald-500',
+                                text: `Arrived at ${r.arrival_port || 'Unknown'} (${r.operation_type || 'Cargo Ops'})`, 
+                                subtext: `Voyage ${r.voyage_number || 'N/A'} • ${r.cargo || 'Cargo'} • ${r.cargo_status || 'Laden'}`,
+                                date: r.utc_date_time || r.atb_utc || r.created_at || '',
+                                vesselName: r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || 'Vessel'
+                              })),
+                              ...noonReports.map(r => ({ 
+                                ...r, 
+                                type: 'Noon-to-Noon', 
+                                iconColor: 'bg-amber-50 text-amber-700 border border-amber-100', 
+                                dotColor: 'bg-amber-500',
+                                text: `Noon-to-Noon report submitted (Speed: ${r.speed_over_ground || 'N/A'} kts)`, 
+                                subtext: `Voyage ${r.voyage_number || 'N/A'} • Pos: ${r.position_lat || '-'}/${r.position_long || '-'} • DTG: ${r.distance_to_go || 'N/A'} NM`,
+                                date: r.utc_date_time || r.created_at || '',
+                                vesselName: r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || 'Vessel'
+                              })),
+                              ...otherReports.map(r => ({ 
+                                ...r, 
+                                type: 'Other Report', 
+                                iconColor: 'bg-slate-50 text-slate-700 border border-slate-100', 
+                                dotColor: 'bg-slate-500',
+                                text: `Other report submitted: ${r.subject || 'Technical File'}`, 
+                                subtext: `Port: ${r.port || 'N/A'} • Voyage: ${r.voyage_number || 'N/A'}`,
+                                date: r.utc_date_time || r.created_at || '',
+                                vesselName: r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || 'Vessel'
+                              }))
+                            ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 10);
 
-                          return compiledReports.map((report, i) => (
-                            <div key={i} className="relative group">
-                              <div className="absolute -left-[23px] top-1 w-2.5 h-2.5 rounded-full bg-blue-500 border-2 border-white ring-4 ring-blue-50 group-hover:scale-125 transition-transform animate-none" />
-                              <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 pl-2">
-                                <div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-bold text-slate-800 text-xs shrink-0">{report.vessel_name}</span>
-                                    <span className={cn("px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider", report.iconColor)}>
-                                      {report.type}
-                                    </span>
+                            if (compiledReports.length === 0) {
+                              return <p className="text-slate-400 text-xs italic text-center py-6">No voyage reports submitted recently.</p>;
+                            }
+
+                            return compiledReports.map((report, i) => (
+                              <div key={i} className="relative group">
+                                <div className={cn("absolute -left-[23px] top-1.5 w-2.5 h-2.5 rounded-full border-2 border-white ring-4 ring-blue-50 group-hover:scale-125 transition-transform", report.dotColor)} />
+                                <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 pl-2">
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-bold text-slate-800 text-xs shrink-0">{report.vesselName}</span>
+                                      <span className={cn("px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider", report.iconColor)}>
+                                        {report.type}
+                                      </span>
+                                    </div>
+                                    <p className="text-slate-700 text-xs mt-1 font-semibold">{report.text}</p>
+                                    <p className="text-slate-400 text-[10px] mt-0.5 font-medium">{report.subtext}</p>
                                   </div>
-                                  <p className="text-slate-600 text-xs mt-1 font-medium">{report.text}</p>
-                                </div>
-                                <div className="text-[10px] font-semibold text-slate-400 font-mono text-left md:text-right shrink-0">
-                                  {report.date ? format(new Date(report.date), 'yyyy-MM-dd HH:mm') : 'N/A'}
+                                  <div className="text-[10px] font-semibold text-slate-400 font-mono text-left md:text-right shrink-0">
+                                    {safeFormatDateTime(report.date)}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                          ));
-                        })()}
+                            ));
+                          })()}
+                        </div>
                       </div>
-                    </div>
+                    )}
+
+                    {/* Tab 2: NOON - Timetable Table */}
+                    {timelineTab === 'noon' && (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50/80 border-b border-slate-100 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                              <th className="px-5 py-3.5 whitespace-nowrap">Date & Time (UTC)</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Vessel & Voyage</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Position & DTG</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Speed & Status</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Destination & ETA</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Total 24h FOC</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Remaining ROB</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {noonReports.length === 0 ? (
+                              <tr>
+                                <td colSpan={7} className="px-5 py-8 text-center text-slate-400 text-xs font-medium">
+                                  No Noon reports recorded yet.
+                                </td>
+                              </tr>
+                            ) : (
+                              [...noonReports]
+                                .sort((a, b) => new Date(b.utc_date_time).getTime() - new Date(a.utc_date_time).getTime())
+                                .slice(0, 10)
+                                .map((r) => {
+                                  const vesselName = r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || 'Vessel';
+                                  const totalFoc = (
+                                    Number(r.foc_hsfo || 0) +
+                                    Number(r.foc_lsfo || 0) +
+                                    Number(r.foc_mgo || 0) +
+                                    Number(r.foc_mdo || 0)
+                                  ).toFixed(1);
+                                  const totalRob = (
+                                    Number(r.rob_hsfo || 0) +
+                                    Number(r.rob_lsfo || 0) +
+                                    Number(r.rob_mgo || 0) +
+                                    Number(r.rob_mdo || 0)
+                                  ).toFixed(1);
+                                  const safeFormatDateTime = (dateStr?: string | null) => {
+                                    if (!dateStr) return 'N/A';
+                                    try {
+                                      const d = new Date(dateStr);
+                                      if (isNaN(d.getTime())) return String(dateStr);
+                                      return format(d, 'yyyy-MM-dd HH:mm');
+                                    } catch (e) {
+                                      return String(dateStr);
+                                    }
+                                  };
+                                  return (
+                                    <tr key={r.id} className="hover:bg-blue-50/20 transition-colors">
+                                      <td className="px-5 py-3.5 font-mono text-xs text-slate-700 whitespace-nowrap font-medium">
+                                        {safeFormatDateTime(r.utc_date_time)}
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-bold text-slate-800 text-xs">{vesselName}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono">Voy: {r.voyage_number || 'N/A'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-mono text-xs text-slate-700">{r.position_lat || '-'}&nbsp;|&nbsp;{r.position_long || '-'}</div>
+                                        <div className="text-[10px] text-slate-400 font-medium">DTG: {r.distance_to_go ? `${r.distance_to_go} NM` : '-'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="font-bold text-xs text-slate-700">{r.speed_over_ground || '0'} kts</span>
+                                          <span className={cn(
+                                            "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border",
+                                            r.report_type === 'At sea' || r.report_type === 'Underway' ? "bg-emerald-50 text-emerald-700 border-emerald-100" :
+                                            r.report_type === 'Anchorage' || r.report_type === 'At Anchor' ? "bg-amber-50 text-amber-700 border-amber-100" :
+                                            "bg-blue-50 text-blue-700 border-blue-100"
+                                          )}>
+                                            {r.report_type || 'At sea'}
+                                          </span>
+                                        </div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-semibold text-slate-700 text-xs flex items-center gap-1">
+                                          <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                                          {r.destination_port || 'Not Scheduled'}
+                                        </div>
+                                        <div className="text-[10px] text-slate-400 font-mono">
+                                          {r.eta_utc ? `ETA: ${r.eta_utc.replace('T', ' ').substring(0, 16)}` : '-'}
+                                        </div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap font-mono text-xs font-bold text-amber-600">
+                                        {totalFoc} MT
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap font-mono text-xs font-bold text-blue-600">
+                                        {totalRob} MT
+                                      </td>
+                                    </tr>
+                                  );
+                                })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* Tab 3: ARRIVAL - Timetable Table */}
+                    {timelineTab === 'arrival' && (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50/80 border-b border-slate-100 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                              <th className="px-5 py-3.5 whitespace-nowrap">Date & Time (UTC)</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Vessel & Voyage</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Arrival Port</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Operation Type</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Cargo & Status</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Sea Passage</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Position</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {arrivalReports.length === 0 ? (
+                              <tr>
+                                <td colSpan={7} className="px-5 py-8 text-center text-slate-400 text-xs font-medium">
+                                  No Arrival reports recorded yet.
+                                </td>
+                              </tr>
+                            ) : (
+                              [...arrivalReports]
+                                .sort((a, b) => new Date(b.utc_date_time || b.atb_utc || 0).getTime() - new Date(a.utc_date_time || a.atb_utc || 0).getTime())
+                                .slice(0, 10)
+                                .map((r) => {
+                                  const vesselName = r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || 'Vessel';
+                                  const dateStr = r.atb_utc || r.utc_date_time;
+                                  const safeFormatDateTime = (s?: string | null) => {
+                                    if (!s) return 'N/A';
+                                    try {
+                                      const d = new Date(s);
+                                      if (isNaN(d.getTime())) return String(s);
+                                      return format(d, 'yyyy-MM-dd HH:mm');
+                                    } catch (e) {
+                                      return String(s);
+                                    }
+                                  };
+                                  return (
+                                    <tr key={r.id} className="hover:bg-blue-50/20 transition-colors">
+                                      <td className="px-5 py-3.5 font-mono text-xs text-slate-700 whitespace-nowrap font-medium">
+                                        {safeFormatDateTime(dateStr)}
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-bold text-slate-800 text-xs">{vesselName}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono">Voy: {r.voyage_number || 'N/A'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-semibold text-slate-800 text-xs flex items-center gap-1">
+                                          <MapPin className="w-3.5 h-3.5 text-emerald-500" />
+                                          {r.arrival_port || 'Unknown Port'}
+                                        </div>
+                                        <div className="text-[10px] text-slate-400">{r.eu_uk_status || 'Non-EU/UK'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-100">
+                                          {r.operation_type || 'Cargo Ops'}
+                                        </span>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-medium text-slate-700 text-xs">{r.cargo || 'General Cargo'}</div>
+                                        <div className="text-[10px] text-slate-400 font-medium capitalize">{r.cargo_status || 'Laden'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap text-xs text-slate-600">
+                                        <div>{r.total_time_at_sea ? `${r.total_time_at_sea} hrs` : '-'}</div>
+                                        <div className="text-[10px] text-slate-400">{r.total_distance ? `${r.total_distance} NM` : '-'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap font-mono text-xs text-slate-500">
+                                        {r.position_lat || '-'}&nbsp;|&nbsp;{r.position_long || '-'}
+                                      </td>
+                                    </tr>
+                                  );
+                                })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* Tab 4: DEPARTURE - Timetable Table */}
+                    {timelineTab === 'departure' && (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50/80 border-b border-slate-100 text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                              <th className="px-5 py-3.5 whitespace-nowrap">Date & Time (UTC)</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Vessel & Voyage</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Departure Port</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Destination / Next Port</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Operation Type</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Cargo & Status</th>
+                              <th className="px-5 py-3.5 whitespace-nowrap">Position</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {departureReports.length === 0 ? (
+                              <tr>
+                                <td colSpan={7} className="px-5 py-8 text-center text-slate-400 text-xs font-medium">
+                                  No Departure reports recorded yet.
+                                </td>
+                              </tr>
+                            ) : (
+                              [...departureReports]
+                                .sort((a, b) => new Date(b.utc_date_time || b.atd_utc || 0).getTime() - new Date(a.utc_date_time || a.atd_utc || 0).getTime())
+                                .slice(0, 10)
+                                .map((r) => {
+                                  const vesselName = r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || 'Vessel';
+                                  const dateStr = r.atd_utc || r.utc_date_time;
+                                  const safeFormatDateTime = (s?: string | null) => {
+                                    if (!s) return 'N/A';
+                                    try {
+                                      const d = new Date(s);
+                                      if (isNaN(d.getTime())) return String(s);
+                                      return format(d, 'yyyy-MM-dd HH:mm');
+                                    } catch (e) {
+                                      return String(s);
+                                    }
+                                  };
+                                  return (
+                                    <tr key={r.id} className="hover:bg-blue-50/20 transition-colors">
+                                      <td className="px-5 py-3.5 font-mono text-xs text-slate-700 whitespace-nowrap font-medium">
+                                        {safeFormatDateTime(dateStr)}
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-bold text-slate-800 text-xs">{vesselName}</div>
+                                        <div className="text-[10px] text-slate-400 font-mono">Voy: {r.voyage_number || 'N/A'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-semibold text-slate-800 text-xs flex items-center gap-1">
+                                          <MapPin className="w-3.5 h-3.5 text-indigo-500" />
+                                          {r.departure_port || 'Unknown Port'}
+                                        </div>
+                                        <div className="text-[10px] text-slate-400">{r.eu_uk_status || 'Non-EU/UK'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-semibold text-slate-800 text-xs flex items-center gap-1">
+                                          <Navigation className="w-3.5 h-3.5 text-blue-500" />
+                                          {r.destination_port || r.next_port || 'Not Specified'}
+                                        </div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                          {r.operation_type || 'Departure Ops'}
+                                        </span>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap">
+                                        <div className="font-medium text-slate-700 text-xs">{r.cargo || 'General Cargo'}</div>
+                                        <div className="text-[10px] text-slate-400 font-medium capitalize">{r.cargo_status || 'Ballast'}</div>
+                                      </td>
+                                      <td className="px-5 py-3.5 whitespace-nowrap font-mono text-xs text-slate-500">
+                                        {r.position_lat || '-'}&nbsp;|&nbsp;{r.position_long || '-'}
+                                      </td>
+                                    </tr>
+                                  );
+                                })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -4490,7 +4875,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                 vessels={vessels} 
                 currentUser={user} 
                 token={token} 
-                flags={flags} 
+                flags={flags.map(f => typeof f === 'string' ? f : f.name)} 
                 onStatusRefresh={fetchSmsSidebarStatus}
               />
             </div>

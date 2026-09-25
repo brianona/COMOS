@@ -174,22 +174,21 @@ interface AdminPanelProps {
   certs: Certificate[];
   setCerts?: React.Dispatch<React.SetStateAction<Certificate[]>>;
   onRefresh: () => void;
-  notify: (type: 'success' | 'error', message: string) => void;
-  previewFile: File | null;
-  setPreviewFile: (f: File | null) => void;
+  notify: (type: 'success' | 'error' | 'info', message: string) => void;
+  previewFile: any;
+  setPreviewFile: (f: any) => void;
   tempPreviewUrl: string | null;
-  setTempPreviewUrl: (u: string | null) => void;
-  isRecognizing: boolean;
+  setTempPreviewUrl?: (url: string | null) => void;
   setIsRecognizing: (r: boolean) => void;
   subView: string;
   editingVessel: Vessel | null;
-  setEditingVessel: (v: Vessel | null) => void;
+  setEditingVessel: (v: any) => void;
   editingVesselPhoto: File | null;
   setEditingVesselPhoto: (f: File | null) => void;
   handleUpdateVessel: () => void;
   handleDeleteVessel: (id: number) => void;
   editingCert: Certificate | null;
-  setEditingCert: (c: Certificate | null) => void;
+  setEditingCert: (c: any) => void;
   newCertFile: File | null;
   setNewCertFile: (f: File | null) => void;
   handleUpdateCert: () => void;
@@ -197,13 +196,13 @@ interface AdminPanelProps {
   confirmDialog: any;
   setConfirmDialog: (d: any) => void;
   uploadFileType: string;
-  setUploadFileType: (t: string) => void;
+  setUploadFileType: (t: any) => void;
   fetchCertDetails?: (cert: any) => void;
-  setSelectedVessel: (v: Vessel | null) => void;
-  onViewVesselDetails: (v: Vessel) => void;
+  setSelectedVessel: (v: any) => void;
+  onViewVesselDetails: (v: any) => void;
   flags?: any[];
   setFlags?: React.Dispatch<React.SetStateAction<any[]>>;
-  setView?: (v: string) => void;
+  setView?: (v: any) => void;
   pendingDeviceRequestsCount?: number;
   onDeviceRequestsChange?: () => void;
   viewedCertIds?: Set<number>;
@@ -1122,7 +1121,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           setTotalLogsCount(data.total || 0);
           if (data.stats) setLogStats(data.stats);
           if (data.tables) setAvailableTables(data.tables);
-          if (data.users) setAvailableUsers(data.users);
+          if (data.users && Array.isArray(data.users)) {
+            const userMap = new Map<string, { username: string; user_role?: string; count: number }>();
+            for (const u of data.users) {
+              if (!u?.username) continue;
+              if (userMap.has(u.username)) {
+                const existing = userMap.get(u.username)!;
+                existing.count = (existing.count || 0) + (u.count || 0);
+                if (!existing.user_role && u.user_role) existing.user_role = u.user_role;
+              } else {
+                userMap.set(u.username, { ...u });
+              }
+            }
+            setAvailableUsers(Array.from(userMap.values()));
+          }
         }
       }
     } catch (err: any) {
@@ -1891,8 +1903,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       'Plans, Manuals & Procedures',
                       'Other'
                     ]
-                ).map(catName => (
-                  <option key={catName} value={catName}>
+                ).map((catName, idx) => (
+                  <option key={`${catName}-${idx}`} value={catName}>
                     {catName}
                   </option>
                 ))}
@@ -3576,7 +3588,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                     const isEditing = editingDeviceLabelId === safeId;
 
                                     return (
-                                      <div key={safeId} className="flex items-center gap-2">
+                                      <div key={`${safeId}-${pIdx}`} className="flex items-center gap-2">
                                         {isEditing ? (
                                           <div className="flex items-center gap-1.5">
                                             <input
@@ -3812,8 +3824,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
                     >
                       <option value="all">All Database Tables</option>
-                      {availableTables.map(t => (
-                        <option key={t.table_name} value={t.table_name}>
+                      {availableTables.map((t, idx) => (
+                        <option key={`${t.table_name}-${idx}`} value={t.table_name}>
                           {t.table_name} ({t.count.toLocaleString()})
                         </option>
                       ))}
@@ -3849,8 +3861,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
                     >
                       <option value="all">All Modifying Users</option>
-                      {availableUsers.map(u => (
-                        <option key={u.username} value={u.username}>
+                      {availableUsers.map((u, idx) => (
+                        <option key={`${u.username}-${idx}`} value={u.username}>
                           {u.username} {u.user_role ? `(${u.user_role})` : ''} - {u.count} changes
                         </option>
                       ))}
@@ -4295,7 +4307,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       setUserFormData({
                         ...userFormData,
                         vessel_id: vId,
-                        email: selectedV?.email || userFormData.email
+                        email: (selectedV as any)?.email || userFormData.email
                       });
                     }}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"

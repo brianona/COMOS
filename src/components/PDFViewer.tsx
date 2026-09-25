@@ -182,12 +182,20 @@ export const PDFViewer: React.FC<PDFViewerProps> = ({ url, blob, arrayBuffer, ti
         canvas.height = Math.floor(viewport.height * outputScale);
         canvas.style.width = `${Math.floor(viewport.width)}px`;
         canvas.style.height = `${Math.floor(viewport.height)}px`;
+        canvas.style.backgroundColor = '#ffffff';
+
+        // Pre-fill canvas with solid pure white background to avoid transparent/unreadable pages
+        context.save();
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.restore();
 
         const transform = outputScale !== 1 
           ? [outputScale, 0, 0, outputScale, 0, 0] 
           : undefined;
 
-        const renderContext = {
+        const renderContext: any = {
+          canvas,
           canvasContext: context,
           transform,
           viewport,

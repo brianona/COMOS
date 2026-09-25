@@ -2,16 +2,69 @@ import React, { useState, useEffect, useRef } from "react";
 import { 
   ChevronLeft, ChevronRight, Play, Pause, Ship, Navigation, Activity, 
   MapPin, Compass, Waves, Droplets, Fuel, Clock, AlertCircle, Camera, CheckSquare,
-  Map as MapIcon, Monitor, Shield, ShieldAlert, Anchor, Package, AlertTriangle, CheckCircle2
+  Map as MapIcon, Monitor, Shield, ShieldAlert, Anchor, Package, AlertTriangle, CheckCircle2,
+  Plus, Minus, RotateCcw, Globe, Layers
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, parseISO } from "date-fns";
 import { cn, parseCoordinate, getStatus } from "../utils/helpers";
 import { Vessel, NoonReport, Certificate, ArrivalReport, DepartureReport, OtherReport } from "../types";
 
+type MapStyleKey = 'dark' | 'nautical' | 'natgeo';
+
+interface TileLayerDef {
+  url: string;
+  options: {
+    maxNativeZoom: number;
+    maxZoom: number;
+    attribution: string;
+  };
+}
+
+const MAP_STYLES: Record<MapStyleKey, { label: string; layers: TileLayerDef[] }> = {
+  dark: {
+    label: "Dark",
+    layers: [
+      {
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+        options: { maxNativeZoom: 16, maxZoom: 18, attribution: "Esri, HERE, Garmin" }
+      },
+      {
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+        options: { maxNativeZoom: 16, maxZoom: 18, attribution: "Labels &copy; Esri (English)" }
+      }
+    ]
+  },
+  nautical: {
+    label: "Nautical",
+    layers: [
+      {
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
+        options: { maxNativeZoom: 16, maxZoom: 18, attribution: "Esri, GEBCO, NOAA" }
+      },
+      {
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Reference/MapServer/tile/{z}/{y}/{x}",
+        options: { maxNativeZoom: 16, maxZoom: 18, attribution: "Labels &copy; Esri (English)" }
+      }
+    ]
+  },
+  natgeo: {
+    label: "NatGeo",
+    layers: [
+      {
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",
+        options: { maxNativeZoom: 16, maxZoom: 18, attribution: "National Geographic, Esri (English)" }
+      }
+    ]
+  }
+};
+
 const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: string, vesselName: string }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletInstance = useRef<any>(null);
+  const markerRef = useRef<any>(null);
+  const tileLayersRef = useRef<any[]>([]);
+  const [mapStyle, setMapStyle] = useState<MapStyleKey>('dark');
   const [leafletReady, setLeafletReady] = useState(!!(window as any).L);
 
   const parsedLat = parseCoordinate(latStr, true);
@@ -34,35 +87,87 @@ const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: 
     return () => clearInterval(interval);
   }, []);
 
+  // Update tile layers whenever mapStyle changes
+  useEffect(() => {
+    const map = leafletInstance.current;
+    const L = (window as any).L;
+    if (!map || !L) return;
+
+    // Remove existing tile layers
+    tileLayersRef.current.forEach(layer => {
+      try {
+        map.removeLayer(layer);
+      } catch (e) {
+        // ignore
+      }
+    });
+    tileLayersRef.current = [];
+
+    const styleDef = MAP_STYLES[mapStyle] || MAP_STYLES.dark;
+    const newLayers = styleDef.layers.map(cfg => {
+      const layer = L.tileLayer(cfg.url, {
+        ...cfg.options,
+        updateWhenIdle: true,
+        updateWhenZooming: false,
+        keepBuffer: 3,
+        className: 'map-tiles-load'
+      });
+      layer.addTo(map);
+      return layer;
+    });
+
+    tileLayersRef.current = newLayers;
+  }, [mapStyle, leafletReady]);
+
+  // Initialize or update Leaflet map and marker
   useEffect(() => {
     if (!leafletReady || parsedLat === null || parsedLon === null || !mapRef.current) return;
 
     const L = (window as any).L;
     if (!L) return;
 
-    let map: any = null;
-
     try {
+      // If map already exists, smoothly reposition to new coordinates
       if (leafletInstance.current) {
-        leafletInstance.current.remove();
-        leafletInstance.current = null;
+        const map = leafletInstance.current;
+        map.flyTo([parsedLat, parsedLon], Math.max(map.getZoom(), 5), { duration: 0.8 });
+        
+        if (markerRef.current) {
+          markerRef.current.setLatLng([parsedLat, parsedLon]);
+          markerRef.current.setTooltipContent(
+            `<div class="font-bold text-[11px] text-white tracking-wide">${vesselName}</div><div class="text-[9px] text-blue-300 font-mono">${latStr}, ${lonStr}</div>`
+          );
+        }
+        return;
       }
 
-      map = L.map(mapRef.current, {
+      // Initialize map with default zoom 5 (English regional overview)
+      const map = L.map(mapRef.current, {
         zoomControl: false,
         attributionControl: false,
-        preferCanvas: true
-      }).setView([parsedLat, parsedLon], 1);
+        preferCanvas: true,
+        minZoom: 2,
+        maxZoom: 18
+      }).setView([parsedLat, parsedLon], 5);
       
       leafletInstance.current = map;
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        updateWhenIdle: true,
-        updateWhenZooming: false,
-        keepBuffer: 3,
-        className: 'map-tiles-load'
-      }).addTo(map);
+      // Add tile layers for current style
+      const styleDef = MAP_STYLES[mapStyle] || MAP_STYLES.dark;
+      const initialLayers = styleDef.layers.map(cfg => {
+        const layer = L.tileLayer(cfg.url, {
+          ...cfg.options,
+          updateWhenIdle: true,
+          updateWhenZooming: false,
+          keepBuffer: 3,
+          className: 'map-tiles-load'
+        });
+        layer.addTo(map);
+        return layer;
+      });
+      tileLayersRef.current = initialLayers;
 
+      // Create pulsed marine marker
       const customIcon = L.divIcon({
         className: 'custom-marine-marker',
         html: `
@@ -74,7 +179,12 @@ const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: 
         iconSize: [32, 32]
       });
 
-      L.marker([parsedLat, parsedLon], { icon: customIcon }).addTo(map);
+      const marker = L.marker([parsedLat, parsedLon], { icon: customIcon }).addTo(map);
+      marker.bindTooltip(
+        `<div class="font-bold text-[11px] text-white tracking-wide">${vesselName}</div><div class="text-[9px] text-blue-300 font-mono">${latStr}, ${lonStr}</div>`,
+        { permanent: true, direction: 'top', offset: [0, -14], className: 'custom-marine-tooltip' }
+      );
+      markerRef.current = marker;
 
       // Force instant sizing recalculation and another one shortly after layouts finalize
       map.invalidateSize();
@@ -82,7 +192,7 @@ const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: 
         if (map) {
           map.invalidateSize();
         }
-      }, 50);
+      }, 100);
 
       return () => {
         clearTimeout(delayInval);
@@ -90,14 +200,37 @@ const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: 
     } catch (e) {
       console.warn("Leaflet instantiation issue:", e);
     }
+  }, [leafletReady, parsedLat, parsedLon, vesselName, latStr, lonStr]);
 
+  // Clean up on unmount
+  useEffect(() => {
     return () => {
       if (leafletInstance.current) {
         leafletInstance.current.remove();
         leafletInstance.current = null;
+        markerRef.current = null;
+        tileLayersRef.current = [];
       }
     };
-  }, [leafletReady, parsedLat, parsedLon, vesselName, latStr, lonStr]);
+  }, []);
+
+  const handleZoomIn = () => {
+    if (leafletInstance.current) {
+      leafletInstance.current.zoomIn();
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (leafletInstance.current) {
+      leafletInstance.current.zoomOut();
+    }
+  };
+
+  const handleRecenter = () => {
+    if (leafletInstance.current && parsedLat !== null && parsedLon !== null) {
+      leafletInstance.current.flyTo([parsedLat, parsedLon], 5, { duration: 0.8 });
+    }
+  };
 
   if (parsedLat === null || parsedLon === null) {
     return (
@@ -113,12 +246,20 @@ const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: 
     <div className="relative w-full h-full min-h-[200px] rounded-2xl overflow-hidden border border-white/15 shadow-2xl">
       <style>{`
         .leaflet-container {
-          background: #0b1329 !important;
+          background: #090d16 !important;
           color: #f8fafc !important;
           font-family: inherit;
         }
-        .leaflet-tile-container {
-          filter: invert(100%) hue-rotate(180deg) brightness(85%) contrast(95%);
+        .custom-marine-tooltip {
+          background: rgba(15, 23, 42, 0.94) !important;
+          border: 1px solid rgba(59, 130, 246, 0.4) !important;
+          border-radius: 8px !important;
+          padding: 4px 8px !important;
+          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5) !important;
+          color: #fff !important;
+        }
+        .custom-marine-tooltip::before {
+          border-top-color: rgba(15, 23, 42, 0.94) !important;
         }
         .leaflet-pane {
           z-index: 1 !important;
@@ -128,9 +269,63 @@ const SlideshowMap = ({ latStr, lonStr, vesselName }: { latStr: string, lonStr: 
         }
       `}</style>
       <div ref={mapRef} className="w-full h-full z-10" />
-      <div className="absolute bottom-4 right-4 z-[400] bg-slate-950/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 flex flex-col pointer-events-none text-right font-mono text-[9px] text-slate-300">
-        <span>Lat: {latStr}</span>
-        <span>Long: {lonStr}</span>
+
+      {/* Top Left: English Map Indicator & Style Selector */}
+      <div className="absolute top-3 left-3 z-[400] flex items-center gap-1.5 bg-slate-950/85 backdrop-blur-md px-2.5 py-1.5 rounded-xl border border-white/15 shadow-lg">
+        <div className="flex items-center gap-1.5 pr-2 border-r border-white/15 text-[10px] font-bold text-emerald-400 tracking-wider">
+          <Globe className="w-3.5 h-3.5 text-emerald-400" />
+          <span>EN ONLY</span>
+        </div>
+        <div className="flex items-center gap-1">
+          {(Object.keys(MAP_STYLES) as MapStyleKey[]).map((styleKey) => (
+            <button
+              key={styleKey}
+              onClick={() => setMapStyle(styleKey)}
+              className={cn(
+                "px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all",
+                mapStyle === styleKey
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-white/10"
+              )}
+            >
+              {MAP_STYLES[styleKey].label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Top Right: Zoom and Recenter Controls */}
+      <div className="absolute top-3 right-3 z-[400] flex flex-col gap-1.5 bg-slate-950/85 backdrop-blur-md p-1.5 rounded-xl border border-white/15 shadow-lg">
+        <button
+          onClick={handleZoomIn}
+          title="Zoom In"
+          aria-label="Zoom in"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-300 hover:text-white hover:bg-white/15 transition-all active:scale-95"
+        >
+          <Plus className="w-4 h-4" />
+        </button>
+        <button
+          onClick={handleZoomOut}
+          title="Zoom Out"
+          aria-label="Zoom out"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-slate-300 hover:text-white hover:bg-white/15 transition-all active:scale-95"
+        >
+          <Minus className="w-4 h-4" />
+        </button>
+        <button
+          onClick={handleRecenter}
+          title="Recenter on Vessel"
+          aria-label="Recenter on Vessel"
+          className="w-7 h-7 flex items-center justify-center rounded-lg text-blue-400 hover:text-blue-300 hover:bg-blue-500/20 transition-all active:scale-95 border-t border-white/10 pt-1"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Bottom Right: Coordinates badge */}
+      <div className="absolute bottom-3 right-3 z-[400] bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/15 flex flex-col pointer-events-none text-right font-mono text-[9px] text-slate-300 shadow-lg">
+        <span className="font-semibold text-blue-400">Lat: {latStr}</span>
+        <span className="font-semibold text-blue-400">Long: {lonStr}</span>
       </div>
     </div>
   );

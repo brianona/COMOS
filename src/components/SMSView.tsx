@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import JSZip from 'jszip';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -449,6 +449,7 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
 
   // Status Alerts/Toasts State
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // States for expanding ZIP files to display internal files individually
   const [expandedZipIds, setExpandedZipIds] = useState<Record<string, boolean>>({});
@@ -456,8 +457,9 @@ export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, curr
   const [loadingZips, setLoadingZips] = useState<Record<string, boolean>>({});
 
   const triggerToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToastMessage({ text, type });
-    setTimeout(() => setToastMessage(null), 4000);
+    toastTimeoutRef.current = setTimeout(() => setToastMessage(null), 20000);
   };
 
   const isVesselInFormScope = (
@@ -4727,7 +4729,7 @@ startxref
       
       {/* Toast notifications */}
       {toastMessage && (
-        <div className="fixed top-5 right-5 z-[200] flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border animate-in slide-in-from-top duration-300 bg-slate-900 border-slate-800 text-white">
+        <div className="fixed top-5 right-5 z-[200] flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg border animate-in slide-in-from-top duration-300 bg-slate-900 border-slate-800 text-white max-w-md">
           {toastMessage.type === 'success' ? (
             <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
               <Check className="w-3.5 h-3.5" />
@@ -4741,7 +4743,15 @@ startxref
               <AlertCircle className="w-3.5 h-3.5" />
             </div>
           )}
-          <p className="text-xs font-bold">{toastMessage.text}</p>
+          <p className="text-xs font-bold flex-1 leading-snug">{toastMessage.text}</p>
+          <button 
+            type="button" 
+            onClick={() => setToastMessage(null)}
+            className="p-1 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors ml-1 shrink-0"
+            title="Dismiss notification"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 

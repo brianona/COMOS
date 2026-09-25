@@ -142,6 +142,32 @@
   font-family: ui-monospace, monospace;
 }
 
+/* DOCX Layout Engine & Document Preview Page Standards */
+.docx-body,
+.docx-rendered-document,
+section.docx-rendered-document,
+.docx-container-styled section {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+.docx-body section {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  margin-bottom: 2rem;
+  border-radius: 0.5rem;
+}
+
+.docx-body section p,
+.docx-body section span,
+.docx-body section div,
+.docx-body section td,
+.docx-body section th,
+.docx-body section li {
+  color: #0f172a;
+}
+
 /* Univer Sheet Viewer Layout Fixes */
 .univer-container {
   width: 100% !important;

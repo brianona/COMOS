@@ -30,6 +30,7 @@ interface PptxViewerProps {
   blob?: Blob;
   arrayBuffer?: ArrayBuffer;
   title?: string;
+  fileName?: string;
   onDownload?: () => void;
 }
 
@@ -38,8 +39,10 @@ export const PptxViewer: React.FC<PptxViewerProps> = ({
   blob,
   arrayBuffer,
   title,
+  fileName,
   onDownload
 }) => {
+  const displayTitle = title || fileName || 'Presentation.pptx';
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [slides, setSlides] = useState<SlideData[]>([]);
