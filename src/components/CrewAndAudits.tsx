@@ -58,7 +58,7 @@ export interface CrewMember {
   birthdate?: string;
   contactNumber?: string;
   photo?: string;
-  hiringStatus?: string;
+  hiringStatus?: 'for rehire' | 'for debriefing' | 'not for rehire';
   siComments?: string;
 }
 
@@ -85,6 +85,9 @@ export interface AuditRecord {
   status: 'Scheduled' | 'In Progress' | 'Completed' | 'Overdue';
   findingsCount: number;
   scope: string;
+  reportFileName?: string;
+  reportFileSize?: string;
+  reportFileData?: string;
 }
 
 export interface NonConformity {
@@ -976,18 +979,14 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
             setFormData({
               name: '',
               rank: '',
-              nationality: 'Filipino',
-              passportNo: '',
-              seamanBookNo: '',
-              status: 'Compliant',
               birthdate: '',
               contactNumber: '',
               signOnDate: '',
               contractDuration: '',
-              nextMedicalExam: '',
-              nextSafetyTraining: '',
+              contractEndDate: '',
               vesselId: isVesselUser ? userVesselId : '',
-              photo: ''
+              photo: '',
+              extensionMonths: '0'
             });
             setShowModal(true);
           }}
@@ -2383,7 +2382,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
       signOnDate: member.signOnDate || '',
       contractDuration: member.contractDuration || 0,
       contractEndDate: member.contractEndDate || '',
-      hiringStatus: member.hiringStatus || 'for rehire',
+      hiringStatus: (member.hiringStatus as any) || 'for rehire',
       siComments: member.siComments || '',
       extensionsCount: member.extensionsCount || 0
     });
@@ -2764,7 +2763,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                     onClick={() => {
                       setSelectedCrew(member);
                       setEditComments(member.siComments || '');
-                      setEditHiringStatus(member.hiringStatus || 'for rehire');
+                      setEditHiringStatus((member.hiringStatus as any) || 'for rehire');
                       setIsEditing(false);
                     }}
                   >
@@ -2820,7 +2819,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                             e.stopPropagation();
                             setSelectedCrew(member);
                             setEditComments(member.siComments || '');
-                            setEditHiringStatus(member.hiringStatus || 'for rehire');
+                            setEditHiringStatus((member.hiringStatus as any) || 'for rehire');
                             setIsEditing(false);
                           }}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-blue-600 bg-blue-50/50 hover:bg-blue-600 hover:text-white transition-colors cursor-pointer"

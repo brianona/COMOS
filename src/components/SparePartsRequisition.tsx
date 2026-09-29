@@ -467,6 +467,7 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
     name: string;
     size: string;
     dataUrl?: string;
+    uploadedAt?: number;
   }[]>([]);
 
   useEffect(() => {

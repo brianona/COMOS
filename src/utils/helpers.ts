@@ -18,9 +18,12 @@ export const getRoleLabel = (role: string) => {
   }
 };
 
-export const getStatus = (date: string) => {
-  if (!date) return "unknown";
+export const getStatus = (date?: string | null) => {
+  if (!date || date.trim() === '' || date.toLowerCase() === 'no expiration' || date.toLowerCase() === 'none' || date.toLowerCase() === 'n/a') {
+    return "no expiration";
+  }
   const exp = parseISO(date);
+  if (isNaN(exp.getTime())) return "no expiration";
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -33,7 +36,7 @@ export const getStatus = (date: string) => {
   return "active";
 };
 
-export const isCertExpiringOrExpired = (expirationDate: string): boolean => {
+export const isCertExpiringOrExpired = (expirationDate?: string | null): boolean => {
   const status = getStatus(expirationDate);
   return status === 'expired' || status === 'expiring soon' || status === 'expiring';
 };

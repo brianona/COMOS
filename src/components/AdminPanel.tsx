@@ -89,7 +89,7 @@ interface Certificate {
   category?: string;
   certificate_number?: string;
   date_issued?: string;
-  expiration_date: string;
+  expiration_date: string | null;
   access_type?: 'office' | 'vessel' | 'any';
   vessel_name?: string;
   team_name?: string;
@@ -179,6 +179,7 @@ interface AdminPanelProps {
   setPreviewFile: (f: any) => void;
   tempPreviewUrl: string | null;
   setTempPreviewUrl?: (url: string | null) => void;
+  isRecognizing?: boolean;
   setIsRecognizing: (r: boolean) => void;
   subView: string;
   editingVessel: Vessel | null;
@@ -1293,13 +1294,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     team_id: '',
     access_type: 'any'
   });
+  const [newCertHasNoExpiration, setNewCertHasNoExpiration] = useState(false);
   const [certFiles, setCertFiles] = useState<File[]>([]);
   const [isSubmittingCert, setIsSubmittingCert] = useState(false);
 
   const [vesselSearch, setVesselSearch] = useState('');
   const [certSearch, setCertSearch] = useState('');
   const [certVesselFilter, setCertVesselFilter] = useState('');
-  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'expiring_or_expired' | 'newly_posted'>('all');
+  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration' | 'expiring_or_expired' | 'newly_posted'>('all');
   const [certSortConfig, setCertSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' }>({ key: 'name', direction: 'asc' });
 
   const requestCertSort = (key: keyof Certificate | 'status') => {
@@ -1375,8 +1377,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       notify('error', 'Please select or enter a certificate name');
       return;
     }
-    if (!newCert.expiration_date) {
-      notify('error', 'Expiration date is required');
+    if (!newCertHasNoExpiration && !newCert.expiration_date) {
+      notify('error', 'Expiration date is required (or select "No expiration")');
       return;
     }
     setIsSubmittingCert(true);
@@ -1385,6 +1387,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       Object.entries(newCert).forEach(([k, v]) => {
         if (v) formData.append(k, String(v));
       });
+      if (newCertHasNoExpiration) {
+        formData.set('expiration_date', '');
+      }
       if (certFiles.length > 0) {
         certFiles.forEach(f => {
           formData.append('files', f);
@@ -1410,6 +1415,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           team_id: '',
           access_type: 'any'
         });
+        setNewCertHasNoExpiration(false);
         setIsCustomCertName(false);
         setCertFiles([]);
         onRefresh();
@@ -1448,7 +1454,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         if (!isNewlyPosted(c, 7, viewedCertIds)) return false;
       } else if (certStatusFilter === 'expiring_or_expired') {
         const s = getStatus(c.expiration_date);
-        if (s === 'active' || s === 'unknown') return false;
+        if (s === 'active' || s === 'no expiration') return false;
       } else if (certStatusFilter !== 'all') {
         const s = getStatus(c.expiration_date);
         if (s !== certStatusFilter) return false;
@@ -1474,12 +1480,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (certSortConfig.key === 'status') {
         const sA = getStatus(a.expiration_date);
         const sB = getStatus(b.expiration_date);
-        const statusOrder: Record<string, number> = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3 };
+        const statusOrder: Record<string, number> = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3, 'no expiration': 4 };
         const cmp = (statusOrder[sA] ?? 99) - (statusOrder[sB] ?? 99);
         return certSortConfig.direction === 'asc' ? cmp : -cmp;
       } else if (certSortConfig.key === 'expiration_date') {
-        const dateA = a.expiration_date ? new Date(a.expiration_date).getTime() : 0;
-        const dateB = b.expiration_date ? new Date(b.expiration_date).getTime() : 0;
+        const dateA = a.expiration_date ? new Date(a.expiration_date).getTime() : (certSortConfig.direction === 'asc' ? Infinity : -Infinity);
+        const dateB = b.expiration_date ? new Date(b.expiration_date).getTime() : (certSortConfig.direction === 'asc' ? Infinity : -Infinity);
         return certSortConfig.direction === 'asc' ? dateA - dateB : dateB - dateA;
       } else if (certSortConfig.key === 'vessel_name') {
         const aVal = a.vessel_name || (a.team_name ? `Other (${a.team_name})` : 'Fleet');
@@ -1922,14 +1928,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
 
             <div>
-              <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Expiration Date *</label>
-              <input
-                type="date"
-                required
-                value={newCert.expiration_date}
-                onChange={e => setNewCert({ ...newCert, expiration_date: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
-              />
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[10px] font-bold uppercase text-slate-400 block">
+                  Expiration Date {!newCertHasNoExpiration && <span className="text-rose-500">*</span>}
+                </label>
+                <label className="inline-flex items-center gap-1.5 cursor-pointer text-[11px] font-semibold text-slate-600 hover:text-blue-600 transition-colors select-none">
+                  <input
+                    type="checkbox"
+                    checked={newCertHasNoExpiration}
+                    onChange={e => {
+                      const checked = e.target.checked;
+                      setNewCertHasNoExpiration(checked);
+                      if (checked) {
+                        setNewCert({ ...newCert, expiration_date: '' });
+                      }
+                    }}
+                    className="w-3.5 h-3.5 rounded text-blue-600 border-slate-300 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span>No expiration</span>
+                </label>
+              </div>
+              {newCertHasNoExpiration ? (
+                <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold text-slate-500 italic flex items-center justify-between">
+                  <span>No expiration date set (Permanent)</span>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 bg-slate-200 px-2 py-0.5 rounded-md">Permanent</span>
+                </div>
+              ) : (
+                <input
+                  type="date"
+                  required={!newCertHasNoExpiration}
+                  value={newCert.expiration_date}
+                  onChange={e => setNewCert({ ...newCert, expiration_date: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+                />
+              )}
             </div>
           </div>
 
@@ -2006,7 +2038,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <FileText className="w-5 h-5 text-blue-600" />
-                <h2 className="text-base font-bold text-slate-900">Certificate &amp; Service Report List</h2>
+                <h2 className="text-base font-bold text-slate-900">Certificate List</h2>
                 <span className="text-[11px] font-bold px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-full">
                   Showing {filteredCerts.length} of {certs.length}
                 </span>
@@ -2107,6 +2139,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <option value="expiring">Expiring (30-90 days)</option>
                 <option value="expiring soon">Expiring Soon (&lt; 30 days)</option>
                 <option value="expired">Expired</option>
+                <option value="no expiration">No Expiration</option>
               </select>
 
               {/* Sort Dropdown and Direction */}
@@ -2250,7 +2283,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <td className="py-3 px-4 text-blue-700 font-semibold">{c.vessel_name || (c.team_name ? `Other (${c.team_name})` : 'Fleet')}</td>
                         <td className="py-3 px-4 text-slate-600 font-mono">{c.certificate_number || '-'}</td>
                         <td className="py-3 px-4 text-slate-700 font-medium font-mono">
-                          {c.expiration_date ? format(new Date(c.expiration_date), 'yyyy-MM-dd') : '-'}
+                          {c.expiration_date ? format(new Date(c.expiration_date), 'yyyy-MM-dd') : <span className="text-slate-400 italic font-sans text-xs">No expiration</span>}
                         </td>
                         <td className="py-3 px-4">
                           <span className={cn(
@@ -2258,6 +2291,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             status === 'expired' ? "bg-red-100 text-red-700" :
                             status === 'expiring soon' ? "bg-orange-100 text-orange-700" :
                             status === 'expiring' ? "bg-amber-100 text-amber-700" :
+                            status === 'no expiration' ? "bg-slate-100 text-slate-600 border border-slate-200" :
                             "bg-emerald-100 text-emerald-700"
                           )}>
                             {status}

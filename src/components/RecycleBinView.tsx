@@ -192,7 +192,7 @@ export const RecycleBinView: React.FC<RecycleBinViewProps> = ({
       categoryTab: 'certificates',
       categoryLabel: 'Certificate',
       title: c.name || 'Unnamed Certificate',
-      subtitle: `Cert #: ${c.certificate_number || 'N/A'} • Expires: ${c.expiration_date || 'N/A'}`,
+      subtitle: `Cert #: ${c.certificate_number || 'N/A'} • Expires: ${c.expiration_date || 'No expiration'}`,
       vesselName: c.vessel_name || 'Fleet-wide',
       deletedAt: c.deleted_at
     });

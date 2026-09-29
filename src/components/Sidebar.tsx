@@ -395,12 +395,12 @@ export const SidebarContent = ({
                 ? `${certSidebarStatus.totalExpiringCount} expiring/expired certificate(s)`
                 : certSidebarStatus && certSidebarStatus.newlyPostedCount > 0
                   ? `${certSidebarStatus.newlyPostedCount} newly posted certificate(s)`
-                  : 'Certificates & Reports'
+                  : 'Certificates'
             }
           >
             <div className="flex items-center gap-3 min-w-0">
               <FileText className="w-4 h-4 shrink-0" />
-              <span className="truncate">Certificates &amp; Reports</span>
+              <span className="truncate">Certificates</span>
             </div>
 
             <div className="flex items-center gap-1.5 shrink-0 ml-auto">
@@ -447,7 +447,7 @@ export const SidebarContent = ({
                   onClick={() => { setView('admin_add_cert'); setIsSidebarOpen(false); }}
                   className={getSubItemClass(view === 'admin_add_cert')}
                 >
-                  <Plus className="w-3.5 h-3.5 shrink-0" /> Add Cert/Report
+                  <Plus className="w-3.5 h-3.5 shrink-0" /> Add Certificate
                 </button>
                 <button 
                   onClick={() => { setView('admin_cert_list'); setIsSidebarOpen(false); }}
@@ -460,12 +460,12 @@ export const SidebarContent = ({
                       ? `${certSidebarStatus.totalExpiringCount} expiring/expired certificate(s)`
                       : certSidebarStatus && certSidebarStatus.newlyPostedCount > 0
                         ? `${certSidebarStatus.newlyPostedCount} newly posted certificate(s)`
-                        : 'Certificate/Service Report list'
+                        : 'Certificate List'
                   }
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <FileText className="w-3.5 h-3.5 shrink-0" />
-                    <span className="truncate">Certificate/Service Report list</span>
+                    <span className="truncate">Certificate List</span>
                   </div>
                   <div className="flex items-center gap-1 shrink-0 ml-auto">
                     {certSidebarStatus && certSidebarStatus.totalExpiringCount > 0 && (

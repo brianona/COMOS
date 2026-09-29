@@ -10,7 +10,7 @@ import {
   Cloud, Package, Save, Monitor, Laptop, Tag, Play, Pause, ChevronLeft,
   Shield, ShieldAlert, ShieldCheck, Compass, Navigation, Paperclip, Download,
   Droplets, Wrench, FlaskConical, Waves, Camera, Image, Fuel, Network, Info,
-  Printer
+  Printer, Lock, Unlock, Edit3
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, isBefore, addDays, parseISO } from "date-fns";
@@ -181,8 +181,16 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [newNote, setNewNote] = useState('');
   const [search, setSearch] = useState('');
   const [certVesselFilter, setCertVesselFilter] = useState('');
-  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired'>('all');
+  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration'>('all');
   const [newExpDate, setNewExpDate] = useState('');
+  const [sidePanelHasNoExpiration, setSidePanelHasNoExpiration] = useState(false);
+  const [isEditingCertDetails, setIsEditingCertDetails] = useState(false);
+  const [originalCertState, setOriginalCertState] = useState<{
+    certificate_number: string;
+    date_issued: string;
+    expiration_date: string;
+    hasNoExpiration: boolean;
+  } | null>(null);
   const [selectedVessel, setSelectedVessel] = useState<Vessel | null>(null);
   const [vesselCertSearch, setVesselCertSearch] = useState('');
   const [vesselSearch, setVesselSearch] = useState('');
@@ -437,7 +445,30 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [editingVessel, setEditingVessel] = useState<Vessel | null>(null);
   const [editingVesselPhoto, setEditingVesselPhoto] = useState<File | null>(null);
   const [editingCert, setEditingCert] = useState<Certificate | null>(null);
+  const [editingCertHasNoExpiration, setEditingCertHasNoExpiration] = useState(false);
   const [newCertFile, setNewCertFile] = useState<File | null>(null);
+
+  useEffect(() => {
+    if (editingCert) {
+      setEditingCertHasNoExpiration(!editingCert.expiration_date);
+    }
+  }, [editingCert?.id]);
+
+  const handleCloseCertModal = useCallback(() => {
+    setSelectedCert(null);
+    setPreviewFile(null);
+    setIsEditingCertDetails(false);
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && (selectedCert || previewFile)) {
+        handleCloseCertModal();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedCert, previewFile, handleCloseCertModal]);
 
   const [routeForm, setRouteForm] = useState({
     next_port: '',
@@ -811,11 +842,16 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   };
 
   const handleUpdateCert = async () => {
-    if (!editingCert || !editingCert.name || !editingCert.expiration_date) {
-      notify('error', 'Certificate/Service Report name and expiration date are required');
+    if (!editingCert || !editingCert.name) {
+      notify('error', 'Certificate/Service Report name is required');
+      return;
+    }
+    if (!editingCertHasNoExpiration && !editingCert.expiration_date) {
+      notify('error', 'Expiration date is required (or select "No expiration")');
       return;
     }
     try {
+      const finalExpDate = editingCertHasNoExpiration ? null : (editingCert.expiration_date || null);
       const res = await fetch(`/api/certificates/${editingCert.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -825,17 +861,42 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
           name: editingCert.name, 
           certificate_number: editingCert.certificate_number,
           date_issued: editingCert.date_issued,
-          expiration_date: editingCert.expiration_date,
+          expiration_date: finalExpDate,
           access_type: editingCert.access_type
         }),
       });
 
       if (res.ok) {
         notify('success', 'Certificate/Service Report updated successfully');
+        setCerts(prev => prev.map(c => c.id === editingCert.id ? {
+          ...c,
+          name: editingCert.name,
+          vessel_id: editingCert.vessel_id,
+          team_id: editingCert.team_id,
+          certificate_number: editingCert.certificate_number,
+          date_issued: editingCert.date_issued,
+          expiration_date: finalExpDate,
+          access_type: editingCert.access_type
+        } : c));
+        if (selectedCert?.id === editingCert.id) {
+          setSelectedCert(prev => prev ? {
+            ...prev,
+            name: editingCert.name,
+            vessel_id: editingCert.vessel_id,
+            team_id: editingCert.team_id,
+            certificate_number: editingCert.certificate_number,
+            date_issued: editingCert.date_issued,
+            expiration_date: finalExpDate,
+            access_type: editingCert.access_type
+          } : null);
+          setNewExpDate(finalExpDate || '');
+          setSidePanelHasNoExpiration(!finalExpDate);
+        }
         setEditingCert(null);
         fetchData();
       } else {
-        notify('error', 'Failed to update certificate');
+        const err = await res.json().catch(() => ({}));
+        notify('error', err.error || 'Failed to update certificate');
       }
     } catch (err) {
       notify('error', 'Connection error occurred');
@@ -1110,15 +1171,42 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       }
       
       setSelectedCert(cert);
-      setNewExpDate(cert.expiration_date);
+      setNewExpDate(cert.expiration_date || '');
+      setSidePanelHasNoExpiration(!cert.expiration_date);
+      setIsEditingCertDetails(false);
+      setOriginalCertState({
+        certificate_number: cert.certificate_number || '',
+        date_issued: cert.date_issued || '',
+        expiration_date: cert.expiration_date || '',
+        hasNoExpiration: !cert.expiration_date
+      });
     } catch (err) {
       console.error('Failed to fetch cert details:', err);
     }
   };
 
+  const handleCancelEditCert = () => {
+    if (originalCertState && selectedCert) {
+      setSelectedCert({
+        ...selectedCert,
+        certificate_number: originalCertState.certificate_number,
+        date_issued: originalCertState.date_issued,
+        expiration_date: originalCertState.hasNoExpiration ? null : (originalCertState.expiration_date || null),
+      });
+      setNewExpDate(originalCertState.expiration_date);
+      setSidePanelHasNoExpiration(originalCertState.hasNoExpiration);
+    }
+    setIsEditingCertDetails(false);
+  };
+
   const handleSidePanelUpdateCert = async () => {
-    if (!selectedCert || !newExpDate) return;
+    if (!selectedCert) return;
+    if (!sidePanelHasNoExpiration && !newExpDate) {
+      notify('error', 'Expiration date is required (or select "No expiration")');
+      return;
+    }
     try {
+      const finalExpDate = sidePanelHasNoExpiration ? null : (newExpDate || null);
       const res = await fetch(`/api/certificates/${selectedCert.id}`, {
         method: 'PUT',
         headers: { 
@@ -1126,23 +1214,30 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
           Authorization: `Bearer ${token}` 
         },
         body: JSON.stringify({ 
-          expiration_date: newExpDate,
+          expiration_date: finalExpDate,
           date_issued: selectedCert.date_issued,
           certificate_number: selectedCert.certificate_number
         }),
       });
       if (res.ok) {
         notify('success', 'Certificate/Service Report fields updated successfully');
+        setIsEditingCertDetails(false);
+        setOriginalCertState({
+          certificate_number: selectedCert.certificate_number || '',
+          date_issued: selectedCert.date_issued || '',
+          expiration_date: finalExpDate || '',
+          hasNoExpiration: !finalExpDate
+        });
         setCerts(prev => prev.map(c => c.id === selectedCert.id ? { 
           ...c, 
-          expiration_date: newExpDate,
+          expiration_date: finalExpDate,
           date_issued: selectedCert.date_issued,
           certificate_number: selectedCert.certificate_number
         } : c));
         fetchData();
         setSelectedCert({ 
           ...selectedCert, 
-          expiration_date: newExpDate,
+          expiration_date: finalExpDate,
           date_issued: selectedCert.date_issued,
           certificate_number: selectedCert.certificate_number
         });
@@ -1252,7 +1347,8 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
               }
 
               setSelectedCert(updatedCert);
-              setNewExpDate(updatedCert.expiration_date);
+              setNewExpDate(updatedCert.expiration_date || '');
+              setSidePanelHasNoExpiration(!updatedCert.expiration_date);
               notify('success', 'Information recognized and autofilled. Please verify the fields.');
             } else {
               notify('info', 'Document(s) uploaded, but no relevant certificate fields were recognized for autofill.');
@@ -1415,12 +1511,12 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
         if (sortConfig.key === 'status') {
           const sA = getStatus(a.expiration_date);
           const sB = getStatus(b.expiration_date);
-          const statusOrder: Record<string, number> = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3 };
+          const statusOrder: Record<string, number> = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3, 'no expiration': 4 };
           const cmp = (statusOrder[sA] ?? 99) - (statusOrder[sB] ?? 99);
           return sortConfig.direction === 'asc' ? cmp : -cmp;
         } else if (sortConfig.key === 'expiration_date') {
-          const dateA = a.expiration_date ? new Date(a.expiration_date).getTime() : 0;
-          const dateB = b.expiration_date ? new Date(b.expiration_date).getTime() : 0;
+          const dateA = a.expiration_date ? new Date(a.expiration_date).getTime() : (sortConfig.direction === 'asc' ? Infinity : -Infinity);
+          const dateB = b.expiration_date ? new Date(b.expiration_date).getTime() : (sortConfig.direction === 'asc' ? Infinity : -Infinity);
           return sortConfig.direction === 'asc' ? dateA - dateB : dateB - dateA;
         } else if (sortConfig.key === 'vessel_name') {
           const aVal = a.vessel_name || (a.team_name ? `Other (${a.team_name})` : 'Fleet');
@@ -1453,7 +1549,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       : <ArrowDown className="w-3 h-3 ml-1 text-blue-600" />;
   };
 
-  const expiringCerts = certs.filter(c => getStatus(c.expiration_date) !== 'active');
+  const expiringCerts = certs.filter(c => isCertExpiringOrExpired(c.expiration_date));
 
   const fetchDepartureReports = useCallback(async () => {
     setLoadingStates(prev => ({ ...prev, departure: true }));
@@ -2597,13 +2693,13 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                     </div>
 
                     <div className="space-y-3">
-                      {certs.filter(c => getStatus(c.expiration_date) !== 'active').length === 0 ? (
+                      {certs.filter(c => isCertExpiringOrExpired(c.expiration_date)).length === 0 ? (
                         <div className="bg-blue-50/30 p-4 rounded-xl text-center border border-blue-100/30">
                           <CheckCircle2 className="w-5 h-5 text-emerald-500 mx-auto mb-2" />
                           <p className="text-xs text-slate-500 font-semibold">All certificates are healthy and compliant</p>
                         </div>
                       ) : (
-                        certs.filter(c => getStatus(c.expiration_date) !== 'active').slice(0, 4).map(c => {
+                        certs.filter(c => isCertExpiringOrExpired(c.expiration_date)).slice(0, 4).map(c => {
                           const status = getStatus(c.expiration_date);
                           return (
                             <div 
@@ -2841,6 +2937,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                       <option value="expiring">Expiring (30-90 days)</option>
                       <option value="expiring soon">Expiring Soon (&lt; 30 days)</option>
                       <option value="expired">Expired</option>
+                      <option value="no expiration">No Expiration</option>
                     </select>
 
                     {/* Search */}
@@ -2985,7 +3082,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                               {cert.certificate_number || '-'}
                             </td>
                             <td className="px-6 py-4 text-sm font-mono text-slate-600">
-                              {cert.expiration_date}
+                              {cert.expiration_date || <span className="text-slate-400 italic font-sans text-xs">No expiration</span>}
                             </td>
                             <td className="px-6 py-4">
                               <span className={cn(
@@ -2993,6 +3090,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                 getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
                                 getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
                                 getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
+                                getStatus(cert.expiration_date) === 'no expiration' ? "bg-slate-100 text-slate-600 border border-slate-200" :
                                 "bg-blue-100 text-blue-700"
                               )}>
                                 {getStatus(cert.expiration_date)}
@@ -3227,7 +3325,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Expiring/Expired</span>
                         <span className="text-red-500 font-bold">
-                          {certs.filter(c => c.vessel_id === vessel.id && getStatus(c.expiration_date) !== 'active').length}
+                          {certs.filter(c => c.vessel_id === vessel.id && isCertExpiringOrExpired(c.expiration_date)).length}
                         </span>
                       </div>
                     </div>
@@ -4041,7 +4139,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                             <div className="flex items-center gap-2">
                               <FileText className="w-5 h-5 text-blue-600" />
-                              <h3 className="text-base font-extrabold text-slate-900">Certificates & Reports</h3>
+                              <h3 className="text-base font-extrabold text-slate-900">Certificates</h3>
                               {(() => {
                                 const vExpiring = vCerts.filter(c => isCertExpiringOrExpired(c.expiration_date)).length;
                                 const vNew = vCerts.filter(c => isNewlyPosted(c, 7, viewedCertIds)).length;
@@ -4136,7 +4234,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                     </div>
                                     <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
                                       <Clock className="w-3 h-3 text-slate-400" />
-                                      <span>Exp: {cert.expiration_date}</span>
+                                      <span>Exp: {cert.expiration_date || 'No expiration'}</span>
                                     </div>
                                   </div>
 
@@ -4146,6 +4244,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                       getStatus(cert.expiration_date) === 'expired' ? "bg-red-100 text-red-700" :
                                       getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700" :
                                       getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700" :
+                                      getStatus(cert.expiration_date) === 'no expiration' ? "bg-slate-100 text-slate-600 border border-slate-200" :
                                       "bg-emerald-100 text-emerald-700"
                                     )}>
                                       {getStatus(cert.expiration_date)}
@@ -5497,6 +5596,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                             getStatus(cert.expiration_date) === 'expired' ? "bg-red-50 text-red-700" :
                             getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-50 text-orange-700" :
                             getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-50 text-amber-700" :
+                            getStatus(cert.expiration_date) === 'no expiration' ? "bg-slate-100 text-slate-600 border border-slate-200" :
                             "bg-blue-50 text-blue-700"
                           )}>
                             {getStatus(cert.expiration_date)}
@@ -5505,7 +5605,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2 text-xs text-slate-500">
                             <Clock className="w-3 h-3" />
-                            <span>Expires: {cert.expiration_date}</span>
+                            <span>Expires: {cert.expiration_date || 'No expiration'}</span>
                           </div>
                           <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-600 transition-colors" />
                         </div>
@@ -5520,170 +5620,317 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
         )}
 
         {(selectedCert || (previewFile && view !== 'admin_add_cert')) && (
-          <>
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-3 sm:p-4 md:p-6 overflow-hidden">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => {
-                setSelectedCert(null);
-                setPreviewFile(null);
-              }}
-              className="fixed inset-0 bg-blue-900/30 z-[150]"
+              onClick={handleCloseCertModal}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs"
             />
             <motion.div 
-              initial={{ x: '100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: '100%' }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed right-0 top-0 bottom-0 w-full md:w-[700px] bg-white z-[170] shadow-2xl flex flex-col"
+              initial={{ opacity: 0, scale: 0.96, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 15 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+              className="relative w-full max-w-5xl lg:max-w-6xl max-h-[92vh] bg-white rounded-2xl md:rounded-3xl shadow-2xl border border-slate-100 flex flex-col overflow-hidden z-[160]"
             >
-              <div className="p-6 border-b border-blue-50 flex items-center justify-between">
-                <div>
-                  <h2 className="text-xl font-bold text-slate-900">{selectedCert ? selectedCert.name : "Document Preview"}</h2>
-                  <p className="text-sm text-slate-500">{selectedCert ? selectedCert.vessel_name : "Autofill Preview"}</p>
+              {/* Modal Header */}
+              <div className="px-6 py-4 md:px-8 md:py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70 shrink-0">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-md shadow-blue-500/20">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-lg md:text-xl font-extrabold text-slate-900 truncate">
+                        {selectedCert ? selectedCert.name : "Document Preview"}
+                      </h2>
+                      {selectedCert && (
+                        <span className={cn(
+                          "px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1",
+                          getStatus(selectedCert.expiration_date) === 'expired' ? "bg-red-100 text-red-700 border border-red-200" :
+                          getStatus(selectedCert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700 border border-orange-200" :
+                          getStatus(selectedCert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700 border border-amber-200" :
+                          getStatus(selectedCert.expiration_date) === 'no expiration' ? "bg-slate-100 text-slate-700 border border-slate-200" :
+                          "bg-emerald-100 text-emerald-700 border border-emerald-200"
+                        )}>
+                          {getStatus(selectedCert.expiration_date)}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium truncate mt-0.5">
+                      {selectedCert ? (selectedCert.vessel_name || (selectedCert.team_name ? `Other (${selectedCert.team_name})` : 'Fleet-wide')) : "Autofill Preview"}
+                      {selectedCert?.certificate_number && (
+                        <span className="font-mono text-slate-400 ml-2">#{selectedCert.certificate_number}</span>
+                      )}
+                    </p>
+                  </div>
                 </div>
-                <button 
-                  onClick={() => {
-                    setSelectedCert(null);
-                    setPreviewFile(null);
-                  }} 
-                  className="p-2 hover:bg-blue-50 rounded-lg text-slate-400 hover:text-blue-600 transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button 
+                    onClick={handleCloseCertModal} 
+                    className="p-2 hover:bg-slate-200/60 rounded-xl text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+                    title="Close Modal (Esc)"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
 
               <div 
                 ref={sidePanelContentRef}
-                className="flex-1 overflow-auto p-6 space-y-8 custom-scrollbar"
+                className="flex-1 overflow-y-auto p-4 sm:p-6 md:p-8 custom-scrollbar"
               >
-                {/* File Preview Section - Primary Focus */}
-                {previewFile && (
-                  <section>
-                    <div className="flex items-center justify-between mb-3 px-1">
-                      <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Document Preview</label>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full truncate max-w-[200px]">
-                          {previewFile.original_name}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handlePrintDocument(previewFile)}
-                          className="flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-200 text-slate-700 hover:text-blue-600 rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer"
-                          title="Print Document"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                          <span>Print</span>
-                        </button>
-                        <a 
-                          href={tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href}
-                          target="_blank" 
-                          rel="noreferrer"
-                          className="p-1 hover:bg-blue-50 rounded text-blue-400 hover:text-blue-600 transition-colors"
-                          title="Open in new tab"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </div>
-                    </div>
-                    {(() => {
-                      const ext = previewFile.original_name.split('.').pop()?.toLowerCase();
-                      const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
-                      const isPdf = ext === 'pdf';
-                      const fileUrl = tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href;
-
-                      if (isImage) {
-                        return (
-                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden h-[calc(100vh-200px)] max-h-[85vh] min-h-[500px] relative">
-                            <ImageViewer 
-                              url={fileUrl} 
-                              title={previewFile.original_name} 
-                              onPrint={() => handlePrintDocument(previewFile)}
-                            />
-                          </div>
-                        );
-                      } else if (isPdf) {
-                        return (
-                          <div className="rounded-2xl border border-blue-100 bg-blue-50/30 overflow-hidden h-[calc(100vh-200px)] max-h-[85vh] min-h-[500px] relative">
-                            <PDFViewer 
-                              url={fileUrl} 
-                              title={previewFile.original_name} 
-                              onPrint={() => handlePrintDocument(previewFile)}
-                            />
-                          </div>
-                        );
-                      } else {
-                        return (
-                          <div className="p-8 rounded-2xl border border-dashed border-blue-200 bg-blue-50/30 flex flex-col items-center justify-center text-center gap-3">
-                            <File className="w-8 h-8 text-blue-300" />
-                            <p className="text-xs text-slate-500">Preview not available for this file type.<br/><span className="font-mono font-bold text-blue-600">{previewFile.original_name}</span></p>
+                <div className="grid gap-6 md:gap-8 lg:grid-cols-12">
+                  {/* Left Column: Document Preview or Placeholder */}
+                  <div className="lg:col-span-7 flex flex-col space-y-3">
+                    {previewFile ? (
+                      <>
+                        <div className="flex items-center justify-between mb-1 px-1">
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Document Preview</label>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full truncate max-w-[200px]">
+                              {previewFile.original_name}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handlePrintDocument(previewFile)}
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-200 text-slate-700 hover:text-blue-600 rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer"
+                              title="Print Document"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>Print</span>
+                            </button>
                             <a 
-                              href={fileUrl} 
+                              href={tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href}
                               target="_blank" 
                               rel="noreferrer"
-                              className="px-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-100"
+                              className="p-1 hover:bg-blue-50 rounded text-blue-400 hover:text-blue-600 transition-colors"
+                              title="Open in new tab"
                             >
-                              Download to view
+                              <ExternalLink className="w-3 h-3" />
                             </a>
                           </div>
-                        );
-                      }
-                    })()}
-                  </section>
-                )}
+                        </div>
+                        {(() => {
+                          const ext = previewFile.original_name.split('.').pop()?.toLowerCase();
+                          const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
+                          const isPdf = ext === 'pdf';
+                          const fileUrl = tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href;
+
+                          if (isImage) {
+                            return (
+                              <div className="rounded-2xl border border-slate-200/80 bg-slate-50 overflow-hidden h-[460px] lg:h-[620px] relative shadow-inner">
+                                <ImageViewer 
+                                  url={fileUrl} 
+                                  title={previewFile.original_name} 
+                                  onPrint={() => handlePrintDocument(previewFile)}
+                                />
+                              </div>
+                            );
+                          } else if (isPdf) {
+                            return (
+                              <div className="rounded-2xl border border-slate-200/80 bg-slate-50 overflow-hidden h-[460px] lg:h-[620px] relative shadow-inner">
+                                <PDFViewer 
+                                  url={fileUrl} 
+                                  title={previewFile.original_name} 
+                                  onPrint={() => handlePrintDocument(previewFile)}
+                                />
+                              </div>
+                            );
+                          } else {
+                            return (
+                              <div className="p-8 rounded-2xl border border-dashed border-blue-200 bg-blue-50/30 flex flex-col items-center justify-center text-center gap-3">
+                                <File className="w-8 h-8 text-blue-300" />
+                                <p className="text-xs text-slate-500">Preview not available for this file type.<br/><span className="font-mono font-bold text-blue-600">{previewFile.original_name}</span></p>
+                                <a 
+                                  href={fileUrl} 
+                                  target="_blank" 
+                                  rel="noreferrer"
+                                  className="px-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-100"
+                                >
+                                  Download to view
+                                </a>
+                              </div>
+                            );
+                          }
+                        })()}
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between mb-1 px-1">
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Document Preview</label>
+                          <span className="text-[10px] font-bold text-slate-500 bg-slate-100 border border-slate-200/80 px-2 py-0.5 rounded-full">
+                            No File Attached
+                          </span>
+                        </div>
+                        <div className="rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/60 overflow-hidden h-[460px] lg:h-[620px] relative flex flex-col items-center justify-center p-6 sm:p-8 text-center">
+                          <div className="w-16 h-16 rounded-3xl bg-white border border-slate-200 text-slate-400 flex items-center justify-center mb-4 shadow-sm">
+                            <FileText className="w-8 h-8 text-slate-300 stroke-[1.5]" />
+                          </div>
+                          <h3 className="text-base font-bold text-slate-800 mb-1.5">
+                            No Certificate File Uploaded
+                          </h3>
+                          <p className="text-xs text-slate-400 max-w-sm leading-relaxed mb-6 font-medium">
+                            There is currently no digital document attached to this certificate. Upload a certificate file to inspect and preview it here.
+                          </p>
+                          {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
+                            <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-blue-500/20 active:scale-98">
+                              <Upload className="w-4 h-4" />
+                              <span>Upload Certificate File</span>
+                              <input type="file" multiple className="hidden" onChange={handleFileUpload} />
+                            </label>
+                          )}
+                          <p className="text-[10px] text-slate-400 mt-4 font-mono">
+                            Supports PDF, PNG, JPG, JPEG, WEBP
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Right Column: Details, Files, and Notes */}
+                  <div className="lg:col-span-5 flex flex-col space-y-6">
 
                 {/* Info Section */}
                 {selectedCert && (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between ml-1">
-                      <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Details</label>
-                      {isRecognizing && (
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 animate-pulse flex items-center gap-1">
-                          <RefreshCw className="w-2 h-2 animate-spin" /> Analyzing Document...
-                        </span>
-                      )}
+                  <div className="bg-slate-50/70 p-4 sm:p-5 rounded-2xl border border-slate-100 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">Certificate Details</label>
+                        {isEditingCertDetails ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-extrabold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md">
+                            <Unlock className="w-3 h-3 text-amber-600" /> Editing Mode
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                            <Lock className="w-3 h-3 text-slate-400" /> Locked
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {isRecognizing && (
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 animate-pulse flex items-center gap-1">
+                            <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Analyzing Document...
+                          </span>
+                        )}
+                        {!isEditingCertDetails && (user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
+                          <button 
+                            type="button"
+                            onClick={() => setIsEditingCertDetails(true)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                            title="Edit certificate details"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>Edit Details</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
+
                     <div className="space-y-1">
                       <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Cert Number</label>
                       <input 
                         type="text" 
                         value={selectedCert.certificate_number || ''}
-                        readOnly={!(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user')}
+                        readOnly={!isEditingCertDetails}
                         onChange={(e) => setSelectedCert({...selectedCert, certificate_number: e.target.value})}
-                        className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
-                        placeholder="N/A"
+                        className={cn(
+                          "w-full px-4 py-2 rounded-xl text-sm transition-all",
+                          isEditingCertDetails 
+                            ? "bg-white border border-blue-400 ring-2 ring-blue-500/20 text-slate-900" 
+                            : "bg-slate-100/70 border border-slate-200 text-slate-700 cursor-default select-text"
+                        )}
+                        placeholder={isEditingCertDetails ? "Enter certificate number" : "N/A"}
                       />
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div className="space-y-1">
                         <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Date Issued</label>
                         <input 
                           type="date" 
                           value={selectedCert.date_issued || ''}
-                          readOnly={!(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user')}
+                          readOnly={!isEditingCertDetails}
+                          disabled={!isEditingCertDetails}
                           onChange={(e) => setSelectedCert({...selectedCert, date_issued: e.target.value})}
-                          className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
+                          className={cn(
+                            "w-full px-3 py-2 rounded-xl text-sm transition-all",
+                            isEditingCertDetails 
+                              ? "bg-white border border-blue-400 ring-2 ring-blue-500/20 text-slate-900" 
+                              : "bg-slate-100/70 border border-slate-200 text-slate-700 cursor-default"
+                          )}
                         />
                       </div>
+
                       <div className="space-y-1">
-                        <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
-                        <input 
-                          type="date" 
-                          value={newExpDate}
-                          readOnly={!(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user')}
-                          onChange={(e) => setNewExpDate(e.target.value)}
-                          className="w-full px-4 py-2 bg-blue-50/50 rounded-xl text-sm border-none focus:ring-2 focus:ring-blue-500/20 read-only:opacity-70"
-                        />
+                        <div className="flex items-center justify-between ml-1 mb-1">
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            Expiration {!sidePanelHasNoExpiration && <span className="text-rose-500">*</span>}
+                          </label>
+                          {isEditingCertDetails && (
+                            <label className="inline-flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-700 hover:text-blue-600 transition-colors select-none bg-white hover:bg-blue-50 px-2 py-0.5 rounded-lg border border-slate-200 shadow-2xs">
+                              <input
+                                type="checkbox"
+                                checked={sidePanelHasNoExpiration}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setSidePanelHasNoExpiration(checked);
+                                  if (checked) {
+                                    setNewExpDate('');
+                                  }
+                                }}
+                                className="w-3.5 h-3.5 rounded text-blue-600 border-slate-300 focus:ring-blue-500 cursor-pointer"
+                              />
+                              <span>No expiration</span>
+                            </label>
+                          )}
+                        </div>
+                        {sidePanelHasNoExpiration ? (
+                          <div className="w-full px-3 py-2 bg-slate-100/80 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 italic flex items-center justify-between shadow-2xs">
+                            <span className="flex items-center gap-1.5">
+                              <Check className="w-3.5 h-3.5 text-blue-600" />
+                              Permanent
+                            </span>
+                            <span className="text-[9px] uppercase font-bold text-slate-500 bg-slate-200 px-1.5 py-0.5 rounded">No expiration</span>
+                          </div>
+                        ) : (
+                          <input 
+                            type="date" 
+                            value={newExpDate || ''}
+                            readOnly={!isEditingCertDetails}
+                            disabled={!isEditingCertDetails}
+                            onChange={(e) => setNewExpDate(e.target.value)}
+                            className={cn(
+                              "w-full px-3 py-2 rounded-xl text-sm transition-all",
+                              isEditingCertDetails 
+                                ? "bg-white border border-blue-400 ring-2 ring-blue-500/20 text-slate-900" 
+                                : "bg-slate-100/70 border border-slate-200 text-slate-700 cursor-default"
+                            )}
+                          />
+                        )}
                       </div>
                     </div>
-                    {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
-                      <button 
-                        onClick={handleSidePanelUpdateCert}
-                        className="w-full py-3 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-800 transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2"
-                      >
-                        <Save className="w-4 h-4" /> Save All Changes
-                      </button>
+
+                    {/* Save & Cancel Buttons (Only shown in Editing Mode) */}
+                    {isEditingCertDetails && (
+                      <div className="flex items-center gap-2 pt-2 border-t border-slate-200/60">
+                        <button 
+                          type="button"
+                          onClick={handleCancelEditCert}
+                          className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={handleSidePanelUpdateCert}
+                          className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-blue-500/20 flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          <Save className="w-4 h-4" /> Save Changes
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}
@@ -5934,44 +6181,42 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                       )}
                       <div ref={notesEndRef} />
                     </div>
+
+                    <div className="flex gap-2 pt-3 border-t border-slate-200/70 mt-3">
+                      <input 
+                        type="text" 
+                        placeholder="Add a note..." 
+                        value={newNote}
+                        onChange={(e) => setNewNote(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleAddNote();
+                          }
+                        }}
+                        className="flex-1 px-3.5 py-2.5 bg-white border border-slate-200/80 rounded-xl text-xs focus:ring-2 focus:ring-blue-500/20 font-medium"
+                      />
+                      <button 
+                        onClick={handleAddNote}
+                        disabled={!newNote.trim()}
+                        className={cn(
+                          "p-2.5 rounded-xl transition-all shadow-sm flex items-center justify-center shrink-0 cursor-pointer",
+                          newNote.trim() 
+                            ? "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-100" 
+                            : "bg-slate-200 text-slate-400 shadow-none cursor-not-allowed"
+                        )}
+                        title="Add Note"
+                      >
+                        <MessageSquare className="w-4 h-4 fill-current" />
+                      </button>
+                    </div>
                   </section>
                 )}
-              </div>
-
-              {/* Pinned Input At Bottom */}
-              {selectedCert && (
-                <div className="p-6 border-t border-blue-50 bg-white">
-                  <div className="flex gap-2 p-1">
-                    <input 
-                      type="text" 
-                      placeholder="Add a note..." 
-                      value={newNote}
-                      onChange={(e) => setNewNote(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handleAddNote();
-                        }
-                      }}
-                      className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 transition-all font-medium"
-                    />
-                    <button 
-                      onClick={handleAddNote}
-                      disabled={!newNote.trim()}
-                      className={cn(
-                        "p-3 rounded-xl transition-all shadow-lg flex items-center justify-center",
-                        newNote.trim() 
-                          ? "bg-blue-600 text-white hover:bg-blue-700 shadow-blue-100" 
-                          : "bg-slate-100 text-slate-300 shadow-none cursor-not-allowed"
-                      )}
-                    >
-                      <MessageSquare className="w-5 h-5 fill-current" />
-                    </button>
                   </div>
                 </div>
-              )}
+              </div>
             </motion.div>
-          </>
+          </div>
         )}
       </AnimatePresence>,
       document.body
@@ -6250,13 +6495,45 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 ml-1">Expiration Date</label>
-                        <input 
-                          type="date" 
-                          value={editingCert.expiration_date}
-                          onChange={(e) => setEditingCert({...editingCert, expiration_date: e.target.value})}
-                          className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
-                        />
+                        <div className="flex items-center justify-between ml-1 mb-1">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            Expiration Date {!editingCertHasNoExpiration && <span className="text-rose-500">*</span>}
+                          </label>
+                          <label className="inline-flex items-center gap-1.5 cursor-pointer text-xs font-semibold text-slate-700 hover:text-blue-600 transition-colors select-none bg-slate-100/90 hover:bg-blue-50 px-2 py-0.5 rounded-lg border border-slate-200">
+                            <input
+                              type="checkbox"
+                              checked={editingCertHasNoExpiration}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setEditingCertHasNoExpiration(checked);
+                                if (checked) {
+                                  setEditingCert({ ...editingCert, expiration_date: null });
+                                } else {
+                                  setEditingCert({ ...editingCert, expiration_date: '' });
+                                }
+                              }}
+                              className="w-3.5 h-3.5 rounded text-blue-600 border-slate-300 focus:ring-blue-500 cursor-pointer"
+                            />
+                            <span>No expiration</span>
+                          </label>
+                        </div>
+                        {editingCertHasNoExpiration ? (
+                          <div className="w-full px-4 py-2.5 bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 italic flex items-center justify-between shadow-2xs">
+                            <span className="flex items-center gap-1.5">
+                              <Check className="w-3.5 h-3.5 text-blue-600" />
+                              No expiration date set
+                            </span>
+                            <span className="text-[10px] uppercase font-bold text-slate-500 bg-slate-200 px-2 py-0.5 rounded-md">Permanent</span>
+                          </div>
+                        ) : (
+                          <input 
+                            type="date" 
+                            required={!editingCertHasNoExpiration}
+                            value={editingCert.expiration_date || ''}
+                            onChange={(e) => setEditingCert({...editingCert, expiration_date: e.target.value})}
+                            className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
+                          />
+                        )}
                       </div>
                     </div>
                     <div className="space-y-1">

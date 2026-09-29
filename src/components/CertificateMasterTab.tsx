@@ -478,7 +478,7 @@ export const CertificateMasterTab: React.FC<CertificateMasterTabProps> = ({
             <div>
               <h3 className="text-base font-bold text-slate-900">Certificate Names & Categories Master</h3>
               <p className="text-xs text-slate-500">
-                Manage valid certificate names and statutory categories. Valid items populate the "Add Cert/Report" dropdown for vessel reporting.
+                Manage valid certificate names and statutory categories. Valid items populate the "Add Certificate" dropdown for vessel reporting.
               </p>
             </div>
           </div>

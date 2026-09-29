@@ -133,6 +133,7 @@ export const SMSFindReportView: React.FC<SMSFindReportViewProps> = ({
     vesselName?: string;
     orderLabel?: string;
     blobUrl?: string;
+    blob?: Blob;
     arrayBuffer?: ArrayBuffer;
     isLoading?: boolean;
   } | null>(null);

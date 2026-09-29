@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, parseISO } from "date-fns";
-import { cn, parseCoordinate, getStatus } from "../utils/helpers";
+import { cn, parseCoordinate, getStatus, isCertExpiringOrExpired } from "../utils/helpers";
 import { Vessel, NoonReport, Certificate, ArrivalReport, DepartureReport, OtherReport } from "../types";
 
 type MapStyleKey = 'dark' | 'nautical' | 'natgeo';
@@ -512,8 +512,12 @@ export const SlideshowView = ({
   const lastPos = getLatestVesselPosition(vessel.id);
   const latStr = lastPos ? lastPos.position_lat : '';
   const lonStr = lastPos ? lastPos.position_long : '';
-  const vesselCerts = certs.filter(c => c.vessel_id === vessel.id && getStatus(c.expiration_date) !== 'active')
-    .sort((a, b) => new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime())
+  const vesselCerts = certs.filter(c => c.vessel_id === vessel.id && isCertExpiringOrExpired(c.expiration_date))
+    .sort((a, b) => {
+      const timeA = a.expiration_date ? new Date(a.expiration_date).getTime() : Infinity;
+      const timeB = b.expiration_date ? new Date(b.expiration_date).getTime() : Infinity;
+      return timeA - timeB;
+    })
     .slice(0, 10);
 
   return (
@@ -713,13 +717,14 @@ export const SlideshowView = ({
                       >
                         <div className="min-w-0 flex-1 pr-4">
                           <p className="text-sm font-bold text-white truncate group-hover/item:text-blue-400 transition-colors">{cert.name}</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5 font-mono">Expires: {cert.expiration_date}</p>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5 font-mono">Expires: {cert.expiration_date || 'No expiration'}</p>
                         </div>
                         <span className={cn(
                           "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest shrink-0 shadow-lg",
                           getStatus(cert.expiration_date) === 'expired' ? "bg-red-600/60 text-white border border-red-500/50" : 
                           getStatus(cert.expiration_date) === 'expiring soon' ? "bg-orange-600/60 text-white border border-orange-500/50" :
-                          "bg-amber-600/60 text-white border border-amber-500/50"
+                          getStatus(cert.expiration_date) === 'expiring' ? "bg-amber-600/60 text-white border border-amber-500/50" :
+                          "bg-slate-700 text-slate-200 border border-slate-600"
                         )}>
                           {getStatus(cert.expiration_date)}
                         </span>

@@ -2733,9 +2733,21 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                       <button
                         type="button"
                         onClick={() => handleDownloadOrderTemplatesZip(order.id, order.label)}
-                        disabled={downloadingTemplatesZipOrderId === order.id}
-                        className="p-1.5 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors cursor-pointer"
-                        title="Download blank templates (ZIP)"
+                        disabled={Boolean(downloadingTemplatesZipOrderId)}
+                        className={`p-1.5 rounded-lg border transition-all ${
+                          downloadingTemplatesZipOrderId === order.id
+                            ? 'bg-blue-50 text-blue-600 border-blue-300 shadow-inner cursor-wait pointer-events-none'
+                            : downloadingTemplatesZipOrderId
+                            ? 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed opacity-50'
+                            : 'text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 border-slate-200 cursor-pointer'
+                        }`}
+                        title={
+                          downloadingTemplatesZipOrderId === order.id
+                            ? 'Downloading & packaging templates ZIP... Please wait.'
+                            : downloadingTemplatesZipOrderId
+                            ? 'Another template download is currently processing...'
+                            : 'Download blank templates (ZIP)'
+                        }
                       >
                         {downloadingTemplatesZipOrderId === order.id ? (
                           <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />
@@ -2749,9 +2761,21 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                         <button
                           type="button"
                           onClick={() => handleDownloadZip(order.id, order.label)}
-                          disabled={downloadingZipOrderId === order.id}
-                          className="p-1.5 text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors cursor-pointer"
-                          title="Download submitted files (ZIP)"
+                          disabled={Boolean(downloadingZipOrderId)}
+                          className={`p-1.5 rounded-lg border transition-all ${
+                            downloadingZipOrderId === order.id
+                              ? 'bg-blue-50 text-blue-600 border-blue-300 shadow-inner cursor-wait pointer-events-none'
+                              : downloadingZipOrderId
+                              ? 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed opacity-50'
+                              : 'text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 border-slate-200 cursor-pointer'
+                          }`}
+                          title={
+                            downloadingZipOrderId === order.id
+                              ? 'Downloading & compiling uploaded files ZIP... Please wait.'
+                              : downloadingZipOrderId
+                              ? 'Another download is currently processing...'
+                              : 'Download submitted files (ZIP)'
+                          }
                         >
                           {downloadingZipOrderId === order.id ? (
                             <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin" />
@@ -3519,12 +3543,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             <button
               onClick={() => onDownloadZip(order.id, order.label, activeVessel ? activeVessel.vessel_id : undefined)}
               disabled={isDownloadingZip}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all ${
                 isDownloadingZip
-                  ? 'bg-blue-50 text-blue-700 border-blue-300 shadow-inner cursor-wait'
-                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200 hover:border-slate-300'
+                  ? 'bg-blue-50 text-blue-700 border-blue-300 shadow-inner cursor-not-allowed pointer-events-none opacity-75'
+                  : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200 hover:border-slate-300 cursor-pointer'
               }`}
-              title={isDownloadingZip ? "Downloading of uploaded files is processing... Packaging files into ZIP" : "Download all uploaded vessel files (ZIP)"}
+              title={isDownloadingZip ? "Compiling and packaging uploaded files into ZIP... Please wait." : "Download all uploaded vessel files (ZIP)"}
             >
               {isDownloadingZip ? (
                 <Loader2 className="w-3.5 h-3.5 text-blue-600 animate-spin shrink-0" />

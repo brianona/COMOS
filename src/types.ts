@@ -100,7 +100,7 @@ export interface Certificate {
   team_name: string;
   owner?: "Nissen" | "Goodwill" | null;
   name: string;
-  expiration_date: string;
+  expiration_date: string | null;
   date_issued?: string | null;
   certificate_number?: string | null;
   access_type: "office" | "vessel" | "any";

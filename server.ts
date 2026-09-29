@@ -290,11 +290,26 @@ async function startServer() {
       port: dbPort,
       waitForConnections: true,
       connectionLimit: 10,
+      maxIdle: 10,
+      idleTimeout: 30000,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 10000,
       queueLimit: 0,
       connectTimeout: 10000,
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
     });
     globalPool = pool;
+
+    // Periodic keep-alive ping to ensure connections never drop on idle
+    setInterval(async () => {
+      try {
+        if (pool) {
+          await pool.query('SELECT 1');
+        }
+      } catch (pingErr) {
+        // Silently catch; connection pool re-establishes on demand
+      }
+    }, 25000).unref();
 
     const rawExecute = pool.execute.bind(pool);
     const rawQuery = pool.query.bind(pool);
@@ -472,7 +487,7 @@ async function startServer() {
           username
         });
       } catch (err) {
-        // Silently swallow errors (e.g. during initial table creation)
+        
       }
     };
 
@@ -491,22 +506,61 @@ async function startServer() {
           });
         }
       } catch (err) {
-        // Ignore notification errors
+        
       }
     };
 
+    const isRetryableError = (err: any): boolean => {
+      if (!err) return false;
+      const code = err.code || '';
+      const msg = err.message || '';
+      return (
+        code === 'ECONNRESET' ||
+        code === 'PROTOCOL_CONNECTION_LOST' ||
+        code === 'ETIMEDOUT' ||
+        code === 'EPIPE' ||
+        code === 'ER_SERVER_SHUTDOWN' ||
+        code === 'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR' ||
+        msg.includes('ECONNRESET') ||
+        msg.includes('Connection lost') ||
+        msg.includes('closed')
+      );
+    };
+
     pool.query = (async (...args: any[]) => {
-      const res = await rawQuery(...args);
-      logQueryToAudit(args[0], args[1], res);
-      notifyDbChangeFromSql(args[0]);
-      return res;
+      try {
+        const res = await rawQuery(...args);
+        logQueryToAudit(args[0], args[1], res);
+        notifyDbChangeFromSql(args[0]);
+        return res;
+      } catch (err: any) {
+        if (isRetryableError(err)) {
+          console.warn(`[MySQL] Connection reset detected in query (${err.code || err.message}). Retrying once...`);
+          const res = await rawQuery(...args);
+          logQueryToAudit(args[0], args[1], res);
+          notifyDbChangeFromSql(args[0]);
+          return res;
+        }
+        throw err;
+      }
     }) as any;
 
     pool.execute = (async (...args: any[]) => {
-      const res = await rawExecute(...args);
-      logQueryToAudit(args[0], args[1], res);
-      notifyDbChangeFromSql(args[0]);
-      return res;
+      try {
+        const res = await rawExecute(...args);
+        logQueryToAudit(args[0], args[1], res);
+        notifyDbChangeFromSql(args[0]);
+        return res;
+      } catch (err: any) {
+        if (isRetryableError(err)) {
+          console.warn(`[MySQL] Connection reset detected in execute (${err.code || err.message}). Retrying once...`);
+          const res = await rawExecute(...args);
+          logQueryToAudit(args[0], args[1], res);
+          notifyDbChangeFromSql(args[0]);
+          return res;
+        }
+        throw err;
+      }
     }) as any;
 
     pool.getConnection = (async () => {
@@ -769,7 +823,7 @@ async function startServer() {
         vessel_id INT,
         team_id INT NOT NULL,
         name VARCHAR(255) NOT NULL,
-        expiration_date DATE NOT NULL,
+        expiration_date DATE NULL,
         FOREIGN KEY (vessel_id) REFERENCES vessels(id),
         FOREIGN KEY (team_id) REFERENCES teams(id)
       )
@@ -792,6 +846,12 @@ async function startServer() {
       if (vesselIdCol && vesselIdCol.Null === 'NO') {
         console.log('Migrating certificates table: Making vessel_id nullable...');
         await pool.query('ALTER TABLE certificates MODIFY COLUMN vessel_id INT NULL');
+      }
+
+      const expDateCol = columns.find((c: any) => c.Field === 'expiration_date');
+      if (expDateCol && expDateCol.Null === 'NO') {
+        console.log('Migrating certificates table: Making expiration_date nullable for No expiration support...');
+        await pool.query('ALTER TABLE certificates MODIFY COLUMN expiration_date DATE NULL');
       }
 
       // Drop unique key if it exists as it might conflict with null vessel_id
@@ -2373,9 +2433,11 @@ async function startServer() {
     storage
   });
   
-  // Request logging
+  // Request logging (API routes only)
   app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    if (req.url.startsWith('/api')) {
+      console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    }
     next();
   });
 
@@ -5305,14 +5367,30 @@ async function startServer() {
       .trim();
   };
 
+  let vesselIdentityCache: { id: string; name: string }[] = [];
+  let vesselIdentityCacheTime = 0;
+
   async function getVesselUserIdentity(poolRef: any, userObj: any) {
-    if (!poolRef || !userObj) return { vesselId: null, vesselName: null };
+    if (!userObj) return { vesselId: null, vesselName: null };
     let vId = userObj.vessel_id != null ? String(userObj.vessel_id) : null;
-    let vName: string | null = null;
+    let vName: string | null = userObj.vessel_name != null ? String(userObj.vessel_name) : null;
+
+    if (vId && vName) {
+      return { vesselId: vId, vesselName: vName };
+    }
 
     try {
-      if (!vId && userObj.id) {
-        const [uRows]: any = await poolRef.execute('SELECT vessel_id, username, role FROM users WHERE id = ?', [userObj.id]);
+      const now = Date.now();
+      if (!vesselIdentityCache.length || now - vesselIdentityCacheTime > 60000) {
+        if (poolRef) {
+          const [rows]: any = await poolRef.query('SELECT id, name FROM vessels');
+          vesselIdentityCache = (rows || []).map((r: any) => ({ id: String(r.id), name: r.name }));
+          vesselIdentityCacheTime = now;
+        }
+      }
+
+      if (!vId && userObj.id && poolRef) {
+        const [uRows]: any = await poolRef.query('SELECT vessel_id, username, role FROM users WHERE id = ?', [userObj.id]);
         if (uRows.length > 0 && uRows[0].vessel_id) {
           vId = String(uRows[0].vessel_id);
         }
@@ -5320,25 +5398,25 @@ async function startServer() {
 
       if (vId) {
         const cleanId = vId.replace(/^v/i, '').trim();
-        const [vRows]: any = await poolRef.execute('SELECT id, name FROM vessels WHERE id = ? OR id = ? OR name = ?', [vId, cleanId, vId]);
-        if (vRows.length > 0) {
-          vName = vRows[0].name;
+        const matched = vesselIdentityCache.find(v => v.id === vId || v.id === cleanId || v.name.toLowerCase() === vId.toLowerCase());
+        if (matched) {
+          vName = matched.name;
         }
       }
 
       if (!vName && userObj.username) {
-        const uTrim = userObj.username.trim();
-        const [vRows]: any = await poolRef.execute(
-          'SELECT id, name FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ?',
-          [uTrim, uTrim.toLowerCase(), `%${uTrim.toLowerCase()}%`]
-        );
-        if (vRows.length > 0) {
-          if (!vId) vId = String(vRows[0].id);
-          vName = vRows[0].name;
+        const uTrim = userObj.username.trim().toLowerCase();
+        const matched = vesselIdentityCache.find(v => v.name.toLowerCase() === uTrim || v.name.toLowerCase().includes(uTrim));
+        if (matched) {
+          if (!vId) vId = matched.id;
+          vName = matched.name;
         }
       }
-    } catch (err) {
-      console.error('Error getting vessel user identity:', err);
+    } catch (err: any) {
+      // Gracefully fall back to whatever identity info we already have
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('Notice: Non-critical lookup in getVesselUserIdentity:', err?.message || err);
+      }
     }
 
     return { vesselId: vId, vesselName: vName };
@@ -8029,6 +8107,13 @@ async function startServer() {
       const finalAccessType = access_type || 'office';
       const finalDateIssued = date_issued || null;
       const finalCertNumber = certificate_number || null;
+      const sanitizeExpDate = (val: any) => {
+        if (!val) return null;
+        const s = String(val).trim();
+        if (s === '' || s.toLowerCase() === 'no expiration' || s.toLowerCase() === 'null' || s.toLowerCase() === 'none' || s.toLowerCase() === 'n/a') return null;
+        return s;
+      };
+      const finalExpirationDate = sanitizeExpDate(expiration_date);
       
       const saveFiles = async (certId: number) => {
         const incomingFiles: any[] = (req.files as any[]) || (req.file ? [req.file] : []);
@@ -8047,7 +8132,7 @@ async function startServer() {
       if (vessel_id === 'all') {
         const [vessels]: any = await pool.query('SELECT id, team_id FROM vessels');
         for (const v of vessels) {
-          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
+          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalAccessType]);
           await saveFiles(result.insertId);
         }
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for ALL vessels`);
@@ -8058,12 +8143,12 @@ async function startServer() {
           const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
-        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
+        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalAccessType]);
         await saveFiles(result.insertId);
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for vessel ID ${vessel_id}`);
       } else {
         // Non-vessel related
-        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, expiration_date, finalAccessType]);
+        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalAccessType]);
         await saveFiles(result.insertId);
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for team ID ${team_id}`);
       }
@@ -8080,29 +8165,60 @@ async function startServer() {
       if (certs.length === 0) return res.status(404).json({ error: 'Certificate not found' });
       const cert = certs[0];
 
+      const sanitizeExpDate = (val: any) => {
+        if (val === undefined) return undefined;
+        if (!val) return null;
+        const s = String(val).trim();
+        if (s === '' || s.toLowerCase() === 'no expiration' || s.toLowerCase() === 'null' || s.toLowerCase() === 'none' || s.toLowerCase() === 'n/a') return null;
+        return s;
+      };
+
+      const sanitizeDate = (val: any) => {
+        if (val === undefined) return undefined;
+        if (!val) return null;
+        const s = String(val).trim();
+        if (s === '' || s.toLowerCase() === 'null' || s.toLowerCase() === 'none' || s.toLowerCase() === 'n/a') return null;
+        return s;
+      };
+
+      const sanitizeText = (val: any) => {
+        if (val === undefined) return undefined;
+        if (!val) return null;
+        const s = String(val).trim();
+        return s === '' ? null : s;
+      };
+
       if (req.user.role === 'admin' || req.user.role === 'team_pic' || req.user.role === 'user') {
-        const finalName = name !== undefined ? name : cert.name;
-        const finalVesselId = vessel_id !== undefined ? vessel_id : cert.vessel_id;
-        const finalExpirationDate = expiration_date !== undefined ? expiration_date : cert.expiration_date;
-        const finalDateIssued = date_issued !== undefined ? date_issued : cert.date_issued;
-        const finalCertNumber = certificate_number !== undefined ? certificate_number : cert.certificate_number;
+        const finalName = name !== undefined && name !== null && String(name).trim() !== '' ? String(name).trim() : cert.name;
+        const finalVesselId = (vessel_id !== undefined && vessel_id !== '' && vessel_id !== null) ? Number(vessel_id) : (vessel_id === null || vessel_id === '' ? null : cert.vessel_id);
+        const sanitizedExp = sanitizeExpDate(expiration_date);
+        const finalExpirationDate = sanitizedExp !== undefined ? sanitizedExp : cert.expiration_date;
+        const sanitizedDateIssued = sanitizeDate(date_issued);
+        const finalDateIssued = sanitizedDateIssued !== undefined ? sanitizedDateIssued : cert.date_issued;
+        const sanitizedCertNum = sanitizeText(certificate_number);
+        const finalCertNumber = sanitizedCertNum !== undefined ? sanitizedCertNum : cert.certificate_number;
         const finalAccessType = access_type !== undefined ? access_type : cert.access_type;
         
-        let finalTeamId = team_id !== undefined ? team_id : cert.team_id;
-        if (vessel_id && team_id === undefined) {
-          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
+        let finalTeamId = cert.team_id;
+        if (team_id !== undefined && team_id !== '' && team_id !== null && !isNaN(Number(team_id))) {
+          finalTeamId = Number(team_id);
+        } else if (finalVesselId) {
+          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [finalVesselId]);
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
 
         await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, date_issued = ?, certificate_number = ?, access_type = ? WHERE id = ?', 
-          [finalName, finalVesselId || null, finalTeamId, finalExpirationDate, finalDateIssued, finalCertNumber, finalAccessType, req.params.id]);
+          [finalName, finalVesselId, finalTeamId, finalExpirationDate, finalDateIssued, finalCertNumber, finalAccessType, req.params.id]);
         await pool.execute('DELETE FROM sent_email_alerts WHERE certificate_id = ?', [req.params.id]);
         await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE', `Updated certificate ID ${req.params.id}: ${finalName}`);
       } else {
         // Non-admins can update expiration date, date issued, and certificate number
-        const finalExpirationDate = expiration_date !== undefined ? expiration_date : cert.expiration_date;
-        const finalDateIssued = date_issued !== undefined ? date_issued : cert.date_issued;
-        const finalCertNumber = certificate_number !== undefined ? certificate_number : cert.certificate_number;
+        const sanitizedExp = sanitizeExpDate(expiration_date);
+        const finalExpirationDate = sanitizedExp !== undefined ? sanitizedExp : cert.expiration_date;
+        const sanitizedDateIssued = sanitizeDate(date_issued);
+        const finalDateIssued = sanitizedDateIssued !== undefined ? sanitizedDateIssued : cert.date_issued;
+        const sanitizedCertNum = sanitizeText(certificate_number);
+        const finalCertNumber = sanitizedCertNum !== undefined ? sanitizedCertNum : cert.certificate_number;
 
         if (req.user.role === 'vessel') {
           if (cert.vessel_id !== req.user.vessel_id || !['vessel', 'any'].includes(cert.access_type)) {
@@ -9950,7 +10066,9 @@ Generated by COMOS System
       const vesselAlerts: Record<number, { vesselName: string, alerts: any[], email: string | null }> = {};
 
       for (const cert of certs) {
+        if (!cert.expiration_date) continue;
         const expDate = new Date(cert.expiration_date);
+        if (isNaN(expDate.getTime())) continue;
         if (isBefore(expDate, sixtyDaysFromNow)) {
           let status = 'EXPIRING';
           if (isBefore(expDate, today)) status = 'EXPIRED';

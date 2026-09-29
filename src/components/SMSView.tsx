@@ -3987,7 +3987,7 @@ startxref
               >
                 <option value="all">🌐 All Fleet (Universal Scopes)</option>
                 {vesselsList.map(v => (
-                  <option key={v.id} value={String(v.id)}>🚢 {v.name} ({v.type || 'Vessel'})</option>
+                  <option key={v.id} value={String(v.id)}>🚢 {v.name} ({v.vessel_type || (v as any).type || 'Vessel'})</option>
                 ))}
               </select>
             </div>
@@ -4055,7 +4055,7 @@ startxref
                   </h4>
                   <p className="text-[11px] text-slate-400 font-medium">
                     {selectedVesselObj 
-                      ? `Displaying forms applicable to ${selectedVesselObj.name} (${selectedVesselObj.type || 'Vessel'})`
+                      ? `Displaying forms applicable to ${selectedVesselObj.name} (${selectedVesselObj.vessel_type || (selectedVesselObj as any).type || 'Vessel'})`
                       : 'All approved standardized forms and checklists registered in this category.'
                     }
                   </p>
