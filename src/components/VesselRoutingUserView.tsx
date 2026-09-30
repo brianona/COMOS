@@ -42,7 +42,18 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
   latestOperationType
 }) => {
   const currentNavStatus = form.route_status || '';
-  const currentOperationType = form.operation_type !== undefined ? (form.operation_type || '') : (latestOperationType || '');
+  const rawOperationType = form.operation_type !== undefined ? (form.operation_type || '') : (latestOperationType || '');
+  const currentOperationType = (() => {
+    const trimmed = (rawOperationType || '').trim();
+    const upper = trimmed.toUpperCase();
+    if (upper === 'DISCHARGING') return 'Discharging';
+    if (upper === 'LOADING') return 'Loading';
+    if (upper === 'DISCHARGING AND LOADING') return 'Discharging and Loading';
+    if (upper === 'BUNKERING') return 'Bunkering';
+    if (upper === 'SHIP-TO-SHIP' || upper === 'SHIP-TO-SHIP CARGO OPERATION') return 'Ship-to-ship';
+    if (upper === 'OTHERS' || upper === 'OTHER') return 'Others';
+    return trimmed;
+  })();
   const currentLoadStatus = form.loading_status || (currentOperationType.toUpperCase() === 'DISCHARGING' ? 'Ballast' : 'Laden');
   const nextPortValue = form.next_port !== undefined ? form.next_port : (vessel.next_port || '');
 
@@ -145,13 +156,13 @@ export const VesselRoutingUserView: React.FC<VesselRoutingUserViewProps> = ({
               <option value="">Select Operation</option>
               <option value="Discharging">Discharging</option>
               <option value="Loading">Loading</option>
-              <option value="DISCHARGING">DISCHARGING</option>
-              <option value="LOADING">LOADING</option>
+              <option value="Discharging and Loading">Discharging and Loading</option>
               <option value="Bunkering">Bunkering</option>
-              <option value="BUNKERING">BUNKERING</option>
-              <option value="Ship-to-Ship">Ship-to-Ship</option>
-              <option value="ship-to-ship cargo operation">SHIP-TO-SHIP</option>
+              <option value="Ship-to-ship">Ship-to-ship</option>
               <option value="Others">Others</option>
+              {currentOperationType && !['', 'Discharging', 'Loading', 'Discharging and Loading', 'Bunkering', 'Ship-to-ship', 'Others'].includes(currentOperationType) && (
+                <option value={currentOperationType}>{currentOperationType}</option>
+              )}
             </select>
           </div>
 
