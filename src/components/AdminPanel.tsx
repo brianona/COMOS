@@ -90,7 +90,6 @@ interface Certificate {
   certificate_number?: string;
   date_issued?: string;
   expiration_date: string | null;
-  access_type?: 'office' | 'vessel' | 'any';
   vessel_name?: string;
   team_name?: string;
   file_name?: string;
@@ -1290,9 +1289,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     certificate_number: '',
     date_issued: '',
     expiration_date: '',
-    vessel_id: vessels[0]?.id ? String(vessels[0].id) : '',
-    team_id: '',
-    access_type: 'any'
+    vessel_id: user?.role === 'vessel' && user?.vessel_id ? String(user.vessel_id) : (vessels[0]?.id ? String(vessels[0].id) : ''),
+    team_id: ''
   });
   const [newCertHasNoExpiration, setNewCertHasNoExpiration] = useState(false);
   const [certFiles, setCertFiles] = useState<File[]>([]);
@@ -1384,7 +1382,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setIsSubmittingCert(true);
     try {
       const formData = new FormData();
-      Object.entries(newCert).forEach(([k, v]) => {
+      const payloadCert = {
+        ...newCert,
+        vessel_id: user?.role === 'vessel' && user?.vessel_id ? String(user.vessel_id) : newCert.vessel_id
+      };
+      Object.entries(payloadCert).forEach(([k, v]) => {
         if (v) formData.append(k, String(v));
       });
       if (newCertHasNoExpiration) {
@@ -1411,9 +1413,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           certificate_number: '',
           date_issued: '',
           expiration_date: '',
-          vessel_id: vessels[0]?.id ? String(vessels[0].id) : '',
-          team_id: '',
-          access_type: 'any'
+          vessel_id: user?.role === 'vessel' && user?.vessel_id ? String(user.vessel_id) : (vessels[0]?.id ? String(vessels[0].id) : ''),
+          team_id: ''
         });
         setNewCertHasNoExpiration(false);
         setIsCustomCertName(false);
@@ -1752,16 +1753,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Vessel *</label>
-              <select
-                value={newCert.vessel_id}
-                onChange={e => setNewCert({ ...newCert, vessel_id: e.target.value })}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
-              >
-                <option value="">Fleet-wide / Office</option>
-                {vessels.map(v => (
-                  <option key={v.id} value={v.id}>{v.name}</option>
-                ))}
-              </select>
+              {user?.role === 'vessel' ? (
+                <div className="w-full px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700">
+                  {vessels.find(v => v.id === user.vessel_id)?.name || 'Assigned Vessel'}
+                </div>
+              ) : (
+                <select
+                  value={newCert.vessel_id}
+                  onChange={e => setNewCert({ ...newCert, vessel_id: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none cursor-pointer"
+                >
+                  <option value="">Fleet-wide / Office</option>
+                  {vessels.map(v => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div>

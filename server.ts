@@ -32,6 +32,13 @@ import mammoth from 'mammoth';
 import { CAT1_CERTS, CAT2_CERTS, CAT3_CERTS, CAT4_CERTS, CAT5_CERTS, CAT6_CERTS, CAT7_CERTS, cleanCertificateName, compareCertificatesNumerically, getCategoryMinCertNumber } from './src/data/certificates';
 import { GraphifyEngine } from './src/services/graphifyScanner';
 import { globalRealtimeEngine, extractTableAndDomainFromSql } from './server_realtime';
+import { 
+  createOptimizedPool, 
+  pollingCache, 
+  dbRateLimitBreaker, 
+  isRateLimitError, 
+  startPoolHeartbeat 
+} from './server_pool';
 
 const graphifyEngine = new GraphifyEngine();
 
@@ -240,6 +247,7 @@ async function startServer() {
   let dbNameUsed: string = 'vessel_cert';
   let dbPassSource: string = 'fallback';
   let dbPassLength: number = 0;
+  let tablesInitialized = false;
   let initializeTables: ((activePool: mysql.Pool) => Promise<void>) | null = null;
 
   try {
@@ -281,35 +289,19 @@ async function startServer() {
 
     console.log(`Connecting to MySQL with Host: ${dbHost}, Port: ${dbPort}, User: ${dbUser}, Database: ${dbName}, Password Length: ${dbPass ? dbPass.length : 0}`);
 
-    console.log('Initializing MySQL connection pool...');
-    pool = mysql.createPool({
+    console.log('Initializing optimized MySQL connection pool with persistent connection reuse...');
+    pool = createOptimizedPool({
       host: dbHost,
       user: dbUser,
       password: dbPass,
       database: dbName,
       port: dbPort,
-      waitForConnections: true,
-      connectionLimit: 10,
-      maxIdle: 10,
-      idleTimeout: 30000,
-      enableKeepAlive: true,
-      keepAliveInitialDelay: 10000,
-      queueLimit: 0,
-      connectTimeout: 10000,
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined
     });
     globalPool = pool;
 
-    // Periodic keep-alive ping to ensure connections never drop on idle
-    setInterval(async () => {
-      try {
-        if (pool) {
-          await pool.query('SELECT 1');
-        }
-      } catch (pingErr) {
-        // Silently catch; connection pool re-establishes on demand
-      }
-    }, 25000).unref();
+    // Start proactive keepalive heartbeat to prevent provider timeout disconnection
+    startPoolHeartbeat(pool);
 
     const rawExecute = pool.execute.bind(pool);
     const rawQuery = pool.query.bind(pool);
@@ -375,9 +367,14 @@ async function startServer() {
           return null;
         }
 
-        const queryValues = (typeof values !== 'function' && values !== undefined)
+        const isFileTable = table === 'files' || table === 'sms_uploads' || table === 'sms_order_uploads' || table.endsWith('_attachments') || table.endsWith('_files');
+        const rawValues = (typeof values !== 'function' && values !== undefined)
           ? values
           : (typeof sql === 'object' && sql ? sql.values : undefined);
+
+        const queryValues = isFileTable 
+          ? ['[Binary File/Document Content Omitted]'] 
+          : rawValues;
 
         let recordId: string | null = null;
         if (queryResult && queryResult[0] && queryResult[0].insertId) {
@@ -461,8 +458,9 @@ async function startServer() {
           ? String(req.headers['x-forwarded-for']).split(',')[0].trim()
           : (req.ip || req.socket?.remoteAddress || null);
 
-        const formattedValues = parsed.queryValues ? JSON.stringify(parsed.queryValues) : 'None';
-        const details = `${parsed.summary}\n[SQL]: ${parsed.sqlStr}\n[Params]: ${formattedValues}`;
+        const formattedValues = parsed.queryValues ? formatQueryDetails(sql, parsed.queryValues) : 'None';
+        const rawDetails = `${parsed.summary}\n[SQL]: ${parsed.sqlStr}\n[Params]: ${formattedValues}`;
+        const details = rawDetails.length > 30000 ? rawDetails.substring(0, 30000) + '... [Truncated]' : rawDetails;
 
         await rawExecute(
           'INSERT INTO audit_logs (user_id, username, user_role, ip_address, action, table_name, record_id, query_type, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -497,6 +495,8 @@ async function startServer() {
         if (changeInfo) {
           const store = asyncLocalStorage.getStore();
           const req = store?.req;
+          // Purge relevant in-memory polling cache entries immediately
+          pollingCache.invalidateDomain(changeInfo.domain);
           globalRealtimeEngine.notifyChange({
             domain: changeInfo.domain,
             action: changeInfo.verb.toLowerCase(),
@@ -512,6 +512,8 @@ async function startServer() {
 
     const isRetryableError = (err: any): boolean => {
       if (!err) return false;
+      // Rate limit errors should NOT be blindly retried as it worsens the limit!
+      if (isRateLimitError(err)) return false;
       const code = err.code || '';
       const msg = err.message || '';
       return (
@@ -534,6 +536,10 @@ async function startServer() {
         notifyDbChangeFromSql(args[0]);
         return res;
       } catch (err: any) {
+        if (isRateLimitError(err)) {
+          dbRateLimitBreaker.triggerCooldown(err.message || 'Exceeded max_connections_per_hour', 60000);
+          throw err;
+        }
         if (isRetryableError(err)) {
           console.warn(`[MySQL] Connection reset detected in query (${err.code || err.message}). Retrying once...`);
           const res = await rawQuery(...args);
@@ -552,6 +558,10 @@ async function startServer() {
         notifyDbChangeFromSql(args[0]);
         return res;
       } catch (err: any) {
+        if (isRateLimitError(err)) {
+          dbRateLimitBreaker.triggerCooldown(err.message || 'Exceeded max_connections_per_hour', 60000);
+          throw err;
+        }
         if (isRetryableError(err)) {
           console.warn(`[MySQL] Connection reset detected in execute (${err.code || err.message}). Retrying once...`);
           const res = await rawExecute(...args);
@@ -585,7 +595,6 @@ async function startServer() {
       return conn;
     }) as any;
     
-    let tablesInitialized = false;
     initializeTables = async (activePool: mysql.Pool) => {
       if (tablesInitialized) return;
       console.log('Initializing database tables...');
@@ -2474,9 +2483,20 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Database availability middleware
+  // Database availability middleware with Rate-Limit Circuit Breaker
   app.use('/api', (req, res, next) => {
-    if (req.path === '/health' || req.path === '/db-status') return next();
+    if (req.path === '/health' || req.path === '/db-status' || req.path === '/retry-db') return next();
+
+    if (dbRateLimitBreaker.isCoolingDown()) {
+      const waitSec = dbRateLimitBreaker.getRemainingCooldownSec();
+      return res.status(503).json({
+        error: 'Database rate limit active',
+        details: `Exceeded max_connections_per_hour from database host. Circuit breaker active for ${waitSec}s to allow provider limit window to reset.`,
+        coolingDown: true,
+        retryAfter: waitSec
+      });
+    }
+
     if (!pool || dbError) {
       return res.status(503).json({ 
         error: 'Database not available', 
@@ -2490,19 +2510,43 @@ async function startServer() {
   // Health check
   app.get('/api/health', (req, res) => {
     res.json({ 
-      connected: !!pool && !dbError,
-      status: pool && !dbError ? 'ok' : 'degraded', 
-      database: pool && !dbError ? 'connected' : 'disconnected',
-      error: dbError,
+      connected: !!pool && !dbError && !dbRateLimitBreaker.isCoolingDown(),
+      status: pool && !dbError && !dbRateLimitBreaker.isCoolingDown() ? 'ok' : 'degraded', 
+      database: pool && !dbError && !dbRateLimitBreaker.isCoolingDown() ? 'connected' : 'disconnected',
+      coolingDown: dbRateLimitBreaker.isCoolingDown(),
+      error: dbRateLimitBreaker.isCoolingDown() ? dbRateLimitBreaker.getErrorMessage() : dbError,
       timestamp: new Date().toISOString() 
     });
   });
 
   app.get('/api/db-status', async (req, res) => {
     try {
+      // Check in-memory polling cache first to avoid slamming the database on rapid polls
+      const cached = pollingCache.get('db:status');
+      if (cached) {
+        return res.json(cached);
+      }
+
       const host = process.env.DB_HOST || 'localhost';
       const port = Number(process.env.DB_PORT) || 3306;
       const outboundIp = await getOutboundIp();
+
+      // If circuit breaker is active, return immediately without triggering new connection attempts
+      if (dbRateLimitBreaker.isCoolingDown()) {
+        const remaining = dbRateLimitBreaker.getRemainingCooldownSec();
+        const payload = {
+          connected: false,
+          error: dbRateLimitBreaker.getErrorMessage(),
+          errorCode: 'ER_USER_LIMIT_REACHED',
+          coolingDown: true,
+          retryAfter: remaining,
+          tcpStatus: 'RATE_LIMIT_COOLDOWN',
+          webStatus: 'SKIPPED',
+          outboundIp: outboundIp
+        };
+        pollingCache.set('db:status', payload, 5000);
+        return res.json(payload);
+      }
 
       // Quick TCP check for port 3306 first (1.5s timeout)
       let tcpCheck = 'PENDING';
@@ -2523,10 +2567,13 @@ async function startServer() {
       if (tcpCheck === 'OPEN' && pool) {
         try {
           await pool.query('SELECT 1');
-          if (initializeTables) await initializeTables(pool);
+          if (initializeTables && !tablesInitialized) await initializeTables(pool);
           dbError = null;
           (pool as any)._dbErrorCode = null;
         } catch (pingErr: any) {
+          if (isRateLimitError(pingErr)) {
+            dbRateLimitBreaker.triggerCooldown(pingErr.message || 'Exceeded max_connections_per_hour', 60000);
+          }
           dbError = pingErr.message;
           (pool as any)._dbErrorCode = pingErr.code;
         }
@@ -2535,14 +2582,19 @@ async function startServer() {
         if (pool) (pool as any)._dbErrorCode = tcpCheck === 'TIMEOUT' ? 'ETIMEDOUT' : 'TCP_ERROR';
       }
 
-      res.json({ 
-        connected: !!pool && !dbError && tcpCheck === 'OPEN',
+      const responsePayload = { 
+        connected: !!pool && !dbError && tcpCheck === 'OPEN' && !dbRateLimitBreaker.isCoolingDown(),
         error: dbError,
         errorCode: (pool as any)?._dbErrorCode || null,
+        coolingDown: dbRateLimitBreaker.isCoolingDown(),
         tcpStatus: tcpCheck,
         webStatus: 'SKIPPED',
         outboundIp: outboundIp
-      });
+      };
+
+      // Cache for 10 seconds to throttle rapid polling handshakes
+      pollingCache.set('db:status', responsePayload, 10000);
+      res.json(responsePayload);
     } catch (err: any) {
       console.error('CRITICAL ERROR in /api/db-status:', err);
       res.status(500).json({ 
@@ -2554,13 +2606,18 @@ async function startServer() {
 
   app.post('/api/retry-db', async (req, res) => {
     try {
+      dbRateLimitBreaker.reset();
+      pollingCache.delete('db:status');
       if (pool) {
         try {
           await pool.query('SELECT 1');
-          if (initializeTables) await initializeTables(pool);
+          if (initializeTables && !tablesInitialized) await initializeTables(pool);
           dbError = null;
           (pool as any)._dbErrorCode = null;
         } catch (pingErr: any) {
+          if (isRateLimitError(pingErr)) {
+            dbRateLimitBreaker.triggerCooldown(pingErr.message, 60000);
+          }
           dbError = pingErr.message;
           (pool as any)._dbErrorCode = pingErr.code;
         }
@@ -2570,9 +2627,10 @@ async function startServer() {
       const outboundIp = await getOutboundIp();
 
       res.json({
-        connected: !!pool && !dbError,
+        connected: !!pool && !dbError && !dbRateLimitBreaker.isCoolingDown(),
         error: dbError,
         errorCode: (pool as any)?._dbErrorCode || null,
+        coolingDown: dbRateLimitBreaker.isCoolingDown(),
         outboundIp
       });
     } catch (err: any) {
@@ -3109,6 +3167,13 @@ async function startServer() {
     const user_id = req.user.id;
     const currentDeviceId = String(req.headers['x-device-id'] || req.query.device_id || req.body?.device_id || '').trim();
 
+    const isGet = req.method === 'GET';
+    const cacheKey = `device:check:${user_id}:${currentDeviceId}`;
+    if (isGet) {
+      const cached = pollingCache.get(cacheKey);
+      if (cached) return res.json(cached);
+    }
+
     try {
       const [userRows]: any = await pool.execute(
         'SELECT id, username, role, device_id, is_verified, vessel_id FROM users WHERE id = ?',
@@ -3207,7 +3272,7 @@ async function startServer() {
         is_verified: isVerified
       }, JWT_SECRET);
 
-      return res.json({
+      const payload = {
         success: true,
         is_verified: isVerified,
         status: isVerified ? 'approved' : (latestRequest ? latestRequest.status : 'idle'),
@@ -3226,7 +3291,13 @@ async function startServer() {
           device_id: user.device_id,
           is_verified: isVerified
         }
-      });
+      };
+
+      if (isGet) {
+        pollingCache.set(cacheKey, payload, 4000);
+      }
+
+      return res.json(payload);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -3239,6 +3310,10 @@ async function startServer() {
   app.get('/api/admin/device-requests', authenticate, isTeamPicOrAdmin, async (req, res) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
     try {
+      const cacheKey = 'device:pending-requests';
+      const cached = pollingCache.get(cacheKey);
+      if (cached) return res.json(cached);
+
       const [rows]: any = await pool.query(`
         SELECT dr.*, u.username, v.name as vessel_name 
         FROM device_registration_requests dr
@@ -3247,6 +3322,7 @@ async function startServer() {
         WHERE dr.status = 'pending'
         ORDER BY dr.created_at DESC
       `);
+      pollingCache.set(cacheKey, rows, 10000);
       res.json(rows);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -5815,6 +5891,12 @@ async function startServer() {
 
   app.get('/api/sms/orders/sidebar-status', authenticate, async (req: any, res) => {
     try {
+      const cacheKey = `sms:sidebar-status:${req.user?.id}:${req.user?.role}:${req.user?.vessel_id || ''}`;
+      const cached = pollingCache.get(cacheKey);
+      if (cached) {
+        return res.json(cached);
+      }
+
       if (!pool) {
         return res.json({
           statusColor: 'normal',
@@ -6005,7 +6087,7 @@ async function startServer() {
         }
       }
 
-      res.json({
+      const payload = {
         statusColor,
         urgentCount,
         uncheckedCount,
@@ -6014,7 +6096,10 @@ async function startServer() {
         hasUrgentDeadline: urgentCount > 0,
         hasUncheckedUploads: uncheckedCount > 0,
         hasReplaceRequests: replaceRequestedCount > 0
-      });
+      };
+
+      pollingCache.set(cacheKey, payload, 15000);
+      res.json(payload);
     } catch (e: any) {
       console.warn('Handled warning in /api/sms/orders/sidebar-status:', e?.message || e);
       res.json({
@@ -7818,7 +7903,7 @@ async function startServer() {
     `;
     let params: any[] = [];
     if (req.user.role === 'vessel') {
-      query += ` AND c.vessel_id = ? AND c.access_type IN ('vessel', 'any')`;
+      query += ` AND c.vessel_id = ?`;
       params = [req.user.vessel_id];
     } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
       const teamIds = req.user.team_ids || [];
@@ -7826,7 +7911,7 @@ async function startServer() {
         return res.json([]);
       }
       const placeholders = teamIds.map(() => '?').join(',');
-      query += ` AND c.team_id IN (${placeholders}) AND c.access_type IN ('office', 'vessel', 'any')`;
+      query += ` AND c.team_id IN (${placeholders})`;
       params = teamIds;
     }
     const [certs] = await pool.execute(query, params);
@@ -7855,7 +7940,7 @@ async function startServer() {
       `;
       let params: any[] = [];
       if (req.user.role === 'vessel') {
-        query += ` AND c.vessel_id = ? AND c.access_type IN ('vessel', 'any')`;
+        query += ` AND c.vessel_id = ?`;
         params = [req.user.vessel_id];
       } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
         const teamIds = req.user.team_ids || [];
@@ -7863,7 +7948,7 @@ async function startServer() {
           return res.json({ expiredCount: 0, expiringCount: 0, totalExpiringCount: 0, newlyPostedCount: 0 });
         }
         const placeholders = teamIds.map(() => '?').join(',');
-        query += ` AND c.team_id IN (${placeholders}) AND c.access_type IN ('office', 'vessel', 'any')`;
+        query += ` AND c.team_id IN (${placeholders})`;
         params = teamIds;
       }
 
@@ -8085,14 +8170,13 @@ async function startServer() {
   });
 
   app.post('/api/certificates', authenticate, canAddCertificate, upload.any(), async (req: any, res) => {
-    const { vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type } = req.body;
+    let { vessel_id, team_id, name, certificate_number, date_issued, expiration_date } = req.body;
     try {
       if (req.user.role === 'vessel') {
-        if (Number(vessel_id) !== req.user.vessel_id) {
+        if (!vessel_id || Number(vessel_id) === Number(req.user.vessel_id)) {
+          vessel_id = req.user.vessel_id;
+        } else {
           return res.status(403).json({ error: 'Vessel users can only add certificates to their own vessel' });
-        }
-        if (access_type !== 'vessel') {
-          return res.status(403).json({ error: 'Vessel users can only add ship certificates' });
         }
       }
 
@@ -8104,7 +8188,6 @@ async function startServer() {
         }
         if (vessel_id === 'all') return res.status(403).json({ error: 'PIC/Management roles cannot add certificates to all vessels' });
       }
-      const finalAccessType = access_type || 'office';
       const finalDateIssued = date_issued || null;
       const finalCertNumber = certificate_number || null;
       const sanitizeExpDate = (val: any) => {
@@ -8121,7 +8204,7 @@ async function startServer() {
           const { file_type } = req.body;
           for (const file of incomingFiles) {
             const uploadData = await handleFileUpload(file.originalname, file.mimetype, file.buffer, 'certificates');
-            await pool.execute(
+            await pool.query(
               'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
               [certId, file.originalname, file.originalname, file.mimetype, file_type || 'certificate', uploadData]
             );
@@ -8132,7 +8215,7 @@ async function startServer() {
       if (vessel_id === 'all') {
         const [vessels]: any = await pool.query('SELECT id, team_id FROM vessels');
         for (const v of vessels) {
-          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalAccessType]);
+          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
           await saveFiles(result.insertId);
         }
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for ALL vessels`);
@@ -8143,12 +8226,12 @@ async function startServer() {
           const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
-        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalAccessType]);
+        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
         await saveFiles(result.insertId);
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for vessel ID ${vessel_id}`);
       } else {
         // Non-vessel related
-        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, access_type) VALUES (?, ?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalAccessType]);
+        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
         await saveFiles(result.insertId);
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for team ID ${team_id}`);
       }
@@ -8159,7 +8242,7 @@ async function startServer() {
   });
 
   app.put('/api/certificates/:id', authenticate, async (req: any, res) => {
-    const { name, vessel_id, team_id, expiration_date, date_issued, certificate_number, access_type } = req.body;
+    const { name, vessel_id, team_id, expiration_date, date_issued, certificate_number } = req.body;
     try {
       const [certs]: any = await pool.execute('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
       if (certs.length === 0) return res.status(404).json({ error: 'Certificate not found' });
@@ -8197,7 +8280,6 @@ async function startServer() {
         const finalDateIssued = sanitizedDateIssued !== undefined ? sanitizedDateIssued : cert.date_issued;
         const sanitizedCertNum = sanitizeText(certificate_number);
         const finalCertNumber = sanitizedCertNum !== undefined ? sanitizedCertNum : cert.certificate_number;
-        const finalAccessType = access_type !== undefined ? access_type : cert.access_type;
         
         let finalTeamId = cert.team_id;
         if (team_id !== undefined && team_id !== '' && team_id !== null && !isNaN(Number(team_id))) {
@@ -8207,12 +8289,13 @@ async function startServer() {
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
 
-        await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, date_issued = ?, certificate_number = ?, access_type = ? WHERE id = ?', 
-          [finalName, finalVesselId, finalTeamId, finalExpirationDate, finalDateIssued, finalCertNumber, finalAccessType, req.params.id]);
+        await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', 
+          [finalName, finalVesselId, finalTeamId, finalExpirationDate, finalDateIssued, finalCertNumber, req.params.id]);
         await pool.execute('DELETE FROM sent_email_alerts WHERE certificate_id = ?', [req.params.id]);
         await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE', `Updated certificate ID ${req.params.id}: ${finalName}`);
       } else {
-        // Non-admins can update expiration date, date issued, and certificate number
+        // Non-admins and vessel users can update certificate name, expiration date, date issued, and certificate number
+        const finalName = name !== undefined && name !== null && String(name).trim() !== '' ? String(name).trim() : cert.name;
         const sanitizedExp = sanitizeExpDate(expiration_date);
         const finalExpirationDate = sanitizedExp !== undefined ? sanitizedExp : cert.expiration_date;
         const sanitizedDateIssued = sanitizeDate(date_issued);
@@ -8221,18 +8304,18 @@ async function startServer() {
         const finalCertNumber = sanitizedCertNum !== undefined ? sanitizedCertNum : cert.certificate_number;
 
         if (req.user.role === 'vessel') {
-          if (cert.vessel_id !== req.user.vessel_id || !['vessel', 'any'].includes(cert.access_type)) {
+          if (Number(cert.vessel_id) !== Number(req.user.vessel_id)) {
             return res.status(403).json({ error: 'Forbidden' });
           }
         } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
-          if (!req.user.team_ids.includes(cert.team_id) || !['office', 'vessel', 'any'].includes(cert.access_type)) {
+          if (!req.user.team_ids.includes(cert.team_id)) {
             return res.status(403).json({ error: 'Forbidden' });
           }
         }
 
-        await pool.execute('UPDATE certificates SET expiration_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', [finalExpirationDate, finalDateIssued, finalCertNumber, req.params.id]);
+        await pool.execute('UPDATE certificates SET name = ?, expiration_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', [finalName, finalExpirationDate, finalDateIssued, finalCertNumber, req.params.id]);
         await pool.execute('DELETE FROM sent_email_alerts WHERE certificate_id = ?', [req.params.id]);
-        await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_FIELDS', `Updated fields for certificate: ${cert.name} (ID: ${req.params.id})`);
+        await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_FIELDS', `Updated fields for certificate: ${finalName} (ID: ${req.params.id})`);
       }
       res.json({ success: true });
     } catch (e: any) {
@@ -8645,17 +8728,38 @@ Generated by COMOS System
     if (!incomingFiles || incomingFiles.length === 0) return res.status(400).json({ error: 'No file uploaded' });
     const { file_type } = req.body;
     try {
+      const certId = Number(req.params.id);
+      if (isNaN(certId)) return res.status(400).json({ error: 'Invalid certificate ID' });
+
+      // Verify certificate exists and permissions
+      const [certs]: any = await pool.query('SELECT * FROM certificates WHERE id = ? AND deleted_at IS NULL', [certId]);
+      if (!certs || certs.length === 0) {
+        return res.status(404).json({ error: 'Certificate not found or has been deleted' });
+      }
+      const cert = certs[0];
+
+      if (req.user.role === 'vessel') {
+        if (cert.vessel_id && Number(cert.vessel_id) !== Number(req.user.vessel_id)) {
+          return res.status(403).json({ error: 'Forbidden: Vessel users can only upload files to certificates of their own vessel' });
+        }
+      } else if (req.user.role === 'user' || req.user.role === 'team_pic') {
+        const teamIds = req.user.team_ids || [];
+        if (cert.team_id && !teamIds.includes(Number(cert.team_id))) {
+          return res.status(403).json({ error: 'Forbidden: You do not have access to this team certificate' });
+        }
+      }
+
       const insertedFiles: any[] = [];
       for (const file of incomingFiles) {
         const uploadData = await handleFileUpload(file.originalname, file.mimetype, file.buffer, 'certificates');
-        const [insertResult]: any = await pool.execute(
+        const [insertResult]: any = await pool.query(
           'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
-          [req.params.id, file.originalname, file.originalname, file.mimetype, file_type || 'certificate', uploadData]
+          [certId, file.originalname, file.originalname, file.mimetype, file_type || 'certificate', uploadData]
         );
-        await logAudit(req.user.id, req.user.username, 'UPLOAD_FILE', `Uploaded ${file_type || 'certificate'} file: ${file.originalname} to certificate ID ${req.params.id}`);
+        await logAudit(req.user.id, req.user.username, 'UPLOAD_FILE', `Uploaded ${file_type || 'certificate'} file: ${file.originalname} to certificate ID ${certId}`);
         insertedFiles.push({ 
           id: insertResult.insertId,
-          certificate_id: Number(req.params.id),
+          certificate_id: certId,
           filename: file.originalname,
           original_name: file.originalname,
           mimetype: file.mimetype,
@@ -8666,7 +8770,7 @@ Generated by COMOS System
       res.json(insertedFiles.length === 1 ? insertedFiles[0] : { success: true, files: insertedFiles, count: insertedFiles.length });
     } catch (err: any) {
       console.error('File upload failed:', err);
-      res.status(500).json({ error: 'Failed to save file to database' });
+      res.status(500).json({ error: err.message || 'Failed to save file to database' });
     }
   });
 
@@ -10033,12 +10137,8 @@ Generated by COMOS System
       `;
       
       let params: any[] = [];
-      if (targetType === 'office') {
-        query += " AND c.access_type IN (?, ?)";
-        params = ['office', 'any'];
-      } else if (targetType === 'vessel') {
-        query += " AND c.access_type IN (?, ?) AND c.vessel_id IS NOT NULL";
-        params = ['vessel', 'any'];
+      if (targetType === 'vessel') {
+        query += " AND c.vessel_id IS NOT NULL";
       }
 
       const [certs]: any = await pool.query(query, params);
@@ -10076,16 +10176,16 @@ Generated by COMOS System
           
           const alertData = { ...cert, status };
 
-          // Office/Any certificates go to office alerts
-          if (targetType === 'office' || (!targetType && (cert.access_type === 'office' || cert.access_type === 'any'))) {
+          // Office alerts
+          if (targetType === 'office' || !targetType) {
             const officeKey = `${cert.id}:${alertRecipient.toLowerCase().trim()}:${status}`;
             if (!sentAlertSet.has(officeKey)) {
               officeAlerts.push(alertData);
             }
           }
 
-          // Vessel certificates go to vessel alerts
-          if (targetType === 'vessel' || (!targetType && (cert.access_type === 'vessel' || (cert.access_type === 'any' && cert.vessel_id)))) {
+          // Vessel alerts
+          if (targetType === 'vessel' || !targetType) {
             if (cert.vessel_id) {
               if (!vesselAlerts[cert.vessel_id]) {
                 const [vesselUsers]: any = await pool.execute(

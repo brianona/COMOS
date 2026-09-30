@@ -103,7 +103,7 @@ export interface Certificate {
   expiration_date: string | null;
   date_issued?: string | null;
   certificate_number?: string | null;
-  access_type: "office" | "vessel" | "any";
+  access_type?: "office" | "vessel" | "any" | string | null;
   has_file?: boolean;
   created_at?: string | null;
   updated_at?: string | null;
