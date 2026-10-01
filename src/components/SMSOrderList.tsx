@@ -1080,17 +1080,11 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     return count;
   }, [userVisibleOrders, isVesselUser]);
 
-  // Reusable order templates saved by the user themselves
+  // Reusable order templates visible to all non-vessel users
   const userVisibleTemplates = useMemo(() => {
-    if (!currentUser) return [];
-    const myId = currentUser.id != null ? String(currentUser.id).trim() : '';
-    const myName = (currentUser.username || '').toLowerCase().trim();
-    return templates.filter(t => {
-      const matchId = t.createdById && myId && String(t.createdById) === myId;
-      const matchName = t.createdBy && myName && t.createdBy.toLowerCase().trim() === myName;
-      return matchId || matchName;
-    });
-  }, [templates, currentUser]);
+    if (!currentUser || isVesselUser) return [];
+    return templates;
+  }, [templates, currentUser, isVesselUser]);
 
   // Request Delete Order (Opens Custom Modal)
   const requestDeleteOrder = (orderId: string, label: string) => {
@@ -3086,6 +3080,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           templates={userVisibleTemplates}
           availableForms={availableForms}
           token={token}
+          currentUser={currentUser}
           onClose={() => setIsTemplatesModalOpen(false)}
           onRequestDeleteTemplate={(tplId, title) => {
             setConfirmModal({
@@ -4998,21 +4993,27 @@ interface TemplatesManagerModalProps {
   templates: OrderTemplate[];
   availableForms: SMSForm[];
   token: string;
+  currentUser?: CurrentUser | null;
   onClose: () => void;
   onApplyTemplate: (tpl: OrderTemplate) => void;
   onRequestDeleteTemplate: (tplId: string, title: string) => void;
-  onRefresh: () => void;
+  onRefresh?: () => void;
 }
 
 const TemplatesManagerModal: React.FC<TemplatesManagerModalProps> = ({
   templates,
   availableForms,
   token,
+  currentUser,
   onClose,
   onApplyTemplate,
   onRequestDeleteTemplate,
   onRefresh
 }) => {
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'super_admin';
+  const myId = currentUser?.id != null ? String(currentUser.id).trim() : '';
+  const myName = (currentUser?.username || '').toLowerCase().trim();
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200">
       <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
@@ -5020,9 +5021,9 @@ const TemplatesManagerModal: React.FC<TemplatesManagerModalProps> = ({
           <div className="space-y-0.5">
             <span className="text-[10px] font-black uppercase text-blue-600 tracking-wider">SMS Templates</span>
             <h2 className="text-lg font-black text-slate-800 tracking-tight">Saved Order Templates</h2>
-            <p className="text-xs text-slate-500">Only showing reusable templates saved by yourself</p>
+            <p className="text-xs text-slate-500">Reusable templates available across office and management users</p>
           </div>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 rounded-full">
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 rounded-full cursor-pointer">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -5031,46 +5032,56 @@ const TemplatesManagerModal: React.FC<TemplatesManagerModalProps> = ({
           {templates.length === 0 ? (
             <div className="text-center py-10 space-y-2 text-slate-400">
               <BookmarkPlus className="w-8 h-8 mx-auto stroke-[1.5]" />
-              <p className="text-xs font-bold">No saved order templates found for your account.</p>
-              <p className="text-[11px]">When creating an order list, check "Save this form list as a reusable Order Template" to save your personal templates for fast reuse.</p>
+              <p className="text-xs font-bold">No saved order templates found.</p>
+              <p className="text-[11px]">When creating an order list, check "Save this form list as a reusable Order Template" to save templates for fast reuse across all office users.</p>
             </div>
           ) : (
-            templates.map(tpl => (
-              <div
-                key={tpl.id}
-                className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs hover:border-slate-200 transition-all flex items-start justify-between gap-4"
-              >
-                <div className="space-y-1 min-w-0 flex-1">
-                  <h4 className="text-sm font-black text-slate-800">{tpl.title}</h4>
-                  {tpl.description && <p className="text-xs text-slate-500">{tpl.description}</p>}
-                  <div className="flex items-center gap-2 pt-1">
-                    <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-[10px] font-bold">
-                      {tpl.itemFormIds.length} Forms included
-                    </span>
-                    <span className="text-[10px] text-slate-400">
-                      Created by {tpl.createdBy}
-                    </span>
+            templates.map(tpl => {
+              const isOwner = (tpl.createdById && myId && String(tpl.createdById) === myId) ||
+                              (tpl.createdBy && myName && tpl.createdBy.toLowerCase().trim() === myName);
+              const canDelete = isAdmin || isOwner;
+
+              return (
+                <div
+                  key={tpl.id}
+                  className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs hover:border-slate-200 transition-all flex items-start justify-between gap-4"
+                >
+                  <div className="space-y-1 min-w-0 flex-1">
+                    <h4 className="text-sm font-black text-slate-800">{tpl.title}</h4>
+                    {tpl.description && <p className="text-xs text-slate-500">{tpl.description}</p>}
+                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-[10px] font-bold">
+                        {tpl.itemFormIds.length} Forms included
+                      </span>
+                      {tpl.createdBy && (
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          Created by <strong className="text-slate-600">{tpl.createdBy}</strong>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => onApplyTemplate(tpl)}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black tracking-wide shadow-2xs transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      <span>Use Template</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                    {canDelete && (
+                      <button
+                        onClick={() => onRequestDeleteTemplate(tpl.id, tpl.title)}
+                        className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                        title="Delete template"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => onApplyTemplate(tpl)}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black tracking-wide shadow-2xs transition-colors flex items-center gap-1"
-                  >
-                    <span>Use Template</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => onRequestDeleteTemplate(tpl.id, tpl.title)}
-                    className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors"
-                    title="Delete template"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
 
