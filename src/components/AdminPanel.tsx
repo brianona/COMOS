@@ -1396,7 +1396,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         certFiles.forEach(f => {
           formData.append('files', f);
         });
-        formData.append('file', certFiles[0]);
       }
 
       const res = await fetch('/api/certificates', {
@@ -2081,15 +2080,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     {certSidebarStatus.newlyPostedCount} New
                   </button>
                 )}
-                {certSidebarStatus && certSidebarStatus.newlyPostedCount > 0 && markAllCertsAsViewed && (
+                {markAllCertsAsViewed && (
                   <button
                     type="button"
                     onClick={() => markAllCertsAsViewed()}
-                    className="text-[10px] font-bold px-2.5 py-0.5 bg-slate-100 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50 border border-slate-200 rounded-full flex items-center gap-1 transition-colors cursor-pointer"
-                    title="Mark all newly posted certificates as read"
+                    className={cn(
+                      "text-[10px] font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1 transition-colors cursor-pointer",
+                      certSidebarStatus && certSidebarStatus.newlyPostedCount > 0
+                        ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-300 font-black shadow-2xs"
+                        : "bg-slate-100 text-slate-600 hover:text-slate-800 border border-slate-200"
+                    )}
+                    title="Mark all certificates as read (clears all new badges)"
                   >
                     <CheckCheck className="w-3 h-3 text-emerald-600" />
-                    Mark all read
+                    <span>Mark all read</span>
                   </button>
                 )}
               </div>

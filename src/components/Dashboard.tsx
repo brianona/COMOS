@@ -10,7 +10,7 @@ import {
   Cloud, Package, Save, Monitor, Laptop, Tag, Play, Pause, ChevronLeft,
   Shield, ShieldAlert, ShieldCheck, Compass, Navigation, Paperclip, Download,
   Droplets, Wrench, FlaskConical, Waves, Camera, Image, Fuel, Network, Info,
-  Printer, Lock, Unlock, Edit3
+  Printer, Lock, Unlock, Edit3, CheckCheck, Sparkles
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, isBefore, addDays, parseISO } from "date-fns";
@@ -161,6 +161,24 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     return reports.length > 0 ? reports[0].operation_type : 'N/A';
   };
 
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+
+  const notify = useCallback((type: 'success' | 'error' | 'info', message: string) => {
+    const id = Date.now();
+    setNotifications(prev => {
+      const next = [...prev, { id, type, message }];
+      // Limit the number of concurrent toast messages to at most 5
+      if (next.length > 5) {
+        return next.slice(next.length - 5);
+      }
+      return next;
+    });
+  }, []);
+
+  const removeNotification = useCallback((id: number) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  }, []);
+
   const [certs, setCerts] = useState<Certificate[]>([]);
   const [vessels, setVessels] = useState<Vessel[]>([]);
   const [flags, setFlags] = useState<VesselFlag[]>([]);
@@ -186,7 +204,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [newNote, setNewNote] = useState('');
   const [search, setSearch] = useState('');
   const [certVesselFilter, setCertVesselFilter] = useState('');
-  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration'>('all');
+  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration' | 'expiring_or_expired' | 'newly_posted'>('all');
   const [newExpDate, setNewExpDate] = useState('');
   const [sidePanelHasNoExpiration, setSidePanelHasNoExpiration] = useState(false);
   const [isEditingCertDetails, setIsEditingCertDetails] = useState(false);
@@ -255,7 +273,8 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     try {
       localStorage.setItem('comos_viewed_cert_ids', JSON.stringify(allIds));
     } catch (e) {}
-  }, [certs]);
+    notify('success', 'All certificates marked as read');
+  }, [certs, notify]);
 
   // Compute number badge counts for Certificates & Reports
   const certSidebarStatus = React.useMemo<CertSidebarStatus>(() => {
@@ -488,7 +507,6 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     shackles: '',
     remark_from_vessel: ''
   });
-  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [sortConfig, setSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' } | null>({ key: 'name', direction: 'asc' });
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
@@ -972,22 +990,6 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     }
   }, [notes, selectedCert]);
 
-  const notify = (type: 'success' | 'error' | 'info', message: string) => {
-    const id = Date.now();
-    setNotifications(prev => {
-      const next = [...prev, { id, type, message }];
-      // Limit the number of concurrent toast messages to at most 5
-      if (next.length > 5) {
-        return next.slice(next.length - 5);
-      }
-      return next;
-    });
-  };
-
-  const removeNotification = (id: number) => {
-    setNotifications(prev => prev.filter(n => n.id !== id));
-  };
-
   const fetchData = useCallback(async () => {
     if (!token) return;
     setLoadingStates(prev => ({ ...prev, global: true }));
@@ -1295,7 +1297,6 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     selectedFiles.forEach(file => {
       formData.append('files', file);
     });
-    formData.append('file', selectedFiles[0]); // Backward-compatible single field
     formData.append('file_type', uploadFileType);
     
     const primaryFile = selectedFiles[0];
@@ -1496,8 +1497,14 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       }
     }
     if (certStatusFilter !== 'all') {
-      const s = getStatus(c.expiration_date);
-      if (s !== certStatusFilter) return false;
+      if (certStatusFilter === 'newly_posted') {
+        if (!isNewlyPosted(c, 7, viewedCertIds)) return false;
+      } else if (certStatusFilter === 'expiring_or_expired') {
+        if (!isCertExpiringOrExpired(c.expiration_date)) return false;
+      } else {
+        const s = getStatus(c.expiration_date);
+        if (s !== certStatusFilter) return false;
+      }
     }
     const s = (search || '').trim().toLowerCase();
     if (s) {
@@ -3145,7 +3152,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
               <div id="certs-section" className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-blue-50 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <FileText className="w-5 h-5 text-blue-500" />
                       <h2 className="font-bold text-slate-900">
                         Certificates Registry
@@ -3153,6 +3160,47 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                       <span className="text-[11px] font-bold px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-full ml-1">
                         Showing {sortedCerts.length} of {certs.length}
                       </span>
+                      {certSidebarStatus && certSidebarStatus.totalExpiringCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setCertStatusFilter(certStatusFilter === 'expiring_or_expired' ? 'all' : 'expiring_or_expired')}
+                          className={cn(
+                            "text-[10px] font-black px-2.5 py-0.5 rounded-full flex items-center gap-1 transition-all cursor-pointer",
+                            certStatusFilter === 'expiring_or_expired'
+                              ? "bg-rose-600 text-white shadow-xs"
+                              : "bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100"
+                          )}
+                          title="Filter expiring or expired certificates"
+                        >
+                          <AlertTriangle className="w-3 h-3" />
+                          {certSidebarStatus.totalExpiringCount} Expiring
+                        </button>
+                      )}
+                      {certSidebarStatus && certSidebarStatus.newlyPostedCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setCertStatusFilter(certStatusFilter === 'newly_posted' ? 'all' : 'newly_posted')}
+                          className={cn(
+                            "text-[10px] font-black px-2.5 py-0.5 rounded-full flex items-center gap-1 transition-all cursor-pointer",
+                            certStatusFilter === 'newly_posted'
+                              ? "bg-emerald-600 text-white shadow-xs"
+                              : "bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                          )}
+                          title="Filter newly posted certificates"
+                        >
+                          <Sparkles className="w-3 h-3" />
+                          {certSidebarStatus.newlyPostedCount} New
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={markAllCertsAsViewed}
+                        className="text-[10px] font-bold px-2.5 py-1 bg-white hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 hover:border-emerald-300 rounded-lg flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                        title="Mark all certificates as read (clears all new badges)"
+                      >
+                        <CheckCheck className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Mark All Read</span>
+                      </button>
                     </div>
                     <p className="text-[10px] font-black uppercase text-slate-400 mt-0.5">Fully searchable global compliance registry</p>
                   </div>
@@ -3177,6 +3225,8 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                       className="px-3 py-2 bg-blue-50/50 border border-blue-100/50 rounded-lg text-xs font-bold uppercase text-slate-700 focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
                     >
                       <option value="all">All Statuses</option>
+                      <option value="expiring_or_expired">⚠️ Expiring or Expired {certSidebarStatus ? `(${certSidebarStatus.totalExpiringCount})` : ''}</option>
+                      <option value="newly_posted">✨ Newly Posted {certSidebarStatus ? `(${certSidebarStatus.newlyPostedCount})` : ''}</option>
                       <option value="active">Active</option>
                       <option value="expiring">Expiring (30-90 days)</option>
                       <option value="expiring soon">Expiring Soon (&lt; 30 days)</option>
@@ -4399,6 +4449,17 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                                       <span className="px-2 py-0.5 text-[10px] font-black bg-emerald-600 text-white rounded-full leading-none shadow-2xs">
                                         {vNew} New
                                       </span>
+                                    )}
+                                    {vNew > 0 && (
+                                      <button
+                                        type="button"
+                                        onClick={markAllCertsAsViewed}
+                                        className="text-[9px] font-bold px-2 py-0.5 bg-slate-100 hover:bg-emerald-50 text-slate-600 hover:text-emerald-700 border border-slate-200 rounded-md flex items-center gap-1 transition-colors cursor-pointer ml-1"
+                                        title="Mark all as read"
+                                      >
+                                        <CheckCheck className="w-2.5 h-2.5 text-emerald-600" />
+                                        <span>Mark Read</span>
+                                      </button>
                                     )}
                                   </div>
                                 );
