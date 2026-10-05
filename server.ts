@@ -5820,13 +5820,13 @@ async function startServer() {
           const distinctFormsUploaded = orderItems.filter((item: any) => {
             return vUploads.some((u: any) => checkFormUploadMatch(u, item));
           }).length;
-          const isCompleted = (totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount) || v.status === 'Completed';
+          const isCompleted = totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount;
           return {
             ...v,
-            submittedCount: isCompleted ? totalItemsCount : distinctFormsUploaded,
+            submittedCount: distinctFormsUploaded,
             totalRequiredCount: totalItemsCount,
             totalFilesUploaded: vUploads.length,
-            status: isCompleted ? 'Completed' : (v.status || 'Pending')
+            status: isCompleted ? 'Completed' : (distinctFormsUploaded > 0 ? 'In Progress' : 'Pending')
           };
         });
 
@@ -6407,13 +6407,13 @@ async function startServer() {
         const distinctFormsUploaded = orderItems.filter((item: any) => {
           return vUploads.some((u: any) => checkFormUploadMatch(u, item));
         }).length;
-        const isCompleted = (totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount) || v.status === 'Completed';
+        const isCompleted = totalItemsCount > 0 && distinctFormsUploaded >= totalItemsCount;
         return {
           ...v,
-          submittedCount: isCompleted ? totalItemsCount : distinctFormsUploaded,
+          submittedCount: distinctFormsUploaded,
           totalRequiredCount: totalItemsCount,
           totalFilesUploaded: vUploads.length,
-          status: isCompleted ? 'Completed' : (v.status || 'Pending')
+          status: isCompleted ? 'Completed' : (distinctFormsUploaded > 0 ? 'In Progress' : 'Pending')
         };
       });
 
@@ -6461,22 +6461,25 @@ async function startServer() {
           [label, deadlineDate, instructions || '', orderId]
         );
 
-        // Fetch existing vessel statuses to preserve status if already completed or in progress
-        const [existingVessels]: any = await pool.execute('SELECT vessel_id, status FROM sms_order_vessels WHERE order_id = ? AND deleted_at IS NULL', [orderId]);
-        const vStatusMap = new Map<string, string>();
-        for (const ev of existingVessels) {
-          vStatusMap.set(String(ev.vessel_id), ev.status);
-        }
+        // Fetch existing uploads to dynamically re-evaluate vessel statuses
+        const [existingUploads]: any = await pool.execute('SELECT * FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL', [orderId]);
 
         await pool.execute('UPDATE sms_order_vessels SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [orderId]);
         await pool.execute('UPDATE sms_order_items SET deleted_at = CURRENT_TIMESTAMP WHERE order_id = ?', [orderId]);
 
         for (const v of vessels) {
           const vId = String(v.vessel_id || v.id);
-          const preservedStatus = vStatusMap.get(vId) || 'Pending';
+          const vName = v.vessel_name || v.name;
+          const vUploads = existingUploads.filter((u: any) => checkVesselMatch(u.vessel_id, u.vessel_name, vId, vName));
+          const distinctFormsUploaded = items.filter((item: any) => {
+            return vUploads.some((u: any) => checkFormUploadMatch(u, item));
+          }).length;
+          const isVesselDone = items.length > 0 && distinctFormsUploaded >= items.length;
+          const newStatus = isVesselDone ? 'Completed' : (distinctFormsUploaded > 0 ? 'In Progress' : 'Pending');
+
           await pool.execute(
             'INSERT INTO sms_order_vessels (order_id, vessel_id, vessel_name, status) VALUES (?, ?, ?, ?)',
-            [orderId, vId, v.vessel_name || v.name, preservedStatus]
+            [orderId, vId, vName, newStatus]
           );
         }
       } else {
@@ -8237,6 +8240,14 @@ async function startServer() {
         if (incomingFiles.length > 0) {
           const { file_type } = req.body;
           for (const file of incomingFiles) {
+            const [recentExisting]: any = await pool.query(
+              'SELECT id FROM files WHERE certificate_id = ? AND original_name = ? AND deleted_at IS NULL AND upload_date >= DATE_SUB(NOW(), INTERVAL 20 SECOND) LIMIT 1',
+              [certId, file.originalname]
+            );
+            if (recentExisting && recentExisting.length > 0) {
+              continue;
+            }
+
             const uploadData = await handleFileUpload(file.originalname, file.mimetype, file.buffer, 'certificates');
             await pool.query(
               'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 
@@ -8249,10 +8260,23 @@ async function startServer() {
       if (vessel_id === 'all') {
         const [vessels]: any = await pool.query('SELECT id, team_id FROM vessels');
         for (const v of vessels) {
-          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
-          await saveFiles(result.insertId);
+          const [existing]: any = await pool.execute(
+            'SELECT id FROM certificates WHERE vessel_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) AND deleted_at IS NULL LIMIT 1',
+            [v.id, name]
+          );
+          if (existing && existing.length > 0) {
+            const existingId = existing[0].id;
+            await pool.execute(
+              'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+              [finalCertNumber, finalDateIssued, finalExpirationDate, existingId]
+            );
+            await saveFiles(existingId);
+          } else {
+            const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
+            await saveFiles(result.insertId);
+          }
         }
-        await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for ALL vessels`);
+        await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created/Updated certificate: ${name} for ALL vessels`);
       } else if (vessel_id) {
         // Get team_id from vessel if not provided
         let finalTeamId = team_id;
@@ -8260,14 +8284,43 @@ async function startServer() {
           const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vessel_id]);
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
-        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
-        await saveFiles(result.insertId);
-        await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for vessel ID ${vessel_id}`);
+
+        // Check if certificate with this exact name already exists for this vessel
+        const [existing]: any = await pool.execute(
+          'SELECT id FROM certificates WHERE vessel_id = ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) AND deleted_at IS NULL LIMIT 1',
+          [vessel_id, name]
+        );
+        if (existing && existing.length > 0) {
+          const existingId = existing[0].id;
+          await pool.execute(
+            'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, team_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [finalCertNumber, finalDateIssued, finalExpirationDate, finalTeamId, existingId]
+          );
+          await saveFiles(existingId);
+          await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE', `Updated existing certificate ID ${existingId} with new document: ${name} for vessel ID ${vessel_id}`);
+        } else {
+          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
+          await saveFiles(result.insertId);
+          await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for vessel ID ${vessel_id}`);
+        }
       } else {
-        // Non-vessel related
-        const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
-        await saveFiles(result.insertId);
-        await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for team ID ${team_id}`);
+        // Non-vessel related (team level)
+        const [existing]: any = await pool.execute(
+          'SELECT id FROM certificates WHERE vessel_id IS NULL AND team_id <=> ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) AND deleted_at IS NULL LIMIT 1',
+          [team_id || null, name]
+        );
+        if (existing && existing.length > 0) {
+          const existingId = existing[0].id;
+          await pool.execute(
+            'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [finalCertNumber, finalDateIssued, finalExpirationDate, existingId]
+          );
+          await saveFiles(existingId);
+        } else {
+          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
+          await saveFiles(result.insertId);
+        }
+        await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created/Updated certificate: ${name} for team ID ${team_id}`);
       }
       res.json({ success: true });
     } catch (e: any) {
@@ -8802,6 +8855,16 @@ Generated by COMOS System
 
       const insertedFiles: any[] = [];
       for (const file of incomingFiles) {
+        // Prevent duplicate file rows inserted in quick succession (e.g. double upload click / network retransmit)
+        const [recentExisting]: any = await pool.query(
+          'SELECT id, certificate_id, filename, original_name, mimetype, file_type, upload_date FROM files WHERE certificate_id = ? AND original_name = ? AND deleted_at IS NULL AND upload_date >= DATE_SUB(NOW(), INTERVAL 20 SECOND) ORDER BY id DESC LIMIT 1',
+          [certId, file.originalname]
+        );
+        if (recentExisting && recentExisting.length > 0) {
+          insertedFiles.push(recentExisting[0]);
+          continue;
+        }
+
         const uploadData = await handleFileUpload(file.originalname, file.mimetype, file.buffer, 'certificates');
         const [insertResult]: any = await pool.query(
           'INSERT INTO files (certificate_id, filename, original_name, mimetype, file_type, data) VALUES (?, ?, ?, ?, ?, ?)', 

@@ -528,6 +528,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   const [routingLoadingFilter, setRoutingLoadingFilter] = useState('');
   const [savingVesselId, setSavingVesselId] = useState<number | null>(null);
   const [isRecognizing, setIsRecognizing] = useState(false);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [uploadFileType, setUploadFileType] = useState<'certificate' | 'supporting'>('certificate');
   const [tempPreviewUrl, setTempPreviewUrl] = useState<string | null>(null);
   const sidePanelContentRef = useRef<HTMLDivElement>(null);
@@ -1283,13 +1284,15 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0 || !selectedCert) return;
+    if (isUploadingFile || !e.target.files || e.target.files.length === 0 || !selectedCert) return;
+    setIsUploadingFile(true);
     const selectedFiles: File[] = Array.from(e.target.files);
 
     const oversizedFiles = selectedFiles.filter(f => f.size > MAX_FILE_SIZE);
     if (oversizedFiles.length > 0) {
       notify('error', `Some files exceed max 20MB: ${oversizedFiles.map(f => f.name).join(', ')}`);
       e.target.value = '';
+      setIsUploadingFile(false);
       return;
     }
 
@@ -1382,6 +1385,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
     } catch (err) {
       notify('error', 'Connection error occurred');
     } finally {
+      setIsUploadingFile(false);
       setIsRecognizing(false);
       e.target.value = '';
     }

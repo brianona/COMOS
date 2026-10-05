@@ -11,7 +11,15 @@ import { Logo, LogoContainer } from "./Logo";
 import { User, DBStatus } from "../types";
 import { getDeviceId, isDeviceRegistered, formatDeviceIds } from "../utils/deviceIdentifier";
 
-export const Login = ({ onLogin, dbStatus, onRefreshDb }: { onLogin: (token: string, user: User) => void, dbStatus: DBStatus | null, onRefreshDb?: () => Promise<any> }) => {
+export const Login = ({ 
+  onLogin, 
+  dbStatus, 
+  onRefreshDb
+}: { 
+  onLogin: (token: string, user: User) => void; 
+  dbStatus: DBStatus | null; 
+  onRefreshDb?: () => Promise<any>;
+}) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -165,12 +173,11 @@ export const Login = ({ onLogin, dbStatus, onRefreshDb }: { onLogin: (token: str
           {error && <p className="text-red-500 text-sm">{error}</p>}
           <button 
             type="submit"
-            className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-800 transition-colors"
+            className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-md shadow-blue-500/20 active:scale-[0.99] cursor-pointer"
           >
             Sign In
           </button>
         </form>
-      
       </motion.div>
     </div>
   );

@@ -9,7 +9,9 @@ import {
   RefreshCw, 
   CheckCircle2, 
   AlertCircle,
-  Sparkles
+  Sparkles,
+  ArrowLeft,
+  LogIn
 } from 'lucide-react';
 import { 
   CURRENT_CLIENT_VERSION, 
@@ -19,7 +21,7 @@ import {
 } from '../utils/version';
 import { SystemVersionInfo } from '../types';
 
-export const AboutView: React.FC = () => {
+export const AboutView: React.FC<{ onBackToLogin?: () => void }> = ({ onBackToLogin }) => {
   const [serverVersion, setServerVersion] = useState<SystemVersionInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [hasUpdate, setHasUpdate] = useState(false);
@@ -54,6 +56,25 @@ export const AboutView: React.FC = () => {
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-300">
+      {onBackToLogin && (
+        <div className="flex items-center justify-between bg-white/80 backdrop-blur-md px-5 py-3 rounded-2xl border border-blue-100 shadow-xs">
+          <button
+            onClick={onBackToLogin}
+            className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Sign In</span>
+          </button>
+          <button
+            onClick={onBackToLogin}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+          >
+            <LogIn className="w-3.5 h-3.5" />
+            <span>Sign In to COMOS</span>
+          </button>
+        </div>
+      )}
+
       {/* Hero Section */}
       <div className="relative overflow-hidden bg-gradient-to-br from-blue-900 to-indigo-950 text-white rounded-3xl p-8 md:p-12 shadow-xl border border-blue-950">
         <div className="absolute right-0 top-0 translate-x-1/3 -translate-y-1/3 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />

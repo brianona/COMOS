@@ -6,6 +6,7 @@ import { User, DBStatus } from "./types";
 import { Login } from "./components/Login";
 import { DeviceRegistration } from "./components/DeviceRegistration";
 import { Dashboard } from "./components/Dashboard";
+import { AboutView } from "./components/AboutView";
 import { 
   healAndSyncDeviceId, 
   isDeviceRegistered, 
@@ -25,6 +26,21 @@ export const App = () => {
     return localStorage.getItem("isDeviceVerified") === "true";
   });
   const [dbStatus, setDbStatus] = useState<DBStatus | null>(null);
+  const [publicView, setPublicView] = useState<'login' | 'about'>(() => {
+    return typeof window !== 'undefined' && window.location.hash === '#about' ? 'about' : 'login';
+  });
+
+  useEffect(() => {
+    const handleHash = () => {
+      if (window.location.hash === '#about') {
+        setPublicView('about');
+      } else if (window.location.hash === '#login' || !window.location.hash) {
+        setPublicView('login');
+      }
+    };
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
 
   useEffect(() => {
     requestStoragePersistence();
@@ -148,10 +164,33 @@ export const App = () => {
   }, [token, user?.id, user?.role]);
 
   if (!token || !user) {
+    if (publicView === 'about') {
+      return (
+        <div className="min-h-screen bg-slate-100/70 text-slate-800 p-4 sm:p-6 md:p-8 flex flex-col justify-between">
+          <SystemUpdateNotifier />
+          <div className="w-full max-w-5xl mx-auto mb-8">
+            <AboutView
+              onBackToLogin={() => {
+                setPublicView('login');
+                window.location.hash = '';
+              }}
+            />
+          </div>
+          <footer className="text-center text-xs text-slate-400 py-4 border-t border-slate-200/60 font-medium">
+            COMOS &copy; {new Date().getFullYear()} Clean Ocean Maritime Operations System. All rights reserved.
+          </footer>
+        </div>
+      );
+    }
+
     return (
       <>
         <SystemUpdateNotifier />
-        <Login onLogin={handleLogin} dbStatus={dbStatus} onRefreshDb={handleRefreshDb} />
+        <Login
+          onLogin={handleLogin}
+          dbStatus={dbStatus}
+          onRefreshDb={handleRefreshDb}
+        />
       </>
     );
   }

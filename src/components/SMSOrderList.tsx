@@ -410,8 +410,8 @@ export const OrderVesselsTooltip: React.FC<OrderVesselsTooltipProps> = ({
                 const vVerified = orderItems.length > 0
                   ? orderItems.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length
                   : (v.submittedCount || 0);
-                const isVDone = v.status === 'Completed' || (totalForms > 0 && (vVerified >= totalForms || (v.submittedCount || 0) >= totalForms));
-                const distinctCount = isVDone ? totalForms : vVerified;
+                const isVDone = totalForms > 0 && vVerified >= totalForms;
+                const distinctCount = vVerified;
 
                 return (
                   <div
@@ -982,7 +982,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           const totalReq = order.items?.length || 0;
           const vUps = getVesselUploads(order.uploads, targetV, order.vessels);
           const vVerified = order.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
-          const isDone = (targetV?.status === 'Completed' || (targetV?.submittedCount || 0) >= totalReq || (totalReq > 0 && vVerified >= totalReq));
+          const isDone = totalReq > 0 && vVerified >= totalReq;
           const userVesselStatus = isDone ? 'Completed' : 'Pending';
 
           if (statusFilter === 'Completed' && userVesselStatus !== 'Completed') return false;
@@ -992,8 +992,6 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           if (statusFilter === 'Pending') {
             const totalReq = order.items?.length || 0;
             const hasAnyPendingVessel = order.vessels.length === 0 || order.vessels.some(v => {
-              if (v.status === 'Completed') return false;
-              if (totalReq > 0 && (v.submittedCount || 0) >= totalReq) return false;
               const vUps = getVesselUploads(order.uploads, v, order.vessels);
               const vVerified = totalReq > 0 ? (order.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0) : 0;
               if (totalReq > 0 && vVerified >= totalReq) return false;
@@ -1043,20 +1041,55 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
         }) || o.vessels[0];
         const vUps = getVesselUploads(o.uploads, targetV, o.vessels);
         const vVerified = o.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
-        return (targetV?.status === 'Completed' || (targetV?.submittedCount || 0) >= totalReq || vVerified >= totalReq);
+        return (totalReq > 0 && vVerified >= totalReq);
       }).length;
       const pending = total - completed;
-      const overdue = typeFilteredOrders.filter(o => o.overallStatus === 'Overdue' && !o.vessels.some(v => v.status === 'Completed')).length;
+      const overdue = typeFilteredOrders.filter(o => {
+        const totalReq = o.items?.length || 0;
+        const myVId = currentUser.vessel_id != null ? String(currentUser.vessel_id).trim() : '';
+        const myName = (currentUser.username || '').toLowerCase().trim();
+        const targetV = o.vessels.find(v => {
+          const vId = v.vessel_id != null ? String(v.vessel_id).trim() : '';
+          const vName = (v.vessel_name || '').toLowerCase().trim();
+          if (myVId && vId && (myVId === vId || myVId.replace(/^v/i, '') === vId.replace(/^v/i, ''))) return true;
+          if (myName && vName && (myName === vName || myName.includes(vName) || vName.includes(myName))) return true;
+          return false;
+        }) || o.vessels[0];
+        const vUps = getVesselUploads(o.uploads, targetV, o.vessels);
+        const vVerified = o.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
+        const isDone = totalReq > 0 && vVerified >= totalReq;
+        return o.overallStatus === 'Overdue' && !isDone;
+      }).length;
       return { total, completed, pending, overdue };
     } else {
-      const completed = typeFilteredOrders.filter(o => o.overallStatus === 'Completed' || (o.vessels.length > 0 && o.vessels.every(v => v.status === 'Completed' || ((o.items?.length || 0) > 0 && (v.submittedCount || 0) >= (o.items?.length || 0))))).length;
-      const inProgress = typeFilteredOrders.filter(o => o.overallStatus === 'In Progress').length;
+      const completed = typeFilteredOrders.filter(o => {
+        const totalReq = o.items?.length || 0;
+        if (totalReq === 0 || o.vessels.length === 0) return false;
+        return o.vessels.every(v => {
+          const vUps = getVesselUploads(o.uploads, v, o.vessels);
+          const vVerified = o.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
+          return vVerified >= totalReq;
+        });
+      }).length;
+      const inProgress = typeFilteredOrders.filter(o => {
+        const totalReq = o.items?.length || 0;
+        if (totalReq === 0 || o.vessels.length === 0) return false;
+        const allDone = o.vessels.every(v => {
+          const vUps = getVesselUploads(o.uploads, v, o.vessels);
+          const vVerified = o.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
+          return vVerified >= totalReq;
+        });
+        if (allDone) return false;
+        const anyHasUploads = o.vessels.some(v => {
+          const vUps = getVesselUploads(o.uploads, v, o.vessels);
+          return vUps.length > 0;
+        });
+        return anyHasUploads;
+      }).length;
       const pending = typeFilteredOrders.filter(o => {
         if (o.overallStatus === 'Pending') return true;
         const totalReq = o.items?.length || 0;
         return o.vessels.length === 0 || o.vessels.some(v => {
-          if (v.status === 'Completed') return false;
-          if (totalReq > 0 && (v.submittedCount || 0) >= totalReq) return false;
           const vUps = getVesselUploads(o.uploads, v, o.vessels);
           const vVerified = totalReq > 0 ? (o.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0) : 0;
           if (totalReq > 0 && vVerified >= totalReq) return false;
@@ -2568,7 +2601,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             const myUploads = isVesselUser ? getVesselUploads(order.uploads, myVessel, order.vessels) : [];
             const myVerifiedCount = order.items?.filter(item => myUploads.some(u => checkFormUploadMatch(u, item))).length || 0;
             
-            const isMyVesselDone = isVesselUser && (myVessel?.status === 'Completed' || (myVessel?.submittedCount || 0) >= totalForms || (totalForms > 0 && myVerifiedCount >= totalForms));
+            const isMyVesselDone = isVesselUser && totalForms > 0 && myVerifiedCount >= totalForms;
             
             // Calculate uploaded files per vessel and overall progress
             let totalUploadedFilesCount = 0;
@@ -2578,16 +2611,15 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             order.vessels.forEach(v => {
               const vUps = getVesselUploads(order.uploads, v, order.vessels);
               const vVerified = order.items?.filter(item => vUps.some(u => checkFormUploadMatch(u, item))).length || 0;
-              const isVDone = v.status === 'Completed' || (totalForms > 0 && (vVerified >= totalForms || (v.submittedCount || 0) >= totalForms));
-              const distinctCount = isVDone ? totalForms : vVerified;
-              totalUploadedFilesCount += distinctCount;
+              const isVDone = totalForms > 0 && vVerified >= totalForms;
+              totalUploadedFilesCount += vVerified;
               if (isVDone) {
                 completedVesselsCount++;
               }
             });
 
             const isAllVesselsDone = order.vessels.length > 0 && completedVesselsCount === order.vessels.length;
-            const isFullyCompleted = isVesselUser ? isMyVesselDone : (order.overallStatus === 'Completed' || isAllVesselsDone);
+            const isFullyCompleted = isVesselUser ? isMyVesselDone : (order.vessels.length > 0 && isAllVesselsDone);
 
             // Progress targets and uploaded counts
             const totalTarget = isVesselUser 
@@ -2595,8 +2627,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               : (order.vessels.length === 1 ? totalForms : totalForms * targetVesselsCount);
 
             const submittedCount = isVesselUser 
-              ? (isMyVesselDone ? totalForms : myVerifiedCount)
-              : (isFullyCompleted ? totalTarget : totalUploadedFilesCount);
+              ? myVerifiedCount
+              : totalUploadedFilesCount;
 
             const percent = totalTarget > 0 ? Math.min(100, Math.round((submittedCount / totalTarget) * 100)) : 0;
 
@@ -3377,8 +3409,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     }).length;
   }, [order.items, vesselUploads]);
 
-  const isVesselDone = (totalRequired > 0 && verifiedCount >= totalRequired) || activeVessel?.status === 'Completed';
-  const distinctUploaded = isVesselDone ? totalRequired : verifiedCount;
+  const isVesselDone = totalRequired > 0 && verifiedCount >= totalRequired;
+  const distinctUploaded = verifiedCount;
   const progressPercent = totalRequired > 0 ? Math.round((distinctUploaded / totalRequired) * 100) : 0;
 
   // Filter and search checklist items
@@ -3623,8 +3655,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               const vVerified = order.items.filter(formItem => 
                 vUploads.some(u => checkFormUploadMatch(u, formItem))
               ).length;
-              const isDone = (totalRequired > 0 && vVerified >= totalRequired) || v.status === 'Completed' || (v.submittedCount || 0) >= totalRequired;
-              const vSubmittedCount = isDone ? totalRequired : vVerified;
+              const isDone = totalRequired > 0 && vVerified >= totalRequired;
+              const vSubmittedCount = vVerified;
               const isActive = activeVessel?.vessel_name === v.vessel_name;
               const vHasReplaceReq = vUploads.some(u => Boolean(u.replace_requested_at));
 
