@@ -32,7 +32,9 @@ class RealtimeSyncService {
   private currentVersion: number = 0;
   private isRunning: boolean = false;
   private hasConnectedOnce: boolean = false;
+  private isPollingActive: boolean = false;
   private abortController: AbortController | null = null;
+  private isExplicitAbort: boolean = false;
   private subscribers: Map<string, Set<EventCallback>> = new Map();
   private allSubscribers: Set<EventCallback> = new Set();
   private statusSubscribers: Set<StatusCallback> = new Set();
@@ -71,12 +73,44 @@ class RealtimeSyncService {
     if (this.token === token && this.isRunning) return;
     this.token = token;
     if (token) {
+      if (token.length > 1000) {
+        this.trySanitizeToken();
+      }
       this.retryAttempts = 0;
       this.hasConnectedOnce = false;
       this.start();
     } else {
       this.stop();
     }
+  }
+
+  public async trySanitizeToken(): Promise<boolean> {
+    if (!this.token) return false;
+    try {
+      const res = await fetch('/api/auth/sanitize-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: this.token })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.token) {
+          this.token = data.token;
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('token', data.token);
+            if (data.user) {
+              localStorage.setItem('user', JSON.stringify(data.user));
+            }
+          }
+          this.retryAttempts = 0;
+          this.triggerImmediatePoll();
+          return true;
+        }
+      }
+    } catch (err) {
+      // Ignore background refresh errors
+    }
+    return false;
   }
 
   public getStatus(): RealtimeStatusState {
@@ -146,14 +180,25 @@ class RealtimeSyncService {
 
   public triggerImmediatePoll() {
     if (!this.token || !this.isRunning) return;
-    if (this.abortController) {
-      this.abortController.abort();
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
+    if (this.abortController) {
+      this.isExplicitAbort = true;
+      try { this.abortController.abort(); } catch (e) {}
+    }
+    this.isPollingActive = false;
     this.poll();
   }
 
+  public reconnect() {
+    this.retryAttempts = 0;
+    this.triggerImmediatePoll();
+  }
+
   public start() {
-    if (this.isRunning) return;
+    if (this.isRunning && this.isPollingActive) return;
     this.isRunning = true;
     this.retryAttempts = 0;
     this.setStatus(this.hasConnectedOnce ? 'connected' : 'connecting');
@@ -162,9 +207,11 @@ class RealtimeSyncService {
 
   public stop() {
     this.isRunning = false;
+    this.isPollingActive = false;
     this.hasConnectedOnce = false;
     if (this.abortController) {
-      this.abortController.abort();
+      this.isExplicitAbort = true;
+      try { this.abortController.abort(); } catch (e) {}
       this.abortController = null;
     }
     if (this.retryTimer) {
@@ -180,31 +227,38 @@ class RealtimeSyncService {
 
   private async poll() {
     if (!this.isRunning || !this.token) {
+      this.isPollingActive = false;
       this.setStatus('disconnected');
       return;
     }
 
+    if (this.isPollingActive) {
+      return;
+    }
+
+    this.isPollingActive = true;
+    this.isExplicitAbort = false;
     this.abortController = new AbortController();
     const { signal } = this.abortController;
 
-    // Watchdog to prevent hanging connections if browser stalls
+    // Client-side watchdog timeout (11s) slightly above server safeTimeoutMs (8s)
     if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
     this.watchdogTimer = setTimeout(() => {
       if (this.isRunning && this.abortController) {
-        this.abortController.abort();
+        try { this.abortController.abort(); } catch (e) {}
       }
-    }, 28000);
+    }, 11000);
 
     try {
-      if (this.retryAttempts > 0) {
-        this.setStatus('reconnecting');
-      } else if (this.hasConnectedOnce) {
+      if (this.hasConnectedOnce && this.retryAttempts === 0) {
         this.setStatus('connected');
+      } else if (this.retryAttempts > 0) {
+        this.setStatus('reconnecting');
       } else {
         this.setStatus('connecting');
       }
 
-      const url = `/api/realtime/poll?version=${this.currentVersion}&timeout=20000`;
+      const url = `/api/realtime/poll?version=${this.currentVersion}&timeout=8000`;
       const res = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${this.token}`,
@@ -218,11 +272,19 @@ class RealtimeSyncService {
         this.watchdogTimer = null;
       }
 
+      this.isPollingActive = false;
+
       if (!res.ok) {
         if (res.status === 401) {
           // Token expired or invalid
           this.stop();
           return;
+        }
+        if (res.status === 431) {
+          // Header too large due to bloated token payload (e.g. signature base64)
+          console.warn('[RealtimeSync] HTTP 431 Header overflow detected; auto-sanitizing token...');
+          const sanitized = await this.trySanitizeToken();
+          if (sanitized) return;
         }
         throw new Error(`Realtime poll returned HTTP ${res.status}`);
       }
@@ -248,22 +310,37 @@ class RealtimeSyncService {
         this.poll();
       }
     } catch (err: any) {
+      this.isPollingActive = false;
       if (this.watchdogTimer) {
         clearTimeout(this.watchdogTimer);
         this.watchdogTimer = null;
       }
 
-      if (err?.name === 'AbortError') {
-        // Expected when restarting poll or unmounting
+      if (this.isExplicitAbort) {
+        this.isExplicitAbort = false;
         return;
       }
 
-      this.retryAttempts++;
-      this.setStatus('reconnecting');
+      // If aborted by watchdog timeout (11s), treat as a normal timeout refresh
+      const isWatchdogAbort = err?.name === 'AbortError';
 
-      // Exponential backoff up to 4 seconds
-      const delay = Math.min(1000 * Math.pow(1.3, this.retryAttempts - 1), 4000);
+      if (!isWatchdogAbort) {
+        this.retryAttempts++;
+        this.setStatus('reconnecting');
+      } else {
+        // Watchdog simply means the long-poll connection was held; immediately re-poll
+        if (this.hasConnectedOnce && this.retryAttempts === 0) {
+          this.setStatus('connected');
+        }
+      }
+
+      // Backoff delay: immediate (50ms) for watchdog timeout, up to 2.5s for network drop
+      const delay = isWatchdogAbort 
+        ? 100 
+        : Math.min(400 * Math.pow(1.25, Math.min(this.retryAttempts - 1, 6)), 2500);
+
       if (this.isRunning) {
+        if (this.retryTimer) clearTimeout(this.retryTimer);
         this.retryTimer = setTimeout(() => {
           if (this.isRunning) this.poll();
         }, delay);

@@ -3394,6 +3394,32 @@ startxref
     }
   };
 
+  const handleDeleteAcknowledgementFile = async (uploadId: string, ackFileName?: string) => {
+    if (currentUser?.role === 'vessel') return;
+    const docName = ackFileName || 'acknowledged document';
+    if (!window.confirm(`Are you sure you want to delete the ${docName}? The original uploaded report will be preserved.`)) {
+      return;
+    }
+    try {
+      const headers: Record<string, string> = {};
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const res = await fetch(`/api/sms/upload-acknowledgement/${uploadId}`, {
+        method: 'DELETE',
+        headers
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to delete acknowledgement');
+      }
+      triggerToast('Acknowledgement document deleted. Status returned to Pending.', 'success');
+      await fetchUploadsList();
+    } catch (err: any) {
+      triggerToast(err.message || 'Error deleting acknowledgement', 'error');
+    }
+  };
+
   const handleDownloadReportDocument = async (up: VesselUpload) => {
     const isZip = (up.fileName || '').toLowerCase().endsWith('.zip');
     const matchedForm = getMatchedFormForUpload(up);
@@ -4554,6 +4580,18 @@ startxref
                               title="Download Signed Acknowledgement Document"
                             >
                               <Download className="w-3.5 h-3.5 text-emerald-600" /> Ack
+                            </button>
+                          )}
+
+                          {isAcknowledged && !isVesselUser && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteAcknowledgementFile(up.id, up.ackFileName)}
+                              className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg border border-rose-200 text-xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer"
+                              title="Delete Acknowledged Document (preserves vessel's original uploaded file)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                              <span className="hidden sm:inline">Delete Ack</span>
                             </button>
                           )}
 

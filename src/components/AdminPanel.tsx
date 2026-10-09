@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { 
   Ship, 
   FileText, 
@@ -51,10 +51,37 @@ import {
   Terminal,
   ExternalLink,
   Radio,
-  Code
+  Code,
+  Bell
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { ErrorBoundary } from './ErrorBoundary';
 import { Logo, LogoContainer, setCustomLogoUrl, getCustomLogoUrl } from './Logo';
+
+export const safeFormatDate = (dateVal?: string | null, formatPattern: string = 'yyyy-MM-dd', fallback: string = '-'): string => {
+  if (!dateVal || typeof dateVal !== 'string') return fallback;
+  const trimmed = dateVal.trim();
+  if (
+    !trimmed ||
+    trimmed.toLowerCase() === 'no expiration' ||
+    trimmed.toLowerCase() === 'none' ||
+    trimmed.toLowerCase() === 'n/a'
+  ) {
+    return fallback;
+  }
+  try {
+    const d = new Date(trimmed);
+    if (!isNaN(d.getTime())) {
+      return format(d, formatPattern);
+    }
+  } catch {
+    // ignore
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+    return trimmed.slice(0, 10);
+  }
+  return trimmed || fallback;
+};
 import { cn, getStatus, isCertExpiringOrExpired, isNewlyPosted } from '../utils/helpers';
 import { CertificateDefinition, CertificateCategory } from '../types';
 import { CertificateMasterTab } from './CertificateMasterTab';
@@ -219,9 +246,9 @@ interface AdminPanelProps {
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   token,
   user,
-  teams,
-  vessels,
-  certs,
+  teams = [],
+  vessels = [],
+  certs = [],
   onRefresh,
   notify,
   subView,
@@ -822,13 +849,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleSaveSystemSettings = async () => {
     setIsSavingSettings(true);
     try {
+      const apiKeyVal = settingsData.RESEND_API_KEY || settingsData.resend_api_key || '';
+      const payload = {
+        ...settingsData,
+        RESEND_API_KEY: apiKeyVal,
+        resend_api_key: apiKeyVal,
+      };
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(settingsData)
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         notify('success', 'System settings saved successfully');
@@ -846,6 +879,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleTestEmail = async () => {
     setIsTestingSmtp(true);
     try {
+      const apiKeyVal = settingsData.RESEND_API_KEY || settingsData.resend_api_key;
       const res = await fetch('/api/admin/test-smtp', {
         method: 'POST',
         headers: {
@@ -853,8 +887,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          resend_api_key: settingsData.resend_api_key,
-          from: settingsData.SMTP_FROM
+          resend_api_key: apiKeyVal,
+          from: settingsData.SMTP_FROM,
+          destination_email: settingsData.DESTINATION_EMAIL
         })
       });
       if (res.ok) {
@@ -1302,6 +1337,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration' | 'expiring_or_expired' | 'newly_posted'>('all');
   const [certSortConfig, setCertSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' }>({ key: 'name', direction: 'asc' });
 
+  // Live System Time Clock (synchronized with server clock)
+  const [systemTime, setSystemTime] = useState<Date>(new Date());
+  const serverTimeOffsetRef = useRef<number>(0);
+
+  useEffect(() => {
+    fetch('/api/system/version')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data && data.serverTime) {
+          const serverMs = new Date(data.serverTime).getTime();
+          const clientMs = Date.now();
+          serverTimeOffsetRef.current = serverMs - clientMs;
+          setSystemTime(new Date(Date.now() + serverTimeOffsetRef.current));
+        }
+      })
+      .catch(() => {});
+
+    const timer = setInterval(() => {
+      setSystemTime(new Date(Date.now() + serverTimeOffsetRef.current));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const requestCertSort = (key: keyof Certificate | 'status') => {
     let direction: 'asc' | 'desc' = 'asc';
     if (certSortConfig.key === key && certSortConfig.direction === 'asc') {
@@ -1436,13 +1494,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   );
 
   const filteredCerts = React.useMemo(() => {
-    const list = certs.filter(c => {
+    const rawList = Array.isArray(certs) ? certs.filter((c): c is Certificate => !!c && typeof c === 'object') : [];
+    const list = rawList.filter(c => {
       // 1. Vessel filter
       if (certVesselFilter) {
         if (certVesselFilter === 'OTHER') {
           if (c.vessel_id || c.vessel_name) return false;
         } else {
-          const selVessel = vessels.find(v => String(v.id) === certVesselFilter);
+          const selVessel = (vessels || []).find(v => String(v.id) === certVesselFilter);
           const match = (c.vessel_id && String(c.vessel_id) === certVesselFilter) ||
                         (selVessel && c.vessel_name && c.vessel_name.toLowerCase() === selVessel.name.toLowerCase());
           if (!match) return false;
@@ -1484,8 +1543,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const cmp = (statusOrder[sA] ?? 99) - (statusOrder[sB] ?? 99);
         return certSortConfig.direction === 'asc' ? cmp : -cmp;
       } else if (certSortConfig.key === 'expiration_date') {
-        const dateA = a.expiration_date ? new Date(a.expiration_date).getTime() : (certSortConfig.direction === 'asc' ? Infinity : -Infinity);
-        const dateB = b.expiration_date ? new Date(b.expiration_date).getTime() : (certSortConfig.direction === 'asc' ? Infinity : -Infinity);
+        const getTimestamp = (val?: string | null) => {
+          if (!val) return certSortConfig.direction === 'asc' ? Infinity : -Infinity;
+          const trimmed = val.trim();
+          if (!trimmed || trimmed.toLowerCase() === 'no expiration' || trimmed.toLowerCase() === 'none' || trimmed.toLowerCase() === 'n/a') {
+            return certSortConfig.direction === 'asc' ? Infinity : -Infinity;
+          }
+          const t = new Date(trimmed).getTime();
+          return isNaN(t) ? (certSortConfig.direction === 'asc' ? Infinity : -Infinity) : t;
+        };
+        const dateA = getTimestamp(a.expiration_date);
+        const dateB = getTimestamp(b.expiration_date);
         return certSortConfig.direction === 'asc' ? dateA - dateB : dateB - dateA;
       } else if (certSortConfig.key === 'vessel_name') {
         const aVal = a.vessel_name || (a.team_name ? `Other (${a.team_name})` : 'Fleet');
@@ -1493,8 +1561,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const cmp = aVal.localeCompare(bVal, undefined, { numeric: true, sensitivity: 'base' });
         return certSortConfig.direction === 'asc' ? cmp : -cmp;
       } else {
-        const aVal = String(a[certSortConfig.key as keyof Certificate] ?? '');
-        const bVal = String(b[certSortConfig.key as keyof Certificate] ?? '');
+        const aVal = String((a as any)[certSortConfig.key] ?? '');
+        const bVal = String((b as any)[certSortConfig.key] ?? '');
         const cmp = aVal.localeCompare(bVal, undefined, { numeric: true, sensitivity: 'base' });
         return certSortConfig.direction === 'asc' ? cmp : -cmp;
       }
@@ -2039,6 +2107,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           SUBVIEW 4: Certificate List
          ========================================== */}
       {subView === 'admin_cert_list' && (
+        <ErrorBoundary
+          fallbackTitle="Error displaying certificate list"
+          fallbackMessage="A temporary error occurred while rendering the certificate list. Please refresh or reset filters."
+        >
         <div className="bg-white p-6 rounded-2xl border border-blue-100/80 shadow-xs space-y-4">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
             <div>
@@ -2294,7 +2366,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <td className="py-3 px-4 text-blue-700 font-semibold">{c.vessel_name || (c.team_name ? `Other (${c.team_name})` : 'Fleet')}</td>
                         <td className="py-3 px-4 text-slate-600 font-mono">{c.certificate_number || '-'}</td>
                         <td className="py-3 px-4 text-slate-700 font-medium font-mono">
-                          {c.expiration_date ? format(new Date(c.expiration_date), 'yyyy-MM-dd') : <span className="text-slate-400 italic font-sans text-xs">No expiration</span>}
+                          {(() => {
+                            const formatted = safeFormatDate(c.expiration_date, 'yyyy-MM-dd', 'No expiration');
+                            return formatted === 'No expiration' ? (
+                              <span className="text-slate-400 italic font-sans text-xs">No expiration</span>
+                            ) : (
+                              <span>{formatted}</span>
+                            );
+                          })()}
                         </td>
                         <td className="py-3 px-4">
                           <span className={cn(
@@ -2353,6 +2432,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </table>
           </div>
         </div>
+        </ErrorBoundary>
       )}
 
       {/* ==========================================
@@ -3249,12 +3329,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           {/* TAB 4: EMAIL & ALERT SCHEDULES */}
           {activeTab === 'notifications' && (
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-xs space-y-6">
-              <div className="border-b border-slate-100 pb-4">
-                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                  <Mail className="w-4 h-4 text-blue-600" />
-                  Email Service & Expiration Alert Dispatcher
-                </h3>
-                <p className="text-xs text-slate-500">Configure Resend API credentials, sender identities, and automated notification schedules for expiring certificates.</p>
+              <div className="border-b border-slate-100 pb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <Mail className="w-4 h-4 text-blue-600" />
+                    Email Service &amp; Expiration Alert Dispatcher
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Configure Resend API credentials, sender identities, and automated notification schedules for expiring certificates.
+                  </p>
+                </div>
+
+                {/* Live Current System Time Badge */}
+                <div className="inline-flex items-center gap-3 px-4 py-2.5 bg-gradient-to-r from-blue-50 to-indigo-50/80 border border-blue-200/80 rounded-2xl text-blue-950 shadow-2xs shrink-0 self-start md:self-center">
+                  <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                    <Clock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-blue-600">Current System Time</span>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" title="System Clock Live" />
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-mono text-sm font-black text-slate-900 tracking-tight">
+                        {systemTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                      <span className="text-[10px] font-semibold text-slate-500">
+                        ({systemTime.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })})
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3262,8 +3367,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Resend API Key</label>
                   <input
                     type="password"
-                    value={settingsData.resend_api_key || ''}
-                    onChange={e => setSettingsData({ ...settingsData, resend_api_key: e.target.value })}
+                    value={settingsData.RESEND_API_KEY || settingsData.resend_api_key || ''}
+                    onChange={e => setSettingsData({ ...settingsData, RESEND_API_KEY: e.target.value, resend_api_key: e.target.value })}
                     placeholder="re_xxxxxxxxxxxxxxxxx"
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
                   />
@@ -3282,6 +3387,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
 
                 <div>
+                  <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Office Recipient Email(s) (Destination)</label>
+                  <input
+                    type="text"
+                    value={settingsData.DESTINATION_EMAIL || ''}
+                    onChange={e => setSettingsData({ ...settingsData, DESTINATION_EMAIL: e.target.value })}
+                    placeholder="e.g. smd@cleanocean.com.ph, technical@cleanocean.com.ph"
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">Separate multiple email addresses with commas</p>
+                </div>
+
+                <div>
                   <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Alert Milestones (Days before expiry)</label>
                   <input
                     type="text"
@@ -3292,7 +3409,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   />
                 </div>
 
-                <div>
+                <div className="sm:col-span-2">
                   <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Enable Automated Dispatch</label>
                   <select
                     value={settingsData.ENABLE_EMAIL_ALERTS || 'true'}
@@ -3325,7 +3442,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                   {settingsData.ALERT_SCHEDULE_TYPE === 'time' ? (
                     <div>
-                      <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Dispatch Time (24h format)</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10px] font-bold uppercase text-slate-400">Dispatch Time (24h format)</label>
+                        <span className="text-[10px] font-mono font-bold text-blue-600">Now: {systemTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
                       <input
                         type="text"
                         value={settingsData.ALERT_TIME || '08:00'}
@@ -3365,7 +3485,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                   {settingsData.VESSEL_ALERT_SCHEDULE_TYPE === 'time' ? (
                     <div>
-                      <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1">Dispatch Time (24h format)</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10px] font-bold uppercase text-slate-400">Dispatch Time (24h format)</label>
+                        <span className="text-[10px] font-mono font-bold text-blue-600">Now: {systemTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
                       <input
                         type="text"
                         value={settingsData.VESSEL_ALERT_TIME || '08:00'}
@@ -3386,6 +3509,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </div>
                   )}
                 </div>
+              </div>
+
+              {/* Alert Dispatch Status Banner */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5 text-xs">
+                <div className="flex items-center justify-between font-bold text-slate-700">
+                  <span className="flex items-center gap-1.5">
+                    <Bell className="w-3.5 h-3.5 text-blue-600" />
+                    Alert Dispatch Status &amp; Logs
+                  </span>
+                  <span className="text-[11px] font-normal text-slate-500">
+                    Office Last Sent: {settingsData.LAST_OFFICE_ALERT_SENT_AT ? new Date(settingsData.LAST_OFFICE_ALERT_SENT_AT).toLocaleString() : 'Not dispatched yet'}
+                  </span>
+                </div>
+                <p className="text-[11px] font-mono text-slate-600 bg-white p-2 rounded-lg border border-slate-200/70">
+                  {settingsData.LAST_ALERT_LOG || 'No alert logs recorded yet. Use "Send Test Email" or wait for scheduled trigger.'}
+                </p>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-100">
@@ -3990,7 +4129,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             <tr key={l.id} className="hover:bg-slate-50/70 transition-colors group">
                               {/* Timestamp */}
                               <td className="py-3 px-4 text-slate-500 whitespace-nowrap font-mono text-[11px]">
-                                {l.created_at ? format(new Date(l.created_at), 'yyyy-MM-dd HH:mm:ss') : '-'}
+                                {safeFormatDate(l.created_at, 'yyyy-MM-dd HH:mm:ss', '-')}
                               </td>
 
                               {/* User & Role */}
@@ -4128,7 +4267,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </span>
                     </h3>
                     <p className="text-xs text-slate-500">
-                      Logged at {inspectedLog.created_at ? format(new Date(inspectedLog.created_at), 'yyyy-MM-dd HH:mm:ss') : '-'}
+                      Logged at {safeFormatDate(inspectedLog.created_at, 'yyyy-MM-dd HH:mm:ss', '-')}
                     </p>
                   </div>
                 </div>

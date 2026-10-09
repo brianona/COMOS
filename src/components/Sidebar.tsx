@@ -691,16 +691,21 @@ export const SidebarContent = ({
       <div className="p-4 border-t border-slate-100 bg-white/80 backdrop-blur-md">
         <button 
           onClick={() => { setIsChangePasswordOpen(true); setIsSidebarOpen(false); }}
-          className="w-full flex items-center gap-3 px-3 py-2.5 mb-2 rounded-xl hover:bg-slate-50 transition-colors text-left group cursor-pointer"
+          className="w-full flex items-center gap-3 px-3 py-2.5 mb-2 rounded-xl hover:bg-slate-50 transition-colors text-left group cursor-pointer border border-transparent hover:border-slate-200"
+          title="Profile, Digital Signature & Password Settings"
         >
-          <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 group-hover:bg-blue-200 transition-colors">
-            {user.username[0].toUpperCase()}
+          <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-xs font-bold text-blue-700 group-hover:bg-blue-200 transition-colors shrink-0 shadow-2xs">
+            {(user.full_name || user.username)[0].toUpperCase()}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold truncate text-slate-800">{user.username}</p>
-            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{getRoleLabel(user.role)}</p>
+            <p className="text-sm font-bold truncate text-slate-800">
+              {user.full_name || user.username}
+            </p>
+            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider truncate">
+              {user.full_name ? `@${user.username} • ${getRoleLabel(user.role)}` : getRoleLabel(user.role)}
+            </p>
           </div>
-          <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
+          <Settings className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors shrink-0" />
         </button>
         <button 
           onClick={onLogout}

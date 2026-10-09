@@ -15,7 +15,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { format, isBefore, addDays, parseISO } from "date-fns";
 import { cn, getRoleLabel, getStatus, isCertExpiringOrExpired, isNewlyPosted, isFocOutsideLimits, isGeminiSupportedMimeType, MAX_FILE_SIZE, AUTO_FILL_ENABLED, recognizeCertText } from "../utils/helpers";
-import { ConfirmModal, ChangePasswordModal } from "./Modals";
+import { ConfirmModal, ChangePasswordModal, UserProfileModal } from "./Modals";
 import { PDFViewer } from "./PDFViewer";
 import { ImageViewer } from "./ImageViewer";
 import { CrewListView, CrewEmploymentStatusView, AuditRegistryView } from "./CrewAndAudits";
@@ -58,7 +58,28 @@ import {
 } from "../utils/deviceIdentifier";
 import { useRealtimeAutoRefresh, useRealtimeStatus, realtimeSync } from "../services/realtimeSync";
 
-export const Dashboard = ({ user, token, onLogout }: { user: User, token: string, onLogout: () => void }) => {
+export const Dashboard = ({ 
+  user, 
+  token, 
+  onLogout,
+  onUpdateUser 
+}: { 
+  user: User; 
+  token: string; 
+  onLogout: () => void;
+  onUpdateUser?: (updated: User) => void;
+}) => {
+  const [currentUser, setCurrentUser] = useState<User>(user);
+
+  useEffect(() => {
+    setCurrentUser(user);
+  }, [user]);
+
+  const handleUpdateCurrentUser = useCallback((updated: User) => {
+    setCurrentUser(updated);
+    onUpdateUser?.(updated);
+  }, [onUpdateUser]);
+
   const [view, setRawView] = useState<ViewType>('dashboard');
   const [viewHistory, setViewHistory] = useState<ViewType[]>([]);
   const prevViewRef = useRef<ViewType>(view);
@@ -1714,7 +1735,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
           view={view} 
           setView={setView} 
           setIsSidebarOpen={setIsSidebarOpen} 
-          user={user} 
+          user={currentUser} 
           isAdminTreeOpen={isAdminTreeOpen} 
           setIsAdminTreeOpen={setIsAdminTreeOpen}
           isVoyageReportOpen={isVoyageReportOpen}
@@ -1782,7 +1803,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                   view={view} 
                   setView={setView} 
                   setIsSidebarOpen={setIsSidebarOpen} 
-                  user={user} 
+                  user={currentUser} 
                   isAdminTreeOpen={isAdminTreeOpen} 
                   setIsAdminTreeOpen={setIsAdminTreeOpen}
                   isVoyageReportOpen={isVoyageReportOpen}
@@ -1866,25 +1887,27 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
 
             <div className="flex items-center gap-2 shrink-0">
               {/* Realtime Long-Polling Live Status Badge */}
-              <div 
+              <button
+                type="button"
+                onClick={() => realtimeSync.triggerImmediatePoll()}
                 className={cn(
-                  "flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold border transition-all select-none",
+                  "flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold border transition-all select-none cursor-pointer hover:shadow-xs active:scale-95",
                   realtimeStatus.status === 'connected'
-                    ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                    ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100/70"
                     : realtimeStatus.status === 'connecting'
-                    ? "bg-blue-50 text-blue-800 border-blue-200"
+                    ? "bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100/70"
                     : realtimeStatus.status === 'reconnecting'
-                    ? "bg-amber-50 text-amber-800 border-amber-200"
-                    : "bg-slate-100 text-slate-500 border-slate-200"
+                    ? "bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100/70"
+                    : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
                 )}
                 title={
                   realtimeStatus.status === 'connected'
-                    ? `Live Database Sync Active (Version ${realtimeStatus.currentVersion})`
+                    ? `Live Database Sync Active (Version ${realtimeStatus.currentVersion}) - Click to refresh connection`
                     : realtimeStatus.status === 'connecting'
-                    ? "Connecting to live database stream..."
+                    ? "Connecting to live database stream... Click to retry"
                     : realtimeStatus.status === 'reconnecting'
-                    ? "Reconnecting to live database stream..."
-                    : "Realtime sync offline"
+                    ? "Reconnecting to live database stream... Click to retry now"
+                    : "Realtime sync offline - Click to reconnect"
                 }
               >
                 <span 
@@ -1900,7 +1923,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
                    realtimeStatus.status === 'connecting' ? 'Connecting...' :
                    realtimeStatus.status === 'reconnecting' ? 'Reconnecting...' : 'Offline'}
                 </span>
-              </div>
+              </button>
 
               {viewHistory.length > 0 && (
                 <span className="hidden md:inline text-[11px] font-bold text-slate-500 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200/60">
@@ -4575,6 +4598,11 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
           )}
 
           {view.startsWith('admin') && view !== 'admin_recycle_bin' && (
+            <ErrorBoundary
+              fallbackTitle="Something went wrong in the administration view"
+              fallbackMessage="A temporary error occurred while rendering the administration view. You can reload or return to dashboard."
+              onReset={fetchData}
+            >
             <AdminPanel 
               token={token} 
               user={user}
@@ -4620,6 +4648,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
               markAllCertsAsViewed={markAllCertsAsViewed}
               certSidebarStatus={certSidebarStatus}
             />
+            </ErrorBoundary>
           )}
 
           {view === 'admin_recycle_bin' && (
@@ -5281,7 +5310,7 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
               <SMSOrderListView 
                 vessels={vessels} 
-                currentUser={user} 
+                currentUser={currentUser} 
                 token={token} 
                 flags={flags.map(f => typeof f === 'string' ? f : f.name)} 
                 onStatusRefresh={fetchSmsSidebarStatus}
@@ -6548,11 +6577,13 @@ export const Dashboard = ({ user, token, onLogout }: { user: User, token: string
       document.body
     )}
 
-      <ChangePasswordModal 
+      <UserProfileModal 
         isOpen={isChangePasswordOpen} 
         onClose={() => setIsChangePasswordOpen(false)} 
+        user={currentUser}
         token={token} 
         notify={notify} 
+        onUpdateUser={handleUpdateCurrentUser}
       />
 
       <ConfirmModal 

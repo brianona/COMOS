@@ -1,5 +1,37 @@
 import 'dotenv/config';
 process.env.TZ = 'Asia/Manila';
+
+// ============================================================================
+// LOG MINIMIZATION & HOSTING STORAGE PROTECTION
+// ============================================================================
+// High-frequency console.log outputs (such as per-request logging, recurring
+// polling tickers, and verbose database migration traces) fill container
+// log storage (*-json.log) rapidly in hosting environments.
+//
+// By default:
+// - Routine console.log statements are completely silenced.
+// - High-frequency API request logging is disabled unless LOG_REQUESTS=true.
+// - Essential startup milestones use console.info, errors use console.error.
+//
+// To re-enable verbose logging for temporary troubleshooting, set:
+//   ENABLE_VERBOSE_LOGS=true  or  LOG_LEVEL=debug
+// ============================================================================
+const LOG_LEVEL = (process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'warn' : 'info')).toLowerCase();
+const ENABLE_VERBOSE_LOGS = process.env.ENABLE_VERBOSE_LOGS === 'true' || process.env.DEBUG === 'true' || LOG_LEVEL === 'debug';
+const LOG_REQUESTS = process.env.LOG_REQUESTS === 'true';
+
+export const originalConsole = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+};
+
+if (!ENABLE_VERBOSE_LOGS) {
+  // Mute routine console.log calls across the application to prevent hosting disk exhaustion
+  console.log = () => {};
+}
+import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
@@ -29,9 +61,11 @@ import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } fro
 import JSZip from 'jszip';
 import WordExtractor from 'word-extractor';
 import mammoth from 'mammoth';
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { CAT1_CERTS, CAT2_CERTS, CAT3_CERTS, CAT4_CERTS, CAT5_CERTS, CAT6_CERTS, CAT7_CERTS, cleanCertificateName, compareCertificatesNumerically, getCategoryMinCertNumber } from './src/data/certificates';
 import { GraphifyEngine } from './src/services/graphifyScanner';
 import { globalRealtimeEngine, extractTableAndDomainFromSql } from './server_realtime';
+import { convertDocumentToPdf, sanitizeForWinAnsi } from './server_doc_converter';
 import { 
   createOptimizedPool, 
   pollingCache, 
@@ -65,7 +99,7 @@ const getOutboundIp = async (): Promise<string> => {
       }
     }
   } catch (err) {}
-  return cachedOutboundIp || '34.96.48.60';
+  return cachedOutboundIp || '34.34.254.209';
 };
 
 const getB2Settings = async () => {
@@ -651,6 +685,21 @@ async function startServer() {
       if (!columnNames.includes('plain_password')) {
         console.log('Migrating users table: Adding plain_password...');
         await pool.query('ALTER TABLE users ADD COLUMN plain_password VARCHAR(255)');
+      }
+
+      if (!columnNames.includes('full_name')) {
+        console.log('Migrating users table: Adding full_name...');
+        await pool.query('ALTER TABLE users ADD COLUMN full_name VARCHAR(255) NULL');
+      }
+
+      if (!columnNames.includes('position')) {
+        console.log('Migrating users table: Adding position...');
+        await pool.query('ALTER TABLE users ADD COLUMN position VARCHAR(255) NULL');
+      }
+
+      if (!columnNames.includes('signature_data')) {
+        console.log('Migrating users table: Adding signature_data...');
+        await pool.query('ALTER TABLE users ADD COLUMN signature_data LONGTEXT NULL');
       }
     } catch (e: any) {
       console.error('Error during users table migration:', e.message);
@@ -1964,6 +2013,30 @@ async function startServer() {
       await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN item_id INT NULL');
     } catch (e) {}
 
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN acknowledged_at DATETIME NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN acknowledged_by VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN acknowledged_by_name VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN acknowledged_by_position VARCHAR(255) NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE sms_order_uploads ADD COLUMN acknowledged_signature LONGTEXT NULL');
+    } catch (e) {}
+
+    try {
+      await pool.query('ALTER TABLE sms_order_items ADD COLUMN is_acknowledgement_required TINYINT(1) DEFAULT 0');
+    } catch (e) {}
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sms_order_upload_reads (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -2442,13 +2515,15 @@ async function startServer() {
     storage
   });
   
-  // Request logging (API routes only)
-  app.use((req, res, next) => {
-    if (req.url.startsWith('/api')) {
-      console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-    }
-    next();
-  });
+  // Request logging (strictly opt-in via LOG_REQUESTS=true to prevent hosting disk log exhaustion)
+  if (LOG_REQUESTS) {
+    app.use((req, res, next) => {
+      if (req.url.startsWith('/api')) {
+        originalConsole.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+      }
+      next();
+    });
+  }
 
   // Content Security Policy (CSP) & Security Headers Middleware
   app.use((req, res, next) => {
@@ -3012,6 +3087,8 @@ async function startServer() {
     const token = jwt.sign({ 
       id: user.id, 
       username: user.username, 
+      full_name: user.full_name || null,
+      position: user.position || null,
       role: user.role, 
       team_ids: teamIds, 
       vessel_id: vesselId,
@@ -3024,6 +3101,9 @@ async function startServer() {
       user: { 
         id: user.id, 
         username: user.username, 
+        full_name: user.full_name || null,
+        position: user.position || null,
+        signature_data: user.signature_data || null,
         role: user.role, 
         team_ids: teamIds, 
         vessel_id: vesselId,
@@ -3032,6 +3112,60 @@ async function startServer() {
         is_verified: !!user.is_verified
       } 
     });
+  });
+
+  app.post('/api/auth/sanitize-token', async (req, res) => {
+    try {
+      const { token } = req.body;
+      if (!token) return res.status(400).json({ error: 'Token required' });
+      let decoded: any;
+      try {
+        decoded = jwt.verify(token, JWT_SECRET);
+      } catch (err) {
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+
+      let userObj: any = null;
+      if (pool && decoded?.id) {
+        try {
+          const [uRows]: any = await pool.execute('SELECT * FROM users WHERE id = ?', [decoded.id]);
+          if (uRows && uRows.length > 0) userObj = uRows[0];
+        } catch (e) {}
+      }
+
+      const cleanPayload = {
+        id: decoded.id,
+        username: decoded.username,
+        full_name: userObj?.full_name || decoded.full_name || null,
+        position: userObj?.position || decoded.position || null,
+        role: decoded.role,
+        team_ids: decoded.team_ids,
+        vessel_id: decoded.vessel_id,
+        vessel_name: decoded.vessel_name,
+        device_id: decoded.device_id,
+        is_verified: !!decoded.is_verified
+      };
+
+      const cleanToken = jwt.sign(cleanPayload, JWT_SECRET);
+      res.json({
+        token: cleanToken,
+        user: {
+          id: decoded.id,
+          username: decoded.username,
+          full_name: userObj?.full_name || decoded.full_name || null,
+          position: userObj?.position || decoded.position || null,
+          signature_data: userObj?.signature_data || null,
+          role: decoded.role,
+          team_ids: decoded.team_ids,
+          vessel_id: decoded.vessel_id,
+          vessel_name: decoded.vessel_name,
+          device_id: decoded.device_id,
+          is_verified: !!decoded.is_verified
+        }
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // Helper to extract hardware fingerprint from device ID
@@ -3137,8 +3271,12 @@ async function startServer() {
         }
       }
 
-      // Clear any pending requests for this user first
-      await pool.execute("DELETE FROM device_registration_requests WHERE user_id = ? AND status = 'pending'", [user_id]);
+      // Clear any pending or rejected requests for this user first
+      await pool.execute("DELETE FROM device_registration_requests WHERE user_id = ? AND status IN ('pending', 'rejected')", [user_id]);
+      
+      // Invalidate polling cache for this user immediately
+      pollingCache.invalidatePattern(new RegExp(`^device:check:${user_id}:`));
+      pollingCache.delete('device:pending-requests');
       
       const deviceLabel = label && String(label).trim() ? String(label).trim() : null;
       await pool.execute(
@@ -3162,6 +3300,47 @@ async function startServer() {
     }
   });
 
+  app.post('/api/device/dismiss-declined', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const user_id = req.user.id;
+    try {
+      await pool.execute("DELETE FROM device_registration_requests WHERE user_id = ? AND status = 'rejected'", [user_id]);
+      pollingCache.invalidatePattern(new RegExp(`^device:check:${user_id}:`));
+      try {
+        globalRealtimeEngine?.notifyChange?.({
+          domain: 'device',
+          action: 'dismiss_rejected',
+          table: 'device_registration_requests',
+          userId: user_id
+        });
+      } catch (e) {}
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/device/cancel-request', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    const user_id = req.user.id;
+    try {
+      await pool.execute("DELETE FROM device_registration_requests WHERE user_id = ? AND status = 'pending'", [user_id]);
+      pollingCache.invalidatePattern(new RegExp(`^device:check:${user_id}:`));
+      pollingCache.delete('device:pending-requests');
+      try {
+        globalRealtimeEngine?.notifyChange?.({
+          domain: 'device',
+          action: 'cancel_pending',
+          table: 'device_registration_requests',
+          userId: user_id
+        });
+      } catch (e) {}
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   const handleDeviceVerificationCheck = async (req: any, res: any) => {
     if (!pool) return res.status(500).json({ error: 'Database not initialized' });
     const user_id = req.user.id;
@@ -3169,7 +3348,7 @@ async function startServer() {
 
     const isGet = req.method === 'GET';
     const cacheKey = `device:check:${user_id}:${currentDeviceId}`;
-    if (isGet) {
+    if (isGet && !req.query.nocache) {
       const cached = pollingCache.get(cacheKey);
       if (cached) return res.json(cached);
     }
@@ -3547,6 +3726,12 @@ async function startServer() {
         'UPDATE device_registration_requests SET status = ? WHERE id = ?',
         [status, request_id]
       );
+
+      // Invalidate polling cache for target user
+      if (targetUserId) {
+        pollingCache.invalidatePattern(new RegExp(`^device:check:${targetUserId}:`));
+      }
+      pollingCache.delete('device:pending-requests');
 
       try {
         globalRealtimeEngine?.notifyChange?.({
@@ -4350,6 +4535,45 @@ async function startServer() {
     }
   });
 
+  app.get('/api/users/profile', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const [rows]: any = await pool.execute(
+        'SELECT id, username, full_name, position, signature_data, email, role, vessel_id FROM users WHERE id = ?',
+        [req.user.id]
+      );
+      if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
+      res.json(rows[0]);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put('/api/users/profile', authenticate, async (req: any, res) => {
+    if (!pool) return res.status(500).json({ error: 'Database not initialized' });
+    try {
+      const { full_name, position, signature_data, email } = req.body;
+      await pool.execute(
+        'UPDATE users SET full_name = ?, position = ?, signature_data = ?, email = COALESCE(?, email) WHERE id = ?',
+        [
+          full_name !== undefined ? (full_name ? String(full_name).trim() : null) : null,
+          position !== undefined ? (position ? String(position).trim() : null) : null,
+          signature_data || null,
+          email !== undefined ? (email ? String(email).trim() : null) : null,
+          req.user.id
+        ]
+      );
+      const [rows]: any = await pool.execute(
+        'SELECT id, username, full_name, position, signature_data, email, role, vessel_id FROM users WHERE id = ?',
+        [req.user.id]
+      );
+      await logAudit(req.user.id, req.user.username, 'UPDATE_PROFILE', `Updated user profile (Full Name: ${rows[0]?.full_name || 'N/A'}, Position: ${rows[0]?.position || 'N/A'}, Signature: ${rows[0]?.signature_data ? 'Provided' : 'None'})`);
+      res.json({ success: true, user: rows[0] });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post('/api/users/change-password', authenticate, async (req: any, res) => {
     const { currentPassword, newPassword } = req.body;
     try {
@@ -4772,6 +4996,31 @@ async function startServer() {
       res.setHeader('Content-Type', row.ack_file_mimetype || 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.ack_file_name || 'Acknowledged_Report.pdf')}"`);
       res.send(retrievedBuffer);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/sms/upload-acknowledgement/:id', authenticate, async (req: any, res) => {
+    try {
+      if (req.user.role === 'vessel') {
+        return res.status(403).json({ error: 'Access denied: Vessel users cannot delete acknowledged documents.' });
+      }
+      const { id } = req.params;
+      const [rows]: any = await pool.execute('SELECT id, file_name, ack_file_name, ack_file_data FROM sms_uploads WHERE id = ? AND deleted_at IS NULL', [id]);
+      if (rows.length === 0) {
+        return res.status(404).json({ error: 'Upload not found' });
+      }
+      const item = rows[0];
+      if (item.ack_file_data) {
+        await handleFileDelete(item.ack_file_data);
+      }
+      await pool.execute(
+        'UPDATE sms_uploads SET is_acknowledged = 0, ack_file_name = NULL, ack_file_data = NULL, ack_file_mimetype = NULL WHERE id = ?',
+        [id]
+      );
+      await logAudit(req.user.id, req.user.username, 'DELETE_SMS_ACKNOWLEDGEMENT', `Deleted acknowledgement for upload ID ${id}`);
+      res.json({ success: true, message: 'Acknowledgement deleted successfully' });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -5729,12 +5978,12 @@ async function startServer() {
       );
 
       const [items]: any = await pool.query(
-        `SELECT id, order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order FROM sms_order_items WHERE order_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY sort_order ASC, id ASC`,
+        `SELECT id, order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order, is_acknowledgement_required FROM sms_order_items WHERE order_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY sort_order ASC, id ASC`,
         orderIds
       );
 
       const [uploads]: any = await pool.query(
-        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, item_id, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by, replace_requested_at, replace_requested_by, replace_reason FROM sms_order_uploads WHERE order_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
+        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, item_id, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by, replace_requested_at, replace_requested_by, replace_reason, acknowledged_at, acknowledged_by, acknowledged_by_name, acknowledged_by_position, acknowledged_signature, acknowledged_file_name, acknowledged_file_size, acknowledged_file_mimetype FROM sms_order_uploads WHERE order_id IN (${placeholders}) AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
         orderIds
       );
 
@@ -5793,6 +6042,7 @@ async function startServer() {
             ...it,
             is_hira: Boolean(it.is_hira),
             remove_filename_restriction: Boolean(it.remove_filename_restriction),
+            is_acknowledgement_required: Boolean(it.is_acknowledgement_required),
             allowed_file_types: parsedAllowed
           };
         }).sort((a: any, b: any) =>
@@ -6358,7 +6608,7 @@ async function startServer() {
       );
 
       const [uploads]: any = await pool.execute(
-        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, item_id, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by, replace_requested_at, replace_requested_by, replace_reason FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
+        `SELECT id, order_id, vessel_id, vessel_name, form_id, form_code, item_id, file_name, file_size, file_mimetype, b2_folder_path, uploaded_at, uploaded_by, checked_at, checked_by, replace_requested_at, replace_requested_by, replace_reason, acknowledged_at, acknowledged_by, acknowledged_by_name, acknowledged_by_position, acknowledged_signature, acknowledged_file_name, acknowledged_file_size, acknowledged_file_mimetype FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
         [id]
       );
 
@@ -6502,7 +6752,7 @@ async function startServer() {
           ? JSON.stringify(item.allowed_file_types || item.allowedFileTypes)
           : null;
         await pool.execute(
-          'INSERT INTO sms_order_items (order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO sms_order_items (order_id, form_id, form_code, category, description, form_date, type, is_hira, remove_filename_restriction, allowed_file_types, template_file_name, sort_order, is_acknowledgement_required) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             orderId,
             item.form_id || item.id,
@@ -6515,7 +6765,8 @@ async function startServer() {
             (item.remove_filename_restriction || item.removeFilenameRestriction) ? 1 : 0,
             allowedTypesStr,
             item.template_file_name || null,
-            sortOrder++
+            sortOrder++,
+            (item.is_acknowledgement_required || item.isAcknowledgementRequired) ? 1 : 0
           ]
         );
       }
@@ -7173,14 +7424,22 @@ async function startServer() {
   app.get('/api/sms/orders/download-upload/:uploadId', authenticate, async (req: any, res) => {
     try {
       const { uploadId } = req.params;
+      const isAckRequest = req.query.type === 'acknowledged' || req.query.file === 'acknowledged';
       const [rows]: any = await pool.execute(
-        'SELECT vessel_id, vessel_name, file_name, file_mimetype, file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
+        'SELECT vessel_id, vessel_name, file_name, file_mimetype, file_data, acknowledged_file_name, acknowledged_file_mimetype, acknowledged_file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
         [uploadId]
       );
-      if (rows.length === 0 || !rows[0].file_data) {
+      if (rows.length === 0) {
         return res.status(404).json({ error: 'Uploaded file not found' });
       }
       const row = rows[0];
+      const targetData = (isAckRequest && row.acknowledged_file_data) ? row.acknowledged_file_data : row.file_data;
+      const targetName = (isAckRequest && row.acknowledged_file_name) ? row.acknowledged_file_name : row.file_name;
+      const targetMime = (isAckRequest && row.acknowledged_file_mimetype) ? row.acknowledged_file_mimetype : (row.file_mimetype || 'application/octet-stream');
+
+      if (!targetData) {
+        return res.status(404).json({ error: 'File data missing or not yet generated' });
+      }
       if (req.user.role === 'vessel') {
         const idInfo = await getVesselUserIdentity(pool, req.user);
         const isMatch = checkVesselMatch(row.vessel_id, row.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username);
@@ -7193,9 +7452,9 @@ async function startServer() {
           return res.status(403).json({ error: 'Access denied: You cannot download files for vessels outside your team.' });
         }
       }
-      const retrievedBuffer = await handleFileRetrieve(row.file_data);
-      res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.file_name)}"`);
+      const retrievedBuffer = await handleFileRetrieve(targetData);
+      res.setHeader('Content-Type', targetMime);
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(targetName)}"`);
       res.send(retrievedBuffer);
     } catch (e: any) {
       console.error('Error downloading SMS order file:', e);
@@ -7206,14 +7465,22 @@ async function startServer() {
   app.get('/api/sms/orders/view-upload/:uploadId', authenticate, async (req: any, res) => {
     try {
       const { uploadId } = req.params;
+      const isAckRequest = req.query.type === 'acknowledged' || req.query.file === 'acknowledged';
       const [rows]: any = await pool.execute(
-        'SELECT vessel_id, vessel_name, file_name, file_mimetype, file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
+        'SELECT vessel_id, vessel_name, file_name, file_mimetype, file_data, acknowledged_file_name, acknowledged_file_mimetype, acknowledged_file_data FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
         [uploadId]
       );
-      if (rows.length === 0 || !rows[0].file_data) {
+      if (rows.length === 0) {
         return res.status(404).json({ error: 'Uploaded file not found' });
       }
       const row = rows[0];
+      const targetData = (isAckRequest && row.acknowledged_file_data) ? row.acknowledged_file_data : row.file_data;
+      const targetName = (isAckRequest && row.acknowledged_file_name) ? row.acknowledged_file_name : row.file_name;
+      const targetMime = (isAckRequest && row.acknowledged_file_mimetype) ? row.acknowledged_file_mimetype : (row.file_mimetype || 'application/octet-stream');
+
+      if (!targetData) {
+        return res.status(404).json({ error: 'File data missing or not yet generated' });
+      }
       if (req.user.role === 'vessel') {
         const idInfo = await getVesselUserIdentity(pool, req.user);
         const isMatch = checkVesselMatch(row.vessel_id, row.vessel_name, idInfo.vesselId, idInfo.vesselName, req.user.username);
@@ -7226,9 +7493,9 @@ async function startServer() {
           return res.status(403).json({ error: 'Access denied: You cannot view files for vessels outside your team.' });
         }
       }
-      const retrievedBuffer = await handleFileRetrieve(row.file_data);
-      res.setHeader('Content-Type', row.file_mimetype || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(row.file_name)}"`);
+      const retrievedBuffer = await handleFileRetrieve(targetData);
+      res.setHeader('Content-Type', targetMime);
+      res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(targetName)}"`);
       res.send(retrievedBuffer);
     } catch (e: any) {
       console.error('Error viewing SMS order file:', e);
@@ -7248,7 +7515,7 @@ async function startServer() {
       const order = orderRows[0];
 
       // Include vessel_id and order_id so matching and directory organization work reliably
-      let query = 'SELECT id, order_id, vessel_id, vessel_name, form_code, file_name, file_data FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL';
+      let query = 'SELECT id, order_id, vessel_id, vessel_name, form_code, file_name, file_data, acknowledged_file_name, acknowledged_file_data FROM sms_order_uploads WHERE order_id = ? AND deleted_at IS NULL';
       let params: any[] = [orderId];
       if (vesselId && String(vesselId).trim() !== '' && String(vesselId).toLowerCase() !== 'all') {
         query += ' AND vessel_id = ?';
@@ -7301,7 +7568,7 @@ async function startServer() {
               const vFolder = sanitize(up.vessel_name || `Vessel_${up.vessel_id || 'Unknown'}`);
               const rawFileName = up.file_name || `upload_${up.id}`;
 
-              // Ensure duplicate filenames inside the same vessel folder don't collide
+              // 1. Pack original uploaded file
               let filePath = `${vFolder}/${rawFileName}`;
               let dupCounter = 1;
               while (usedPaths.has(filePath.toLowerCase())) {
@@ -7315,6 +7582,29 @@ async function startServer() {
 
               zip.file(filePath, fileBuf);
               packedCount++;
+
+              // 2. If acknowledged stamped PDF exists, also pack it into the ZIP
+              if (up.acknowledged_file_data) {
+                try {
+                  const ackBuf = await handleFileRetrieve(up.acknowledged_file_data);
+                  if (ackBuf && ackBuf.length > 0) {
+                    const ackName = up.acknowledged_file_name || `${rawFileName.replace(/\.[^/.]+$/, '')}_ACKNOWLEDGED.pdf`;
+                    let ackPath = `${vFolder}/${ackName}`;
+                    let ackDup = 1;
+                    while (usedPaths.has(ackPath.toLowerCase())) {
+                      const dotIdx = ackName.lastIndexOf('.');
+                      const base = dotIdx !== -1 ? ackName.substring(0, dotIdx) : ackName;
+                      const ext = dotIdx !== -1 ? ackName.substring(dotIdx) : '';
+                      ackPath = `${vFolder}/${base}_(${ackDup})${ext}`;
+                      ackDup++;
+                    }
+                    usedPaths.add(ackPath.toLowerCase());
+                    zip.file(ackPath, ackBuf);
+                  }
+                } catch (ackPackErr: any) {
+                  console.warn(`Could not pack acknowledged file for upload ${up.id}:`, ackPackErr.message);
+                }
+              }
             } catch (err: any) {
               console.error(`Failed to pack file ${up.file_name} into ZIP:`, err.message);
             }
@@ -7573,6 +7863,514 @@ async function startServer() {
     }
   });
 
+  // Helper to stamp an uploaded document with official acknowledgment and convert to PDF
+  async function stampDocumentWithAcknowledgement({
+    buffer,
+    mimetype,
+    filename,
+    signerName,
+    signerPosition,
+    signatureDataUrl,
+    orderLabel,
+    vesselName,
+    formCode,
+  }: {
+    buffer: Buffer;
+    mimetype: string;
+    filename: string;
+    signerName: string;
+    signerPosition?: string | null;
+    signatureDataUrl?: string | null;
+    orderLabel?: string;
+    vesselName?: string;
+    formCode?: string;
+  }): Promise<{ pdfBuffer: Buffer; newFilename: string }> {
+    let pdfDoc: PDFDocument;
+    const lowerName = filename.toLowerCase();
+    const isPdf = (mimetype || '').includes('pdf') || lowerName.endsWith('.pdf');
+    const isImage = (mimetype || '').startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp'].some(ext => lowerName.endsWith(ext));
+    const isDocx = lowerName.endsWith('.docx');
+    const isDoc = lowerName.endsWith('.doc');
+
+    if (isPdf) {
+      pdfDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    } else if (isImage) {
+      pdfDoc = await PDFDocument.create();
+      let embeddedImg;
+      try {
+        if (mimetype === 'image/png' || lowerName.endsWith('.png')) {
+          embeddedImg = await pdfDoc.embedPng(buffer);
+        } else {
+          embeddedImg = await pdfDoc.embedJpg(buffer);
+        }
+        const page = pdfDoc.addPage([embeddedImg.width, embeddedImg.height]);
+        page.drawImage(embeddedImg, {
+          x: 0,
+          y: 0,
+          width: embeddedImg.width,
+          height: embeddedImg.height,
+        });
+      } catch (imgErr) {
+        // Fallback: standard page
+        const page = pdfDoc.addPage([595.28, 841.89]);
+        const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        page.drawText(`Document Image: ${filename}`, { x: 50, y: 780, size: 14, font: helvetica, color: rgb(0.2, 0.2, 0.2) });
+      }
+    } else {
+      // Direct LibreOffice API Document-to-PDF Conversion
+      // Converts original document (.docx, .doc, .xlsx, .xls, .rtf, etc.) directly using LibreOffice API
+      // before applying the official acknowledgement stamp. No mammoth or previewer API rendering is used.
+      const convertedPdfBytes = await convertDocumentToPdf(buffer, filename, {
+        vesselName,
+        orderLabel,
+        formCode
+      });
+      pdfDoc = await PDFDocument.load(convertedPdfBytes, { ignoreEncryption: true });
+    }
+
+    const pages = pdfDoc.getPages();
+    if (pages.length === 0) {
+      pdfDoc.addPage([595.28, 841.89]);
+    }
+
+    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const helveticaBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    // Embed signature image if provided
+    let sigImg: any = null;
+    if (signatureDataUrl && typeof signatureDataUrl === 'string' && signatureDataUrl.startsWith('data:image/')) {
+      try {
+        const base64Data = signatureDataUrl.replace(/^data:image\/\w+;base64,/, '');
+        const sigBuffer = Buffer.from(base64Data, 'base64');
+        if (signatureDataUrl.includes('image/png')) {
+          sigImg = await pdfDoc.embedPng(sigBuffer);
+        } else {
+          sigImg = await pdfDoc.embedJpg(sigBuffer);
+        }
+      } catch (sigErr) {
+        console.warn('Could not embed signature graphic:', sigErr);
+      }
+    }
+
+    // Stamp the target page (last page) at the bottom right corner
+    const targetPage = pages[pages.length - 1];
+    const { width, height } = targetPage.getSize();
+
+    const stampWidth = 235;
+    const stampHeight = 88;
+    const margin = 18;
+    const boxX = Math.max(10, width - stampWidth - margin);
+    const boxY = Math.max(10, margin);
+
+    // 1. Stamp Box Card Background
+    targetPage.drawRectangle({
+      x: boxX,
+      y: boxY,
+      width: stampWidth,
+      height: stampHeight,
+      color: rgb(1, 1, 1),
+      opacity: 0.95,
+      borderColor: rgb(0.08, 0.38, 0.75), // Ocean Navy Blue
+      borderWidth: 1.5,
+    });
+
+    // 2. Header Bar
+    targetPage.drawRectangle({
+      x: boxX,
+      y: boxY + stampHeight - 20,
+      width: stampWidth,
+      height: 20,
+      color: rgb(0.08, 0.38, 0.75),
+    });
+
+    targetPage.drawText('OFFICIALLY ACKNOWLEDGED', {
+      x: boxX + 10,
+      y: boxY + stampHeight - 14,
+      size: 8.5,
+      font: helveticaBold,
+      color: rgb(1, 1, 1),
+    });
+
+    // 3. Metadata Lines:
+    // Line 1: by: Fullname
+    // Line 2: Position
+    // Line 3: Cleanocean Shipmanagement Inc.
+    // Line 4: Date
+    const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+    const cleanSigner = sanitizeForWinAnsi(signerName || 'Authorized Personnel').substring(0, 26);
+    const cleanPos = sanitizeForWinAnsi(signerPosition || 'Authorized Officer').substring(0, 26);
+
+    targetPage.drawText(`by: ${cleanSigner}`, {
+      x: boxX + 10,
+      y: boxY + 52,
+      size: 8,
+      font: helveticaBold,
+      color: rgb(0.08, 0.15, 0.28),
+    });
+
+    targetPage.drawText(cleanPos, {
+      x: boxX + 10,
+      y: boxY + 39,
+      size: 7.5,
+      font: helveticaBold,
+      color: rgb(0.25, 0.3, 0.4),
+    });
+
+    targetPage.drawText('Cleanocean Shipmanagement Inc.', {
+      x: boxX + 10,
+      y: boxY + 26,
+      size: 7.5,
+      font: helveticaBold,
+      color: rgb(0.08, 0.38, 0.75),
+    });
+
+    targetPage.drawText(`Date: ${sanitizeForWinAnsi(nowStr)}`, {
+      x: boxX + 10,
+      y: boxY + 13,
+      size: 7,
+      font: helvetica,
+      color: rgb(0.35, 0.4, 0.5),
+    });
+
+    // 4. Signature Graphic on the right side of the stamp box
+    if (sigImg) {
+      const maxSigW = 75;
+      const maxSigH = 46;
+      const scale = Math.min(maxSigW / sigImg.width, maxSigH / sigImg.height, 1);
+      const renderW = sigImg.width * scale;
+      const renderH = sigImg.height * scale;
+      const sigX = boxX + stampWidth - renderW - 10;
+      const sigY = boxY + 10 + (maxSigH - renderH) / 2;
+
+      targetPage.drawImage(sigImg, {
+        x: sigX,
+        y: sigY,
+        width: renderW,
+        height: renderH,
+      });
+    }
+
+    const pdfBytes = await pdfDoc.save();
+    const baseName = filename.replace(/\.[^/.]+$/, '').replace(/_ACKNOWLEDGED$/i, '');
+    const newFilename = `${baseName}_ACKNOWLEDGED.pdf`;
+
+    return {
+      pdfBuffer: Buffer.from(pdfBytes),
+      newFilename,
+    };
+  }
+
+  // Acknowledge a submitted file in an SMS Order (Via digital stamping or uploading an acknowledged document)
+  app.post('/api/sms/orders/uploads/:uploadId/acknowledge', authenticate, upload.single('acknowledged_file'), async (req: any, res) => {
+    try {
+      if (req.user.role === 'vessel') {
+        return res.status(403).json({ error: 'Vessel accounts cannot acknowledge submitted documents. Office/Management accounts only.' });
+      }
+
+      const { uploadId } = req.params;
+      const { full_name, position, signature_data } = req.body || {};
+
+      // 1. Fetch upload record
+      const [rows]: any = await pool.execute(
+        'SELECT u.*, o.label as order_label FROM sms_order_uploads u LEFT JOIN sms_orders o ON u.order_id = o.id WHERE u.id = ? AND u.deleted_at IS NULL',
+        [uploadId]
+      );
+      if (rows.length === 0 || !rows[0].file_data) {
+        return res.status(404).json({ error: 'Upload not found or file data missing' });
+      }
+      const uploadItem = rows[0];
+
+      // 2. Fetch user's profile
+      const [userRows]: any = await pool.execute(
+        'SELECT full_name, position, signature_data FROM users WHERE id = ?',
+        [req.user.id]
+      );
+      const userProfile = userRows[0] || {};
+
+      let signerName = full_name || userProfile.full_name || req.user.username;
+      let signerPosition = position !== undefined ? (position || '') : (userProfile.position || '');
+      let signatureUrl = signature_data || userProfile.signature_data;
+
+      // If user supplied new name, position, or signature, update their user profile
+      if ((full_name && full_name !== userProfile.full_name) || (position !== undefined && position !== userProfile.position) || (signature_data && signature_data !== userProfile.signature_data)) {
+        await pool.execute(
+          'UPDATE users SET full_name = COALESCE(?, full_name), position = COALESCE(?, position), signature_data = COALESCE(?, signature_data) WHERE id = ?',
+          [full_name || null, position || null, signature_data || null, req.user.id]
+        );
+      }
+
+      const formatSize = (bytes: number) => {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+      };
+
+      // Check if an acknowledged document file was directly uploaded
+      const hasUploadedFile = (req.file && req.file.buffer && req.file.buffer.length > 0) || (req.body?.acknowledged_file_base64);
+
+      if (hasUploadedFile) {
+        let uploadedBuffer: Buffer;
+        let uploadedOriginalName: string;
+        let uploadedMime: string;
+
+        if (req.file && req.file.buffer) {
+          uploadedBuffer = req.file.buffer;
+          uploadedOriginalName = req.file.originalname || 'acknowledged_document.pdf';
+          uploadedMime = req.file.mimetype || 'application/pdf';
+        } else {
+          const rawBase64 = String(req.body.acknowledged_file_base64).replace(/^data:[^;]+;base64,/, '');
+          uploadedBuffer = Buffer.from(rawBase64, 'base64');
+          uploadedOriginalName = req.body.acknowledged_file_name || 'acknowledged_document.pdf';
+          uploadedMime = req.body.acknowledged_file_mimetype || 'application/pdf';
+        }
+
+        const lowerUploadedName = uploadedOriginalName.toLowerCase();
+        let finalPdfBuffer: Buffer;
+
+        if (uploadedMime === 'application/pdf' || lowerUploadedName.endsWith('.pdf')) {
+          finalPdfBuffer = uploadedBuffer;
+        } else {
+          // Convert uploaded document directly to PDF using LibreOffice API
+          finalPdfBuffer = await convertDocumentToPdf(uploadedBuffer, uploadedOriginalName, {
+            vesselName: uploadItem.vessel_name,
+            orderLabel: uploadItem.order_label,
+            formCode: uploadItem.form_code
+          });
+        }
+
+        const baseName = uploadedOriginalName.replace(/\.[^/.]+$/, '').replace(/_ACKNOWLEDGED$/i, '');
+        const newFilename = `${baseName}_ACKNOWLEDGED.pdf`;
+        const newStoredData = await handleFileUpload(newFilename, 'application/pdf', finalPdfBuffer, 'sms_order_uploads');
+        const newFileSize = formatSize(finalPdfBuffer.length);
+
+        await pool.execute(
+          `UPDATE sms_order_uploads 
+           SET acknowledged_at = CURRENT_TIMESTAMP, 
+               acknowledged_by = ?, 
+               acknowledged_by_name = ?, 
+               acknowledged_by_position = ?,
+               acknowledged_signature = NULL,
+               acknowledged_file_name = ?, 
+               acknowledged_file_data = ?, 
+               acknowledged_file_size = ?, 
+               acknowledged_file_mimetype = 'application/pdf', 
+               checked_at = COALESCE(checked_at, CURRENT_TIMESTAMP),
+               checked_by = COALESCE(checked_by, ?)
+           WHERE id = ?`,
+          [
+            req.user.username,
+            signerName,
+            signerPosition || null,
+            newFilename,
+            newStoredData,
+            newFileSize,
+            req.user.username,
+            uploadId
+          ]
+        );
+
+        try {
+          await pool.execute(
+            'INSERT IGNORE INTO sms_order_upload_reads (user_id, upload_id) VALUES (?, ?)',
+            [String(req.user.id || req.user.username), uploadId]
+          );
+        } catch (e) {}
+
+        await logAudit(
+          req.user.id,
+          req.user.username,
+          'ACKNOWLEDGE_SMS_ORDER_FILE',
+          `Acknowledged file for order ${uploadItem.order_id} (Vessel: ${uploadItem.vessel_name}) by uploading signed document ${newFilename}. Original file ${uploadItem.file_name} preserved.`
+        );
+
+        return res.json({
+          success: true,
+          upload: {
+            id: Number(uploadId),
+            order_id: uploadItem.order_id,
+            vessel_id: uploadItem.vessel_id,
+            vessel_name: uploadItem.vessel_name,
+            form_code: uploadItem.form_code,
+            file_name: uploadItem.file_name,
+            file_size: uploadItem.file_size,
+            file_mimetype: uploadItem.file_mimetype,
+            acknowledged_file_name: newFilename,
+            acknowledged_file_size: newFileSize,
+            acknowledged_file_mimetype: 'application/pdf',
+            acknowledged_at: new Date().toISOString(),
+            acknowledged_by: req.user.username,
+            acknowledged_by_name: signerName,
+            acknowledged_by_position: signerPosition || null,
+            acknowledged_signature: null,
+            is_read: true,
+            checked_at: new Date().toISOString(),
+            checked_by: req.user.username,
+          }
+        });
+      }
+
+      // 3. Digital Stamping Flow: Retrieve original file buffer
+      const originalBuffer = await handleFileRetrieve(uploadItem.file_data);
+
+      // 4. Stamp document & convert to PDF form
+      const { pdfBuffer, newFilename } = await stampDocumentWithAcknowledgement({
+        buffer: originalBuffer,
+        mimetype: uploadItem.file_mimetype,
+        filename: uploadItem.file_name,
+        signerName,
+        signerPosition,
+        signatureDataUrl: signatureUrl,
+        orderLabel: uploadItem.order_label,
+        vesselName: uploadItem.vessel_name,
+        formCode: uploadItem.form_code,
+      });
+
+      // 5. Store stamped PDF
+      const newStoredData = await handleFileUpload(newFilename, 'application/pdf', pdfBuffer, 'sms_order_uploads');
+      const newFileSize = formatSize(pdfBuffer.length);
+
+      // 6. Update upload record with stamped PDF and acknowledgment metadata
+      // The original uploaded file (file_name, file_data, file_mimetype, file_size) is NEVER removed or overwritten
+      // The stamped acknowledged PDF is stored in acknowledged_file_name, acknowledged_file_data, etc.
+      await pool.execute(
+        `UPDATE sms_order_uploads 
+         SET acknowledged_at = CURRENT_TIMESTAMP, 
+             acknowledged_by = ?, 
+             acknowledged_by_name = ?, 
+             acknowledged_by_position = ?,
+             acknowledged_signature = ?,
+             acknowledged_file_name = ?, 
+             acknowledged_file_data = ?, 
+             acknowledged_file_size = ?, 
+             acknowledged_file_mimetype = 'application/pdf', 
+             checked_at = COALESCE(checked_at, CURRENT_TIMESTAMP),
+             checked_by = COALESCE(checked_by, ?)
+         WHERE id = ?`,
+        [
+          req.user.username,
+          signerName,
+          signerPosition || null,
+          signatureUrl || null,
+          newFilename,
+          newStoredData,
+          newFileSize,
+          req.user.username,
+          uploadId
+        ]
+      );
+
+      // 7. Mark as read for this user
+      try {
+        await pool.execute(
+          'INSERT IGNORE INTO sms_order_upload_reads (user_id, upload_id) VALUES (?, ?)',
+          [String(req.user.id || req.user.username), uploadId]
+        );
+      } catch (e) {}
+
+      await logAudit(
+        req.user.id,
+        req.user.username,
+        'ACKNOWLEDGE_SMS_ORDER_FILE',
+        `Acknowledged and stamped file ${newFilename} for order ${uploadItem.order_id} (Vessel: ${uploadItem.vessel_name}). Original file ${uploadItem.file_name} preserved.`
+      );
+
+      res.json({
+        success: true,
+        upload: {
+          id: Number(uploadId),
+          order_id: uploadItem.order_id,
+          vessel_id: uploadItem.vessel_id,
+          vessel_name: uploadItem.vessel_name,
+          form_code: uploadItem.form_code,
+          file_name: uploadItem.file_name, // Original file preserved!
+          file_size: uploadItem.file_size, // Original file size preserved!
+          file_mimetype: uploadItem.file_mimetype, // Original mimetype preserved!
+          acknowledged_file_name: newFilename,
+          acknowledged_file_size: newFileSize,
+          acknowledged_file_mimetype: 'application/pdf',
+          acknowledged_at: new Date().toISOString(),
+          acknowledged_by: req.user.username,
+          acknowledged_by_name: signerName,
+          acknowledged_by_position: signerPosition || null,
+          acknowledged_signature: signatureUrl,
+          is_read: true,
+          checked_at: new Date().toISOString(),
+          checked_by: req.user.username,
+        }
+      });
+    } catch (e: any) {
+      console.error('Error acknowledging SMS order file:', e);
+      res.status(500).json({ error: e.message || 'Failed to acknowledge document' });
+    }
+  });
+
+  // Delete Acknowledged Document from SMS Order (Non-Vessel Users Only)
+  const handleDeleteAcknowledgedDoc = async (req: any, res: any) => {
+    try {
+      if (req.user.role === 'vessel') {
+        return res.status(403).json({
+          error: 'Access denied: Vessel users cannot delete acknowledged documents. Only office / non-vessel users are authorized to delete acknowledged documents.'
+        });
+      }
+
+      const { uploadId } = req.params;
+      const [rows]: any = await pool.execute(
+        'SELECT id, order_id, vessel_id, vessel_name, form_code, file_name, acknowledged_file_name, acknowledged_file_data, acknowledged_at FROM sms_order_uploads WHERE id = ? AND deleted_at IS NULL',
+        [uploadId]
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({ error: 'Upload record not found' });
+      }
+
+      const item = rows[0];
+      if (!item.acknowledged_at && !item.acknowledged_file_data && !item.acknowledged_file_name) {
+        return res.status(400).json({ error: 'No acknowledged document exists for this upload.' });
+      }
+
+      // 1. Delete stored acknowledged document file from storage if applicable
+      if (item.acknowledged_file_data) {
+        await handleFileDelete(item.acknowledged_file_data);
+      }
+
+      // 2. Clear acknowledgement fields in database (preserves the vessel's original uploaded file)
+      await pool.execute(
+        `UPDATE sms_order_uploads 
+         SET acknowledged_at = NULL, 
+             acknowledged_by = NULL, 
+             acknowledged_by_name = NULL, 
+             acknowledged_by_position = NULL, 
+             acknowledged_signature = NULL, 
+             acknowledged_file_name = NULL, 
+             acknowledged_file_data = NULL, 
+             acknowledged_file_size = NULL, 
+             acknowledged_file_mimetype = NULL 
+         WHERE id = ?`,
+        [uploadId]
+      );
+
+      await logAudit(
+        req.user.id,
+        req.user.username,
+        'DELETE_ACKNOWLEDGED_SMS_ORDER_FILE',
+        `Deleted acknowledged document (${item.acknowledged_file_name || 'Acknowledged PDF'}) for order ${item.order_id} (Vessel: ${item.vessel_name}). Original uploaded document "${item.file_name}" retained.`
+      );
+
+      res.json({
+        success: true,
+        message: `Acknowledged document "${item.acknowledged_file_name || 'Acknowledged PDF'}" deleted successfully. Original file preserved.`,
+        uploadId: Number(uploadId)
+      });
+    } catch (e: any) {
+      console.error('Error deleting acknowledged document:', e);
+      res.status(500).json({ error: e.message || 'Failed to delete acknowledged document' });
+    }
+  };
+
+  app.delete('/api/sms/orders/uploads/:uploadId/acknowledge', authenticate, handleDeleteAcknowledgedDoc);
+  app.delete('/api/sms/orders/upload/:uploadId/acknowledge', authenticate, handleDeleteAcknowledgedDoc);
+  app.delete('/api/sms/orders/upload/:uploadId/acknowledged', authenticate, handleDeleteAcknowledgedDoc);
+
   // SMS Order Templates
   app.get('/api/sms/order-reports', authenticate, async (req: any, res) => {
     try {
@@ -7708,6 +8506,11 @@ async function startServer() {
           uploadedBy: u.uploaded_by,
           checkedAt: u.checked_at,
           checkedBy: u.checked_by,
+          acknowledgedAt: u.acknowledged_at,
+          acknowledgedBy: u.acknowledged_by,
+          acknowledgedByName: u.acknowledged_by_name,
+          acknowledgedFileName: u.acknowledged_file_name,
+          acknowledgedFileSize: u.acknowledged_file_size,
           isRead
         };
       });
@@ -7728,7 +8531,7 @@ async function startServer() {
 
       const placeholders = uploadIds.map(() => '?').join(',');
       let [uploads]: any = await pool.query(
-        `SELECT u.id, u.order_id, o.label as order_label, u.vessel_id, u.vessel_name, u.form_code, u.file_name, u.file_data, u.file_mimetype 
+        `SELECT u.id, u.order_id, o.label as order_label, u.vessel_id, u.vessel_name, u.form_code, u.file_name, u.file_data, u.file_mimetype, u.acknowledged_file_name, u.acknowledged_file_data 
          FROM sms_order_uploads u
          LEFT JOIN sms_orders o ON u.order_id = o.id
          WHERE u.id IN (${placeholders}) AND u.deleted_at IS NULL`,
@@ -7765,6 +8568,7 @@ async function startServer() {
               const vesselFolder = sanitize(up.vessel_name || 'Vessel');
               const rawFileName = up.file_name || `file_${up.id}`;
 
+              // 1. Pack original uploaded file
               let filePath = `${orderFolder}/${vesselFolder}/${rawFileName}`;
               let dupCounter = 1;
               while (usedPaths.has(filePath.toLowerCase())) {
@@ -7778,6 +8582,29 @@ async function startServer() {
 
               zip.file(filePath, fileBuf);
               packedCount++;
+
+              // 2. If acknowledged stamped PDF exists, also pack it into the ZIP
+              if (up.acknowledged_file_data) {
+                try {
+                  const ackBuf = await handleFileRetrieve(up.acknowledged_file_data);
+                  if (ackBuf && ackBuf.length > 0) {
+                    const ackName = up.acknowledged_file_name || `${rawFileName.replace(/\.[^/.]+$/, '')}_ACKNOWLEDGED.pdf`;
+                    let ackPath = `${orderFolder}/${vesselFolder}/${ackName}`;
+                    let ackDup = 1;
+                    while (usedPaths.has(ackPath.toLowerCase())) {
+                      const dotIdx = ackName.lastIndexOf('.');
+                      const base = dotIdx !== -1 ? ackName.substring(0, dotIdx) : ackName;
+                      const ext = dotIdx !== -1 ? ackName.substring(dotIdx) : '';
+                      ackPath = `${orderFolder}/${vesselFolder}/${base}_(${ackDup})${ext}`;
+                      ackDup++;
+                    }
+                    usedPaths.add(ackPath.toLowerCase());
+                    zip.file(ackPath, ackBuf);
+                  }
+                } catch (ackPackErr: any) {
+                  console.warn(`Could not pack acknowledged file for upload ${up.id}:`, ackPackErr.message);
+                }
+              }
             } catch (err: any) {
               console.error(`Failed to pack file ${up.file_name}:`, err.message);
             }
@@ -9502,7 +10329,6 @@ Generated by COMOS System
 
   app.post('/api/noon-reports', authenticate, upload.single('report_file'), async (req: any, res) => {
     try {
-      console.log('Received noon report submission:', req.body);
       const {
         vessel_id,
         voyage_number,
@@ -10017,6 +10843,38 @@ Generated by COMOS System
     }
   }
 
+  // Parse multi-time schedule strings like "08:00;13:00", "08:00, 13:00", "08:00"
+  function parseScheduleTimes(rawStr: string | undefined | null): { hour: number; minute: number }[] {
+    if (!rawStr) return [{ hour: 8, minute: 0 }];
+    const tokens = String(rawStr).split(/[,;|\s]+/).map(s => s.trim()).filter(Boolean);
+    const result: { hour: number; minute: number }[] = [];
+    for (const t of tokens) {
+      const parts = t.split(':');
+      if (parts.length >= 2) {
+        const h = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        if (!isNaN(h) && h >= 0 && h <= 23 && !isNaN(m) && m >= 0 && m <= 59) {
+          result.push({ hour: h, minute: m });
+        }
+      }
+    }
+    return result.length > 0 ? result : [{ hour: 8, minute: 0 }];
+  }
+
+  // Parse comma/semicolon separated recipient emails
+  function parseRecipientEmails(rawStr: string | undefined | null, defaultEmail = 'smd@cleanocean.com.ph'): string[] {
+    if (!rawStr) return [defaultEmail];
+    const emails = String(rawStr).split(/[,;|\s]+/).map(s => s.trim().toLowerCase()).filter(s => s.includes('@'));
+    return emails.length > 0 ? Array.from(new Set(emails)) : [defaultEmail];
+  }
+
+  // Parse alert milestone days like "30,60,90"
+  function parseAlertMilestones(rawStr: string | undefined | null): number[] {
+    if (!rawStr) return [30, 60, 90];
+    const days = String(rawStr).split(/[,;|\s]+/).map(s => parseInt(s.trim(), 10)).filter(d => !isNaN(d) && d > 0);
+    return days.length > 0 ? Array.from(new Set(days)).sort((a, b) => a - b) : [30, 60, 90];
+  }
+
   async function sendEmail({ to, subject, html, from, headers }: { to: string | string[], subject: string, html: string, from?: string, headers?: Record<string, string> }) {
     const settings = await getSmtpSettings();
     const apiKey = settings?.RESEND_API_KEY || process.env.RESEND_API_KEY;
@@ -10036,11 +10894,12 @@ Generated by COMOS System
     lastEmailSentAt = Date.now();
     
     const resend = new Resend(apiKey);
-    const fromEmail = from || settings?.SMTP_FROM || process.env.SMTP_FROM || 'onboarding@resend.dev';
-    console.log(`Debug: Sending email from ${fromEmail} to ${to}`);
+    const rawFrom = from || settings?.SMTP_FROM || process.env.SMTP_FROM || 'COMOS@comos.cc';
+    const fromEmail = rawFrom.includes('<') ? rawFrom : `"COMOS" <${rawFrom}>`;
+    
+    console.log(`[Email Dispatch] Sending email from ${fromEmail} to:`, to);
     
     try {
-      console.log(`Debug: Payload: from=${fromEmail}, to=${to}, subject=${subject}`);
       const { data, error } = await resend.emails.send({
         from: fromEmail,
         to,
@@ -10065,12 +10924,97 @@ Generated by COMOS System
     vessel: 0,
     all: 0,
   };
+  const isExecutingCheck: Record<string, boolean> = {
+    office: false,
+    vessel: false,
+    all: false,
+  };
   let officeAlertTimeout: NodeJS.Timeout | null = null;
   let vesselAlertTimeout: NodeJS.Timeout | null = null;
+  let alertTickerInterval: NodeJS.Timeout | null = null;
 
   async function startAlertScheduler() {
     await startOfficeAlertScheduler();
     await startVesselAlertScheduler();
+    startAlertTicker();
+  }
+
+  function startAlertTicker() {
+    if (alertTickerInterval) clearInterval(alertTickerInterval);
+    // 60-second ticker to guarantee schedule execution even if timers drifted
+    alertTickerInterval = setInterval(async () => {
+      try {
+        const settings = await getSmtpSettings();
+        if (settings?.ENABLE_EMAIL_ALERTS === 'false') return;
+
+        const now = new Date();
+        // Time in Asia/Manila (UTC+8) and local
+        const manilaFormatter = new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Asia/Manila',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        });
+        const manilaTimeStr = manilaFormatter.format(now);
+        const [manilaH, manilaM] = manilaTimeStr.split(':').map(Number);
+        const localH = now.getHours();
+        const localM = now.getMinutes();
+
+        // 1. Office Check
+        if (settings?.ALERT_SCHEDULE_TYPE === 'time' || !settings?.ALERT_SCHEDULE_TYPE) {
+          const officeTimes = parseScheduleTimes(settings?.ALERT_TIME);
+          const isOfficeDue = officeTimes.some(t => 
+            (t.hour === manilaH && t.minute === manilaM) || 
+            (t.hour === localH && t.minute === localM)
+          );
+          if (isOfficeDue) {
+            const lastSentStr = settings?.LAST_OFFICE_ALERT_SENT_AT;
+            const lastSentDiffMin = lastSentStr ? (Date.now() - new Date(lastSentStr).getTime()) / 60000 : 9999;
+            if (lastSentDiffMin >= 25) {
+              console.log(`[Alert Ticker] Scheduled Office alert due at ${manilaTimeStr} Manila / ${localH}:${localM} local. Triggering dispatch...`);
+              await checkExpirations('office');
+            }
+          }
+        } else if (settings?.ALERT_SCHEDULE_TYPE === 'interval') {
+          const hours = parseInt(settings?.ALERT_INTERVAL_HOURS || '24', 10);
+          const intervalMs = Math.max(1, hours) * 60 * 60 * 1000;
+          const lastSentStr = settings?.LAST_OFFICE_ALERT_SENT_AT;
+          const diffMs = lastSentStr ? (Date.now() - new Date(lastSentStr).getTime()) : Infinity;
+          if (diffMs >= intervalMs) {
+            console.log(`[Alert Ticker] Interval Office alert due (${(diffMs / 3600000).toFixed(1)}h >= ${hours}h). Triggering dispatch...`);
+            await checkExpirations('office');
+          }
+        }
+
+        // 2. Vessel Check
+        if (settings?.VESSEL_ALERT_SCHEDULE_TYPE === 'time' || !settings?.VESSEL_ALERT_SCHEDULE_TYPE) {
+          const vesselTimes = parseScheduleTimes(settings?.VESSEL_ALERT_TIME);
+          const isVesselDue = vesselTimes.some(t => 
+            (t.hour === manilaH && t.minute === manilaM) || 
+            (t.hour === localH && t.minute === localM)
+          );
+          if (isVesselDue) {
+            const lastSentStr = settings?.LAST_VESSEL_ALERT_SENT_AT;
+            const lastSentDiffMin = lastSentStr ? (Date.now() - new Date(lastSentStr).getTime()) / 60000 : 9999;
+            if (lastSentDiffMin >= 25) {
+              console.log(`[Alert Ticker] Scheduled Vessel alert due at ${manilaTimeStr} Manila / ${localH}:${localM} local. Triggering dispatch...`);
+              await checkExpirations('vessel');
+            }
+          }
+        } else if (settings?.VESSEL_ALERT_SCHEDULE_TYPE === 'interval') {
+          const hours = parseInt(settings?.VESSEL_ALERT_INTERVAL_HOURS || '24', 10);
+          const intervalMs = Math.max(1, hours) * 60 * 60 * 1000;
+          const lastSentStr = settings?.LAST_VESSEL_ALERT_SENT_AT;
+          const diffMs = lastSentStr ? (Date.now() - new Date(lastSentStr).getTime()) : Infinity;
+          if (diffMs >= intervalMs) {
+            console.log(`[Alert Ticker] Interval Vessel alert due (${(diffMs / 3600000).toFixed(1)}h >= ${hours}h). Triggering dispatch...`);
+            await checkExpirations('vessel');
+          }
+        }
+      } catch (tickerErr) {
+        console.warn('[Alert Ticker] Exception in background ticker:', tickerErr);
+      }
+    }, 60 * 1000);
   }
 
   async function startOfficeAlertScheduler() {
@@ -10083,34 +11027,35 @@ Generated by COMOS System
         return;
       }
 
-      const type = settings?.ALERT_SCHEDULE_TYPE || 'interval';
+      const type = settings?.ALERT_SCHEDULE_TYPE || 'time';
       let ms = 24 * 60 * 60 * 1000; // Default 24h
 
       if (type === 'interval') {
-        const hours = parseInt(settings?.ALERT_INTERVAL_HOURS || '24');
-        ms = hours * 60 * 60 * 1000;
+        const hours = parseInt(settings?.ALERT_INTERVAL_HOURS || '24', 10);
+        ms = Math.max(1, hours) * 60 * 60 * 1000;
         console.log(`Office Alert scheduler: Next check in ${hours} hours.`);
       } else {
-        const times = (settings?.ALERT_TIME || '08:00').split(',');
+        const times = parseScheduleTimes(settings?.ALERT_TIME);
         const now = new Date();
         let nextCheck: Date | null = null;
 
-        for (const time of times) {
-          const [h, m] = time.split(':').map(Number);
+        for (const { hour, minute } of times) {
           const candidate = new Date();
-          candidate.setHours(h, m, 0, 0);
-          if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
+          candidate.setHours(hour, minute, 0, 0);
+          if (candidate.getTime() <= now.getTime() + 10000) {
+            candidate.setDate(candidate.getDate() + 1);
+          }
           
-          if (!nextCheck || candidate < nextCheck) {
+          if (!nextCheck || candidate.getTime() < nextCheck.getTime()) {
             nextCheck = candidate;
           }
         }
 
         if (nextCheck) {
-          ms = nextCheck.getTime() - now.getTime();
-          console.log(`Office Alert scheduler: Next check at ${nextCheck.toLocaleString()}.`);
+          ms = Math.max(5000, nextCheck.getTime() - now.getTime());
+          console.log(`Office Alert scheduler: Next check scheduled for ${nextCheck.toLocaleString()}.`);
         } else {
-          ms = 24 * 60 * 60 * 1000; // Fallback
+          ms = 24 * 60 * 60 * 1000;
         }
       }
 
@@ -10134,34 +11079,35 @@ Generated by COMOS System
         return;
       }
 
-      const type = settings?.VESSEL_ALERT_SCHEDULE_TYPE || 'interval';
+      const type = settings?.VESSEL_ALERT_SCHEDULE_TYPE || 'time';
       let ms = 24 * 60 * 60 * 1000; // Default 24h
 
       if (type === 'interval') {
-        const hours = parseInt(settings?.VESSEL_ALERT_INTERVAL_HOURS || '24');
-        ms = hours * 60 * 60 * 1000;
+        const hours = parseInt(settings?.VESSEL_ALERT_INTERVAL_HOURS || '24', 10);
+        ms = Math.max(1, hours) * 60 * 60 * 1000;
         console.log(`Vessel Alert scheduler: Next check in ${hours} hours.`);
       } else {
-        const times = (settings?.VESSEL_ALERT_TIME || '08:00').split(',');
+        const times = parseScheduleTimes(settings?.VESSEL_ALERT_TIME);
         const now = new Date();
         let nextCheck: Date | null = null;
 
-        for (const time of times) {
-          const [h, m] = time.split(':').map(Number);
+        for (const { hour, minute } of times) {
           const candidate = new Date();
-          candidate.setHours(h, m, 0, 0);
-          if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
+          candidate.setHours(hour, minute, 0, 0);
+          if (candidate.getTime() <= now.getTime() + 10000) {
+            candidate.setDate(candidate.getDate() + 1);
+          }
           
-          if (!nextCheck || candidate < nextCheck) {
+          if (!nextCheck || candidate.getTime() < nextCheck.getTime()) {
             nextCheck = candidate;
           }
         }
 
         if (nextCheck) {
-          ms = nextCheck.getTime() - now.getTime();
-          console.log(`Vessel Alert scheduler: Next check at ${nextCheck.toLocaleString()}.`);
+          ms = Math.max(5000, nextCheck.getTime() - now.getTime());
+          console.log(`Vessel Alert scheduler: Next check scheduled for ${nextCheck.toLocaleString()}.`);
         } else {
-          ms = 24 * 60 * 60 * 1000; // Fallback
+          ms = 24 * 60 * 60 * 1000;
         }
       }
 
@@ -10175,78 +11121,68 @@ Generated by COMOS System
     }
   }
 
-  async function checkExpirations(targetType?: 'office' | 'vessel'): Promise<number> {
-    console.log(`Checking certificate expirations${targetType ? ` for ${targetType}` : ''}...`);
+  async function checkExpirations(targetType?: 'office' | 'vessel', force = false): Promise<number> {
+    console.log(`Checking certificate expirations${targetType ? ` for ${targetType}` : ''} (force: ${force})...`);
     if (!pool) return 0;
 
-    // 1. In-memory deduplication check (to catch rapid double calls in the same process)
-    const nowTimestamp = Date.now();
     const typeKey = targetType || 'all';
-    // If it ran within the last 10 seconds, skip to prevent double execution
-    if (nowTimestamp - lastCheckTimestamps[typeKey] < 10000) {
-      console.log(`Skipping checkExpirations('${typeKey}') - executed too recently in memory.`);
+
+    // Prevent concurrent execution of the same target
+    if (isExecutingCheck[typeKey]) {
+      console.log(`Skipping checkExpirations('${typeKey}') - already running.`);
       return 0;
     }
-    lastCheckTimestamps[typeKey] = nowTimestamp;
+    isExecutingCheck[typeKey] = true;
 
-    // 2. Distributed lock across all running container instances to prevent duplicate concurrent runs
-    let hasDistributedLock = false;
     try {
-      const [lockRows]: any = await pool.query("SELECT GET_LOCK('comos_alert_dispatch_lock', 0) as locked");
-      if (!lockRows || lockRows[0]?.locked !== 1) {
-        console.log(`Skipping checkExpirations('${typeKey}') - another container holds the dispatch lock.`);
+      // 1. In-memory deduplication check (unless forced)
+      const nowTimestamp = Date.now();
+      if (!force && nowTimestamp - lastCheckTimestamps[typeKey] < 10000) {
+        console.log(`Skipping checkExpirations('${typeKey}') - executed too recently in memory.`);
         return 0;
       }
-      hasDistributedLock = true;
+      lastCheckTimestamps[typeKey] = nowTimestamp;
 
       const settings = await getSmtpSettings();
 
-      // 3. Check if automated alert dispatch is enabled in system settings
-      if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
+      // 2. Check if automated alert dispatch is enabled in system settings (unless manually forced)
+      if (!force && settings?.ENABLE_EMAIL_ALERTS === 'false') {
         console.log('Email alerts are disabled in settings.');
-        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alerts are disabled.`, 'LAST_ALERT_LOG']);
+        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alerts are disabled in settings.`, 'LAST_ALERT_LOG']);
         return 0;
       }
 
-      // 4. Database-backed deduplication (to prevent re-running if scheduled check ran recently)
-      if (targetType && settings) {
+      // 3. Database-backed deduplication (prevent rapid re-firing within the same slot unless forced)
+      if (!force && targetType && settings) {
         const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
         const lastSentStr = settings[lastSentKey];
         if (lastSentStr) {
           const lastSent = new Date(lastSentStr);
           const diffMs = Date.now() - lastSent.getTime();
           
-          let minIntervalMs = 4 * 60 * 60 * 1000;
+          let minIntervalMs = 25 * 60 * 1000; // 25 min default for time-based multi-slot (e.g. 08:00 and 13:00)
           const scheduleType = targetType === 'office' ? 
             settings.ALERT_SCHEDULE_TYPE : 
             settings.VESSEL_ALERT_SCHEDULE_TYPE;
           
           if (scheduleType === 'interval') {
             const hoursKey = targetType === 'office' ? 'ALERT_INTERVAL_HOURS' : 'VESSEL_ALERT_INTERVAL_HOURS';
-            const hours = parseInt(settings[hoursKey] || '24');
-            if (hours < 4) {
-              minIntervalMs = hours * 0.8 * 60 * 60 * 1000;
-            }
+            const hours = parseInt(settings[hoursKey] || '24', 10);
+            minIntervalMs = Math.max(1, hours) * 0.8 * 60 * 60 * 1000;
           }
           
           if (diffMs < minIntervalMs) {
-            console.log(`Skipping automated ${targetType} alert check. Already checked/sent successfully in DB ${(diffMs / 1000 / 60).toFixed(1)} minutes ago.`);
+            console.log(`Skipping automated ${targetType} alert check. Already sent ${(diffMs / 1000 / 60).toFixed(1)} minutes ago.`);
             return 0;
           }
         }
-
-        // Immediately update timestamp in DB to claim this timeslot and prevent concurrent container overlap
-        await pool.execute(
-          'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-          [lastSentKey, new Date().toISOString(), new Date().toISOString()]
-        );
       }
 
       let query = `
         SELECT c.*, COALESCE(v.name, 'General') as vessel_name, t.name as team_name
         FROM certificates c
         LEFT JOIN vessels v ON c.vessel_id = v.id
-        JOIN teams t ON c.team_id = t.id
+        LEFT JOIN teams t ON c.team_id = t.id
         WHERE c.deleted_at IS NULL
       `;
       
@@ -10258,21 +11194,12 @@ Generated by COMOS System
       const [certs]: any = await pool.query(query, params);
 
       const today = new Date();
-      const sixtyDaysFromNow = addDays(today, 60);
-      const thirtyDaysFromNow = addDays(today, 30);
-      const todayDateStr = today.toISOString().split('T')[0];
+      today.setHours(0, 0, 0, 0);
+      const todayDateStr = new Date().toISOString().split('T')[0];
 
-      // 5. Query sent_email_alerts table to check which certificate-recipient-status alerts have already been sent
-      const [sentAlertRows]: any = await pool.query(
-        "SELECT certificate_id, recipient_email, alert_status FROM sent_email_alerts"
-      );
-      const sentAlertSet = new Set<string>();
-      for (const row of sentAlertRows) {
-        sentAlertSet.add(`${row.certificate_id}:${row.recipient_email.toLowerCase().trim()}:${row.alert_status}`);
-      }
-
-      const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
-      const senderEmail = settings?.SMTP_FROM || process.env.SMTP_FROM || 'onboarding@resend.dev';
+      // Parse configured alert milestones (e.g. 30, 60, 90, 180 days)
+      const milestones = parseAlertMilestones(settings?.ALERT_DAYS);
+      const maxAlertDays = Math.max(...milestones, 90);
 
       // Office alerts: consolidated across all teams into a single list
       const officeAlerts: any[] = [];
@@ -10283,22 +11210,27 @@ Generated by COMOS System
         if (!cert.expiration_date) continue;
         const expDate = new Date(cert.expiration_date);
         if (isNaN(expDate.getTime())) continue;
-        if (isBefore(expDate, sixtyDaysFromNow)) {
-          let status = 'EXPIRING';
-          if (isBefore(expDate, today)) status = 'EXPIRED';
-          else if (isBefore(expDate, thirtyDaysFromNow)) status = 'EXPIRING SOON';
-          
-          const alertData = { ...cert, status };
+        
+        // Calculate diff in calendar days
+        const diffTime = expDate.getTime() - today.getTime();
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-          // Office alerts
+        if (diffDays <= maxAlertDays) {
+          let status = 'EXPIRING';
+          if (diffDays < 0) {
+            status = 'EXPIRED';
+          } else if (diffDays <= 30) {
+            status = 'EXPIRING SOON';
+          }
+          
+          const alertData = { ...cert, status, days_left: diffDays };
+
+          // Office alerts: include all expired and expiring certificates
           if (targetType === 'office' || !targetType) {
-            const officeKey = `${cert.id}:${alertRecipient.toLowerCase().trim()}:${status}`;
-            if (!sentAlertSet.has(officeKey)) {
-              officeAlerts.push(alertData);
-            }
+            officeAlerts.push(alertData);
           }
 
-          // Vessel alerts
+          // Vessel alerts: include if assigned to this vessel
           if (targetType === 'vessel' || !targetType) {
             if (cert.vessel_id) {
               if (!vesselAlerts[cert.vessel_id]) {
@@ -10309,144 +11241,203 @@ Generated by COMOS System
                 const email = vesselUsers.length > 0 ? vesselUsers[0].email : null;
                 vesselAlerts[cert.vessel_id] = { vesselName: cert.vessel_name, alerts: [], email };
               }
-              const vesselEmail = vesselAlerts[cert.vessel_id].email;
-              if (vesselEmail) {
-                const vesselKey = `${cert.id}:${vesselEmail.toLowerCase().trim()}:${status}`;
-                if (!sentAlertSet.has(vesselKey)) {
-                  vesselAlerts[cert.vessel_id].alerts.push(alertData);
-                }
+              if (vesselAlerts[cert.vessel_id].email) {
+                vesselAlerts[cert.vessel_id].alerts.push(alertData);
               }
             }
           }
         }
       }
 
+      // Sort alerts by expiration date ascending (expired first, then nearest expiring)
+      officeAlerts.sort((a, b) => new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime());
+      for (const vId in vesselAlerts) {
+        vesselAlerts[vId].alerts.sort((a, b) => new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime());
+      }
+
       const freshVesselAlertCount = Object.values(vesselAlerts).reduce((acc, v) => acc + v.alerts.length, 0);
-      console.log(`Found ${certs.length} certificates. Fresh unsent alerts - Office: ${officeAlerts.length}, Vessel: ${freshVesselAlertCount}.`);
+      console.log(`Scan completed across ${certs.length} certificates. Qualifying alerts - Office: ${officeAlerts.length}, Vessel: ${freshVesselAlertCount}.`);
 
       if (officeAlerts.length === 0 && freshVesselAlertCount === 0) {
-        console.log('No new certificate alerts need to be sent (all have already been alerted).');
-        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. All expiring certificates have already been alerted.`, 'LAST_ALERT_LOG']);
+        console.log('No expiring certificates found.');
+        await pool.execute(
+          'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+          ['LAST_ALERT_LOG', `Last scan: ${new Date().toLocaleString()}. No certificates require attention.`, `Last scan: ${new Date().toLocaleString()}. No certificates require attention.`]
+        );
         return 0;
       }
 
+      const rawDestEmail = settings?.DESTINATION_EMAIL || settings?.destination_email;
+      const officeRecipients = parseRecipientEmails(rawDestEmail, 'smd@cleanocean.com.ph');
+      const senderEmail = settings?.SMTP_FROM || process.env.SMTP_FROM || 'COMOS@comos.cc';
+      const apiKey = settings?.RESEND_API_KEY || settings?.resend_api_key || process.env.RESEND_API_KEY;
+
       let totalEmailsSent = 0;
 
-      if (settings?.RESEND_API_KEY || process.env.RESEND_API_KEY) {
-        // Send Office Alerts: EXACTLY ONE consolidated email for the office recipient!
-        if (officeAlerts.length > 0) {
-          console.log(`Sending 1 consolidated office alert email to ${alertRecipient} with ${officeAlerts.length} certificate(s)...`);
-          await sendConsolidatedEmail('Office Summary', officeAlerts, alertRecipient, senderEmail);
+      if (apiKey) {
+        // Send Office Alerts: Dispatch consolidated email summary to all office recipients
+        if ((targetType === 'office' || !targetType) && officeAlerts.length > 0) {
+          console.log(`Sending consolidated office alert to [${officeRecipients.join(', ')}] with ${officeAlerts.length} certificate(s)...`);
+          await sendConsolidatedEmail('Office Summary', officeAlerts, officeRecipients, senderEmail);
           totalEmailsSent++;
 
-          // Record sent alerts in database to ensure they are never sent again
+          // Record in sent_email_alerts table for historical audit
           for (const alert of officeAlerts) {
-            await pool.execute(
-              `INSERT INTO sent_email_alerts (certificate_id, recipient_email, alert_status, alert_channel, alert_date)
-               VALUES (?, ?, ?, 'email', ?)
-               ON DUPLICATE KEY UPDATE sent_at = CURRENT_TIMESTAMP`,
-              [alert.id, alertRecipient.toLowerCase().trim(), alert.status, todayDateStr]
-            );
-            sentAlertSet.add(`${alert.id}:${alertRecipient.toLowerCase().trim()}:${alert.status}`);
+            for (const recipient of officeRecipients) {
+              await pool.execute(
+                `INSERT INTO sent_email_alerts (certificate_id, recipient_email, alert_status, alert_channel, alert_date)
+                 VALUES (?, ?, ?, 'email', ?)
+                 ON DUPLICATE KEY UPDATE sent_at = CURRENT_TIMESTAMP`,
+                [alert.id, recipient, alert.status, todayDateStr]
+              );
+            }
           }
+
+          // Update LAST_OFFICE_ALERT_SENT_AT timestamp
+          await pool.execute(
+            'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+            ['LAST_OFFICE_ALERT_SENT_AT', new Date().toISOString(), new Date().toISOString()]
+          );
         }
 
-        // Send Vessel Alerts: EXACTLY ONE email per vessel (only for vessels with new unsent alerts)
-        for (const vesselId in vesselAlerts) {
-          const { vesselName, alerts, email } = vesselAlerts[vesselId];
-          if (alerts.length === 0 || !email) continue;
+        // Send Vessel Alerts: EXACTLY ONE email per vessel
+        if (targetType === 'vessel' || !targetType) {
+          for (const vesselId in vesselAlerts) {
+            const { vesselName, alerts, email } = vesselAlerts[vesselId];
+            if (alerts.length === 0 || !email) continue;
 
-          console.log(`Sending vessel alert email to ${email} for Vessel: ${vesselName} with ${alerts.length} certificate(s)...`);
-          await sendConsolidatedEmail(`Vessel: ${vesselName}`, alerts, email, senderEmail);
-          totalEmailsSent++;
+            console.log(`Sending vessel alert email to ${email} for Vessel: ${vesselName} with ${alerts.length} certificate(s)...`);
+            await sendConsolidatedEmail(`Vessel: ${vesselName}`, alerts, [email], senderEmail);
+            totalEmailsSent++;
 
-          // Record sent alerts in database to ensure they are never sent again
-          for (const alert of alerts) {
+            for (const alert of alerts) {
+              await pool.execute(
+                `INSERT INTO sent_email_alerts (certificate_id, recipient_email, alert_status, alert_channel, alert_date)
+                 VALUES (?, ?, ?, 'email', ?)
+                 ON DUPLICATE KEY UPDATE sent_at = CURRENT_TIMESTAMP`,
+                [alert.id, email.toLowerCase().trim(), alert.status, todayDateStr]
+              );
+            }
+          }
+
+          // Update LAST_VESSEL_ALERT_SENT_AT timestamp
+          if (freshVesselAlertCount > 0) {
             await pool.execute(
-              `INSERT INTO sent_email_alerts (certificate_id, recipient_email, alert_status, alert_channel, alert_date)
-               VALUES (?, ?, ?, 'email', ?)
-               ON DUPLICATE KEY UPDATE sent_at = CURRENT_TIMESTAMP`,
-              [alert.id, email.toLowerCase().trim(), alert.status, todayDateStr]
+              'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+              ['LAST_VESSEL_ALERT_SENT_AT', new Date().toISOString(), new Date().toISOString()]
             );
-            sentAlertSet.add(`${alert.id}:${email.toLowerCase().trim()}:${alert.status}`);
           }
         }
       } else {
-        console.warn('RESEND_API_KEY incomplete in both settings and environment. Skipping email alerts.');
-        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Resend API settings incomplete (Missing API Key).`, 'LAST_ALERT_LOG']);
+        console.warn('RESEND_API_KEY missing in both settings and environment. Skipping email alert dispatch.');
+        await pool.execute(
+          'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+          ['LAST_ALERT_LOG', `Last check: ${new Date().toLocaleString()}. Resend API settings incomplete (Missing API Key).`, `Last check: ${new Date().toLocaleString()}. Resend API settings incomplete (Missing API Key).`]
+        );
       }
 
-      console.log(`Certificate expiration check completed. Sent ${totalEmailsSent} alert email(s).`);
+      console.log(`Certificate expiration check completed. Dispatched ${totalEmailsSent} alert email(s).`);
       return totalEmailsSent;
     } catch (err) {
       console.error('Error during certificate expiration check:', err);
       return 0;
     } finally {
-      if (hasDistributedLock && pool) {
-        try {
-          await pool.query("SELECT RELEASE_LOCK('comos_alert_dispatch_lock')");
-        } catch (releaseErr) {
-          console.error('Failed to release comos_alert_dispatch_lock:', releaseErr);
-        }
-      }
+      isExecutingCheck[typeKey] = false;
     }
   }
 
-  async function sendConsolidatedEmail(name: string, alerts: any[], recipient: string, senderEmail: string) {
-    console.log(`Sending consolidated alert for ${name} (${alerts.length} certificates) to ${recipient}`);
+  async function sendConsolidatedEmail(name: string, alerts: any[], recipients: string | string[], senderEmail: string) {
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
+    console.log(`Sending consolidated alert for ${name} (${alerts.length} certificates) to:`, recipientList);
 
     try {
-      const tableRows = alerts.map(alert => `
-        <tr>
-          <td style="border: 1px solid #ddd; padding: 8px;">${alert.team_name ? alert.team_name + ' / ' : ''}${alert.vessel_name}</td>
-          <td style="border: 1px solid #ddd; padding: 8px;">${alert.name}</td>
-          <td style="border: 1px solid #ddd; padding: 8px;">${alert.expiration_date ? String(alert.expiration_date).split('T')[0] : 'N/A'}</td>
-          <td style="border: 1px solid #ddd; padding: 8px; color: ${alert.status === 'EXPIRED' ? '#d9534f' : alert.status === 'EXPIRING SOON' ? '#d9534f' : '#f0ad4e'}; font-weight: bold;">${alert.status}</td>
-        </tr>
-      `).join('');
+      const tableRows = alerts.map((alert, idx) => {
+        const isExp = alert.status === 'EXPIRED';
+        const isSoon = alert.status === 'EXPIRING SOON';
+        const badgeColor = isExp ? '#dc2626' : isSoon ? '#ea580c' : '#0284c7';
+        const badgeBg = isExp ? '#fee2e2' : isSoon ? '#ffedd5' : '#e0f2fe';
+        const expFormatted = alert.expiration_date ? String(alert.expiration_date).split('T')[0] : 'N/A';
+        const daysLabel = alert.days_left < 0 ? `(${Math.abs(alert.days_left)} days overdue)` : `(${alert.days_left} days left)`;
+        
+        return `
+          <tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
+            <td style="border: 1px solid #e2e8f0; padding: 10px 12px; font-weight: 600; color: #1e293b;">
+              ${alert.team_name ? `<span style="color: #64748b; font-size: 11px;">${alert.team_name} / </span>` : ''}${alert.vessel_name}
+            </td>
+            <td style="border: 1px solid #e2e8f0; padding: 10px 12px; color: #0f172a; font-weight: 500;">
+              ${alert.name}
+            </td>
+            <td style="border: 1px solid #e2e8f0; padding: 10px 12px; color: #334155; font-family: monospace; font-size: 13px;">
+              <b>${expFormatted}</b> <span style="font-size: 11px; color: ${badgeColor};">${daysLabel}</span>
+            </td>
+            <td style="border: 1px solid #e2e8f0; padding: 10px 12px; text-align: center;">
+              <span style="display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800; text-transform: uppercase; background-color: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeColor}33;">
+                ${alert.status}
+              </span>
+            </td>
+          </tr>
+        `;
+      }).join('');
 
       const htmlContent = `
-        <div style="font-family: Arial, sans-serif; color: #333; max-width: 800px;">
-          <h2 style="color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px;">Certificate/Service Report Expiration Alerts: ${name}</h2>
-          <p>The following certificates/service reports for <b>${name}</b> require attention:</p>
-          <table style="border-collapse: collapse; width: 100%; margin-top: 20px;">
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; max-width: 860px; margin: 0 auto; padding: 24px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
+          <div style="background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: #ffffff; padding: 24px; border-radius: 12px; margin-bottom: 24px;">
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #93c5fd; margin-bottom: 6px;">
+              Clean Ocean Shipmanagement Inc. • COMOS Alert System
+            </div>
+            <h2 style="margin: 0; font-size: 20px; font-weight: 800; color: #ffffff;">
+              Vessel Certificate / Service Report Expiration Alerts
+            </h2>
+            <p style="margin: 8px 0 0 0; font-size: 13px; color: #cbd5e1;">
+              Scope: <b>${name}</b> • Total items requiring attention: <b>${alerts.length}</b>
+            </p>
+          </div>
+
+          <p style="font-size: 14px; color: #475569; margin-bottom: 16px; line-height: 1.5;">
+            The following vessel certificates and service reports have expired or are approaching their renewal/survey milestones. Please review and arrange prompt renewal or survey:
+          </p>
+
+          <table style="border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 24px;">
             <thead>
-              <tr style="background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;">
-                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Team / Vessel</th>
-                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Certificate/Service Report Name</th>
-                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Expiration Date</th>
-                <th style="border: 1px solid #dee2e6; padding: 12px; text-align: left;">Status</th>
+              <tr style="background-color: #f1f5f9; border-bottom: 2px solid #cbd5e1;">
+                <th style="border: 1px solid #e2e8f0; padding: 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #475569;">Team / Vessel</th>
+                <th style="border: 1px solid #e2e8f0; padding: 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #475569;">Certificate / Report Name</th>
+                <th style="border: 1px solid #e2e8f0; padding: 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #475569;">Expiration Date</th>
+                <th style="border: 1px solid #e2e8f0; padding: 12px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #475569;">Status</th>
               </tr>
             </thead>
             <tbody>
               ${tableRows}
             </tbody>
           </table>
-          <p style="margin-top: 30px; font-size: 0.85em; color: #7f8c8d; border-top: 1px solid #eee; padding-top: 15px;">
-            This is an automated notification from the <b>COMOS Vessel Certificate/Service Report System</b>.
-          </p>
+
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 16px; border-radius: 10px; font-size: 12px; color: #64748b; line-height: 1.5;">
+            <b>Notice:</b> This is an automated notification from the COMOS Vessel Management System. For inquiries or updates, access the COMOS portal or contact the Technical & Safety Management Department.
+            <div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">
+              Dispatched at: ${new Date().toISOString().replace('T', ' ').substring(0, 19)} UTC
+            </div>
+          </div>
         </div>
       `;
 
-      // Deterministic idempotency key for Resend
-      const todayDateStr = new Date().toISOString().split('T')[0];
-      const certIdsJoined = alerts.map((a: any) => a.id).sort().join('-');
-      const idempotencyKey = `alert-${recipient.replace(/[^a-zA-Z0-9]/g, '_')}-${todayDateStr}-${certIdsJoined}`;
-
       await sendEmail({
-        from: `"COMOS" <${senderEmail}>`,
-        to: recipient,
-        subject: `[COMOS] Certificate/Service Report Alerts: ${name}`,
+        from: senderEmail,
+        to: recipientList,
+        subject: `[COMOS Alert] Certificate/Service Report Expiration Notice: ${name} (${alerts.length} Items)`,
         html: htmlContent,
-        headers: {
-          'Idempotency-Key': idempotencyKey
-        }
       });
-      console.log(`Consolidated email alert sent to ${recipient} for ${name}`);
-      await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. Alert sent to ${recipient} for ${name} (${alerts.length} certs).`, 'LAST_ALERT_LOG']);
+
+      console.log(`Consolidated email alert successfully sent to [${recipientList.join(', ')}] for ${name}`);
+      await pool.execute(
+        'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+        ['LAST_ALERT_LOG', `Last check: ${new Date().toLocaleString()}. Alert dispatched to [${recipientList.join(', ')}] for ${name} (${alerts.length} certificates).`, `Last check: ${new Date().toLocaleString()}. Alert dispatched to [${recipientList.join(', ')}] for ${name} (${alerts.length} certificates).`]
+      );
     } catch (e: any) {
-      console.error(`Failed to send consolidated email to ${recipient} for ${name}:`, e);
-      await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Last check: ${new Date().toLocaleString()}. FAILED to send to ${recipient}: ${e.message}`, 'LAST_ALERT_LOG']);
+      console.error(`Failed to send consolidated email to [${recipientList.join(', ')}] for ${name}:`, e);
+      await pool.execute(
+        'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+        ['LAST_ALERT_LOG', `Last check: ${new Date().toLocaleString()}. FAILED to dispatch to [${recipientList.join(', ')}]: ${e.message}`, `Last check: ${new Date().toLocaleString()}. FAILED to dispatch to [${recipientList.join(', ')}]: ${e.message}`]
+      );
     }
   }
 
@@ -10455,7 +11446,7 @@ Generated by COMOS System
 
   app.post('/api/admin/test-email', authenticate, isAdmin, async (req, res) => {
     try {
-      console.log('[Manual Trigger] Testing email alerts...');
+      console.log('[Manual Trigger] Running manual expiration alert scan & dispatch...');
       const settings = await getSmtpSettings();
       const apiKey = settings?.RESEND_API_KEY || process.env.RESEND_API_KEY;
       
@@ -10465,42 +11456,57 @@ Generated by COMOS System
         });
       }
 
-      const alertRecipient = settings?.DESTINATION_EMAIL || 'IT@cleanocean.com.ph';
-      const senderEmail = settings?.SMTP_FROM || 'onboarding@resend.dev';
+      const officeRecipients = parseRecipientEmails(settings?.DESTINATION_EMAIL, 'smd@cleanocean.com.ph');
+      const senderEmail = settings?.SMTP_FROM || process.env.SMTP_FROM || 'COMOS@comos.cc';
 
-      // Run actual expiration check first
-      const alertEmailsSent = await checkExpirations();
+      // Force run actual expiration check
+      const alertEmailsSent = await checkExpirations('office', true);
 
-      // If no alert emails were generated (no expiring certificates), send 1 test email to verify Resend connectivity
+      // If no expiring certificates were found, send 1 connectivity test email to verify delivery
       if (alertEmailsSent === 0) {
         await sendEmail({
-          from: `"COMOS System Test" <${senderEmail}>`,
-          to: alertRecipient,
-          subject: '[COMOS] Resend Configuration Test',
+          from: senderEmail,
+          to: officeRecipients,
+          subject: '[COMOS] Resend Email Service Test',
           html: `
-            <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-              <div style="background-color: #fff3cd; color: #856404; padding: 10px; border: 1px solid #ffeeba; border-radius: 5px; margin-bottom: 20px; text-align: center; font-weight: bold;">
-                NOTICE: This system is currently in its TESTING PERIOD.
+            <div style="font-family: Arial, sans-serif; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; max-width: 600px;">
+              <h2 style="color: #0f172a; margin-top: 0;">COMOS Email Service Test</h2>
+              <p style="color: #334155;">This is a test notification from the <b>COMOS Vessel Management System</b>.</p>
+              <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 12px 16px; border-radius: 8px; font-weight: 600; margin: 16px 0;">
+                ✓ Email dispatch connection is working properly to [${officeRecipients.join(', ')}].
               </div>
-              <h2 style="color: #2c3e50;">Resend Configuration Test</h2>
-              <p>This is a test email from the <b>COMOS Vessel Certificate/Service Report System</b> using Resend.</p>
-              <p>Your Resend API settings for <b>${alertRecipient}</b> are working correctly. No expiring certificates were found at this time.</p>
-              <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
-              <p style="font-size: 0.8em; color: #7f8c8d;">Timestamp: ${new Date().toLocaleString()}</p>
+              <p style="color: #64748b; font-size: 13px;">Expiration Scan Result: All vessel certificates are currently up-to-date (0 expired or near-expiry items found).</p>
+              <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+              <p style="font-size: 11px; color: #94a3b8; margin-bottom: 0;">Timestamp: ${new Date().toLocaleString()}</p>
             </div>
           `
         });
-        await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Manual Test: ${new Date().toLocaleString()}. Connectivity test email sent.`, 'LAST_ALERT_LOG']);
-        return res.json({ message: `Test email sent successfully to ${alertRecipient}. No expiring certificates found.` });
+        await pool.execute(
+          'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+          ['LAST_ALERT_LOG', `Manual Scan: ${new Date().toLocaleString()}. Connectivity test email sent to [${officeRecipients.join(', ')}].`, `Manual Scan: ${new Date().toLocaleString()}. Connectivity test email sent to [${officeRecipients.join(', ')}].`]
+        );
+        return res.json({ 
+          success: true,
+          message: `Scan complete: No expiring certificates found. Connectivity test email dispatched to ${officeRecipients.join(', ')}.` 
+        });
       }
 
-      await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Manual Test: ${new Date().toLocaleString()}. ${alertEmailsSent} alert email(s) sent.`, 'LAST_ALERT_LOG']);
-      res.json({ message: `Expiration alert scan triggered. ${alertEmailsSent} alert email(s) sent successfully.` });
+      await pool.execute(
+        'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+        ['LAST_ALERT_LOG', `Manual Scan: ${new Date().toLocaleString()}. Dispatched office alert summary to [${officeRecipients.join(', ')}].`, `Manual Scan: ${new Date().toLocaleString()}. Dispatched office alert summary to [${officeRecipients.join(', ')}].`]
+      );
+      res.json({ 
+        success: true,
+        message: `Expiration scan completed successfully. Office alert email dispatched to ${officeRecipients.join(', ')}.` 
+      });
     } catch (error: any) {
       console.error('Manual email test failed:', error);
-      await pool.execute('UPDATE settings SET setting_value = ? WHERE setting_key = ?', [`Manual Test: ${new Date().toLocaleString()}. FAILED: ${error.message}`, 'LAST_ALERT_LOG']);
+      await pool.execute(
+        'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+        ['LAST_ALERT_LOG', `Manual Scan: ${new Date().toLocaleString()}. FAILED: ${error.message}`, `Manual Scan: ${new Date().toLocaleString()}. FAILED: ${error.message}`]
+      );
       res.status(500).json({ 
-        error: 'Failed to send test email.', 
+        error: 'Failed to send alert email.', 
         details: error.message 
       });
     }
@@ -12942,9 +13948,10 @@ Generated by COMOS System
     app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist/index.html')));
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server successfully started on http://0.0.0.0:${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  const server = http.createServer({ maxHeaderSize: 65536 }, app);
+  server.listen(PORT, '0.0.0.0', () => {
+    originalConsole.info(`[COMOS] Server successfully started on http://0.0.0.0:${PORT} [${process.env.NODE_ENV || 'development'}]`);
+    originalConsole.info(`[COMOS] Console log minimization ACTIVE: hosting storage protected (LOG_LEVEL=${LOG_LEVEL}, VERBOSE=${ENABLE_VERBOSE_LOGS})`);
   });
 }
 

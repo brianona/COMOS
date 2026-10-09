@@ -114,7 +114,7 @@ export class RealtimeEngine {
     user: any,
     lastVersion: number,
     domains?: string[],
-    timeoutMs: number = 20000
+    timeoutMs: number = 10000
   ) {
     // If this is an initial handshake from a client (version === 0), respond immediately with current version
     if (lastVersion === 0) {
@@ -136,8 +136,8 @@ export class RealtimeEngine {
       });
     }
 
-    // Otherwise, hold the request connection open until a new change occurs or timeout expires
-    const safeTimeoutMs = Math.max(1000, Math.min(timeoutMs, 25000));
+    // Otherwise, hold the request connection open until a new change occurs or timeout expires (default 8s for proxy stability)
+    const safeTimeoutMs = Math.max(1000, Math.min(timeoutMs, 8000));
     const timeout = setTimeout(() => {
       this.subscribers.delete(id);
       if (!res.headersSent) {

@@ -19,7 +19,8 @@ import {
   RefreshCw, 
   FileSpreadsheet, 
   FileCode, 
-  Copy 
+  Copy,
+  Trash2
 } from 'lucide-react';
 import { PDFViewer } from './PDFViewer';
 import { ImageViewer } from './ImageViewer';
@@ -59,6 +60,8 @@ export interface DocumentPreviewModalProps {
   onMarkRead?: () => void;
   onRequestReplacement?: (uploadId: number, fileName: string) => void;
   onCancelReplacementRequest?: (uploadId: number) => void;
+  onDeleteAcknowledgedDoc?: (uploadId: number, fileName: string) => void;
+  isVesselUser?: boolean;
   isManagementOrAdmin?: boolean;
   token?: string;
 }
@@ -70,6 +73,8 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   onMarkRead,
   onRequestReplacement,
   onCancelReplacementRequest,
+  onDeleteAcknowledgedDoc,
+  isVesselUser = false,
   isManagementOrAdmin = false,
   token
 }) => {
@@ -275,6 +280,19 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
                   </button>
                 )
               )
+            )}
+
+            {/* Non-vessel users can delete acknowledged document */}
+            {!modal.isTemplate && !isVesselUser && modal.uploadId && (modal.fileName.toLowerCase().includes('_acknowledged.pdf') || modal.title?.toLowerCase().includes('acknowledged') || modal.subtitle?.toLowerCase().includes('acknowledged')) && onDeleteAcknowledgedDoc && (
+              <button
+                type="button"
+                onClick={() => onDeleteAcknowledgedDoc(modal.uploadId!, modal.fileName)}
+                className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                title="Delete this acknowledged document (preserves the vessel's original uploaded file)"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span className="hidden sm:inline">Delete Acknowledged Doc</span>
+              </button>
             )}
 
             {modal.blobUrl && (

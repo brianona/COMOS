@@ -44,6 +44,29 @@ export const App = () => {
 
   useEffect(() => {
     requestStoragePersistence();
+
+    // Auto-migrate any legacy bloated token (containing signature data) to a clean lightweight token
+    if (token && token.length > 1000) {
+      fetch('/api/auth/sanitize-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data?.token) {
+          localStorage.setItem('token', data.token);
+          setToken(data.token);
+          realtimeSync.setToken(data.token);
+          if (data.user) {
+            localStorage.setItem('user', JSON.stringify(data.user));
+            setUser(data.user);
+          }
+        }
+      })
+      .catch(() => {});
+    }
+
     realtimeSync.setToken(token);
     fetch("/api/db-status")
       .then(res => {
@@ -217,6 +240,10 @@ export const App = () => {
           user={user}
           token={token}
           onLogout={handleLogout}
+          onUpdateUser={(updatedUser: User) => {
+            setUser(updatedUser);
+            localStorage.setItem("user", JSON.stringify(updatedUser));
+          }}
         />
       </ErrorBoundary>
     </>

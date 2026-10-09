@@ -13,6 +13,9 @@ export interface User {
   device_id?: string | null;
   is_verified?: boolean;
   plain_password?: string | null;
+  full_name?: string | null;
+  position?: string | null;
+  signature_data?: string | null;
 }
 
 export interface DeviceRegistrationRequest {

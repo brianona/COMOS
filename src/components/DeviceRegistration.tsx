@@ -25,6 +25,7 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
   const [error, setError] = useState('');
   const [isCheckingNow, setIsCheckingNow] = useState(false);
   const checkInFlightRef = useRef(false);
+  const hasDismissedDeclinedRef = useRef(false);
 
   const checkStatus = useCallback(async (isManual = false) => {
     if (checkInFlightRef.current && !isManual) return;
@@ -35,7 +36,10 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
     }
     const currentDeviceId = getDeviceId();
     try {
-      const res = await fetch('/api/device/verify', {
+      const url = (isManual || hasDismissedDeclinedRef.current) 
+        ? '/api/device/verify?nocache=1' 
+        : '/api/device/verify';
+      const res = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'X-Device-Id': currentDeviceId
@@ -54,14 +58,21 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
         }
         
         if (data.status === 'rejected') {
-          setStatus('rejected');
+          if (!hasDismissedDeclinedRef.current) {
+            setStatus('rejected');
+          }
           return;
         }
 
         if (data.pending_request) {
+          hasDismissedDeclinedRef.current = false;
           setStatus('pending');
           if (data.device_code) {
             setDeviceCode(data.device_code);
+          }
+        } else if (!data.is_verified && data.status !== 'rejected') {
+          if (status === 'rejected') {
+            setStatus('idle');
           }
         }
       } else {
@@ -76,7 +87,7 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
       checkInFlightRef.current = false;
       if (isManual) setIsCheckingNow(false);
     }
-  }, [token, user.device_id, onVerified]);
+  }, [token, user.device_id, onVerified, status]);
 
   // Realtime subscription: auto-detect administrator approval instantly
   useEffect(() => {
@@ -105,7 +116,30 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
     return () => clearInterval(interval);
   }, [checkStatus, status]);
 
+  const handleDismissDeclined = async () => {
+    setIsCheckingNow(true);
+    hasDismissedDeclinedRef.current = true;
+    try {
+      await fetch('/api/device/dismiss-declined', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+    } catch (e) {
+      console.warn('Failed to dismiss declined status:', e);
+    } finally {
+      setDeviceCode(Math.random().toString(36).substring(2, 8).toUpperCase());
+      setDeviceLabel('');
+      setError('');
+      setStatus('idle');
+      setIsCheckingNow(false);
+    }
+  };
+
   const handleRegister = async () => {
+    hasDismissedDeclinedRef.current = false;
     setStatus('checking');
     setError('');
     const currentDeviceId = getDeviceId();
@@ -188,12 +222,8 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
               </p>
             </div>
             <button
-              onClick={() => {
-                setDeviceCode(Math.random().toString(36).substring(2, 8).toUpperCase());
-                setStatus('idle');
-                setError('');
-              }}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-95 text-sm"
+              onClick={handleDismissDeclined}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-95 text-sm cursor-pointer"
             >
               Submit New Request
             </button>
@@ -202,11 +232,22 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
 
         {(status === 'idle' || status === 'checking') && (
           <div className="space-y-6">
-            <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-700/50 text-center">
-              <span className="text-xs font-bold text-blue-400 uppercase tracking-widest block mb-4">Registration Code</span>
+            <div className="bg-slate-900/50 p-6 rounded-2xl border border-slate-700/50 text-center relative group">
+              <div className="flex items-center justify-between mb-4">
+                <span className="text-xs font-bold text-blue-400 uppercase tracking-widest block">Registration Code</span>
+                <button
+                  type="button"
+                  onClick={() => setDeviceCode(Math.random().toString(36).substring(2, 8).toUpperCase())}
+                  className="text-[11px] font-semibold text-slate-400 hover:text-blue-400 flex items-center gap-1 transition-colors cursor-pointer"
+                  title="Generate a new code"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>New Code</span>
+                </button>
+              </div>
               <div className="flex items-center justify-center gap-3">
                 {deviceCode.split('').map((char, i) => (
-                  <div key={i} className="w-10 h-12 bg-slate-800 border border-slate-700 rounded-lg flex items-center justify-center text-xl font-bold text-white shadow-sm">
+                  <div key={i} className="w-10 h-12 bg-slate-800 border border-slate-700 rounded-lg flex items-center justify-center text-xl font-bold text-white shadow-sm font-mono">
                     {char}
                   </div>
                 ))}
@@ -244,14 +285,14 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
                 <button
                   onClick={handleRegister}
                   disabled={status === 'checking'}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-95 flex items-center justify-center gap-2 text-sm"
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-900/20 transition-all active:scale-95 flex items-center justify-center gap-2 text-sm cursor-pointer"
                 >
                   {status === 'checking' ? 'Registering...' : 'Request Registration'}
                 </button>
                 <button
                   onClick={() => checkStatus(true)}
                   disabled={isCheckingNow}
-                  className="px-4 py-3.5 bg-slate-700/70 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-600/50 transition-all active:scale-95 flex items-center justify-center"
+                  className="px-4 py-3.5 bg-slate-700/70 hover:bg-slate-700 text-slate-200 rounded-xl border border-slate-600/50 transition-all active:scale-95 flex items-center justify-center cursor-pointer"
                   title="Check if Admin has approved"
                 >
                   <RefreshCw className={cn("w-4 h-4", isCheckingNow && "animate-spin text-blue-400")} />
@@ -275,7 +316,7 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
               <p className="text-sm text-slate-400 leading-relaxed px-4">
                 Your request has been sent to Admin. You will be redirected automatically once approved.
               </p>
-              <div className="inline-block px-4 py-2 bg-blue-500/10 rounded-full text-[10px] font-bold text-blue-400 uppercase tracking-widest border border-blue-500/20">
+              <div className="inline-block px-4 py-2 bg-blue-500/10 rounded-full text-[10px] font-bold text-blue-400 uppercase tracking-widest border border-blue-500/20 font-mono">
                 Code: {deviceCode}
               </div>
             </div>
@@ -284,14 +325,25 @@ export const DeviceRegistration: React.FC<DeviceRegistrationProps> = ({
               <button
                 onClick={() => checkStatus(true)}
                 disabled={isCheckingNow}
-                className="w-full bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2"
+                className="w-full bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <RefreshCw className={cn("w-3.5 h-3.5", isCheckingNow && "animate-spin text-blue-400")} />
                 {isCheckingNow ? 'Checking with Server...' : 'Check Approval Status Now'}
               </button>
               <button
-                onClick={() => setStatus('idle')}
-                className="w-full text-slate-500 hover:text-slate-300 text-xs font-bold py-2 transition-colors"
+                onClick={async () => {
+                  setStatus('idle');
+                  try {
+                    await fetch('/api/device/cancel-request', {
+                      method: 'POST',
+                      headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                      }
+                    });
+                  } catch (e) {}
+                }}
+                className="w-full text-slate-500 hover:text-slate-300 text-xs font-bold py-2 transition-colors cursor-pointer"
               >
                 Cancel Request
               </button>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   FileText, 
   Plus, 
@@ -48,7 +49,10 @@ import {
   Loader2,
   MoreVertical,
   SlidersHorizontal,
-  GitMerge
+  GitMerge,
+  CheckCheck,
+  PenTool,
+  Eraser
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { validateFileAgainstForm, ValidationResult } from '../utils/smsValidation';
@@ -79,6 +83,9 @@ interface CurrentUser {
   role: string;
   vessel_id?: string | number;
   team_ids?: number[];
+  full_name?: string | null;
+  position?: string | null;
+  signature_data?: string | null;
 }
 
 interface SMSForm {
@@ -92,6 +99,7 @@ interface SMSForm {
   removeFilenameRestriction?: boolean;
   allowedFileTypes?: string[];
   templateFileName?: string;
+  isAcknowledgementRequired?: boolean;
 }
 
 interface OrderItem {
@@ -106,6 +114,8 @@ interface OrderItem {
   remove_filename_restriction: boolean;
   allowed_file_types: string[];
   template_file_name?: string;
+  is_acknowledgement_required?: boolean;
+  isAcknowledgementRequired?: boolean;
 }
 
 interface OrderVessel {
@@ -140,6 +150,14 @@ interface OrderUpload {
   replace_reason?: string | null;
   is_read?: boolean;
   read_at?: string | null;
+  acknowledged_at?: string | null;
+  acknowledged_by?: string | null;
+  acknowledged_by_name?: string | null;
+  acknowledged_by_position?: string | null;
+  acknowledged_signature?: string | null;
+  acknowledged_file_name?: string | null;
+  acknowledged_file_size?: string | null;
+  acknowledged_file_mimetype?: string | null;
 }
 
 interface SMSOrder {
@@ -298,6 +316,548 @@ export const checkFormUploadMatch = (u: any, item: any): boolean => {
   }
 
   return false;
+};
+
+export const isUploadAcknowledgementRequired = (
+  u: OrderUpload,
+  item?: OrderItem | null,
+  availableForms: SMSForm[] = []
+): boolean => {
+  if (!u) return false;
+  if (item?.is_acknowledgement_required || item?.isAcknowledgementRequired) {
+    return true;
+  }
+  const fCode = (item?.form_code || u.form_code || '').trim().toUpperCase();
+  const fName = (u.file_name || '').trim().toUpperCase();
+
+  const matched = availableForms.find(f => 
+    (f.formCode && fCode && f.formCode.toUpperCase() === fCode) ||
+    (f.id && item?.form_id && String(f.id) === String(item.form_id))
+  );
+  if (matched && Boolean((matched as any).isAcknowledgementRequired)) {
+    return true;
+  }
+
+  const ackCodes = ['COMI-SM-1-1', 'COMI-SM-3-1', 'COMI-SM-4-1', 'COMI-SM-4A-1', 'COMI-SM-1-1-REPORT'];
+  if (ackCodes.some(code => fCode.includes(code) || fName.includes(code.replace(/-/g, '')) || fName.includes(code))) {
+    return true;
+  }
+
+  return false;
+};
+
+interface DocumentAcknowledgementModalProps {
+  upload: OrderUpload;
+  formItem?: OrderItem | null;
+  currentUser: CurrentUser;
+  token: string;
+  onClose: () => void;
+  onSuccess: (updatedUpload: any) => void;
+  onUpdateCurrentUser?: (updated: any) => void;
+}
+
+const DocumentAcknowledgementModal: React.FC<DocumentAcknowledgementModalProps> = ({
+  upload,
+  formItem,
+  currentUser,
+  token,
+  onClose,
+  onSuccess,
+  onUpdateCurrentUser,
+}) => {
+  const [signerName, setSignerName] = useState(currentUser.full_name || currentUser.username || '');
+  const [signerPosition, setSignerPosition] = useState(currentUser.position || '');
+  const [signatureData, setSignatureData] = useState<string | null>(currentUser.signature_data || null);
+  const [signatureMode, setSignatureMode] = useState<'preview' | 'upload' | 'draw'>(
+    currentUser.signature_data ? 'preview' : 'draw'
+  );
+  const [ackMethod, setAckMethod] = useState<'stamp' | 'upload'>('stamp');
+  const [uploadedAckFile, setUploadedAckFile] = useState<File | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [hasDrawnStrokes, setHasDrawnStrokes] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const ackFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleAckFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadedAckFile(file);
+    setErrorMsg(null);
+    e.target.value = '';
+  };
+
+  const handleSignatureFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Please select an image file (PNG, JPG, WebP)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxW = 500;
+        const maxH = 200;
+        const ratio = Math.min(maxW / img.width, maxH / img.height, 1);
+        canvas.width = img.width * ratio;
+        canvas.height = img.height * ratio;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/png');
+          setSignatureData(dataUrl);
+          setSignatureMode('preview');
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    ctx.beginPath();
+    ctx.moveTo(clientX - rect.left, clientY - rect.top);
+    setIsDrawing(true);
+    setHasDrawnStrokes(true);
+  };
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawing) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineTo(clientX - rect.left, clientY - rect.top);
+    ctx.stroke();
+  };
+
+  const stopDrawing = () => {
+    if (!isDrawing) return;
+    setIsDrawing(false);
+    const canvas = canvasRef.current;
+    if (canvas) {
+      setSignatureData(canvas.toDataURL('image/png'));
+    }
+  };
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    setHasDrawnStrokes(false);
+    setSignatureData(null);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!signerName.trim()) {
+      setErrorMsg('Please enter your full name for document acknowledgment.');
+      return;
+    }
+    if (ackMethod === 'upload' && !uploadedAckFile) {
+      setErrorMsg('Please select an acknowledged document file to upload.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMsg(null);
+    try {
+      const formData = new FormData();
+      if (ackMethod === 'upload' && uploadedAckFile) {
+        formData.append('acknowledged_file', uploadedAckFile);
+      }
+      formData.append('full_name', signerName.trim());
+      if (signerPosition.trim()) {
+        formData.append('position', signerPosition.trim());
+      }
+      if (ackMethod === 'stamp' && signatureData) {
+        formData.append('signature_data', signatureData);
+      }
+
+      const res = await fetch(`/api/sms/orders/uploads/${upload.id}/acknowledge`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`
+        },
+        body: formData
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to acknowledge document');
+      }
+      if (onUpdateCurrentUser && ((signerName && signerName !== currentUser.full_name) || (signerPosition && signerPosition !== currentUser.position) || (signatureData && signatureData !== currentUser.signature_data))) {
+        onUpdateCurrentUser({
+          ...currentUser,
+          full_name: signerName.trim(),
+          position: signerPosition.trim() || currentUser.position,
+          signature_data: signatureData || currentUser.signature_data
+        });
+      }
+      onSuccess(data.upload);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Error occurred while acknowledging document');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[250] flex items-center justify-center p-4">
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-200">
+        <div className="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 p-5 text-white flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-teal-500/20 border border-teal-400/30 flex items-center justify-center text-teal-300">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-white leading-tight">Official Document Acknowledgment</h3>
+              <p className="text-xs text-teal-200/80">
+                {ackMethod === 'stamp' ? 'Digital auto-stamp with name & signature onto PDF' : 'Upload an already acknowledged document'}
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-white/10 rounded-xl text-slate-300 hover:text-white transition-colors cursor-pointer">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-5 flex-1">
+          {errorMsg && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-medium flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
+          {/* Document Summary Card */}
+          <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80 space-y-1.5 text-xs">
+            <div className="flex items-center justify-between text-slate-500 font-medium">
+              <span>Target Vessel:</span>
+              <span className="font-bold text-slate-800">{upload.vessel_name}</span>
+            </div>
+            <div className="flex items-center justify-between text-slate-500 font-medium">
+              <span>Requirement:</span>
+              <span className="font-bold text-blue-700 font-mono">{formItem?.form_code || upload.form_code}</span>
+            </div>
+            <div className="flex items-center justify-between text-slate-500 font-medium">
+              <span>Uploaded File:</span>
+              <span className="font-bold text-slate-800 truncate max-w-[220px]" title={upload.file_name}>{upload.file_name}</span>
+            </div>
+          </div>
+
+          {/* Acknowledgement Method Switcher */}
+          <div className="bg-slate-100 p-1 rounded-2xl flex gap-1 border border-slate-200">
+            <button
+              type="button"
+              onClick={() => { setAckMethod('stamp'); setErrorMsg(null); }}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                ackMethod === 'stamp'
+                  ? 'bg-white text-teal-800 shadow-sm border border-slate-200/60'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'
+              }`}
+            >
+              <PenTool className="w-3.5 h-3.5 text-teal-600" />
+              <span>Digital Stamping</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAckMethod('upload'); setErrorMsg(null); }}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                ackMethod === 'upload'
+                  ? 'bg-white text-teal-800 shadow-sm border border-slate-200/60'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'
+              }`}
+            >
+              <Upload className="w-3.5 h-3.5 text-teal-600" />
+              <span>Upload Acknowledged Doc</span>
+            </button>
+          </div>
+
+          {/* Method 1: Upload Acknowledged Document */}
+          {ackMethod === 'upload' && (
+            <div className="space-y-3">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center justify-between">
+                <span>Select Acknowledged File</span>
+                <span className="text-[10px] text-teal-700 font-semibold bg-teal-50 px-2 py-0.5 rounded-md border border-teal-200">PDF, Word, Excel, Image</span>
+              </label>
+
+              <input
+                ref={ackFileInputRef}
+                type="file"
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.rtf,.odt,.png,.jpg,.jpeg"
+                onChange={handleAckFileSelect}
+                className="hidden"
+              />
+
+              {!uploadedAckFile ? (
+                <div
+                  onClick={() => ackFileInputRef.current?.click()}
+                  className="border-2 border-dashed border-teal-300 hover:border-teal-500 bg-teal-50/20 hover:bg-teal-50/50 rounded-2xl p-6 text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-2 group"
+                >
+                  <div className="w-12 h-12 rounded-2xl bg-teal-100/80 text-teal-700 flex items-center justify-center group-hover:scale-105 transition-transform">
+                    <Upload className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">Click to browse or drop signed document</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Supports PDF, DOCX, DOC, XLSX, or scanned image files</p>
+                  </div>
+                  <span className="mt-1 px-3 py-1 bg-white border border-teal-200 rounded-lg text-xs font-semibold text-teal-700 shadow-2xs">
+                    Browse File
+                  </span>
+                </div>
+              ) : (
+                <div className="border border-teal-300 bg-teal-50/50 rounded-2xl p-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 overflow-hidden">
+                    <div className="w-10 h-10 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                      <FileCheck className="w-5 h-5" />
+                    </div>
+                    <div className="overflow-hidden">
+                      <p className="text-xs font-bold text-slate-900 truncate" title={uploadedAckFile.name}>
+                        {uploadedAckFile.name}
+                      </p>
+                      <p className="text-[10px] text-teal-700 font-mono mt-0.5">
+                        {(uploadedAckFile.size / 1024).toFixed(1)} KB • Ready for official acknowledgment
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => ackFileInputRef.current?.click()}
+                      className="px-2.5 py-1.5 text-xs font-semibold bg-white border border-slate-200 text-slate-700 hover:text-teal-700 rounded-lg shadow-2xs hover:bg-slate-50 transition-all cursor-pointer"
+                    >
+                      Replace
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUploadedAckFile(null)}
+                      className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
+                      title="Remove file"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Full Name Input */}
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center justify-between">
+              <span>Acknowledged By (Full Name)</span>
+              <span className="text-[10px] text-slate-400 font-normal">
+                {ackMethod === 'stamp' ? 'Printed in stamp box' : 'Recorded in audit log'}
+              </span>
+            </label>
+            <input 
+              type="text" 
+              required
+              value={signerName}
+              onChange={(e) => setSignerName(e.target.value)}
+              placeholder="e.g. Capt. John Doe / Superintendent Smith"
+              className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:border-teal-500 focus:ring-3 focus:ring-teal-500/20 outline-none transition-all"
+            />
+          </div>
+
+          {/* Position Input */}
+          <div>
+            <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5 flex items-center justify-between">
+              <span>Position / Rank</span>
+              <span className="text-[10px] text-slate-400 font-normal">
+                {ackMethod === 'stamp' ? 'Printed in stamp box' : 'Recorded in audit log'}
+              </span>
+            </label>
+            <input 
+              type="text" 
+              value={signerPosition}
+              onChange={(e) => setSignerPosition(e.target.value)}
+              placeholder="e.g. Marine Superintendent / Technical Manager / DPA"
+              className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-semibold text-slate-900 focus:border-teal-500 focus:ring-3 focus:ring-teal-500/20 outline-none transition-all"
+            />
+          </div>
+
+          {/* Signature section (Only for Digital Stamping) */}
+          {ackMethod === 'stamp' && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                  Signer Digital Signature
+                </label>
+                <div className="flex items-center bg-slate-100 p-0.5 rounded-lg text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setSignatureMode('preview')}
+                    className={`px-2 py-0.5 rounded-md font-semibold transition-all cursor-pointer ${
+                      signatureMode === 'preview' ? 'bg-white text-teal-700 shadow-xs' : 'text-slate-500'
+                    }`}
+                  >
+                    Current
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSignatureMode('draw')}
+                    className={`px-2 py-0.5 rounded-md font-semibold transition-all cursor-pointer ${
+                      signatureMode === 'draw' ? 'bg-white text-teal-700 shadow-xs' : 'text-slate-500'
+                    }`}
+                  >
+                    <PenTool className="w-3 h-3 inline mr-1" /> Draw
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSignatureMode('upload')}
+                    className={`px-2 py-0.5 rounded-md font-semibold transition-all cursor-pointer ${
+                      signatureMode === 'upload' ? 'bg-white text-teal-700 shadow-xs' : 'text-slate-500'
+                    }`}
+                  >
+                    <Upload className="w-3 h-3 inline mr-1" /> Upload
+                  </button>
+                </div>
+              </div>
+
+              {signatureMode === 'preview' && signatureData && (
+                <div className="border border-teal-200 bg-teal-50/30 rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5">
+                  <img src={signatureData} alt="Signature" className="max-h-20 max-w-full object-contain filter drop-shadow-2xs" />
+                  <span className="text-[10px] text-teal-700 font-bold flex items-center gap-1">
+                    <CheckCheck className="w-3 h-3" /> Digital signature attached
+                  </span>
+                </div>
+              )}
+
+              {(signatureMode === 'draw' || (!signatureData && signatureMode === 'preview')) && (
+                <div className="space-y-1.5">
+                  <div className="border border-slate-300 rounded-2xl bg-white p-1 relative shadow-inner overflow-hidden">
+                    <canvas
+                      ref={canvasRef}
+                      width={440}
+                      height={120}
+                      onMouseDown={startDrawing}
+                      onMouseMove={draw}
+                      onMouseUp={stopDrawing}
+                      onMouseLeave={stopDrawing}
+                      onTouchStart={startDrawing}
+                      onTouchMove={draw}
+                      onTouchEnd={stopDrawing}
+                      className="w-full h-28 bg-slate-50/50 rounded-xl cursor-crosshair touch-none"
+                    />
+                    {!hasDrawnStrokes && !signatureData && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-slate-300 text-xs font-medium">
+                        Draw your signature here with mouse or finger
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <button type="button" onClick={clearCanvas} className="text-slate-500 hover:text-rose-600 flex items-center gap-1 font-semibold cursor-pointer">
+                      <Eraser className="w-3.5 h-3.5" /> Clear
+                    </button>
+                    {signatureData && (
+                      <span className="text-teal-600 font-bold text-[11px] flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Captured
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {signatureMode === 'upload' && (
+                <div className="space-y-2">
+                  <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-200 hover:border-teal-400 bg-slate-50 hover:bg-teal-50/30 rounded-2xl p-4 text-center cursor-pointer transition-all"
+                  >
+                    <Upload className="w-5 h-5 mx-auto text-teal-600 mb-1" />
+                    <p className="text-xs font-bold text-slate-700">Upload signature image</p>
+                    <p className="text-[10px] text-slate-400">PNG or JPG with transparent background</p>
+                  </div>
+                  <input ref={fileInputRef} type="file" accept="image/*" onChange={handleSignatureFile} className="hidden" />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Context Notice Banner */}
+          {ackMethod === 'stamp' ? (
+            <div className="bg-amber-50 p-3 rounded-xl border border-amber-200/80 text-[11px] text-amber-800 flex items-start gap-2">
+              <Info className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+              <p>
+                Once confirmed, the file will be officially converted to PDF format via LibreOffice with an &quot;OFFICIALLY ACKNOWLEDGED&quot; stamp, your full name, position, timestamp, and signature at the bottom right corner.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-teal-50 p-3 rounded-xl border border-teal-200/80 text-[11px] text-teal-800 flex items-start gap-2">
+              <Info className="w-4 h-4 shrink-0 text-teal-600 mt-0.5" />
+              <p>
+                The uploaded document will be archived as the officially acknowledged file for this requirement. If uploaded in Word or spreadsheet format, it will be automatically converted to PDF via LibreOffice for permanent preservation.
+              </p>
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="flex-1 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-500/20 transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+            >
+              {isSubmitting ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>
+                    {ackMethod === 'stamp' ? 'Stamping & Converting PDF...' : 'Processing & Archiving...'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  {ackMethod === 'stamp' ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Confirm & Stamp PDF</span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Upload & Acknowledge</span>
+                    </>
+                  )}
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>,
+    document.body
+  );
 };
 
 export const getVesselUploads = (uploads: any[] | undefined, targetVessel: any, orderVessels?: any[]): any[] => {
@@ -760,6 +1320,52 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     }
   };
 
+  // Document Acknowledgment Modal state & handlers
+  const [acknowledgingUpload, setAcknowledgingUpload] = useState<{
+    upload: OrderUpload;
+    formItem?: OrderItem | null;
+  } | null>(null);
+
+  const handleAcknowledgeUpload = (upload: OrderUpload, formItem?: OrderItem | null) => {
+    setAcknowledgingUpload({ upload, formItem });
+  };
+
+  const handleAcknowledgeSuccess = (updatedUpload: any) => {
+    setAcknowledgingUpload(null);
+    showToast('Document officially acknowledged and stamped into PDF format!', 'success');
+
+    setOrders(prevOrders => prevOrders.map(order => {
+      if (!order.uploads) return order;
+      const hasUp = order.uploads.some(u => u.id === updatedUpload.id);
+      if (!hasUp) return order;
+      return {
+        ...order,
+        uploads: order.uploads.map(u => u.id === updatedUpload.id ? { ...u, ...updatedUpload } : u)
+      };
+    }));
+
+    setSelectedOrderForInspection(prev => {
+      if (!prev || !prev.uploads) return prev;
+      return {
+        ...prev,
+        uploads: prev.uploads.map(u => u.id === updatedUpload.id ? { ...u, ...updatedUpload } : u)
+      };
+    });
+
+    if (previewModal && previewModal.isOpen && previewModal.uploadId === updatedUpload.id) {
+      setPreviewModal(prev => prev ? {
+        ...prev,
+        fileName: updatedUpload.file_name || prev.fileName,
+        fileMimetype: prev.fileMimetype,
+        isRead: true
+      } : null);
+    }
+
+    if (onStatusRefresh) {
+      onStatusRefresh();
+    }
+  };
+
   // Custom Confirmation Modal state
   const [confirmModal, setConfirmModal] = useState<ConfirmModalState | null>(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
@@ -1210,9 +1816,12 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     }
   };
 
-  // Download Single Uploaded File
-  const handleDownloadUpload = (uploadId: number, fileName: string) => {
-    fetch(`/api/sms/orders/download-upload/${uploadId}`, {
+  // Download Single Uploaded File (original or acknowledged)
+  const handleDownloadUpload = (uploadId: number, fileName: string, fileType?: 'original' | 'acknowledged') => {
+    const url = fileType === 'acknowledged'
+      ? `/api/sms/orders/download-upload/${uploadId}?type=acknowledged`
+      : `/api/sms/orders/download-upload/${uploadId}`;
+    fetch(url, {
       headers: { Authorization: `Bearer ${token}` }
     })
       .then(async res => {
@@ -1254,7 +1863,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     fileMimetype?: string,
     formCode?: string,
     vesselName?: string,
-    isRead?: boolean
+    isRead?: boolean,
+    previewType?: 'original' | 'acknowledged'
   ) => {
     if (previewModal?.blobUrl) {
       window.URL.revokeObjectURL(previewModal.blobUrl);
@@ -1278,7 +1888,10 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
     });
 
     try {
-      const res = await fetch(`/api/sms/orders/download-upload/${uploadId}`, {
+      const fetchUrl = previewType === 'acknowledged'
+        ? `/api/sms/orders/download-upload/${uploadId}?type=acknowledged`
+        : `/api/sms/orders/download-upload/${uploadId}`;
+      const res = await fetch(fetchUrl, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (!res.ok) {
@@ -1647,6 +2260,42 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           }
         } catch (err: any) {
           showToast('Error removing file: ' + err.message, 'error');
+        }
+      }
+    });
+  };
+
+  // Request Delete Acknowledged Document (Non-Vessel Users Only)
+  const requestDeleteAcknowledgedDoc = (uploadId: number, ackFileName?: string) => {
+    if (isVesselUser) return;
+    const docName = ackFileName || 'Acknowledged PDF';
+    setConfirmModal({
+      isOpen: true,
+      title: 'Delete Acknowledged Document',
+      message: `Are you sure you want to delete the acknowledged document "${docName}"?`,
+      detail: 'The stamped acknowledged PDF will be permanently removed, and this requirement will revert to unacknowledged status. The vessel\'s original uploaded file will remain completely intact.',
+      confirmLabel: 'Delete Acknowledged Document',
+      cancelLabel: 'Cancel',
+      isDestructive: true,
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/sms/orders/uploads/${uploadId}/acknowledge`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (res.ok) {
+            showToast(`Acknowledged document "${docName}" deleted. Requirement returned to unacknowledged.`);
+            await fetchOrders(true);
+            onStatusRefresh?.();
+            if (previewModal?.isOpen && previewModal.uploadId === uploadId) {
+              handleClosePreviewModal();
+            }
+          } else {
+            const err = await res.json();
+            showToast(err.error || 'Failed to delete acknowledged document', 'error');
+          }
+        } catch (err: any) {
+          showToast('Error deleting acknowledged document: ' + err.message, 'error');
         }
       }
     });
@@ -3012,7 +3661,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
             if (previewModal.isTemplate && (previewModal.formId || previewModal.formCode)) {
               handleDownloadTemplate(previewModal.formId || '', previewModal.formCode || '', previewModal.fileName);
             } else if (previewModal.uploadId) {
-              handleDownloadUpload(previewModal.uploadId, previewModal.fileName);
+              const isAck = previewModal.fileName.toLowerCase().includes('_acknowledged.pdf');
+              handleDownloadUpload(previewModal.uploadId, previewModal.fileName, isAck ? 'acknowledged' : 'original');
             }
           }}
           onMarkRead={() => {
@@ -3021,6 +3671,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               setPreviewModal(prev => prev ? { ...prev, isRead: true } : null);
             }
           }}
+          onDeleteAcknowledgedDoc={requestDeleteAcknowledgedDoc}
+          isVesselUser={isVesselUser}
           isManagementOrAdmin={isManagementOrAdmin}
           token={token}
         />
@@ -3057,6 +3709,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           onPreviewUpload={handlePreviewUpload}
           onPreviewTemplate={handlePreviewTemplate}
           onDeleteUpload={requestDeleteUpload}
+          onDeleteAcknowledgedDoc={requestDeleteAcknowledgedDoc}
           onFileUpload={handleFileUpload}
           onBulkUpload={handleBulkUpload}
           uploadingForFormId={uploadingForFormId}
@@ -3073,6 +3726,8 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           }}
           onMarkOrderChecked={handleMarkOrderChecked}
           onMarkSingleUploadChecked={handleMarkSingleUploadChecked}
+          onAcknowledgeUpload={handleAcknowledgeUpload}
+          availableForms={availableForms}
           onEditOrder={(orderToEdit) => {
             setSelectedOrderForInspection(null);
             setEditingOrder(orderToEdit);
@@ -3210,6 +3865,18 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           }}
         />
       )}
+
+      {/* MODAL 6: DOCUMENT ACKNOWLEDGEMENT & STAMPING (Non-vessel Users) */}
+      {acknowledgingUpload && (
+        <DocumentAcknowledgementModal
+          upload={acknowledgingUpload.upload}
+          formItem={acknowledgingUpload.formItem}
+          currentUser={currentUser}
+          token={token}
+          onClose={() => setAcknowledgingUpload(null)}
+          onSuccess={handleAcknowledgeSuccess}
+        />
+      )}
     </div>
   );
 };
@@ -3311,12 +3978,13 @@ interface OrderDetailsModalProps {
   token: string;
   onClose: () => void;
   onDownloadZip: (orderId: string, label: string, vesselId?: string) => void;
-  onDownloadUpload: (uploadId: number, fileName: string) => void;
+  onDownloadUpload: (uploadId: number, fileName: string, fileType?: 'original' | 'acknowledged') => void;
   onDownloadTemplate: (formId: string, formCode: string, templateFileName?: string) => void;
   onDownloadOrderTemplatesZip: (orderId: string, label: string) => void;
-  onPreviewUpload: (uploadId: number, fileName: string, fileMimetype?: string, formCode?: string, vesselName?: string, isRead?: boolean) => void;
+  onPreviewUpload: (uploadId: number, fileName: string, fileMimetype?: string, formCode?: string, vesselName?: string, isRead?: boolean, previewType?: 'original' | 'acknowledged') => void;
   onPreviewTemplate: (formId: string, formCode: string, templateFileName?: string) => void;
   onDeleteUpload: (uploadId: number, fileName: string) => void;
+  onDeleteAcknowledgedDoc?: (uploadId: number, ackFileName?: string) => void;
   onFileUpload: (orderId: string, formItem: OrderItem, files: FileList | File[], targetVessel?: { id: string | number; name: string }) => void;
   onBulkUpload: (order: SMSOrder, files: FileList | File[], targetVessel?: { id: string | number; name: string }) => void;
   uploadingForFormId?: string | null;
@@ -3334,6 +4002,8 @@ interface OrderDetailsModalProps {
   onEditOrder?: (order: SMSOrder) => void;
   isDownloadingZip?: boolean;
   isDownloadingTemplatesZip?: boolean;
+  onAcknowledgeUpload?: (upload: OrderUpload, formItem?: OrderItem) => void;
+  availableForms?: SMSForm[];
 }
 
 const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
@@ -3353,6 +4023,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onPreviewUpload,
   onPreviewTemplate,
   onDeleteUpload,
+  onDeleteAcknowledgedDoc,
   onFileUpload,
   onBulkUpload,
   uploadingForFormId,
@@ -3369,7 +4040,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onCancelReplacementRequest,
   onEditOrder,
   isDownloadingZip,
-  isDownloadingTemplatesZip
+  isDownloadingTemplatesZip,
+  onAcknowledgeUpload,
+  availableForms = []
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -4170,8 +4843,33 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                     </span>
                                   </div>
                                   <div className="text-[10px] text-slate-400 truncate">
-                                    by {up.uploaded_by} • {new Date(up.uploaded_at).toLocaleDateString()}
+                                    Uploaded by {up.uploaded_by} • {new Date(up.uploaded_at).toLocaleDateString()}
                                   </div>
+                                  {up.acknowledged_at && (
+                                    <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-emerald-50 text-emerald-800 border border-emerald-200/90 rounded text-[10px] font-semibold">
+                                        <FileCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                        <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-700">Stamped PDF:</span>
+                                        <span className="font-normal truncate max-w-[190px]" title={up.acknowledged_file_name || 'Acknowledged PDF'}>
+                                          {up.acknowledged_file_name || 'Acknowledged PDF'}
+                                        </span>
+                                        {up.acknowledged_file_size && (
+                                          <span className="text-emerald-700 font-mono">({up.acknowledged_file_size})</span>
+                                        )}
+                                      </span>
+                                      {!isVesselUser && onDeleteAcknowledgedDoc && (
+                                        <button
+                                          type="button"
+                                          onClick={() => onDeleteAcknowledgedDoc(up.id, up.acknowledged_file_name || 'Acknowledged PDF')}
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-rose-600 hover:text-rose-700 hover:bg-rose-50 border border-rose-200/60 rounded text-[10px] font-semibold transition-colors cursor-pointer"
+                                          title="Delete acknowledged document (preserves vessel's original uploaded file)"
+                                        >
+                                          <Trash2 className="w-3 h-3 text-rose-500" />
+                                          <span>Delete Acknowledged Doc</span>
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
 
@@ -4207,6 +4905,29 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                   )
                                 )}
 
+                                {/* Acknowledgment Status / Acknowledge Button */}
+                                {up.acknowledged_at ? (
+                                  <span 
+                                    className="text-[10px] text-emerald-800 font-extrabold px-2.5 py-0.5 rounded-md bg-emerald-100/90 border border-emerald-300 flex items-center gap-1 shadow-2xs"
+                                    title={`Acknowledged by ${up.acknowledged_by_name || up.acknowledged_by} on ${new Date(up.acknowledged_at).toLocaleString()}`}
+                                  >
+                                    <CheckCheck className="w-3.5 h-3.5 text-emerald-600" />
+                                    <span>Acknowledged</span>
+                                  </span>
+                                ) : (
+                                  !isVesselUser && isUploadAcknowledgementRequired(up, formItem, availableForms) && onAcknowledgeUpload && (
+                                    <button
+                                      type="button"
+                                      onClick={() => onAcknowledgeUpload(up, formItem)}
+                                      className="px-2.5 py-1 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-lg text-[10px] font-bold shadow-xs flex items-center gap-1 transition-all cursor-pointer hover:shadow-emerald-500/20"
+                                      title="Acknowledge and auto-stamp document as PDF with your full name & signature"
+                                    >
+                                      <CheckCircle2 className="w-3 h-3 text-white" />
+                                      <span>Acknowledge</span>
+                                    </button>
+                                  )
+                                )}
+
                                 {/* Read status */}
                                 {up.is_read || up.checked_at ? (
                                   <span className="text-[10px] text-emerald-700 font-bold px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-200/80 inline-block">
@@ -4223,25 +4944,47 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                   </button>
                                 ) : null}
 
-                                {/* View File */}
-                                <button
-                                  type="button"
-                                  onClick={() => onPreviewUpload(up.id, up.file_name, up.file_mimetype, formItem.form_code, activeVessel?.vessel_name, up.is_read || Boolean(up.checked_at))}
-                                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer border border-transparent hover:border-slate-200"
-                                  title="View document"
-                                >
-                                  <Eye className="w-3.5 h-3.5 text-blue-600" />
-                                </button>
+                                {/* Original File Actions: View & Download */}
+                                <div className="flex items-center bg-white border border-slate-200/90 rounded-lg shadow-2xs divide-x divide-slate-100 overflow-hidden" title="Original Uploaded File actions">
+                                  <button
+                                    type="button"
+                                    onClick={() => onPreviewUpload(up.id, up.file_name, up.file_mimetype, formItem.form_code, activeVessel?.vessel_name, up.is_read || Boolean(up.checked_at), 'original')}
+                                    className="p-1.5 text-slate-600 hover:text-blue-700 hover:bg-blue-50/50 transition-colors cursor-pointer"
+                                    title={`View original uploaded file: ${up.file_name}`}
+                                  >
+                                    <Eye className="w-3.5 h-3.5 text-blue-600" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onDownloadUpload(up.id, up.file_name, 'original')}
+                                    className="p-1.5 text-slate-600 hover:text-blue-700 hover:bg-blue-50/50 transition-colors cursor-pointer"
+                                    title={`Download original uploaded file: ${up.file_name}`}
+                                  >
+                                    <Download className="w-3.5 h-3.5 text-slate-600" />
+                                  </button>
+                                </div>
 
-                                {/* Download File */}
-                                <button
-                                  type="button"
-                                  onClick={() => onDownloadUpload(up.id, up.file_name)}
-                                  className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-white rounded-lg transition-colors cursor-pointer border border-transparent hover:border-slate-200"
-                                  title="Download file"
-                                >
-                                  <Download className="w-3.5 h-3.5" />
-                                </button>
+                                {/* Stamped Acknowledged PDF Actions: View & Download */}
+                                {up.acknowledged_at && (
+                                  <div className="flex items-center bg-emerald-50/90 border border-emerald-200 rounded-lg shadow-2xs divide-x divide-emerald-200/80 overflow-hidden" title="Stamped Acknowledged PDF actions">
+                                    <button
+                                      type="button"
+                                      onClick={() => onPreviewUpload(up.id, up.acknowledged_file_name || `${up.file_name.replace(/\.[^/.]+$/, '')}_ACKNOWLEDGED.pdf`, 'application/pdf', formItem.form_code, activeVessel?.vessel_name, true, 'acknowledged')}
+                                      className="p-1.5 text-emerald-700 hover:text-emerald-900 hover:bg-emerald-100/70 transition-colors cursor-pointer"
+                                      title={`View stamped acknowledged PDF: ${up.acknowledged_file_name || 'Acknowledged PDF'}`}
+                                    >
+                                      <FileCheck className="w-3.5 h-3.5 text-emerald-700" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => onDownloadUpload(up.id, up.acknowledged_file_name || `${up.file_name.replace(/\.[^/.]+$/, '')}_ACKNOWLEDGED.pdf`, 'acknowledged')}
+                                      className="p-1.5 text-emerald-700 hover:text-emerald-900 hover:bg-emerald-100/70 transition-colors cursor-pointer"
+                                      title={`Download stamped acknowledged PDF: ${up.acknowledged_file_name || 'Acknowledged PDF'}`}
+                                    >
+                                      <Download className="w-3.5 h-3.5 text-emerald-700" />
+                                    </button>
+                                  </div>
+                                )}
 
                                 {/* Delete File */}
                                 {(isVesselUser || isManagementOrAdmin) && (
