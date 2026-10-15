@@ -104,10 +104,15 @@ export interface Certificate {
   owner?: "Nissen" | "Goodwill" | null;
   name: string;
   expiration_date: string | null;
+  original_expiration_date?: string | null;
+  extension_applied?: boolean | number;
+  extension_date?: string | null;
   date_issued?: string | null;
   certificate_number?: string | null;
   access_type?: "office" | "vessel" | "any" | string | null;
-  has_file?: boolean;
+  has_file?: boolean | number;
+  file_count?: number;
+  file_name?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   latest_file_upload?: string | null;

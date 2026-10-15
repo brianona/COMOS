@@ -3140,7 +3140,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 cursor-pointer"
               >
                 <option value="All">All Teams</option>
-                {teams.map(t => (
+                {[...teams].sort((a, b) => (a || '').localeCompare(b || '')).map(t => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>

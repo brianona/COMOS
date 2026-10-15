@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Award,
   Plus,
@@ -16,6 +16,10 @@ import {
   ShieldCheck,
   Sparkles,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   FolderPlus,
   AlertCircle
 } from 'lucide-react';
@@ -49,6 +53,12 @@ export const CertificateMasterTab: React.FC<CertificateMasterTabProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [validityFilter, setValidityFilter] = useState<'all' | 'valid' | 'invalid'>('all');
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, selectedCategory, validityFilter, pageSize]);
 
   // Modal: Add / Edit Certificate Definition
   const [isCertModalOpen, setIsCertModalOpen] = useState(false);
@@ -120,6 +130,14 @@ export const CertificateMasterTab: React.FC<CertificateMasterTabProps> = ({
       .slice()
       .sort((a, b) => compareCertificatesNumerically(a.name, b.name));
   }, [certDefinitions, searchTerm, selectedCategory, validityFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredCerts.length / pageSize));
+  const safePage = Math.min(Math.max(1, currentPage), totalPages);
+  const startIndex = (safePage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, filteredCerts.length);
+  const paginatedCerts = useMemo(() => {
+    return filteredCerts.slice(startIndex, endIndex);
+  }, [filteredCerts, startIndex, endIndex]);
 
   // Statistics
   const stats = useMemo(() => {
@@ -670,6 +688,25 @@ export const CertificateMasterTab: React.FC<CertificateMasterTabProps> = ({
               <XCircle className="w-3 h-3" /> Inactive
             </button>
           </div>
+
+          {/* Per Page Selector (20, 50, 100, 1000) */}
+          <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-700">
+            <span className="text-slate-400 font-medium text-[11px] whitespace-nowrap">Show:</span>
+            <select
+              value={pageSize}
+              onChange={e => {
+                setPageSize(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="bg-transparent border-none text-xs font-bold text-slate-800 focus:outline-none cursor-pointer pr-1"
+              title="Certificate definitions displayed per page"
+            >
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+              <option value={100}>100 / page</option>
+              <option value={1000}>1000 / page</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -759,14 +796,14 @@ export const CertificateMasterTab: React.FC<CertificateMasterTabProps> = ({
                   </td>
                 </tr>
               ) : (
-                filteredCerts.map((cert, index) => (
+                paginatedCerts.map((cert, index) => (
                   <tr
                     key={cert.id}
                     className={`hover:bg-slate-50/70 transition-colors ${
                       !cert.is_valid ? 'bg-slate-50/40 text-slate-500' : ''
                     }`}
                   >
-                    <td className="py-3 px-3 text-center text-slate-400 font-medium">{index + 1}</td>
+                    <td className="py-3 px-3 text-center text-slate-400 font-medium">{startIndex + index + 1}</td>
                     <td className="py-3 px-4">
                       <div className="font-bold text-slate-900 flex items-center gap-2">
                         <Award className={`w-3.5 h-3.5 shrink-0 ${cert.is_valid ? 'text-blue-600' : 'text-slate-400'}`} />
@@ -842,13 +879,114 @@ export const CertificateMasterTab: React.FC<CertificateMasterTabProps> = ({
         </div>
       </div>
 
-      <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100">
-        <span>
-          Showing <strong>{filteredCerts.length}</strong> of <strong>{certDefinitions.length}</strong> certificate definitions
-        </span>
-        <span className="text-[11px] text-slate-400">
-          * Valid certificates will automatically display in the Add Cert dropdown list
-        </span>
+      {/* Pagination Footer */}
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500 pt-3 border-t border-slate-100">
+        <div className="flex items-center gap-2">
+          <span>
+            Showing <strong>{filteredCerts.length === 0 ? 0 : startIndex + 1}</strong> to <strong>{endIndex}</strong> of <strong>{filteredCerts.length}</strong> definitions
+          </span>
+          {filteredCerts.length !== certDefinitions.length && (
+            <span className="text-slate-400 text-[11px]">({certDefinitions.length} total)</span>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Per Page Selector */}
+          <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1">
+            <span className="text-slate-500 font-medium text-xs">Per page:</span>
+            <select
+              value={pageSize}
+              onChange={e => {
+                setPageSize(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="bg-transparent border-none text-xs font-bold text-slate-800 focus:outline-none cursor-pointer pr-1"
+              title="Certificate definitions displayed per page"
+            >
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={1000}>1000</option>
+            </select>
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={safePage <= 1}
+                onClick={() => setCurrentPage(1)}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors cursor-pointer"
+                title="First page"
+              >
+                <ChevronsLeft className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                disabled={safePage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors cursor-pointer"
+                title="Previous page"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+
+              <div className="flex items-center gap-1 px-1">
+                {(() => {
+                  const pages: number[] = [];
+                  if (totalPages <= 7) {
+                    for (let i = 1; i <= totalPages; i++) pages.push(i);
+                  } else {
+                    pages.push(1);
+                    if (safePage > 3) pages.push(-1);
+                    const start = Math.max(2, safePage - 1);
+                    const end = Math.min(totalPages - 1, safePage + 1);
+                    for (let i = start; i <= end; i++) pages.push(i);
+                    if (safePage < totalPages - 2) pages.push(-1);
+                    pages.push(totalPages);
+                  }
+                  return pages.map((p, idx) => (
+                    p === -1 ? (
+                      <span key={`dots-${idx}`} className="px-1 text-slate-400 font-bold select-none">...</span>
+                    ) : (
+                      <button
+                        key={`p-${p}`}
+                        type="button"
+                        onClick={() => setCurrentPage(p)}
+                        className={`min-w-[28px] h-7 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          safePage === p
+                            ? 'bg-blue-600 text-white shadow-xs'
+                            : 'bg-white border border-slate-200 hover:bg-slate-50 text-slate-700'
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    )
+                  ));
+                })()}
+              </div>
+
+              <button
+                type="button"
+                disabled={safePage >= totalPages}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors cursor-pointer"
+                title="Next page"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                disabled={safePage >= totalPages}
+                onClick={() => setCurrentPage(totalPages)}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors cursor-pointer"
+                title="Last page"
+              >
+                <ChevronsRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ========================================================

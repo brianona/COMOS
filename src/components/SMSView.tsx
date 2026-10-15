@@ -292,23 +292,36 @@ const INITIAL_UPLOADS: VesselUpload[] = [
 
 export const SMSView: React.FC<SMSViewProps> = ({ vessels: externalVessels, currentUser, token, mode: initialMode = 'management', flags = [], onPendingAckCountChange, onNavigateMode }) => {
   const isVesselUser = currentUser?.role === 'vessel';
-  const effectiveInitialMode = (isVesselUser && (initialMode === 'reporting' || initialMode === 'management')) 
+  const effectiveInitialMode = (initialMode === 'reporting') 
+    ? (isVesselUser ? 'overview' : 'management') 
+    : (isVesselUser && initialMode === 'management') 
     ? 'overview' 
     : initialMode;
   const [activeMode, setActiveMode] = useState<'overview' | 'management' | 'reporting' | 'acknowledgement'>(effectiveInitialMode);
 
   useEffect(() => {
-    if (isVesselUser && (initialMode === 'reporting' || initialMode === 'management')) {
+    if (initialMode === 'reporting') {
+      setActiveMode(isVesselUser ? 'overview' : 'management');
+    } else if (isVesselUser && initialMode === 'management') {
       setActiveMode('overview');
     } else {
       setActiveMode(initialMode);
     }
   }, [initialMode, isVesselUser]);
 
-  const mode = isVesselUser && (activeMode === 'reporting' || activeMode === 'management') ? 'overview' : activeMode;
+  const mode = (activeMode === 'reporting')
+    ? (isVesselUser ? 'overview' : 'management')
+    : (isVesselUser && activeMode === 'management')
+    ? 'overview'
+    : activeMode;
 
   const handleNavigateMode = (targetMode: 'overview' | 'management' | 'reporting' | 'acknowledgement') => {
-    const finalMode = (isVesselUser && (targetMode === 'reporting' || targetMode === 'management')) ? 'overview' : targetMode;
+    let finalMode = targetMode;
+    if (finalMode === 'reporting') {
+      finalMode = isVesselUser ? 'overview' : 'management';
+    } else if (isVesselUser && finalMode === 'management') {
+      finalMode = 'overview';
+    }
     setActiveMode(finalMode);
     if (onNavigateMode) {
       onNavigateMode(finalMode);
@@ -4329,13 +4342,6 @@ startxref
                   <div className="flex flex-col gap-1.5">
                     <button
                       type="button"
-                      onClick={() => handleNavigateMode('reporting')}
-                      className="w-full py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-                    >
-                      <Send className="w-3.5 h-3.5" /> Go to SMS Reporting Terminal
-                    </button>
-                    <button
-                      type="button"
                       onClick={() => handleNavigateMode('management')}
                       className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                     >
@@ -4671,7 +4677,7 @@ startxref
     let percent = 0;
     let fileName = '';
     let stepBadge = 'Processing';
-    let modeLabel = mode === 'reporting' ? 'SMS Reporting' : 'SMS Management';
+    let modeLabel = 'SMS Management';
 
     if (isProcessingFiles && processingFilesState) {
       title = processingFilesState.totalCount > 1 
@@ -4799,27 +4805,21 @@ startxref
         
         <div className="space-y-1.5 relative z-10">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-700 rounded-full text-[10px] font-black uppercase tracking-wider mb-1 border border-amber-200/50">
-            {mode === 'reporting' 
-              ? 'SMS Reporting' 
-              : mode === 'acknowledgement' 
+            {mode === 'acknowledgement' 
               ? 'Report Acknowledgement' 
               : mode === 'overview'
               ? 'SMS Catalog & Manuals'
               : 'SMS Management'}
           </div>
           <h2 className="text-2xl font-black text-slate-800 tracking-tight flex items-center gap-2">
-            {mode === 'reporting' 
-              ? 'Safety Management System (SMS) - Reporting' 
-              : mode === 'acknowledgement' 
+            {mode === 'acknowledgement' 
               ? 'Safety Management System (SMS) - Report Acknowledgement' 
               : mode === 'overview'
               ? 'Safety Management System (SMS)'
               : 'Safety Management System (SMS) - Management'}
           </h2>
           <p className="text-xs text-slate-500 max-w-2xl leading-relaxed">
-            {mode === 'reporting' 
-              ? 'Submit finished safety checklists and forms, upload vessel report packages, download submitted vessel archives, and monitor previous submissions.' 
-              : mode === 'acknowledgement'
+            {mode === 'acknowledgement'
               ? 'Review uploaded vessel report packages requiring acknowledgement, upload official signed acknowledgement documents, and download processed records.'
               : mode === 'overview'
               ? 'Fleet Safety Management Manual (SMM) master catalog. Browse approved standardized forms and checklists, review vessel scopes, and download standard form templates.'
@@ -4843,21 +4843,6 @@ startxref
             <FileText className="w-4 h-4" />
             <span>SMS Manual & Catalog</span>
           </button>
-
-          {currentUser?.role !== 'vessel' && (
-            <button
-              type="button"
-              onClick={() => handleNavigateMode('reporting')}
-              className={`flex items-center gap-2 px-4 py-2.5 text-xs font-black rounded-xl transition-all cursor-pointer ${
-                mode === 'reporting'
-                  ? 'bg-blue-600 text-white shadow-xs shadow-blue-500/20'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <Send className="w-4 h-4" />
-              <span>SMS Reporting</span>
-            </button>
-          )}
 
           {currentUser?.role !== 'vessel' && (
             <>
@@ -4912,7 +4897,7 @@ startxref
               Safety Management Manual
             </span>
             <span className="text-[10px] text-slate-400 font-extrabold uppercase tracking-wide">
-              Select Category to {mode === 'reporting' ? 'Report Files' : mode === 'overview' ? 'Browse Forms & Templates' : managementTab === 'submitted_files' ? 'View Submitted Files' : 'Manage Forms'}
+              Select Category to {mode === 'overview' ? 'Browse Forms & Templates' : managementTab === 'submitted_files' ? 'View Submitted Files' : 'Manage Forms'}
             </span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-10 gap-2.5">
@@ -5399,8 +5384,8 @@ startxref
         {/* Submitted Files (Vessel Uploads) Tab Content */}
         {mode === 'management' && managementTab === 'submitted_files' && renderSubmittedFilesAccordion()}
 
-        {/* NEW REVOLUTIONARY SMS REPORTING WORKSPACE */}
-        {mode === 'reporting' && currentUser?.role !== 'vessel' && (
+        {/* NEW REVOLUTIONARY SMS REPORTING WORKSPACE - HIDDEN */}
+        {false && (
           <div className="space-y-6 animate-in fade-in duration-300">
             {/* Top Control Bar & Simulator */}
             <div className="bg-slate-900 text-white rounded-3xl p-6 shadow-xl border border-slate-800 flex flex-col lg:flex-row gap-6 items-start lg:items-center justify-between">

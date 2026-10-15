@@ -717,7 +717,14 @@ export const SlideshowView = ({
                       >
                         <div className="min-w-0 flex-1 pr-4">
                           <p className="text-sm font-bold text-white truncate group-hover/item:text-blue-400 transition-colors">{cert.name}</p>
-                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5 font-mono">Expires: {cert.expiration_date || 'No expiration'}</p>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-0.5 font-mono flex items-center gap-1.5">
+                            <span>Expires: {cert.expiration_date || 'No expiration'}</span>
+                            {Boolean(cert.extension_applied) && (
+                              <span className="text-[8px] font-black text-purple-300 bg-purple-900/60 border border-purple-500/40 px-1 py-0.2 rounded">
+                                Extended
+                              </span>
+                            )}
+                          </p>
                         </div>
                         <span className={cn(
                           "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest shrink-0 shadow-lg",

@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, parseISO } from "date-fns";
-import { cn, isFocOutsideLimits, isGeminiSupportedMimeType, MAX_FILE_SIZE } from "../utils/helpers";
+import { cn, isFocOutsideLimits, isGeminiSupportedMimeType, MAX_FILE_SIZE, computeNoonReportAvgSpeed, NoonSpeedResult } from "../utils/helpers";
 import { ImageViewer } from "./ImageViewer";
 import { User, Vessel, NoonReport } from "../types";
 
@@ -368,6 +368,29 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
     };
   }, [form.rob_hsfo, form.rob_lsfo, form.rob_mgo, form.rob_mdo, form.vessel_id, form.utc_date_time, reports, editingId]);
 
+  // Precompute average speed (knots) for all reports by comparing DTG and time against previous noon reports
+  const speedMap = React.useMemo(() => {
+    const map = new Map<number, NoonSpeedResult>();
+    (reports || []).forEach(r => {
+      map.set(r.id, computeNoonReportAvgSpeed(r, reports));
+    });
+    return map;
+  }, [reports]);
+
+  // Compute live estimated speed in the form as user enters Distance to Go
+  const formAvgSpeed = React.useMemo(() => {
+    if (!form.distance_to_go || !form.vessel_id) return null;
+    return computeNoonReportAvgSpeed(
+      {
+        id: editingId || 0,
+        vessel_id: form.vessel_id,
+        utc_date_time: form.utc_date_time,
+        distance_to_go: form.distance_to_go
+      },
+      reports
+    );
+  }, [form.distance_to_go, form.vessel_id, form.utc_date_time, editingId, reports]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -636,6 +659,12 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                       onChange={(e) => setForm({ ...form, distance_to_go: e.target.value })}
                       className="w-full px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:ring-2 focus:ring-blue-500/20 outline-none"
                     />
+                    {formAvgSpeed && formAvgSpeed.speed !== null && (
+                      <p className="text-[11px] font-medium text-blue-600 mt-1.5 flex items-center gap-1">
+                        <Gauge className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span>Avg Speed vs prior report: <strong className="font-mono font-bold text-blue-700">{formAvgSpeed.speedFormatted}</strong> ({formAvgSpeed.distCovered?.toFixed(1)} NM in {formAvgSpeed.hoursElapsed?.toFixed(1)}h)</span>
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
@@ -1416,6 +1445,7 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                       Number(report.foc_mdo || 0)
                     ).toFixed(2);
                     const isHsfoOutside = isFocOutsideLimits(String(report.foc_hsfo), report.charterer_min_hsfo, report.charterer_max_hsfo);
+                    const speedInfo = speedMap.get(report.id) || computeNoonReportAvgSpeed(report, reports);
 
                     return (
                       <tr 
@@ -1466,6 +1496,25 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                             <div className="text-xs text-slate-500 flex items-center gap-1">
                               <span className="font-medium">DTG:</span>
                               <strong className="font-mono font-bold text-slate-800">{report.distance_to_go} nm</strong>
+                            </div>
+                            <div className="text-xs text-slate-500 flex items-center gap-1">
+                              <Gauge className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+                              <span className="font-medium text-slate-500">Avg Speed:</span>
+                              {speedInfo && speedInfo.speed !== null ? (
+                                <strong 
+                                  className="font-mono font-bold text-blue-700 hover:text-blue-900 cursor-help"
+                                  title={`Average Speed: ${speedInfo.speed.toFixed(2)} knots (knots per hour)\nDistance covered: ${speedInfo.distCovered?.toFixed(1)} NM\nTime elapsed: ${speedInfo.hoursElapsed?.toFixed(1)} hrs\nCompared with previous report: ${speedInfo.prevReportDate ? format(parseISO(speedInfo.prevReportDate), 'MMM dd, yyyy HH:mm') : 'prior report'}`}
+                                >
+                                  {speedInfo.speedFormatted}
+                                </strong>
+                              ) : (
+                                <span 
+                                  className="font-mono text-slate-400 font-medium cursor-help"
+                                  title={speedInfo?.isNewVoyageOrPort ? "DTG increased (voyage leg or destination change)" : "No previous noon report found for this vessel"}
+                                >
+                                  -
+                                </span>
+                              )}
                             </div>
                           </div>
                         </td>
@@ -1746,7 +1795,7 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                   <MapPin className="w-4 h-4 text-blue-600" />
                   Navigation & Route Status
                 </h4>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-6 gap-4">
                   <div>
                     <span className="text-[10px] font-bold uppercase text-slate-400 block">Latitude</span>
                     <span className="font-mono font-bold text-slate-800 text-sm">{selectedReportForDetails.position_lat}</span>
@@ -1758,6 +1807,12 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                   <div>
                     <span className="text-[10px] font-bold uppercase text-slate-400 block">Distance To Go</span>
                     <span className="font-mono font-bold text-blue-700 text-sm">{selectedReportForDetails.distance_to_go} nm</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">Avg Speed</span>
+                    <span className="font-mono font-bold text-blue-700 text-sm">
+                      {speedMap.get(selectedReportForDetails.id)?.speedFormatted || '-'}
+                    </span>
                   </div>
                   <div>
                     <span className="text-[10px] font-bold uppercase text-slate-400 block">Report Type</span>

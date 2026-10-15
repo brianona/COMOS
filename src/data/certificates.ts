@@ -280,7 +280,7 @@ export const getViewTitle = (v: ViewType): string => {
     case 'graphify': return 'Graphify Architecture';
     case 'admin': return 'Admin Settings';
     case 'admin_vessel_list': return 'Admin Vessel List';
-    case 'admin_cert_list': return 'Admin Certificates';
+    case 'admin_cert_list': return 'Certificates';
     case 'admin_new_vessel': return 'Add New Vessel';
     case 'admin_add_cert': return 'Add Certificate';
     case 'admin_recycle_bin': return 'Recycle Bin';

@@ -940,6 +940,12 @@ async function startServer() {
           await pool.query("UPDATE certificates SET created_at = COALESCE(date_issued, DATE_SUB(NOW(), INTERVAL 30 DAY)) WHERE created_at >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)");
         } catch (e) {}
       }
+
+      if (!columnNames.includes('extension_applied')) {
+        console.log('Migrating certificates table: Adding extension_applied and extension_date...');
+        await pool.query("ALTER TABLE certificates ADD COLUMN extension_applied TINYINT(1) NOT NULL DEFAULT 0");
+        await pool.query("ALTER TABLE certificates ADD COLUMN extension_date DATE NULL");
+      }
     } catch (e: any) {
       console.error('Error during certificates table migration:', e.message);
     }
@@ -1124,6 +1130,22 @@ async function startServer() {
         INDEX idx_alert_date (alert_date),
         INDEX idx_recipient (recipient_email)
       )
+    `);
+
+    // Distributed lock table to prevent multi-instance / duplicate scheduled email alerts
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS alert_dispatch_locks (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        lock_slot VARCHAR(120) NOT NULL,
+        target_type VARCHAR(50) NOT NULL,
+        dispatched_by VARCHAR(255) NOT NULL,
+        status VARCHAR(50) NOT NULL DEFAULT 'IN_PROGRESS',
+        dispatched_emails_count INT DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        completed_at DATETIME NULL,
+        UNIQUE KEY uq_lock_slot (lock_slot),
+        INDEX idx_target_created (target_type, created_at)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
 
     // Delete any past system database updates logged in audit_logs
@@ -2738,6 +2760,19 @@ async function startServer() {
     } catch (e) {
       res.status(401).json({ error: 'Invalid token' });
     }
+  };
+
+  const getEffectiveTeamIds = async (user: any): Promise<number[]> => {
+    let teamIds: number[] = Array.isArray(user?.team_ids) ? user.team_ids.map(Number).filter((id: number) => !isNaN(id) && id > 0) : [];
+    if (teamIds.length === 0 && user?.id) {
+      try {
+        const [uTeams]: any = await pool.execute('SELECT team_id FROM user_teams WHERE user_id = ?', [user.id]);
+        teamIds = (uTeams || []).map((ut: any) => Number(ut.team_id)).filter((id: number) => !isNaN(id) && id > 0);
+      } catch (err: any) {
+        console.warn('Error fetching user_teams:', err.message);
+      }
+    }
+    return teamIds;
   };
 
   // ==================== REALTIME LONG-POLLING API ====================
@@ -4724,13 +4759,19 @@ async function startServer() {
     if (req.user.role === 'admin') {
       [vessels] = await pool.query("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL");
     } else if (req.user.role === 'vessel') {
-      const vesselId = req.user.vessel_id;
+      let vesselId = req.user.vessel_id;
+      if (!vesselId && req.user.username) {
+        try {
+          const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+          if (vRows.length > 0) vesselId = vRows[0].id;
+        } catch (e) {}
+      }
       if (!vesselId) {
         return res.json([]);
       }
       [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
     } else {
-      const teamIds = req.user.team_ids || [];
+      const teamIds = await getEffectiveTeamIds(req.user);
       if (teamIds.length === 0) {
         return res.json([]);
       }
@@ -8736,16 +8777,21 @@ async function startServer() {
   app.get('/api/certificates', authenticate, async (req: any, res) => {
     let query = `
       SELECT c.*, 
-      DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as expiration_date, 
+      c.extension_applied,
+      DATE_FORMAT(c.extension_date, '%Y-%m-%d') as extension_date,
+      DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as original_expiration_date,
+      DATE_FORMAT(CASE WHEN c.extension_applied = 1 AND c.extension_date IS NOT NULL THEN c.extension_date ELSE c.expiration_date END, '%Y-%m-%d') as expiration_date, 
       DATE_FORMAT(c.date_issued, '%Y-%m-%d') as date_issued,
       DATE_FORMAT(c.created_at, '%Y-%m-%d %H:%i:%s') as created_at,
       DATE_FORMAT(c.updated_at, '%Y-%m-%d %H:%i:%s') as updated_at,
       v.name as vessel_name, v.owner, t.name as team_name,
       (SELECT COUNT(*) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) > 0 as has_file,
+      (SELECT COUNT(*) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) as file_count,
+      (SELECT f.original_name FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL ORDER BY f.id DESC LIMIT 1) as file_name,
       (SELECT MAX(DATE_FORMAT(f.upload_date, '%Y-%m-%d %H:%i:%s')) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) as latest_file_upload
       FROM certificates c 
       LEFT JOIN vessels v ON c.vessel_id = v.id
-      JOIN teams t ON c.team_id = t.id
+      LEFT JOIN teams t ON c.team_id = t.id
       WHERE c.deleted_at IS NULL
     `;
     let params: any[] = [];
@@ -8779,7 +8825,7 @@ async function startServer() {
       let query = `
         SELECT 
           c.id,
-          DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as expiration_date,
+          DATE_FORMAT(CASE WHEN c.extension_applied = 1 AND c.extension_date IS NOT NULL THEN c.extension_date ELSE c.expiration_date END, '%Y-%m-%d') as expiration_date,
           DATE_FORMAT(c.created_at, '%Y-%m-%d %H:%i:%s') as created_at,
           (SELECT MAX(DATE_FORMAT(f.upload_date, '%Y-%m-%d %H:%i:%s')) FROM files f WHERE f.certificate_id = c.id AND f.deleted_at IS NULL) as latest_file_upload
         FROM certificates c
@@ -9017,7 +9063,7 @@ async function startServer() {
   });
 
   app.post('/api/certificates', authenticate, canAddCertificate, upload.any(), async (req: any, res) => {
-    let { vessel_id, team_id, name, certificate_number, date_issued, expiration_date } = req.body;
+    let { vessel_id, team_id, name, certificate_number, date_issued, expiration_date, extension_applied, extension_date } = req.body;
     try {
       if (req.user.role === 'vessel') {
         if (!vessel_id || Number(vessel_id) === Number(req.user.vessel_id)) {
@@ -9044,6 +9090,8 @@ async function startServer() {
         return s;
       };
       const finalExpirationDate = sanitizeExpDate(expiration_date);
+      const finalExtensionApplied = (extension_applied === true || extension_applied === 'true' || extension_applied === 1 || extension_applied === '1') ? 1 : 0;
+      const finalExtensionDate = finalExtensionApplied ? sanitizeExpDate(extension_date) : null;
       
       const saveFiles = async (certId: number) => {
         let rawFiles: any[] = [];
@@ -9094,12 +9142,12 @@ async function startServer() {
           if (existing && existing.length > 0) {
             const existingId = existing[0].id;
             await pool.execute(
-              'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-              [finalCertNumber, finalDateIssued, finalExpirationDate, existingId]
+              'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, extension_applied = ?, extension_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+              [finalCertNumber, finalDateIssued, finalExpirationDate, finalExtensionApplied, finalExtensionDate, existingId]
             );
             await saveFiles(existingId);
           } else {
-            const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
+            const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, extension_applied, extension_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [v.id, v.team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalExtensionApplied, finalExtensionDate]);
             await saveFiles(result.insertId);
           }
         }
@@ -9120,13 +9168,13 @@ async function startServer() {
         if (existing && existing.length > 0) {
           const existingId = existing[0].id;
           await pool.execute(
-            'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, team_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [finalCertNumber, finalDateIssued, finalExpirationDate, finalTeamId, existingId]
+            'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, extension_applied = ?, extension_date = ?, team_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [finalCertNumber, finalDateIssued, finalExpirationDate, finalExtensionApplied, finalExtensionDate, finalTeamId, existingId]
           );
           await saveFiles(existingId);
           await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE', `Updated existing certificate ID ${existingId} with new document: ${name} for vessel ID ${vessel_id}`);
         } else {
-          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
+          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, extension_applied, extension_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [vessel_id, finalTeamId, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalExtensionApplied, finalExtensionDate]);
           await saveFiles(result.insertId);
           await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created certificate: ${name} for vessel ID ${vessel_id}`);
         }
@@ -9139,12 +9187,12 @@ async function startServer() {
         if (existing && existing.length > 0) {
           const existingId = existing[0].id;
           await pool.execute(
-            'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [finalCertNumber, finalDateIssued, finalExpirationDate, existingId]
+            'UPDATE certificates SET certificate_number = COALESCE(?, certificate_number), date_issued = COALESCE(?, date_issued), expiration_date = ?, extension_applied = ?, extension_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [finalCertNumber, finalDateIssued, finalExpirationDate, finalExtensionApplied, finalExtensionDate, existingId]
           );
           await saveFiles(existingId);
         } else {
-          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date) VALUES (?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate]);
+          const [result]: any = await pool.execute('INSERT INTO certificates (vessel_id, team_id, name, certificate_number, date_issued, expiration_date, extension_applied, extension_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [null, team_id, name, finalCertNumber, finalDateIssued, finalExpirationDate, finalExtensionApplied, finalExtensionDate]);
           await saveFiles(result.insertId);
         }
         await logAudit(req.user.id, req.user.username, 'CREATE_CERTIFICATE', `Created/Updated certificate: ${name} for team ID ${team_id}`);
@@ -9156,7 +9204,7 @@ async function startServer() {
   });
 
   app.put('/api/certificates/:id', authenticate, async (req: any, res) => {
-    const { name, vessel_id, team_id, expiration_date, date_issued, certificate_number } = req.body;
+    const { name, vessel_id, team_id, expiration_date, original_expiration_date, extension_applied, extension_date, date_issued, certificate_number } = req.body;
     try {
       const [certs]: any = await pool.execute('SELECT * FROM certificates WHERE id = ?', [req.params.id]);
       if (certs.length === 0) return res.status(404).json({ error: 'Certificate not found' });
@@ -9185,11 +9233,25 @@ async function startServer() {
         return s === '' ? null : s;
       };
 
+      const finalExtensionApplied = (extension_applied === true || extension_applied === 'true' || extension_applied === 1 || extension_applied === '1')
+        ? 1
+        : (extension_applied === false || extension_applied === 'false' || extension_applied === 0 || extension_applied === '0'
+          ? 0
+          : (cert.extension_applied ? 1 : 0));
+      const sanitizedExtDate = sanitizeExpDate(extension_date);
+      const finalExtensionDate = finalExtensionApplied
+        ? (sanitizedExtDate !== undefined ? sanitizedExtDate : (cert.extension_date ? new Date(cert.extension_date).toISOString().split('T')[0] : null))
+        : null;
+
+      const baseExpInput = original_expiration_date !== undefined ? original_expiration_date : expiration_date;
+      const sanitizedBaseExp = sanitizeExpDate(baseExpInput);
+      const finalExpirationDate = sanitizedBaseExp !== undefined 
+        ? sanitizedBaseExp 
+        : (cert.expiration_date ? new Date(cert.expiration_date).toISOString().split('T')[0] : null);
+
       if (req.user.role === 'admin' || req.user.role === 'team_pic' || req.user.role === 'user') {
         const finalName = name !== undefined && name !== null && String(name).trim() !== '' ? String(name).trim() : cert.name;
         const finalVesselId = (vessel_id !== undefined && vessel_id !== '' && vessel_id !== null) ? Number(vessel_id) : (vessel_id === null || vessel_id === '' ? null : cert.vessel_id);
-        const sanitizedExp = sanitizeExpDate(expiration_date);
-        const finalExpirationDate = sanitizedExp !== undefined ? sanitizedExp : cert.expiration_date;
         const sanitizedDateIssued = sanitizeDate(date_issued);
         const finalDateIssued = sanitizedDateIssued !== undefined ? sanitizedDateIssued : cert.date_issued;
         const sanitizedCertNum = sanitizeText(certificate_number);
@@ -9203,15 +9265,13 @@ async function startServer() {
           if (vRows.length > 0) finalTeamId = vRows[0].team_id;
         }
 
-        await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', 
-          [finalName, finalVesselId, finalTeamId, finalExpirationDate, finalDateIssued, finalCertNumber, req.params.id]);
+        await pool.execute('UPDATE certificates SET name = ?, vessel_id = ?, team_id = ?, expiration_date = ?, extension_applied = ?, extension_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', 
+          [finalName, finalVesselId, finalTeamId, finalExpirationDate, finalExtensionApplied, finalExtensionDate, finalDateIssued, finalCertNumber, req.params.id]);
         await pool.execute('DELETE FROM sent_email_alerts WHERE certificate_id = ?', [req.params.id]);
         await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE', `Updated certificate ID ${req.params.id}: ${finalName}`);
       } else {
-        // Non-admins and vessel users can update certificate name, expiration date, date issued, and certificate number
+        // Non-admins and vessel users can update certificate name, expiration date, extension fields, date issued, and certificate number
         const finalName = name !== undefined && name !== null && String(name).trim() !== '' ? String(name).trim() : cert.name;
-        const sanitizedExp = sanitizeExpDate(expiration_date);
-        const finalExpirationDate = sanitizedExp !== undefined ? sanitizedExp : cert.expiration_date;
         const sanitizedDateIssued = sanitizeDate(date_issued);
         const finalDateIssued = sanitizedDateIssued !== undefined ? sanitizedDateIssued : cert.date_issued;
         const sanitizedCertNum = sanitizeText(certificate_number);
@@ -9227,7 +9287,7 @@ async function startServer() {
           }
         }
 
-        await pool.execute('UPDATE certificates SET name = ?, expiration_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', [finalName, finalExpirationDate, finalDateIssued, finalCertNumber, req.params.id]);
+        await pool.execute('UPDATE certificates SET name = ?, expiration_date = ?, extension_applied = ?, extension_date = ?, date_issued = ?, certificate_number = ? WHERE id = ?', [finalName, finalExpirationDate, finalExtensionApplied, finalExtensionDate, finalDateIssued, finalCertNumber, req.params.id]);
         await pool.execute('DELETE FROM sent_email_alerts WHERE certificate_id = ?', [req.params.id]);
         await logAudit(req.user.id, req.user.username, 'UPDATE_CERTIFICATE_FIELDS', `Updated fields for certificate: ${finalName} (ID: ${req.params.id})`);
       }
@@ -9633,8 +9693,20 @@ Generated by COMOS System
 
   // File Routes
   app.get('/api/certificates/:id/files', authenticate, async (req, res) => {
-    const [files] = await pool.execute('SELECT id, certificate_id, filename, original_name, mimetype, file_type, upload_date FROM files WHERE certificate_id = ? AND deleted_at IS NULL ORDER BY id DESC', [req.params.id]);
-    res.json(files);
+    try {
+      const certId = Number(req.params.id);
+      if (isNaN(certId)) {
+        return res.status(400).json({ error: 'Invalid certificate ID' });
+      }
+      const [files] = await pool.query(
+        'SELECT id, certificate_id, filename, original_name, mimetype, file_type, upload_date FROM files WHERE certificate_id = ? AND deleted_at IS NULL ORDER BY id DESC',
+        [certId]
+      );
+      res.json(files);
+    } catch (err: any) {
+      console.error('Error fetching certificate files:', err);
+      res.status(500).json({ error: err.message || 'Failed to fetch certificate files' });
+    }
   });
 
   app.post('/api/certificates/:id/files', authenticate, upload.any(), async (req: any, res) => {
@@ -9715,17 +9787,65 @@ Generated by COMOS System
     }
   });
 
+  // Direct fetch by file ID
+  app.get('/api/files/id/:id', authenticate, async (req, res) => {
+    try {
+      const fileId = Number(req.params.id);
+      if (isNaN(fileId)) return res.status(400).json({ error: 'Invalid file ID' });
+      const [files]: any = await pool.query('SELECT * FROM files WHERE id = ? AND deleted_at IS NULL LIMIT 1', [fileId]);
+      if (files.length > 0 && files[0].data) {
+        const file = files[0];
+        const retrievedData = await handleFileRetrieve(file.data);
+        res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.original_name)}"`);
+        res.setHeader('Content-Security-Policy', "frame-ancestors 'self' *");
+        res.send(retrievedData);
+      } else {
+        res.status(404).json({ error: 'File not found in database' });
+      }
+    } catch (err: any) {
+      console.error('File retrieval by ID failed:', err);
+      res.status(500).json({ error: 'Error retrieving file' });
+    }
+  });
+
   app.get('/api/files/:filename', authenticate, async (req, res) => {
     try {
-      // Note: In this new version, we might want to fetch by ID or filename. 
-      // Since the old code used filename, we'll try to find by filename first.
-      const [files]: any = await pool.execute('SELECT * FROM files WHERE filename = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1', [req.params.filename]);
+      const param = req.params.filename;
+      const explicitId = req.query.id ? Number(req.query.id) : null;
+      let files: any[] = [];
+
+      // 1. If explicit ?id is provided or param is numeric ID
+      if (explicitId && !isNaN(explicitId)) {
+        const [rows]: any = await pool.query('SELECT * FROM files WHERE id = ? AND deleted_at IS NULL LIMIT 1', [explicitId]);
+        files = rows;
+      } else if (/^\d+$/.test(param)) {
+        const [rows]: any = await pool.query('SELECT * FROM files WHERE (id = ? OR filename = ? OR original_name = ?) AND deleted_at IS NULL ORDER BY id DESC LIMIT 1', [Number(param), param, param]);
+        files = rows;
+      }
+
+      // 2. Query by filename or original_name
+      if (files.length === 0) {
+        const [rows]: any = await pool.query('SELECT * FROM files WHERE (filename = ? OR original_name = ?) AND deleted_at IS NULL ORDER BY id DESC LIMIT 1', [param, param]);
+        files = rows;
+      }
+
+      // 3. Try URL-decoded version if param had percent encoding
+      if (files.length === 0) {
+        try {
+          const decoded = decodeURIComponent(param);
+          if (decoded !== param) {
+            const [rows]: any = await pool.query('SELECT * FROM files WHERE (filename = ? OR original_name = ?) AND deleted_at IS NULL ORDER BY id DESC LIMIT 1', [decoded, decoded]);
+            files = rows;
+          }
+        } catch (_) {}
+      }
       
       if (files.length > 0 && files[0].data) {
         const file = files[0];
         const retrievedData = await handleFileRetrieve(file.data);
         res.setHeader('Content-Type', file.mimetype || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `inline; filename="${file.original_name}"`);
+        res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.original_name)}"`);
         // Add headers to help with PDF preview issues
         res.setHeader('Content-Security-Policy', "frame-ancestors 'self' *");
         res.send(retrievedData);
@@ -9765,12 +9885,27 @@ Generated by COMOS System
       `;
       let params: any[] = [];
 
-      if (req.user.role === 'vessel' && req.user.vessel_id) {
+      if (req.user.role === 'vessel') {
+        let vesselId = req.user.vessel_id;
+        if (!vesselId && req.user.username) {
+          try {
+            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+            if (vRows.length > 0) vesselId = vRows[0].id;
+          } catch (e) {}
+        }
+        if (!vesselId) {
+          return res.json([]);
+        }
         query += ' AND dr.vessel_id = ?';
-        params.push(req.user.vessel_id);
+        params.push(vesselId);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
 
       query += ' ORDER BY dr.utc_date_time DESC';
@@ -9981,12 +10116,27 @@ Generated by COMOS System
       `;
       let params: any[] = [];
 
-      if (req.user.role === 'vessel' && req.user.vessel_id) {
+      if (req.user.role === 'vessel') {
+        let vesselId = req.user.vessel_id;
+        if (!vesselId && req.user.username) {
+          try {
+            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+            if (vRows.length > 0) vesselId = vRows[0].id;
+          } catch (e) {}
+        }
+        if (!vesselId) {
+          return res.json([]);
+        }
         query += ' AND ar.vessel_id = ?';
-        params.push(req.user.vessel_id);
+        params.push(vesselId);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
 
       query += ' ORDER BY ar.utc_date_time DESC';
@@ -10311,12 +10461,27 @@ Generated by COMOS System
       `;
       let params: any[] = [];
 
-      if (req.user.role === 'vessel' && req.user.vessel_id) {
+      if (req.user.role === 'vessel') {
+        let vesselId = req.user.vessel_id;
+        if (!vesselId && req.user.username) {
+          try {
+            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+            if (vRows.length > 0) vesselId = vRows[0].id;
+          } catch (e) {}
+        }
+        if (!vesselId) {
+          return res.json([]);
+        }
         query += ' AND nr.vessel_id = ?';
-        params.push(req.user.vessel_id);
+        params.push(vesselId);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
 
       query += ' ORDER BY nr.utc_date_time DESC';
@@ -10697,12 +10862,27 @@ Generated by COMOS System
       `;
       let params: any[] = [];
 
-      if (req.user.role === 'vessel' && req.user.vessel_id) {
+      if (req.user.role === 'vessel') {
+        let vesselId = req.user.vessel_id;
+        if (!vesselId && req.user.username) {
+          try {
+            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+            if (vRows.length > 0) vesselId = vRows[0].id;
+          } catch (e) {}
+        }
+        if (!vesselId) {
+          return res.json([]);
+        }
         query += ' AND orr.vessel_id = ?';
-        params.push(req.user.vessel_id);
+        params.push(vesselId);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
 
       query += ' ORDER BY orr.utc_date_time DESC';
@@ -10918,61 +11098,102 @@ Generated by COMOS System
     }
   }
 
-  // Certificate Expiration Check Logic
+  // Certificate Expiration Check Logic with Distributed Lock
   const lastCheckTimestamps: Record<string, number> = {
     office: 0,
     vessel: 0,
     all: 0,
   };
+  const executedSlots = new Set<string>();
   const isExecutingCheck: Record<string, boolean> = {
     office: false,
     vessel: false,
     all: false,
   };
-  let officeAlertTimeout: NodeJS.Timeout | null = null;
-  let vesselAlertTimeout: NodeJS.Timeout | null = null;
   let alertTickerInterval: NodeJS.Timeout | null = null;
 
-  async function startAlertScheduler() {
-    await startOfficeAlertScheduler();
-    await startVesselAlertScheduler();
-    startAlertTicker();
+  // Claims an atomic slot lock in the shared MySQL database across all server instances
+  async function claimAlertDispatchSlot(slotKey: string, targetType: string): Promise<boolean> {
+    if (!pool) return false;
+    try {
+      const instanceId = `${process.env.APP_NAME || process.env.HOSTNAME || 'server'}_pid${process.pid}_${Math.random().toString(36).substring(2, 7)}`;
+      // Insert with unique constraint on lock_slot
+      await pool.execute(
+        `INSERT INTO alert_dispatch_locks (lock_slot, target_type, dispatched_by, status, created_at)
+         VALUES (?, ?, ?, 'IN_PROGRESS', CURRENT_TIMESTAMP)`,
+        [slotKey, targetType, instanceId]
+      );
+      console.log(`[Alert Lock] Successfully claimed dispatch lease for slot: "${slotKey}" on instance: ${instanceId}`);
+      return true;
+    } catch (err: any) {
+      if (err.code === 'ER_DUP_ENTRY' || err.errno === 1062) {
+        console.log(`[Alert Lock] Slot "${slotKey}" was already claimed/processed by another instance. Skipping to prevent duplicate emails.`);
+        return false;
+      }
+      console.error(`[Alert Lock] Database error checking slot "${slotKey}":`, err.message);
+      return false;
+    }
+  }
+
+  // Completes the atomic slot lock record after emails are sent
+  async function completeAlertDispatchSlot(slotKey: string, emailsCount: number) {
+    if (!pool) return;
+    try {
+      await pool.execute(
+        `UPDATE alert_dispatch_locks 
+         SET status = 'COMPLETED', dispatched_emails_count = ?, completed_at = CURRENT_TIMESTAMP 
+         WHERE lock_slot = ?`,
+        [emailsCount, slotKey]
+      );
+    } catch (err: any) {
+      console.error(`[Alert Lock] Failed to mark slot "${slotKey}" as completed:`, err.message);
+    }
   }
 
   function startAlertTicker() {
     if (alertTickerInterval) clearInterval(alertTickerInterval);
-    // 60-second ticker to guarantee schedule execution even if timers drifted
+
+    // 30-second ticker to guarantee schedule execution strictly in Asia/Manila (UTC+8)
     alertTickerInterval = setInterval(async () => {
       try {
+        if (!pool) return;
+
+        // In development mode, skip automated scheduled background dispatches to avoid sending emails to live recipients while developing
+        const isDev = process.env.NODE_ENV === 'development';
+        if (isDev && process.env.ENABLE_DEV_SCHEDULER !== 'true') {
+          return;
+        }
+
         const settings = await getSmtpSettings();
         if (settings?.ENABLE_EMAIL_ALERTS === 'false') return;
 
         const now = new Date();
-        // Time in Asia/Manila (UTC+8) and local
+        // Standardize strictly to Asia/Manila (UTC+8) timezone
         const manilaFormatter = new Intl.DateTimeFormat('en-GB', {
           timeZone: 'Asia/Manila',
           hour: '2-digit',
           minute: '2-digit',
           hour12: false
         });
+        const manilaDateFormatter = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'Asia/Manila'
+        });
         const manilaTimeStr = manilaFormatter.format(now);
+        const manilaDateStr = manilaDateFormatter.format(now);
         const [manilaH, manilaM] = manilaTimeStr.split(':').map(Number);
-        const localH = now.getHours();
-        const localM = now.getMinutes();
 
         // 1. Office Check
         if (settings?.ALERT_SCHEDULE_TYPE === 'time' || !settings?.ALERT_SCHEDULE_TYPE) {
           const officeTimes = parseScheduleTimes(settings?.ALERT_TIME);
-          const isOfficeDue = officeTimes.some(t => 
-            (t.hour === manilaH && t.minute === manilaM) || 
-            (t.hour === localH && t.minute === localM)
-          );
-          if (isOfficeDue) {
-            const lastSentStr = settings?.LAST_OFFICE_ALERT_SENT_AT;
-            const lastSentDiffMin = lastSentStr ? (Date.now() - new Date(lastSentStr).getTime()) / 60000 : 9999;
-            if (lastSentDiffMin >= 25) {
-              console.log(`[Alert Ticker] Scheduled Office alert due at ${manilaTimeStr} Manila / ${localH}:${localM} local. Triggering dispatch...`);
-              await checkExpirations('office');
+          const matchedSlot = officeTimes.find(t => t.hour === manilaH && t.minute === manilaM);
+          if (matchedSlot) {
+            const slotHourStr = String(matchedSlot.hour).padStart(2, '0');
+            const slotMinStr = String(matchedSlot.minute).padStart(2, '0');
+            const slotKey = `office_time_${manilaDateStr}_${slotHourStr}:${slotMinStr}`;
+            if (!executedSlots.has(slotKey)) {
+              executedSlots.add(slotKey);
+              if (executedSlots.size > 500) executedSlots.clear();
+              await checkExpirations('office', false, slotKey);
             }
           }
         } else if (settings?.ALERT_SCHEDULE_TYPE === 'interval') {
@@ -10981,24 +11202,28 @@ Generated by COMOS System
           const lastSentStr = settings?.LAST_OFFICE_ALERT_SENT_AT;
           const diffMs = lastSentStr ? (Date.now() - new Date(lastSentStr).getTime()) : Infinity;
           if (diffMs >= intervalMs) {
-            console.log(`[Alert Ticker] Interval Office alert due (${(diffMs / 3600000).toFixed(1)}h >= ${hours}h). Triggering dispatch...`);
-            await checkExpirations('office');
+            const bucket = Math.floor(Date.now() / intervalMs);
+            const slotKey = `office_interval_${hours}h_${bucket}`;
+            if (!executedSlots.has(slotKey)) {
+              executedSlots.add(slotKey);
+              if (executedSlots.size > 500) executedSlots.clear();
+              await checkExpirations('office', false, slotKey);
+            }
           }
         }
 
         // 2. Vessel Check
         if (settings?.VESSEL_ALERT_SCHEDULE_TYPE === 'time' || !settings?.VESSEL_ALERT_SCHEDULE_TYPE) {
           const vesselTimes = parseScheduleTimes(settings?.VESSEL_ALERT_TIME);
-          const isVesselDue = vesselTimes.some(t => 
-            (t.hour === manilaH && t.minute === manilaM) || 
-            (t.hour === localH && t.minute === localM)
-          );
-          if (isVesselDue) {
-            const lastSentStr = settings?.LAST_VESSEL_ALERT_SENT_AT;
-            const lastSentDiffMin = lastSentStr ? (Date.now() - new Date(lastSentStr).getTime()) / 60000 : 9999;
-            if (lastSentDiffMin >= 25) {
-              console.log(`[Alert Ticker] Scheduled Vessel alert due at ${manilaTimeStr} Manila / ${localH}:${localM} local. Triggering dispatch...`);
-              await checkExpirations('vessel');
+          const matchedSlot = vesselTimes.find(t => t.hour === manilaH && t.minute === manilaM);
+          if (matchedSlot) {
+            const slotHourStr = String(matchedSlot.hour).padStart(2, '0');
+            const slotMinStr = String(matchedSlot.minute).padStart(2, '0');
+            const slotKey = `vessel_time_${manilaDateStr}_${slotHourStr}:${slotMinStr}`;
+            if (!executedSlots.has(slotKey)) {
+              executedSlots.add(slotKey);
+              if (executedSlots.size > 500) executedSlots.clear();
+              await checkExpirations('vessel', false, slotKey);
             }
           }
         } else if (settings?.VESSEL_ALERT_SCHEDULE_TYPE === 'interval') {
@@ -11007,132 +11232,39 @@ Generated by COMOS System
           const lastSentStr = settings?.LAST_VESSEL_ALERT_SENT_AT;
           const diffMs = lastSentStr ? (Date.now() - new Date(lastSentStr).getTime()) : Infinity;
           if (diffMs >= intervalMs) {
-            console.log(`[Alert Ticker] Interval Vessel alert due (${(diffMs / 3600000).toFixed(1)}h >= ${hours}h). Triggering dispatch...`);
-            await checkExpirations('vessel');
+            const bucket = Math.floor(Date.now() / intervalMs);
+            const slotKey = `vessel_interval_${hours}h_${bucket}`;
+            if (!executedSlots.has(slotKey)) {
+              executedSlots.add(slotKey);
+              if (executedSlots.size > 500) executedSlots.clear();
+              await checkExpirations('vessel', false, slotKey);
+            }
           }
         }
       } catch (tickerErr) {
         console.warn('[Alert Ticker] Exception in background ticker:', tickerErr);
       }
-    }, 60 * 1000);
+    }, 30 * 1000);
   }
 
-  async function startOfficeAlertScheduler() {
-    if (officeAlertTimeout) clearTimeout(officeAlertTimeout);
-    
-    try {
-      const settings = await getSmtpSettings();
-      if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
-        console.log('Office Alert scheduler: Alerts are disabled.');
-        return;
-      }
-
-      const type = settings?.ALERT_SCHEDULE_TYPE || 'time';
-      let ms = 24 * 60 * 60 * 1000; // Default 24h
-
-      if (type === 'interval') {
-        const hours = parseInt(settings?.ALERT_INTERVAL_HOURS || '24', 10);
-        ms = Math.max(1, hours) * 60 * 60 * 1000;
-        console.log(`Office Alert scheduler: Next check in ${hours} hours.`);
-      } else {
-        const times = parseScheduleTimes(settings?.ALERT_TIME);
-        const now = new Date();
-        let nextCheck: Date | null = null;
-
-        for (const { hour, minute } of times) {
-          const candidate = new Date();
-          candidate.setHours(hour, minute, 0, 0);
-          if (candidate.getTime() <= now.getTime() + 10000) {
-            candidate.setDate(candidate.getDate() + 1);
-          }
-          
-          if (!nextCheck || candidate.getTime() < nextCheck.getTime()) {
-            nextCheck = candidate;
-          }
-        }
-
-        if (nextCheck) {
-          ms = Math.max(5000, nextCheck.getTime() - now.getTime());
-          console.log(`Office Alert scheduler: Next check scheduled for ${nextCheck.toLocaleString()}.`);
-        } else {
-          ms = 24 * 60 * 60 * 1000;
-        }
-      }
-
-      officeAlertTimeout = setTimeout(async () => {
-        await checkExpirations('office');
-        startOfficeAlertScheduler();
-      }, ms);
-    } catch (err) {
-      console.error('Failed to start office alert scheduler:', err);
-      officeAlertTimeout = setTimeout(startOfficeAlertScheduler, 60 * 60 * 1000);
-    }
+  async function startAlertScheduler() {
+    startAlertTicker();
   }
 
-  async function startVesselAlertScheduler() {
-    if (vesselAlertTimeout) clearTimeout(vesselAlertTimeout);
-    
-    try {
-      const settings = await getSmtpSettings();
-      if (settings?.ENABLE_EMAIL_ALERTS === 'false') {
-        console.log('Vessel Alert scheduler: Alerts are disabled.');
-        return;
-      }
-
-      const type = settings?.VESSEL_ALERT_SCHEDULE_TYPE || 'time';
-      let ms = 24 * 60 * 60 * 1000; // Default 24h
-
-      if (type === 'interval') {
-        const hours = parseInt(settings?.VESSEL_ALERT_INTERVAL_HOURS || '24', 10);
-        ms = Math.max(1, hours) * 60 * 60 * 1000;
-        console.log(`Vessel Alert scheduler: Next check in ${hours} hours.`);
-      } else {
-        const times = parseScheduleTimes(settings?.VESSEL_ALERT_TIME);
-        const now = new Date();
-        let nextCheck: Date | null = null;
-
-        for (const { hour, minute } of times) {
-          const candidate = new Date();
-          candidate.setHours(hour, minute, 0, 0);
-          if (candidate.getTime() <= now.getTime() + 10000) {
-            candidate.setDate(candidate.getDate() + 1);
-          }
-          
-          if (!nextCheck || candidate.getTime() < nextCheck.getTime()) {
-            nextCheck = candidate;
-          }
-        }
-
-        if (nextCheck) {
-          ms = Math.max(5000, nextCheck.getTime() - now.getTime());
-          console.log(`Vessel Alert scheduler: Next check scheduled for ${nextCheck.toLocaleString()}.`);
-        } else {
-          ms = 24 * 60 * 60 * 1000;
-        }
-      }
-
-      vesselAlertTimeout = setTimeout(async () => {
-        await checkExpirations('vessel');
-        startVesselAlertScheduler();
-      }, ms);
-    } catch (err) {
-      console.error('Failed to start vessel alert scheduler:', err);
-      vesselAlertTimeout = setTimeout(startVesselAlertScheduler, 60 * 60 * 1000);
-    }
-  }
-
-  async function checkExpirations(targetType?: 'office' | 'vessel', force = false): Promise<number> {
-    console.log(`Checking certificate expirations${targetType ? ` for ${targetType}` : ''} (force: ${force})...`);
+  async function checkExpirations(targetType?: 'office' | 'vessel', force = false, slotKey?: string): Promise<number> {
+    console.log(`Checking certificate expirations${targetType ? ` for ${targetType}` : ''} (force: ${force}, slot: ${slotKey || 'auto'})...`);
     if (!pool) return 0;
 
     const typeKey = targetType || 'all';
 
-    // Prevent concurrent execution of the same target
+    // Prevent concurrent execution of the same target in this process
     if (isExecutingCheck[typeKey]) {
-      console.log(`Skipping checkExpirations('${typeKey}') - already running.`);
+      console.log(`Skipping checkExpirations('${typeKey}') - already running in this process.`);
       return 0;
     }
     isExecutingCheck[typeKey] = true;
+
+    let effectiveSlotKey = slotKey;
 
     try {
       // 1. In-memory deduplication check (unless forced)
@@ -11152,37 +11284,45 @@ Generated by COMOS System
         return 0;
       }
 
-      // 3. Database-backed deduplication (prevent rapid re-firing within the same slot unless forced)
-      if (!force && targetType && settings) {
-        const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
-        const lastSentStr = settings[lastSentKey];
-        if (lastSentStr) {
-          const lastSent = new Date(lastSentStr);
-          const diffMs = Date.now() - lastSent.getTime();
-          
-          let minIntervalMs = 25 * 60 * 1000; // 25 min default for time-based multi-slot (e.g. 08:00 and 13:00)
-          const scheduleType = targetType === 'office' ? 
-            settings.ALERT_SCHEDULE_TYPE : 
-            settings.VESSEL_ALERT_SCHEDULE_TYPE;
-          
-          if (scheduleType === 'interval') {
-            const hoursKey = targetType === 'office' ? 'ALERT_INTERVAL_HOURS' : 'VESSEL_ALERT_INTERVAL_HOURS';
-            const hours = parseInt(settings[hoursKey] || '24', 10);
-            minIntervalMs = Math.max(1, hours) * 0.8 * 60 * 60 * 1000;
-          }
-          
-          if (diffMs < minIntervalMs) {
-            console.log(`Skipping automated ${targetType} alert check. Already sent ${(diffMs / 1000 / 60).toFixed(1)} minutes ago.`);
-            return 0;
-          }
+      // 3. Distributed Lock Claim: Ensure only ONE instance across any number of containers/replicas can run this slot
+      if (!effectiveSlotKey) {
+        if (force) {
+          effectiveSlotKey = `manual_${typeKey}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        } else {
+          const manilaDateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date());
+          const manilaTimeStr = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+          effectiveSlotKey = `${typeKey}_time_${manilaDateStr}_${manilaTimeStr}`;
+        }
+      }
+
+      if (!force) {
+        const acquiredLock = await claimAlertDispatchSlot(effectiveSlotKey, typeKey);
+        if (!acquiredLock) {
+          return 0;
+        }
+
+        // Immediately update settings timestamp so any other check sees fresh timestamp right away
+        if (targetType) {
+          const lastSentKey = targetType === 'office' ? 'LAST_OFFICE_ALERT_SENT_AT' : 'LAST_VESSEL_ALERT_SENT_AT';
+          await pool.execute(
+            'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+            [lastSentKey, new Date().toISOString(), new Date().toISOString()]
+          );
         }
       }
 
       let query = `
-        SELECT c.*, COALESCE(v.name, 'General') as vessel_name, t.name as team_name
+        SELECT c.*, 
+        c.extension_applied,
+        DATE_FORMAT(c.extension_date, '%Y-%m-%d') as extension_date,
+        DATE_FORMAT(c.expiration_date, '%Y-%m-%d') as original_expiration_date,
+        DATE_FORMAT(CASE WHEN c.extension_applied = 1 AND c.extension_date IS NOT NULL THEN c.extension_date ELSE c.expiration_date END, '%Y-%m-%d') as expiration_date,
+        COALESCE(v.name, 'General') as vessel_name,
+        COALESCE(t.name, vt.name, 'Unassigned Team') as team_name
         FROM certificates c
         LEFT JOIN vessels v ON c.vessel_id = v.id
         LEFT JOIN teams t ON c.team_id = t.id
+        LEFT JOIN teams vt ON v.team_id = vt.id
         WHERE c.deleted_at IS NULL
       `;
       
@@ -11264,6 +11404,9 @@ Generated by COMOS System
           'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
           ['LAST_ALERT_LOG', `Last scan: ${new Date().toLocaleString()}. No certificates require attention.`, `Last scan: ${new Date().toLocaleString()}. No certificates require attention.`]
         );
+        if (effectiveSlotKey) {
+          await completeAlertDispatchSlot(effectiveSlotKey, 0);
+        }
         return 0;
       }
 
@@ -11336,10 +11479,17 @@ Generated by COMOS System
         );
       }
 
+      if (effectiveSlotKey) {
+        await completeAlertDispatchSlot(effectiveSlotKey, totalEmailsSent);
+      }
+
       console.log(`Certificate expiration check completed. Dispatched ${totalEmailsSent} alert email(s).`);
       return totalEmailsSent;
     } catch (err) {
       console.error('Error during certificate expiration check:', err);
+      if (effectiveSlotKey && pool) {
+        await pool.execute('UPDATE alert_dispatch_locks SET status = ? WHERE lock_slot = ?', ['FAILED', effectiveSlotKey]).catch(() => {});
+      }
       return 0;
     } finally {
       isExecutingCheck[typeKey] = false;
@@ -11351,48 +11501,163 @@ Generated by COMOS System
     console.log(`Sending consolidated alert for ${name} (${alerts.length} certificates) to:`, recipientList);
 
     try {
-      const tableRows = alerts.map((alert, idx) => {
-        const isExp = alert.status === 'EXPIRED';
-        const isSoon = alert.status === 'EXPIRING SOON';
-        const badgeColor = isExp ? '#dc2626' : isSoon ? '#ea580c' : '#0284c7';
-        const badgeBg = isExp ? '#fee2e2' : isSoon ? '#ffedd5' : '#e0f2fe';
-        const expFormatted = alert.expiration_date ? String(alert.expiration_date).split('T')[0] : 'N/A';
-        const daysLabel = alert.days_left < 0 ? `(${Math.abs(alert.days_left)} days overdue)` : `(${alert.days_left} days left)`;
-        
-        return `
-          <tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
-            <td style="border: 1px solid #e2e8f0; padding: 10px 12px; font-weight: 600; color: #1e293b;">
-              ${alert.team_name ? `<span style="color: #64748b; font-size: 11px;">${alert.team_name} / </span>` : ''}${alert.vessel_name}
-            </td>
-            <td style="border: 1px solid #e2e8f0; padding: 10px 12px; color: #0f172a; font-weight: 500;">
-              ${alert.name}
-            </td>
-            <td style="border: 1px solid #e2e8f0; padding: 10px 12px; color: #334155; font-family: monospace; font-size: 13px;">
-              <b>${expFormatted}</b> <span style="font-size: 11px; color: ${badgeColor};">${daysLabel}</span>
-            </td>
-            <td style="border: 1px solid #e2e8f0; padding: 10px 12px; text-align: center;">
-              <span style="display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800; text-transform: uppercase; background-color: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeColor}33;">
-                ${alert.status}
-              </span>
-            </td>
-          </tr>
-        `;
-      }).join('');
+      const isOffice = name === 'Office Summary' || name.toLowerCase().includes('office');
 
-      const htmlContent = `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; max-width: 860px; margin: 0 auto; padding: 24px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
-          <div style="background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: #ffffff; padding: 24px; border-radius: 12px; margin-bottom: 24px;">
-            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #93c5fd; margin-bottom: 6px;">
-              Clean Ocean Shipmanagement Inc. • COMOS Alert System
+      let bodyContentHtml = '';
+
+      if (isOffice) {
+        // Group office alerts by team
+        const alertsByTeam: Record<string, any[]> = {};
+        for (const alert of alerts) {
+          const teamName = (alert.team_name || 'Unassigned Team').trim();
+          if (!alertsByTeam[teamName]) {
+            alertsByTeam[teamName] = [];
+          }
+          alertsByTeam[teamName].push(alert);
+        }
+
+        // Sort teams alphabetically, placing 'Unassigned Team' at the end if present
+        const sortedTeamNames = Object.keys(alertsByTeam).sort((a, b) => {
+          const isAUnassigned = a.toLowerCase().includes('unassigned');
+          const isBUnassigned = b.toLowerCase().includes('unassigned');
+          if (isAUnassigned && !isBUnassigned) return 1;
+          if (!isAUnassigned && isBUnassigned) return -1;
+          return a.localeCompare(b);
+        });
+
+        // Overview pills for each team
+        const teamSummaryBadges = sortedTeamNames.map(teamName => {
+          const teamAlerts = alertsByTeam[teamName];
+          const expCount = teamAlerts.filter(a => a.status === 'EXPIRED').length;
+          const soonCount = teamAlerts.filter(a => a.status === 'EXPIRING SOON').length;
+          return `
+            <span style="display: inline-block; margin: 3px 6px 3px 0; padding: 5px 12px; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 12px; color: #1e293b; font-weight: 600;">
+              🏢 <b>${teamName}</b>: ${teamAlerts.length} ${teamAlerts.length === 1 ? 'item' : 'items'}
+              ${expCount > 0 ? `<span style="color: #dc2626; font-size: 11px; margin-left: 4px; font-weight: 700;">(${expCount} expired)</span>` : soonCount > 0 ? `<span style="color: #ea580c; font-size: 11px; margin-left: 4px; font-weight: 700;">(${soonCount} expiring soon)</span>` : ''}
+            </span>
+          `;
+        }).join('');
+
+        // Generate a separate table for EACH team
+        const teamTablesHtml = sortedTeamNames.map(teamName => {
+          const teamAlerts = alertsByTeam[teamName];
+          // Sort ascending by expiration date within each team
+          teamAlerts.sort((a, b) => new Date(a.expiration_date).getTime() - new Date(b.expiration_date).getTime());
+
+          const expCount = teamAlerts.filter(a => a.status === 'EXPIRED').length;
+          const soonCount = teamAlerts.filter(a => a.status === 'EXPIRING SOON').length;
+          const expiringCount = teamAlerts.filter(a => a.status === 'EXPIRING').length;
+
+          const rowsHtml = teamAlerts.map((alert, idx) => {
+            const isExp = alert.status === 'EXPIRED';
+            const isSoon = alert.status === 'EXPIRING SOON';
+            const badgeColor = isExp ? '#dc2626' : isSoon ? '#ea580c' : '#0284c7';
+            const badgeBg = isExp ? '#fee2e2' : isSoon ? '#ffedd5' : '#e0f2fe';
+            const expFormatted = alert.expiration_date ? String(alert.expiration_date).split('T')[0] : 'N/A';
+            const daysLabel = alert.days_left < 0 ? `(${Math.abs(alert.days_left)} days overdue)` : `(${alert.days_left} days left)`;
+
+            return `
+              <tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
+                <td style="border: 1px solid #e2e8f0; padding: 10px 12px; font-weight: 700; color: #0f172a; font-size: 13px;">
+                  ${alert.vessel_name || 'General'}
+                </td>
+                <td style="border: 1px solid #e2e8f0; padding: 10px 12px; color: #1e293b; font-weight: 500; font-size: 13px;">
+                  ${alert.name}
+                </td>
+                <td style="border: 1px solid #e2e8f0; padding: 10px 12px; color: #334155; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; font-size: 13px;">
+                  <b style="color: #0f172a;">${expFormatted}</b> <span style="font-size: 11px; color: ${badgeColor}; font-weight: 700;">${daysLabel}</span>
+                  ${alert.extension_applied ? `<div style="margin-top: 3px;"><span style="display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; background-color: #f3e8ff; color: #7e22ce; border: 1px solid #d8b4fe;">★ EXTENDED (Orig: ${alert.original_expiration_date || 'N/A'})</span></div>` : ''}
+                </td>
+                <td style="border: 1px solid #e2e8f0; padding: 10px 12px; text-align: center;">
+                  <span style="display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800; text-transform: uppercase; background-color: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeColor}40;">
+                    ${alert.status}
+                  </span>
+                </td>
+              </tr>
+            `;
+          }).join('');
+
+          return `
+            <div style="margin-bottom: 28px; background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
+              <table style="border-collapse: collapse; width: 100%; background-color: #f1f5f9; border-bottom: 2px solid #cbd5e1;">
+                <tr>
+                  <td style="padding: 12px 16px; text-align: left; vertical-align: middle;">
+                    <span style="font-size: 15px; font-weight: 800; color: #0f172a; letter-spacing: -0.2px;">
+                      🏢 ${teamName}
+                    </span>
+                    <span style="margin-left: 8px; font-size: 12px; color: #475569; font-weight: 600;">
+                      (${teamAlerts.length} ${teamAlerts.length === 1 ? 'certificate/report' : 'certificates/reports'})
+                    </span>
+                  </td>
+                  <td style="padding: 12px 16px; text-align: right; vertical-align: middle; white-space: nowrap;">
+                    ${expCount > 0 ? `<span style="display: inline-block; padding: 3px 8px; border-radius: 9999px; font-size: 10px; font-weight: 800; background-color: #fee2e2; color: #dc2626; border: 1px solid #fca5a5; margin-left: 4px;">${expCount} EXPIRED</span>` : ''}
+                    ${soonCount > 0 ? `<span style="display: inline-block; padding: 3px 8px; border-radius: 9999px; font-size: 10px; font-weight: 800; background-color: #ffedd5; color: #ea580c; border: 1px solid #fdba74; margin-left: 4px;">${soonCount} EXPIRING SOON</span>` : ''}
+                    ${expiringCount > 0 ? `<span style="display: inline-block; padding: 3px 8px; border-radius: 9999px; font-size: 10px; font-weight: 800; background-color: #e0f2fe; color: #0284c7; border: 1px solid #7dd3fc; margin-left: 4px;">${expiringCount} EXPIRING</span>` : ''}
+                  </td>
+                </tr>
+              </table>
+              <table style="border-collapse: collapse; width: 100%; font-size: 13px;">
+                <thead>
+                  <tr style="background-color: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+                    <th style="border: 1px solid #e2e8f0; padding: 10px 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; width: 22%;">Vessel</th>
+                    <th style="border: 1px solid #e2e8f0; padding: 10px 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; width: 40%;">Certificate / Report Name</th>
+                    <th style="border: 1px solid #e2e8f0; padding: 10px 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; width: 24%;">Expiration Date</th>
+                    <th style="border: 1px solid #e2e8f0; padding: 10px 12px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748b; width: 14%;">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
             </div>
-            <h2 style="margin: 0; font-size: 20px; font-weight: 800; color: #ffffff;">
-              Vessel Certificate / Service Report Expiration Alerts
-            </h2>
-            <p style="margin: 8px 0 0 0; font-size: 13px; color: #cbd5e1;">
-              Scope: <b>${name}</b> • Total items requiring attention: <b>${alerts.length}</b>
-            </p>
+          `;
+        }).join('');
+
+        bodyContentHtml = `
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 16px; margin-bottom: 24px;">
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #475569; margin-bottom: 8px;">
+              Overview by Technical Team
+            </div>
+            <div>
+              ${teamSummaryBadges}
+            </div>
           </div>
 
+          <p style="font-size: 14px; color: #475569; margin-bottom: 18px; line-height: 1.5;">
+            The following vessel certificates and service reports have expired or are approaching their renewal/survey milestones, grouped by assigned technical team:
+          </p>
+
+          ${teamTablesHtml}
+        `;
+      } else {
+        // Vessel Alert: Single vessel table
+        const vesselTableRows = alerts.map((alert, idx) => {
+          const isExp = alert.status === 'EXPIRED';
+          const isSoon = alert.status === 'EXPIRING SOON';
+          const badgeColor = isExp ? '#dc2626' : isSoon ? '#ea580c' : '#0284c7';
+          const badgeBg = isExp ? '#fee2e2' : isSoon ? '#ffedd5' : '#e0f2fe';
+          const expFormatted = alert.expiration_date ? String(alert.expiration_date).split('T')[0] : 'N/A';
+          const daysLabel = alert.days_left < 0 ? `(${Math.abs(alert.days_left)} days overdue)` : `(${alert.days_left} days left)`;
+          
+          return `
+            <tr style="background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
+              <td style="border: 1px solid #e2e8f0; padding: 10px 12px; color: #0f172a; font-weight: 600; font-size: 13px;">
+                ${alert.name}
+              </td>
+              <td style="border: 1px solid #e2e8f0; padding: 10px 12px; color: #334155; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; font-size: 13px;">
+                <b style="color: #0f172a;">${expFormatted}</b> <span style="font-size: 11px; color: ${badgeColor}; font-weight: 700;">${daysLabel}</span>
+                ${alert.extension_applied ? `<div style="margin-top: 3px;"><span style="display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 700; background-color: #f3e8ff; color: #7e22ce; border: 1px solid #d8b4fe;">★ EXTENDED (Orig: ${alert.original_expiration_date || 'N/A'})</span></div>` : ''}
+              </td>
+              <td style="border: 1px solid #e2e8f0; padding: 10px 12px; text-align: center;">
+                <span style="display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 800; text-transform: uppercase; background-color: ${badgeBg}; color: ${badgeColor}; border: 1px solid ${badgeColor}40;">
+                  ${alert.status}
+                </span>
+              </td>
+            </tr>
+          `;
+        }).join('');
+
+        bodyContentHtml = `
           <p style="font-size: 14px; color: #475569; margin-bottom: 16px; line-height: 1.5;">
             The following vessel certificates and service reports have expired or are approaching their renewal/survey milestones. Please review and arrange prompt renewal or survey:
           </p>
@@ -11400,18 +11665,35 @@ Generated by COMOS System
           <table style="border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 24px;">
             <thead>
               <tr style="background-color: #f1f5f9; border-bottom: 2px solid #cbd5e1;">
-                <th style="border: 1px solid #e2e8f0; padding: 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #475569;">Team / Vessel</th>
                 <th style="border: 1px solid #e2e8f0; padding: 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #475569;">Certificate / Report Name</th>
                 <th style="border: 1px solid #e2e8f0; padding: 12px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #475569;">Expiration Date</th>
                 <th style="border: 1px solid #e2e8f0; padding: 12px; text-align: center; font-size: 11px; font-weight: 700; text-transform: uppercase; color: #475569;">Status</th>
               </tr>
             </thead>
             <tbody>
-              ${tableRows}
+              ${vesselTableRows}
             </tbody>
           </table>
+        `;
+      }
 
-          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 16px; border-radius: 10px; font-size: 12px; color: #64748b; line-height: 1.5;">
+      const htmlContent = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; max-width: 880px; margin: 0 auto; padding: 24px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;">
+          <div style="background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%); color: #ffffff; padding: 24px; border-radius: 12px; margin-bottom: 24px;">
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #93c5fd; margin-bottom: 6px;">
+              CleanOcean Shipmanagement Inc. • COMOS Alert System
+            </div>
+            <h2 style="margin: 0; font-size: 20px; font-weight: 800; color: #ffffff;">
+              ${isOffice ? 'Office Notification: Expirations by Technical Team' : 'Vessel Certificate / Report Expiration Alert'}
+            </h2>
+            <p style="margin: 8px 0 0 0; font-size: 13px; color: #cbd5e1;">
+              Scope: <b>${name}</b> • Total items requiring attention: <b>${alerts.length}</b>
+            </p>
+          </div>
+
+          ${bodyContentHtml}
+
+          <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; padding: 16px; border-radius: 10px; font-size: 12px; color: #64748b; line-height: 1.5; margin-top: 12px;">
             <b>Notice:</b> This is an automated notification from the COMOS Vessel Management System. For inquiries or updates, access the COMOS portal or contact the Technical & Safety Management Department.
             <div style="margin-top: 8px; font-size: 11px; color: #94a3b8;">
               Dispatched at: ${new Date().toISOString().replace('T', ' ').substring(0, 19)} UTC
@@ -11420,10 +11702,14 @@ Generated by COMOS System
         </div>
       `;
 
+      const subject = isOffice
+        ? `[COMOS Alert] Office Notification: Expirations by Team (${alerts.length} Items)`
+        : `[COMOS Alert] Certificate/Service Report Expiration Notice: ${name} (${alerts.length} Items)`;
+
       await sendEmail({
         from: senderEmail,
         to: recipientList,
-        subject: `[COMOS Alert] Certificate/Service Report Expiration Notice: ${name} (${alerts.length} Items)`,
+        subject,
         html: htmlContent,
       });
 
@@ -11922,8 +12208,13 @@ Generated by COMOS System
         query += ' AND fa.vessel_id = ?';
         params.push(req.user.vessel_id);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
       query += ' ORDER BY fa.date DESC, fa.id DESC';
       const [reports]: any = await pool.execute(query, params);
@@ -12146,8 +12437,13 @@ Generated by COMOS System
         query += ' AND ldr.vessel_id = ?';
         params.push(req.user.vessel_id);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
       query += ' ORDER BY ldr.date DESC, ldr.id DESC';
       const [reports]: any = await pool.execute(query, params);
@@ -12364,8 +12660,13 @@ Generated by COMOS System
         query += ' AND loa.vessel_id = ?';
         params.push(req.user.vessel_id);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
       query += ' ORDER BY loa.date DESC, loa.id DESC';
       const [reports]: any = await pool.execute(query, params);
@@ -12583,8 +12884,13 @@ Generated by COMOS System
         query += ' AND b.vessel_id = ?';
         params.push(req.user.vessel_id);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
       query += ' ORDER BY b.date DESC, b.id DESC';
       const [reports]: any = await pool.execute(query, params);
@@ -13369,8 +13675,13 @@ Generated by COMOS System
         query += ' AND tr.vessel_id = ?';
         params.push(String(req.user.vessel_id));
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        query += ' AND v.team_id IN (?)';
-        params.push(req.user.team_ids);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND v.team_id IN (${placeholders})`;
+        params.push(...teamIds);
       }
       query += ' ORDER BY tr.date_found DESC, tr.id DESC';
       const [reports]: any = await pool.execute(query, params);
@@ -13596,7 +13907,12 @@ Generated by COMOS System
       if (req.user.role === 'vessel' && req.user.vessel_id) {
         filtered = parsedList.filter((x: any) => String(x.vesselId) === String(req.user.vessel_id));
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        const [vessels]: any = await pool.execute('SELECT id FROM vessels WHERE team_id IN (?)', [req.user.team_ids]);
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        const [vessels]: any = await pool.execute(`SELECT id FROM vessels WHERE team_id IN (${placeholders})`, teamIds);
         const vesselIds = vessels.map((v: any) => String(v.id));
         filtered = parsedList.filter((x: any) => vesselIds.includes(String(x.vesselId)));
       }

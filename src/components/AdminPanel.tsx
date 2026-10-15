@@ -30,6 +30,9 @@ import {
   Sliders,
   Activity,
   ChevronRight,
+  ChevronLeft,
+  ChevronsLeft,
+  ChevronsRight,
   UserCheck,
   Building2,
   ShieldAlert,
@@ -117,8 +120,13 @@ interface Certificate {
   certificate_number?: string;
   date_issued?: string;
   expiration_date: string | null;
+  original_expiration_date?: string | null;
+  extension_applied?: boolean | number;
+  extension_date?: string | null;
   vessel_name?: string;
   team_name?: string;
+  has_file?: boolean | number;
+  file_count?: number;
   file_name?: string;
   created_at?: string;
   updated_at?: string;
@@ -1324,6 +1332,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     certificate_number: '',
     date_issued: '',
     expiration_date: '',
+    extension_applied: false,
+    extension_date: '',
     vessel_id: user?.role === 'vessel' && user?.vessel_id ? String(user.vessel_id) : (vessels[0]?.id ? String(vessels[0].id) : ''),
     team_id: ''
   });
@@ -1334,8 +1344,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [vesselSearch, setVesselSearch] = useState('');
   const [certSearch, setCertSearch] = useState('');
   const [certVesselFilter, setCertVesselFilter] = useState('');
-  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration' | 'expiring_or_expired' | 'newly_posted'>('all');
-  const [certSortConfig, setCertSortConfig] = useState<{ key: keyof Certificate | 'status', direction: 'asc' | 'desc' }>({ key: 'name', direction: 'asc' });
+  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration' | 'expiring_or_expired' | 'newly_posted' | 'has_file' | 'no_file'>('all');
+  const [certSortConfig, setCertSortConfig] = useState<{ key: keyof Certificate | 'status' | 'has_file', direction: 'asc' | 'desc' }>({ key: 'name', direction: 'asc' });
+  const [certPageSize, setCertPageSize] = useState<number>(20);
+  const [certCurrentPage, setCertCurrentPage] = useState<number>(1);
+
+  useEffect(() => {
+    setCertCurrentPage(1);
+  }, [certSearch, certVesselFilter, certStatusFilter, certSortConfig, certPageSize]);
 
   // Live System Time Clock (synchronized with server clock)
   const [systemTime, setSystemTime] = useState<Date>(new Date());
@@ -1437,6 +1453,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       notify('error', 'Expiration date is required (or select "No expiration")');
       return;
     }
+    if (!newCertHasNoExpiration && newCert.extension_applied && !newCert.extension_date) {
+      notify('error', 'Please enter an extension expiration date (or uncheck Extension Applied)');
+      return;
+    }
     setIsSubmittingCert(true);
     try {
       const formData = new FormData();
@@ -1445,10 +1465,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         vessel_id: user?.role === 'vessel' && user?.vessel_id ? String(user.vessel_id) : newCert.vessel_id
       };
       Object.entries(payloadCert).forEach(([k, v]) => {
-        if (v) formData.append(k, String(v));
+        if (v !== undefined && v !== null) formData.append(k, String(v));
       });
       if (newCertHasNoExpiration) {
         formData.set('expiration_date', '');
+        formData.set('extension_applied', 'false');
+        formData.set('extension_date', '');
+      } else {
+        formData.set('extension_applied', String(newCert.extension_applied));
+        formData.set('extension_date', newCert.extension_applied ? (newCert.extension_date || '') : '');
       }
       if (certFiles.length > 0) {
         certFiles.forEach(f => {
@@ -1470,6 +1495,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           certificate_number: '',
           date_issued: '',
           expiration_date: '',
+          extension_applied: false,
+          extension_date: '',
           vessel_id: user?.role === 'vessel' && user?.vessel_id ? String(user.vessel_id) : (vessels[0]?.id ? String(vessels[0].id) : ''),
           team_id: ''
         });
@@ -1514,6 +1541,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       } else if (certStatusFilter === 'expiring_or_expired') {
         const s = getStatus(c.expiration_date);
         if (s === 'active' || s === 'no expiration') return false;
+      } else if (certStatusFilter === 'has_file') {
+        const has = Boolean(c.has_file) || (c.file_count && c.file_count > 0) || Boolean(c.file_name);
+        if (!has) return false;
+      } else if (certStatusFilter === 'no_file') {
+        const has = Boolean(c.has_file) || (c.file_count && c.file_count > 0) || Boolean(c.file_name);
+        if (has) return false;
       } else if (certStatusFilter !== 'all') {
         const s = getStatus(c.expiration_date);
         if (s !== certStatusFilter) return false;
@@ -1526,7 +1559,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const matchesCertNum = (c.certificate_number || '').toLowerCase().includes(q);
         const matchesVessel = (c.vessel_name || '').toLowerCase().includes(q);
         const matchesTeam = (c.team_name || '').toLowerCase().includes(q);
-        if (!matchesName && !matchesCertNum && !matchesVessel && !matchesTeam) {
+        const matchesFile = (c.file_name || '').toLowerCase().includes(q);
+        if (!matchesName && !matchesCertNum && !matchesVessel && !matchesTeam && !matchesFile) {
           return false;
         }
       }
@@ -1560,6 +1594,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const bVal = b.vessel_name || (b.team_name ? `Other (${b.team_name})` : 'Fleet');
         const cmp = aVal.localeCompare(bVal, undefined, { numeric: true, sensitivity: 'base' });
         return certSortConfig.direction === 'asc' ? cmp : -cmp;
+      } else if (certSortConfig.key === 'has_file') {
+        const valA = (Boolean(a.has_file) || (a.file_count && a.file_count > 0) || Boolean(a.file_name)) ? 1 : 0;
+        const valB = (Boolean(b.has_file) || (b.file_count && b.file_count > 0) || Boolean(b.file_name)) ? 1 : 0;
+        return certSortConfig.direction === 'asc' ? valA - valB : valB - valA;
       } else {
         const aVal = String((a as any)[certSortConfig.key] ?? '');
         const bVal = String((b as any)[certSortConfig.key] ?? '');
@@ -1570,6 +1608,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     return list;
   }, [certs, certVesselFilter, certStatusFilter, certSearch, certSortConfig, vessels, viewedCertIds]);
+
+  const totalCertPages = Math.max(1, Math.ceil(filteredCerts.length / certPageSize));
+  const safeCertPage = Math.min(Math.max(1, certCurrentPage), totalCertPages);
+  const startCertIndex = (safeCertPage - 1) * certPageSize;
+  const endCertIndex = Math.min(startCertIndex + certPageSize, filteredCerts.length);
+  const paginatedCerts = useMemo(() => {
+    return filteredCerts.slice(startCertIndex, endCertIndex);
+  }, [filteredCerts, startCertIndex, endCertIndex]);
 
   const filteredUsers = usersList.filter(u => {
     const matchesSearch = 
@@ -1673,7 +1719,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
               >
                 <option value="">Unassigned</option>
-                {teams.map(t => (
+                {[...teams].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(t => (
                   <option key={t.id} value={t.id}>{t.name}</option>
                 ))}
               </select>
@@ -2014,7 +2060,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       const checked = e.target.checked;
                       setNewCertHasNoExpiration(checked);
                       if (checked) {
-                        setNewCert({ ...newCert, expiration_date: '' });
+                        setNewCert({ ...newCert, expiration_date: '', extension_applied: false, extension_date: '' });
                       }
                     }}
                     className="w-3.5 h-3.5 rounded text-blue-600 border-slate-300 focus:ring-blue-500 cursor-pointer"
@@ -2035,6 +2081,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   onChange={e => setNewCert({ ...newCert, expiration_date: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
                 />
+              )}
+
+              {/* Extension Applied Option */}
+              {!newCertHasNoExpiration && (
+                <div className="mt-2.5 p-2.5 bg-purple-50/70 border border-purple-200/80 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={newCert.extension_applied}
+                        onChange={e => setNewCert({ ...newCert, extension_applied: e.target.checked })}
+                        className="w-3.5 h-3.5 rounded text-purple-600 border-purple-300 focus:ring-purple-500 cursor-pointer"
+                      />
+                      <span className="text-xs font-bold text-purple-900">
+                        Extension Applied
+                      </span>
+                    </label>
+                    {newCert.extension_applied && (
+                      <span className="text-[9px] uppercase font-bold text-purple-700 bg-purple-200/80 px-1.5 py-0.5 rounded">
+                        Active
+                      </span>
+                    )}
+                  </div>
+
+                  {newCert.extension_applied && (
+                    <div className="space-y-1 pt-1.5 border-t border-purple-200/60">
+                      <label className="text-[10px] font-bold uppercase text-purple-800 block">
+                        Extension Expiration Date <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        required={newCert.extension_applied}
+                        value={newCert.extension_date}
+                        onChange={e => setNewCert({ ...newCert, extension_date: e.target.value })}
+                        className="w-full px-3 py-1.5 bg-white border border-purple-300 rounded-lg text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-purple-500/20 outline-none"
+                      />
+                      <p className="text-[10px] text-purple-700 font-medium">
+                        The system treats this extension date as the certificate's new expiration date and applies all tagging and alert settings as normal.
+                      </p>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -2118,7 +2206,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <FileText className="w-5 h-5 text-blue-600" />
                 <h2 className="text-base font-bold text-slate-900">Certificate List</h2>
                 <span className="text-[11px] font-bold px-2.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200/60 rounded-full">
-                  Showing {filteredCerts.length} of {certs.length}
+                  {filteredCerts.length > 0 
+                    ? `Showing ${startCertIndex + 1}–${endCertIndex} of ${filteredCerts.length}${filteredCerts.length !== certs.length ? ` (${certs.length} total)` : ''}`
+                    : `0 of ${certs.length}`}
                 </span>
                 {certSidebarStatus && certSidebarStatus.totalExpiringCount > 0 && (
                   <button
@@ -2223,6 +2313,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <option value="expiring soon">Expiring Soon (&lt; 30 days)</option>
                 <option value="expired">Expired</option>
                 <option value="no expiration">No Expiration</option>
+                <option value="has_file">📎 With Attached Document</option>
+                <option value="no_file">📄 Without Document</option>
               </select>
 
               {/* Sort Dropdown and Direction */}
@@ -2237,6 +2329,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <option value="certificate_number">Sort: Cert #</option>
                   <option value="expiration_date">Sort: Expiry Date</option>
                   <option value="status">Sort: Status</option>
+                  <option value="has_file">Sort: Attached File</option>
                 </select>
                 <button
                   type="button"
@@ -2246,6 +2339,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 >
                   {certSortConfig.direction === 'asc' ? <ArrowUp className="w-3.5 h-3.5" /> : <ArrowDown className="w-3.5 h-3.5" />}
                 </button>
+              </div>
+
+              {/* Per Page Selector (20, 50, 100, 1000) */}
+              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-bold text-slate-700">
+                <span className="text-slate-400 font-medium text-[11px] whitespace-nowrap">Show:</span>
+                <select
+                  value={certPageSize}
+                  onChange={e => {
+                    setCertPageSize(Number(e.target.value));
+                    setCertCurrentPage(1);
+                  }}
+                  className="bg-transparent border-none text-xs font-bold text-slate-800 focus:ring-0 cursor-pointer pr-1"
+                  title="Certificates per page"
+                >
+                  <option value={20}>20 / page</option>
+                  <option value={50}>50 / page</option>
+                  <option value={100}>100 / page</option>
+                  <option value={1000}>1000 / page</option>
+                </select>
               </div>
 
               {/* Reset Filters button */}
@@ -2311,13 +2423,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       Status {getCertSortIcon('status')}
                     </div>
                   </th>
+                  <th 
+                    className="py-3 px-4 cursor-pointer hover:text-blue-600 hover:bg-slate-100/50 transition-colors"
+                    onClick={() => requestCertSort('has_file')}
+                  >
+                    <div className="flex items-center">
+                      Document / File {getCertSortIcon('has_file')}
+                    </div>
+                  </th>
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
                 {filteredCerts.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-12 text-center text-slate-400">
+                    <td colSpan={7} className="py-12 text-center text-slate-400">
                       <div className="max-w-xs mx-auto space-y-2">
                         <Search className="w-8 h-8 text-slate-300 mx-auto" />
                         <p className="font-semibold text-slate-600">No certificates or service reports found</p>
@@ -2340,7 +2460,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </td>
                   </tr>
                 ) : (
-                  filteredCerts.map(c => {
+                  paginatedCerts.map(c => {
                     const status = getStatus(c.expiration_date);
                     return (
                       <tr 
@@ -2371,7 +2491,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             return formatted === 'No expiration' ? (
                               <span className="text-slate-400 italic font-sans text-xs">No expiration</span>
                             ) : (
-                              <span>{formatted}</span>
+                              <div className="flex flex-col">
+                                <span>{formatted}</span>
+                                {Boolean(c.extension_applied) && (
+                                  <span 
+                                    className="inline-flex items-center gap-1 text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded-md mt-0.5 w-fit" 
+                                    title={c.original_expiration_date ? `Extended from original expiration: ${c.original_expiration_date}` : 'Certificate extension applied'}
+                                  >
+                                    ★ Extended
+                                  </span>
+                                )}
+                              </div>
                             );
                           })()}
                         </td>
@@ -2386,6 +2516,43 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           )}>
                             {status}
                           </span>
+                        </td>
+                        <td className="py-3 px-4">
+                          {(() => {
+                            const hasDoc = Boolean(c.has_file) || (c.file_count && c.file_count > 0) || Boolean(c.file_name);
+                            if (hasDoc) {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    markCertAsViewed?.(c.id);
+                                    if (fetchCertDetails) fetchCertDetails(c);
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 hover:text-blue-800 border border-blue-200/80 rounded-lg text-xs font-semibold transition-all max-w-[200px] truncate shadow-2xs group/doc cursor-pointer"
+                                  title={c.file_name ? `Preview Certificate File: ${c.file_name}` : 'Preview Uploaded Certificate Document'}
+                                >
+                                  <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0 group-hover/doc:scale-110 transition-transform" />
+                                  <span className="truncate">{c.file_name || `${c.file_count || 1} Document Attached`}</span>
+                                </button>
+                              );
+                            }
+                            return (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  markCertAsViewed?.(c.id);
+                                  if (fetchCertDetails) fetchCertDetails(c);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-slate-400 hover:text-blue-600 hover:bg-blue-50/60 rounded-md transition-colors cursor-pointer"
+                                title="No document attached. Click to view and attach a certificate file."
+                              >
+                                <span className="italic">No file</span>
+                                <span className="text-[10px] text-blue-600 font-bold ml-1">+ Upload</span>
+                              </button>
+                            );
+                          })()}
                         </td>
                         <td className="py-3 px-4 text-right">
                           <div className="flex items-center justify-end gap-1.5">
@@ -2431,6 +2598,117 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </tbody>
             </table>
           </div>
+
+          {/* Certificate List Pagination Bar */}
+          {filteredCerts.length > 0 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-100 text-xs text-slate-600">
+              <div className="flex items-center gap-2">
+                <span>
+                  Showing <strong className="text-slate-900 font-semibold">{startCertIndex + 1}</strong> to <strong className="text-slate-900 font-semibold">{endCertIndex}</strong> of <strong className="text-slate-900 font-semibold">{filteredCerts.length}</strong> certificates
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Per-page selector (20, 50, 100, 1000) */}
+                <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1">
+                  <span className="text-slate-500 font-medium text-xs">Per page:</span>
+                  <select
+                    value={certPageSize}
+                    onChange={e => {
+                      setCertPageSize(Number(e.target.value));
+                      setCertCurrentPage(1);
+                    }}
+                    className="bg-transparent border-none text-xs font-bold text-slate-800 focus:outline-none cursor-pointer pr-1"
+                    title="Select certificates displayed per page"
+                  >
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={1000}>1000</option>
+                  </select>
+                </div>
+
+                {/* Page Navigation */}
+                {totalCertPages > 1 && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={safeCertPage <= 1}
+                      onClick={() => setCertCurrentPage(1)}
+                      className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors cursor-pointer"
+                      title="First page"
+                    >
+                      <ChevronsLeft className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={safeCertPage <= 1}
+                      onClick={() => setCertCurrentPage(p => Math.max(1, p - 1))}
+                      className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors cursor-pointer"
+                      title="Previous page"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-1 px-1">
+                      {(() => {
+                        const pages: number[] = [];
+                        if (totalCertPages <= 7) {
+                          for (let i = 1; i <= totalCertPages; i++) pages.push(i);
+                        } else {
+                          pages.push(1);
+                          if (safeCertPage > 3) pages.push(-1);
+                          const start = Math.max(2, safeCertPage - 1);
+                          const end = Math.min(totalCertPages - 1, safeCertPage + 1);
+                          for (let i = start; i <= end; i++) pages.push(i);
+                          if (safeCertPage < totalCertPages - 2) pages.push(-1);
+                          pages.push(totalCertPages);
+                        }
+                        return pages.map((p, idx) => (
+                          p === -1 ? (
+                            <span key={`dots-${idx}`} className="px-1 text-slate-400 font-bold select-none">...</span>
+                          ) : (
+                            <button
+                              key={`p-${p}`}
+                              type="button"
+                              onClick={() => setCertCurrentPage(p)}
+                              className={cn(
+                                "min-w-[28px] h-7 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer",
+                                safeCertPage === p
+                                  ? "bg-blue-600 text-white shadow-xs"
+                                  : "bg-white border border-slate-200 hover:bg-slate-50 text-slate-700"
+                              )}
+                            >
+                              {p}
+                            </button>
+                          )
+                        ));
+                      })()}
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={safeCertPage >= totalCertPages}
+                      onClick={() => setCertCurrentPage(p => Math.min(totalCertPages, p + 1))}
+                      className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors cursor-pointer"
+                      title="Next page"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={safeCertPage >= totalCertPages}
+                      onClick={() => setCertCurrentPage(totalCertPages)}
+                      className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition-colors cursor-pointer"
+                      title="Last page"
+                    >
+                      <ChevronsRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
         </ErrorBoundary>
       )}
@@ -3169,7 +3447,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                       </div>
                       <h5 className="text-xs font-bold text-white tracking-wide mt-1">CLEAN OCEAN MARITIME OPERATIONS SYSTEM</h5>
-                      <p className="text-[10px] text-slate-400 mt-0.5">Secure Fleet Management & SMS Reporting</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Secure Fleet Management & Operations</p>
                     </div>
                   </div>
                 </div>
@@ -4519,7 +4797,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div>
                 <label className="text-[10px] font-bold uppercase text-slate-400 block mb-1.5">Assigned Technical Teams</label>
                 <div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
-                  {teams.map(t => {
+                  {[...teams].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(t => {
                     const isChecked = userFormData.team_ids.includes(t.id);
                     return (
                       <label key={t.id} className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">

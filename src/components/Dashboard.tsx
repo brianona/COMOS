@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, isBefore, addDays, parseISO } from "date-fns";
-import { cn, getRoleLabel, getStatus, isCertExpiringOrExpired, isNewlyPosted, isFocOutsideLimits, isGeminiSupportedMimeType, MAX_FILE_SIZE, AUTO_FILL_ENABLED, recognizeCertText } from "../utils/helpers";
+import { cn, getRoleLabel, getStatus, isCertExpiringOrExpired, isNewlyPosted, isFocOutsideLimits, isGeminiSupportedMimeType, MAX_FILE_SIZE, AUTO_FILL_ENABLED, recognizeCertText, computeNoonReportAvgSpeed } from "../utils/helpers";
 import { ConfirmModal, ChangePasswordModal, UserProfileModal } from "./Modals";
 import { PDFViewer } from "./PDFViewer";
 import { ImageViewer } from "./ImageViewer";
@@ -99,7 +99,9 @@ export const Dashboard = ({
   const setView = useCallback((newView: ViewType | ((prev: ViewType) => ViewType)) => {
     setRawView(currentView => {
       let targetView = typeof newView === 'function' ? newView(currentView) : newView;
-      if (user.role === 'vessel' && (targetView === 'sms_reporting' || targetView === 'sms')) {
+      if (targetView === 'sms_reporting') {
+        targetView = user.role === 'vessel' ? 'sms_overview' : 'sms';
+      } else if (user.role === 'vessel' && targetView === 'sms') {
         targetView = 'sms_overview';
       }
       if (targetView !== currentView) {
@@ -133,14 +135,18 @@ export const Dashboard = ({
   useEffect(() => {
     const handlePopState = (event: PopStateEvent) => {
       let hashView = window.location.hash.replace('#', '') as ViewType;
-      if (user.role === 'vessel' && (hashView === 'sms_reporting' || hashView === 'sms')) {
+      if (hashView === 'sms_reporting') {
+        hashView = user.role === 'vessel' ? 'sms_overview' : 'sms';
+      } else if (user.role === 'vessel' && hashView === 'sms') {
         hashView = 'sms_overview';
       }
       if (hashView && hashView !== view) {
         setRawView(hashView);
       } else if (event.state?.view) {
         let stateView = event.state.view as ViewType;
-        if (user.role === 'vessel' && (stateView === 'sms_reporting' || stateView === 'sms')) {
+        if (stateView === 'sms_reporting') {
+          stateView = user.role === 'vessel' ? 'sms_overview' : 'sms';
+        } else if (user.role === 'vessel' && stateView === 'sms') {
           stateView = 'sms_overview';
         }
         setRawView(stateView);
@@ -151,7 +157,9 @@ export const Dashboard = ({
   }, [view, user.role]);
 
   useEffect(() => {
-    if (user.role === 'vessel' && (view === 'sms_reporting' || view === 'sms')) {
+    if (view === 'sms_reporting') {
+      setView(user.role === 'vessel' ? 'sms_overview' : 'sms');
+    } else if (user.role === 'vessel' && view === 'sms') {
       setView('sms_overview');
     }
   }, [user.role, view, setView]);
@@ -225,9 +233,11 @@ export const Dashboard = ({
   const [newNote, setNewNote] = useState('');
   const [search, setSearch] = useState('');
   const [certVesselFilter, setCertVesselFilter] = useState('');
-  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration' | 'expiring_or_expired' | 'newly_posted'>('all');
+  const [certStatusFilter, setCertStatusFilter] = useState<'all' | 'active' | 'expiring' | 'expiring soon' | 'expired' | 'no expiration' | 'expiring_or_expired' | 'newly_posted' | 'has_file' | 'no_file'>('all');
   const [newExpDate, setNewExpDate] = useState('');
   const [sidePanelHasNoExpiration, setSidePanelHasNoExpiration] = useState(false);
+  const [sidePanelExtensionApplied, setSidePanelExtensionApplied] = useState(false);
+  const [sidePanelExtensionDate, setSidePanelExtensionDate] = useState('');
   const [isEditingCertDetails, setIsEditingCertDetails] = useState(false);
   const [originalCertState, setOriginalCertState] = useState<{
     name: string;
@@ -235,6 +245,8 @@ export const Dashboard = ({
     date_issued: string;
     expiration_date: string;
     hasNoExpiration: boolean;
+    extension_applied: boolean;
+    extension_date: string;
   } | null>(null);
   const [selectedVessel, setSelectedVessel] = useState<Vessel | null>(null);
   const [vesselCertSearch, setVesselCertSearch] = useState('');
@@ -896,8 +908,16 @@ export const Dashboard = ({
       notify('error', 'Expiration date is required (or select "No expiration")');
       return;
     }
+    if (!editingCertHasNoExpiration && editingCert.extension_applied && !editingCert.extension_date) {
+      notify('error', 'Please enter an extension expiration date (or untick Extension Applied)');
+      return;
+    }
     try {
-      const finalExpDate = editingCertHasNoExpiration ? null : (editingCert.expiration_date || null);
+      const isExtApplied = Boolean(editingCert.extension_applied);
+      const extDate = isExtApplied ? (editingCert.extension_date || null) : null;
+      const baseExp = editingCertHasNoExpiration ? null : (editingCert.original_expiration_date || editingCert.expiration_date || null);
+      const effectiveExp = (isExtApplied && extDate) ? extDate : baseExp;
+
       const res = await fetch(`/api/certificates/${editingCert.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -907,7 +927,10 @@ export const Dashboard = ({
           name: editingCert.name, 
           certificate_number: editingCert.certificate_number,
           date_issued: editingCert.date_issued,
-          expiration_date: finalExpDate
+          original_expiration_date: baseExp,
+          expiration_date: baseExp,
+          extension_applied: isExtApplied,
+          extension_date: extDate
         }),
       });
 
@@ -920,7 +943,10 @@ export const Dashboard = ({
           team_id: editingCert.team_id,
           certificate_number: editingCert.certificate_number,
           date_issued: editingCert.date_issued,
-          expiration_date: finalExpDate
+          original_expiration_date: baseExp,
+          expiration_date: effectiveExp,
+          extension_applied: isExtApplied,
+          extension_date: extDate
         } : c));
         if (selectedCert?.id === editingCert.id) {
           setSelectedCert(prev => prev ? {
@@ -930,10 +956,15 @@ export const Dashboard = ({
             team_id: editingCert.team_id,
             certificate_number: editingCert.certificate_number,
             date_issued: editingCert.date_issued,
-            expiration_date: finalExpDate
+            original_expiration_date: baseExp,
+            expiration_date: effectiveExp,
+            extension_applied: isExtApplied,
+            extension_date: extDate
           } : null);
-          setNewExpDate(finalExpDate || '');
-          setSidePanelHasNoExpiration(!finalExpDate);
+          setNewExpDate(baseExp || '');
+          setSidePanelHasNoExpiration(!baseExp);
+          setSidePanelExtensionApplied(isExtApplied);
+          setSidePanelExtensionDate(extDate || '');
         }
         setEditingCert(null);
         fetchData();
@@ -1185,28 +1216,39 @@ export const Dashboard = ({
         const filesData: FileData[] = await filesRes.json();
         setFiles(filesData);
         // Latest Certificate files should always be pinned as the default display.
-        if (filesData.length > 0 && (!isRefresh || !previewFile)) {
-          const certFiles = filesData.filter(f => f.file_type === 'certificate');
-          if (certFiles.length > 0) {
-            setPreviewFile([...certFiles].sort((a, b) => b.id - a.id)[0]);
-          } else {
-            setPreviewFile([...filesData].sort((a, b) => b.id - a.id)[0]);
+        if (filesData.length > 0) {
+          if (!isRefresh || !previewFile || !filesData.some(f => f.id === previewFile?.id)) {
+            const certFiles = filesData.filter(f => f.file_type === 'certificate');
+            if (certFiles.length > 0) {
+              setPreviewFile([...certFiles].sort((a, b) => b.id - a.id)[0]);
+            } else {
+              setPreviewFile([...filesData].sort((a, b) => b.id - a.id)[0]);
+            }
           }
-        } else if (filesData.length === 0) {
+        } else {
           setPreviewFile(null);
         }
       }
       
+      const isExt = Boolean(cert.extension_applied);
+      const extDate = cert.extension_date || '';
+      const baseExp = cert.original_expiration_date || cert.expiration_date || '';
+      const hasNoExp = !cert.expiration_date && !cert.extension_date;
+
       setSelectedCert(cert);
-      setNewExpDate(cert.expiration_date || '');
-      setSidePanelHasNoExpiration(!cert.expiration_date);
+      setNewExpDate(baseExp);
+      setSidePanelHasNoExpiration(hasNoExp);
+      setSidePanelExtensionApplied(isExt);
+      setSidePanelExtensionDate(extDate);
       setIsEditingCertDetails(false);
       setOriginalCertState({
         name: cert.name || '',
         certificate_number: cert.certificate_number || '',
         date_issued: cert.date_issued || '',
-        expiration_date: cert.expiration_date || '',
-        hasNoExpiration: !cert.expiration_date
+        expiration_date: baseExp,
+        hasNoExpiration: hasNoExp,
+        extension_applied: isExt,
+        extension_date: extDate
       });
     } catch (err) {
       console.error('Failed to fetch cert details:', err);
@@ -1215,15 +1257,23 @@ export const Dashboard = ({
 
   const handleCancelEditCert = () => {
     if (originalCertState && selectedCert) {
+      const effectiveExp = (originalCertState.extension_applied && originalCertState.extension_date)
+        ? originalCertState.extension_date
+        : (originalCertState.hasNoExpiration ? null : (originalCertState.expiration_date || null));
       setSelectedCert({
         ...selectedCert,
         name: originalCertState.name,
         certificate_number: originalCertState.certificate_number,
         date_issued: originalCertState.date_issued,
-        expiration_date: originalCertState.hasNoExpiration ? null : (originalCertState.expiration_date || null),
+        original_expiration_date: originalCertState.hasNoExpiration ? null : (originalCertState.expiration_date || null),
+        expiration_date: effectiveExp,
+        extension_applied: originalCertState.extension_applied,
+        extension_date: originalCertState.extension_date || null,
       });
       setNewExpDate(originalCertState.expiration_date);
       setSidePanelHasNoExpiration(originalCertState.hasNoExpiration);
+      setSidePanelExtensionApplied(originalCertState.extension_applied);
+      setSidePanelExtensionDate(originalCertState.extension_date);
     }
     setIsEditingCertDetails(false);
   };
@@ -1234,8 +1284,16 @@ export const Dashboard = ({
       notify('error', 'Expiration date is required (or select "No expiration")');
       return;
     }
+    if (!sidePanelHasNoExpiration && sidePanelExtensionApplied && !sidePanelExtensionDate) {
+      notify('error', 'Please enter an extension expiration date (or untick Extension Applied)');
+      return;
+    }
     try {
-      const finalExpDate = sidePanelHasNoExpiration ? null : (newExpDate || null);
+      const baseExp = sidePanelHasNoExpiration ? null : (newExpDate || null);
+      const isExt = sidePanelHasNoExpiration ? false : sidePanelExtensionApplied;
+      const extDate = isExt ? (sidePanelExtensionDate || null) : null;
+      const effectiveExp = (isExt && extDate) ? extDate : baseExp;
+
       const res = await fetch(`/api/certificates/${selectedCert.id}`, {
         method: 'PUT',
         headers: { 
@@ -1244,9 +1302,12 @@ export const Dashboard = ({
         },
         body: JSON.stringify({ 
           name: selectedCert.name,
-          expiration_date: finalExpDate,
           date_issued: selectedCert.date_issued,
-          certificate_number: selectedCert.certificate_number
+          certificate_number: selectedCert.certificate_number,
+          original_expiration_date: baseExp,
+          expiration_date: baseExp,
+          extension_applied: isExt,
+          extension_date: extDate
         }),
       });
       if (res.ok) {
@@ -1256,24 +1317,32 @@ export const Dashboard = ({
           name: selectedCert.name || '',
           certificate_number: selectedCert.certificate_number || '',
           date_issued: selectedCert.date_issued || '',
-          expiration_date: finalExpDate || '',
-          hasNoExpiration: !finalExpDate
+          expiration_date: baseExp || '',
+          hasNoExpiration: !baseExp,
+          extension_applied: isExt,
+          extension_date: extDate || ''
         });
         setCerts(prev => prev.map(c => c.id === selectedCert.id ? { 
           ...c, 
           name: selectedCert.name,
-          expiration_date: finalExpDate,
+          original_expiration_date: baseExp,
+          expiration_date: effectiveExp,
+          extension_applied: isExt,
+          extension_date: extDate,
           date_issued: selectedCert.date_issued,
           certificate_number: selectedCert.certificate_number
         } : c));
-        fetchData();
         setSelectedCert({ 
           ...selectedCert, 
           name: selectedCert.name,
-          expiration_date: finalExpDate,
+          original_expiration_date: baseExp,
+          expiration_date: effectiveExp,
+          extension_applied: isExt,
+          extension_date: extDate,
           date_issued: selectedCert.date_issued,
           certificate_number: selectedCert.certificate_number
         });
+        fetchData();
       } else {
         notify('error', 'Failed to update certificate');
       }
@@ -1445,7 +1514,9 @@ export const Dashboard = ({
 
     const fileUrl = (tempPreviewUrl && targetFile.id === previewFile?.id) 
       ? tempPreviewUrl 
-      : new URL(`/api/files/${encodeURIComponent(targetFile.filename)}?token=${token}`, window.location.href).href;
+      : (targetFile.id
+          ? new URL(`/api/files/${encodeURIComponent(targetFile.filename)}?id=${targetFile.id}&token=${token}`, window.location.href).href
+          : new URL(`/api/files/${encodeURIComponent(targetFile.filename)}?token=${token}`, window.location.href).href);
     const ext = targetFile.original_name.split('.').pop()?.toLowerCase();
     const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
     const isPdf = ext === 'pdf';
@@ -1526,6 +1597,12 @@ export const Dashboard = ({
         if (!isNewlyPosted(c, 7, viewedCertIds)) return false;
       } else if (certStatusFilter === 'expiring_or_expired') {
         if (!isCertExpiringOrExpired(c.expiration_date)) return false;
+      } else if (certStatusFilter === 'has_file') {
+        const has = Boolean(c.has_file) || (c.file_count && c.file_count > 0) || Boolean(c.file_name);
+        if (!has) return false;
+      } else if (certStatusFilter === 'no_file') {
+        const has = Boolean(c.has_file) || (c.file_count && c.file_count > 0) || Boolean(c.file_name);
+        if (has) return false;
       } else {
         const s = getStatus(c.expiration_date);
         if (s !== certStatusFilter) return false;
@@ -1538,7 +1615,8 @@ export const Dashboard = ({
       const matchesVessel = (c.vessel_name || '').toLowerCase().includes(s);
       const matchesTeam = (c.team_name || '').toLowerCase().includes(s);
       const matchesOwner = (c.owner || '').toLowerCase().includes(s);
-      if (!matchesName && !matchesCertNum && !matchesVessel && !matchesTeam && !matchesOwner) {
+      const matchesFile = (c.file_name || '').toLowerCase().includes(s);
+      if (!matchesName && !matchesCertNum && !matchesVessel && !matchesTeam && !matchesOwner && !matchesFile) {
         return false;
       }
     }
@@ -1555,6 +1633,10 @@ export const Dashboard = ({
           const statusOrder: Record<string, number> = { 'expired': 0, 'expiring soon': 1, 'expiring': 2, 'active': 3, 'no expiration': 4 };
           const cmp = (statusOrder[sA] ?? 99) - (statusOrder[sB] ?? 99);
           return sortConfig.direction === 'asc' ? cmp : -cmp;
+        } else if (sortConfig.key === 'has_file') {
+          const valA = (Boolean(a.has_file) || (a.file_count && a.file_count > 0) || Boolean(a.file_name)) ? 1 : 0;
+          const valB = (Boolean(b.has_file) || (b.file_count && b.file_count > 0) || Boolean(b.file_name)) ? 1 : 0;
+          return sortConfig.direction === 'asc' ? valA - valB : valB - valA;
         } else if (sortConfig.key === 'expiration_date') {
           const dateA = a.expiration_date ? new Date(a.expiration_date).getTime() : (sortConfig.direction === 'asc' ? Infinity : -Infinity);
           const dateB = b.expiration_date ? new Date(b.expiration_date).getTime() : (sortConfig.direction === 'asc' ? Infinity : -Infinity);
@@ -2970,6 +3052,12 @@ export const Dashboard = ({
                                       <td className="px-5 py-3.5 whitespace-nowrap">
                                         <div className="font-mono text-xs text-slate-700">{r.position_lat || "-"}&nbsp;|&nbsp;{r.position_long || "-"}</div>
                                         <div className="text-[10px] text-slate-400 font-medium">DTG: {r.distance_to_go ? `${r.distance_to_go} NM` : "-"}</div>
+                                        <div className="text-[10px] text-slate-500 font-medium flex items-center gap-1">
+                                          <span className="text-slate-400">Avg Speed:</span>
+                                          <span className="font-mono font-bold text-blue-600">
+                                            {computeNoonReportAvgSpeed(r, noonReports).speedFormatted}
+                                          </span>
+                                        </div>
                                       </td>
                                       <td className="px-5 py-3.5 whitespace-nowrap">
                                         <div className="flex items-center gap-1.5">
@@ -3259,6 +3347,8 @@ export const Dashboard = ({
                       <option value="expiring soon">Expiring Soon (&lt; 30 days)</option>
                       <option value="expired">Expired</option>
                       <option value="no expiration">No Expiration</option>
+                      <option value="has_file">📎 With Attached Document</option>
+                      <option value="no_file">📄 Without Document</option>
                     </select>
 
                     {/* Search */}
@@ -3266,7 +3356,7 @@ export const Dashboard = ({
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
                       <input 
                         type="text" 
-                        placeholder="Search name, cert #, vessel..." 
+                        placeholder="Search name, cert #, vessel, file..." 
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         className="pl-10 pr-8 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
@@ -3295,6 +3385,7 @@ export const Dashboard = ({
                         <option value="certificate_number">Cert #</option>
                         <option value="expiration_date">Exp. Date</option>
                         <option value="status">Status</option>
+                        <option value="has_file">Attached File</option>
                       </select>
                       <button 
                         onClick={() => requestSort(sortConfig?.key || 'name')}
@@ -3342,13 +3433,16 @@ export const Dashboard = ({
                         <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('status')}>
                           <div className="flex items-center">Status {getSortIcon('status')}</div>
                         </th>
+                        <th className="px-6 py-4 cursor-pointer hover:text-blue-600 transition-colors" onClick={() => requestSort('has_file')}>
+                          <div className="flex items-center">Document / File {getSortIcon('has_file')}</div>
+                        </th>
                         <th className="px-6 py-4 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-blue-50 text-xs">
                       {sortedCerts.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="py-12 text-center text-slate-400">
+                          <td colSpan={7} className="py-12 text-center text-slate-400">
                             <div className="max-w-xs mx-auto space-y-2">
                               <Search className="w-8 h-8 text-slate-300 mx-auto" />
                               <p className="font-semibold text-slate-600">No certificates or service reports found</p>
@@ -3403,7 +3497,21 @@ export const Dashboard = ({
                               {cert.certificate_number || '-'}
                             </td>
                             <td className="px-6 py-4 text-sm font-mono text-slate-600">
-                              {cert.expiration_date || <span className="text-slate-400 italic font-sans text-xs">No expiration</span>}
+                              {cert.expiration_date ? (
+                                <div className="flex flex-col">
+                                  <span>{cert.expiration_date}</span>
+                                  {Boolean(cert.extension_applied) && (
+                                    <span 
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-200 px-1.5 py-0.5 rounded-md mt-0.5 w-fit" 
+                                      title={cert.original_expiration_date ? `Extended from original expiration: ${cert.original_expiration_date}` : 'Certificate extension applied'}
+                                    >
+                                      ★ Extended
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 italic font-sans text-xs">No expiration</span>
+                              )}
                             </td>
                             <td className="px-6 py-4">
                               <span className={cn(
@@ -3416,6 +3524,41 @@ export const Dashboard = ({
                               )}>
                                 {getStatus(cert.expiration_date)}
                               </span>
+                            </td>
+                            <td className="px-6 py-4">
+                              {(() => {
+                                const hasDoc = Boolean(cert.has_file) || (cert.file_count && cert.file_count > 0) || Boolean(cert.file_name);
+                                if (hasDoc) {
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        fetchCertDetails(cert);
+                                      }}
+                                      className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 hover:text-blue-800 border border-blue-200/80 rounded-lg text-xs font-semibold transition-all max-w-[200px] truncate shadow-2xs group/doc cursor-pointer"
+                                      title={cert.file_name ? `Preview Certificate File: ${cert.file_name}` : 'Preview Uploaded Certificate Document'}
+                                    >
+                                      <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0 group-hover/doc:scale-110 transition-transform" />
+                                      <span className="truncate">{cert.file_name || `${cert.file_count || 1} Document Attached`}</span>
+                                    </button>
+                                  );
+                                }
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      fetchCertDetails(cert);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-slate-400 hover:text-blue-600 hover:bg-blue-50/60 rounded-md transition-colors cursor-pointer"
+                                    title="No document attached. Click to view and attach a certificate file."
+                                  >
+                                    <span className="italic">No file</span>
+                                    <span className="text-[10px] text-blue-600 font-bold ml-1">+ Upload</span>
+                                  </button>
+                                );
+                              })()}
                             </td>
                             <td className="px-6 py-4 text-right">
                               <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -3490,7 +3633,7 @@ export const Dashboard = ({
                     className="px-3 py-2 bg-white border border-blue-100 rounded-xl text-xs font-bold uppercase tracking-wider text-slate-600 focus:ring-2 focus:ring-blue-500/20 shadow-sm"
                   >
                     <option value="">All Teams</option>
-                    {teams.map(t => (
+                    {[...teams].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(t => (
                       <option key={t.id} value={String(t.id)}>{t.name}</option>
                     ))}
                   </select>
@@ -5264,7 +5407,7 @@ export const Dashboard = ({
                 onNavigateMode={(targetMode) => {
                   if (targetMode === 'management') setView(user.role === 'vessel' ? 'sms_overview' : 'sms');
                   else if (targetMode === 'overview') setView('sms_overview');
-                  else if (targetMode === 'reporting') setView(user.role === 'vessel' ? 'sms_overview' : 'sms_reporting');
+                  else if (targetMode === 'reporting') setView(user.role === 'vessel' ? 'sms_overview' : 'sms');
                 }}
               />
             </div>
@@ -5282,25 +5425,7 @@ export const Dashboard = ({
                 onNavigateMode={(targetMode) => {
                   if (targetMode === 'management') setView('sms');
                   else if (targetMode === 'overview') setView('sms_overview');
-                  else if (targetMode === 'reporting') setView(user.role === 'vessel' ? 'sms_overview' : 'sms_reporting');
-                }}
-              />
-            </div>
-          )}
-
-          {view === 'sms_reporting' && user.role !== 'vessel' && (
-            <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <SMSView 
-                vessels={vessels} 
-                currentUser={user} 
-                token={token} 
-                mode="reporting" 
-                flags={flags} 
-                onPendingAckCountChange={setPendingAckCount}
-                onNavigateMode={(targetMode) => {
-                  if (targetMode === 'management') setView('sms');
-                  else if (targetMode === 'overview') setView('sms_overview');
-                  else if (targetMode === 'reporting') setView('sms_reporting');
+                  else if (targetMode === 'reporting') setView('sms');
                 }}
               />
             </div>
@@ -5944,6 +6069,11 @@ export const Dashboard = ({
                           <div className="flex items-center gap-2 text-xs text-slate-500">
                             <Clock className="w-3 h-3" />
                             <span>Expires: {cert.expiration_date || 'No expiration'}</span>
+                            {Boolean(cert.extension_applied) && (
+                              <span className="text-[9px] font-bold text-purple-700 bg-purple-100 border border-purple-200 px-1.5 py-0.2 rounded">
+                                Extended
+                              </span>
+                            )}
                           </div>
                           <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-600 transition-colors" />
                         </div>
@@ -5985,16 +6115,26 @@ export const Dashboard = ({
                         {selectedCert ? selectedCert.name : "Document Preview"}
                       </h2>
                       {selectedCert && (
-                        <span className={cn(
-                          "px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1",
-                          getStatus(selectedCert.expiration_date) === 'expired' ? "bg-red-100 text-red-700 border border-red-200" :
-                          getStatus(selectedCert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700 border border-orange-200" :
-                          getStatus(selectedCert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700 border border-amber-200" :
-                          getStatus(selectedCert.expiration_date) === 'no expiration' ? "bg-slate-100 text-slate-700 border border-slate-200" :
-                          "bg-emerald-100 text-emerald-700 border border-emerald-200"
-                        )}>
-                          {getStatus(selectedCert.expiration_date)}
-                        </span>
+                        <>
+                          <span className={cn(
+                            "px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider inline-flex items-center gap-1",
+                            getStatus(selectedCert.expiration_date) === 'expired' ? "bg-red-100 text-red-700 border border-red-200" :
+                            getStatus(selectedCert.expiration_date) === 'expiring soon' ? "bg-orange-100 text-orange-700 border border-orange-200" :
+                            getStatus(selectedCert.expiration_date) === 'expiring' ? "bg-amber-100 text-amber-700 border border-amber-200" :
+                            getStatus(selectedCert.expiration_date) === 'no expiration' ? "bg-slate-100 text-slate-700 border border-slate-200" :
+                            "bg-emerald-100 text-emerald-700 border border-emerald-200"
+                          )}>
+                            {getStatus(selectedCert.expiration_date)}
+                          </span>
+                          {Boolean(selectedCert.extension_applied) && (
+                            <span 
+                              className="px-2.5 py-0.5 rounded-full text-[10px] font-bold text-purple-700 bg-purple-100 border border-purple-200 inline-flex items-center gap-1"
+                              title={selectedCert.original_expiration_date ? `Original expiration: ${selectedCert.original_expiration_date}` : 'Extension applied'}
+                            >
+                              ★ Extension Applied
+                            </span>
+                          )}
+                        </>
                       )}
                     </div>
                     <p className="text-xs text-slate-500 font-medium truncate mt-0.5">
@@ -6023,65 +6163,64 @@ export const Dashboard = ({
                 <div className="grid gap-6 md:gap-8 lg:grid-cols-12">
                   {/* Left Column: Document Preview or Placeholder */}
                   <div className="lg:col-span-7 flex flex-col space-y-3">
-                    {previewFile ? (
-                      <>
-                        <div className="flex items-center justify-between mb-1 px-1">
-                          <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Document Preview</label>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full truncate max-w-[200px]">
-                              {previewFile.original_name}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => handlePrintDocument(previewFile)}
-                              className="flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-200 text-slate-700 hover:text-blue-600 rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer"
-                              title="Print Document"
-                            >
-                              <Printer className="w-3.5 h-3.5" />
-                              <span>Print</span>
-                            </button>
-                            <a 
-                              href={tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href}
-                              target="_blank" 
-                              rel="noreferrer"
-                              className="p-1 hover:bg-blue-50 rounded text-blue-400 hover:text-blue-600 transition-colors"
-                              title="Open in new tab"
-                            >
-                              <ExternalLink className="w-3 h-3" />
-                            </a>
-                          </div>
-                        </div>
-                        {(() => {
-                          const ext = previewFile.original_name.split('.').pop()?.toLowerCase();
-                          const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
-                          const isPdf = ext === 'pdf';
-                          const fileUrl = tempPreviewUrl || new URL(`/api/files/${encodeURIComponent(previewFile.filename)}?token=${token}`, window.location.href).href;
+                    {(() => {
+                      const activePreviewFile = previewFile || (files && files.length > 0 ? (files.find(f => f.file_type === 'certificate') || files[0]) : null);
+                      if (activePreviewFile) {
+                        const ext = activePreviewFile.original_name.split('.').pop()?.toLowerCase();
+                        const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '');
+                        const isPdf = ext === 'pdf';
+                        const fileUrl = tempPreviewUrl || (activePreviewFile.id 
+                          ? new URL(`/api/files/${encodeURIComponent(activePreviewFile.filename)}?id=${activePreviewFile.id}&token=${token}`, window.location.href).href 
+                          : new URL(`/api/files/${encodeURIComponent(activePreviewFile.filename)}?token=${token}`, window.location.href).href);
 
-                          if (isImage) {
-                            return (
+                        return (
+                          <>
+                            <div className="flex items-center justify-between mb-1 px-1">
+                              <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Document Preview</label>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full truncate max-w-[200px]" title={activePreviewFile.original_name}>
+                                  {activePreviewFile.original_name}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handlePrintDocument(activePreviewFile)}
+                                  className="flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-200 text-slate-700 hover:text-blue-600 rounded-lg text-xs font-semibold transition-all shadow-xs cursor-pointer"
+                                  title="Print Document"
+                                >
+                                  <Printer className="w-3.5 h-3.5" />
+                                  <span>Print</span>
+                                </button>
+                                <a 
+                                  href={fileUrl}
+                                  target="_blank" 
+                                  rel="noreferrer"
+                                  className="p-1 hover:bg-blue-50 rounded text-blue-400 hover:text-blue-600 transition-colors"
+                                  title="Open in new tab"
+                                >
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              </div>
+                            </div>
+                            {isImage ? (
                               <div className="rounded-2xl border border-slate-200/80 bg-slate-50 overflow-hidden h-[460px] lg:h-[620px] relative shadow-inner">
                                 <ImageViewer 
                                   url={fileUrl} 
-                                  title={previewFile.original_name} 
-                                  onPrint={() => handlePrintDocument(previewFile)}
+                                  title={activePreviewFile.original_name} 
+                                  onPrint={() => handlePrintDocument(activePreviewFile)}
                                 />
                               </div>
-                            );
-                          } else if (isPdf) {
-                            return (
+                            ) : isPdf ? (
                               <div className="rounded-2xl border border-slate-200/80 bg-slate-50 overflow-hidden h-[460px] lg:h-[620px] relative shadow-inner">
                                 <PDFViewer 
                                   url={fileUrl} 
-                                  title={previewFile.original_name} 
-                                  onPrint={() => handlePrintDocument(previewFile)}
+                                  title={activePreviewFile.original_name} 
+                                  onPrint={() => handlePrintDocument(activePreviewFile)}
                                 />
                               </div>
-                            );
-                          } else {
-                            return (
+                            ) : (
                               <div className="p-8 rounded-2xl border border-dashed border-blue-200 bg-blue-50/30 flex flex-col items-center justify-center text-center gap-3">
                                 <File className="w-8 h-8 text-blue-300" />
-                                <p className="text-xs text-slate-500">Preview not available for this file type.<br/><span className="font-mono font-bold text-blue-600">{previewFile.original_name}</span></p>
+                                <p className="text-xs text-slate-500">Preview not available for this file type.<br/><span className="font-mono font-bold text-blue-600">{activePreviewFile.original_name}</span></p>
                                 <a 
                                   href={fileUrl} 
                                   target="_blank" 
@@ -6091,11 +6230,11 @@ export const Dashboard = ({
                                   Download to view
                                 </a>
                               </div>
-                            );
-                          }
-                        })()}
-                      </>
-                    ) : (
+                            )}
+                          </>
+                        );
+                      }
+                      return (
                       <>
                         <div className="flex items-center justify-between mb-1 px-1">
                           <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400">Document Preview</label>
@@ -6125,7 +6264,8 @@ export const Dashboard = ({
                           </p>
                         </div>
                       </>
-                    )}
+                    );
+                    })()}
                   </div>
 
                   {/* Right Column: Details, Files, and Notes */}
@@ -6267,6 +6407,61 @@ export const Dashboard = ({
                         )}
                       </div>
                     </div>
+
+                    {/* Extension Applied Section */}
+                    {(!sidePanelHasNoExpiration || sidePanelExtensionApplied) && (
+                      <div className="space-y-2 p-3 bg-purple-50/70 border border-purple-200/80 rounded-xl">
+                        <div className="flex items-center justify-between">
+                          <label className={cn(
+                            "inline-flex items-center gap-2 select-none",
+                            isEditingCertDetails ? "cursor-pointer" : "cursor-default"
+                          )}>
+                            <input 
+                              type="checkbox"
+                              checked={sidePanelExtensionApplied}
+                              disabled={!isEditingCertDetails}
+                              onChange={(e) => setSidePanelExtensionApplied(e.target.checked)}
+                              className="w-4 h-4 rounded text-purple-600 border-purple-300 focus:ring-purple-500 cursor-pointer disabled:cursor-default"
+                            />
+                            <span className="text-xs font-bold text-purple-900">
+                              Extension Applied
+                            </span>
+                          </label>
+                          {sidePanelExtensionApplied && (
+                            <span className="text-[10px] uppercase font-black text-purple-700 bg-purple-200/80 px-2 py-0.5 rounded-md">
+                              Active
+                            </span>
+                          )}
+                        </div>
+
+                        {sidePanelExtensionApplied && (
+                          <div className="space-y-1 pt-1.5 border-t border-purple-200/60">
+                            <label className="block text-[10px] font-bold uppercase tracking-wider text-purple-800">
+                              Extension Expiration Date {isEditingCertDetails && <span className="text-rose-500">*</span>}
+                            </label>
+                            <input 
+                              type="date"
+                              required={sidePanelExtensionApplied}
+                              value={sidePanelExtensionDate || ''}
+                              readOnly={!isEditingCertDetails}
+                              disabled={!isEditingCertDetails}
+                              onChange={(e) => setSidePanelExtensionDate(e.target.value)}
+                              className={cn(
+                                "w-full px-3 py-2 rounded-xl text-sm transition-all font-semibold",
+                                isEditingCertDetails 
+                                  ? "bg-white border border-purple-400 ring-2 ring-purple-500/20 text-slate-900" 
+                                  : "bg-purple-100/60 border border-purple-200 text-purple-900 cursor-default"
+                              )}
+                            />
+                            <p className="text-[10px] text-purple-700 font-medium">
+                              {isEditingCertDetails 
+                                ? "The system treats this extension date as the certificate's new expiration date and applies all tagging and alert settings as normal."
+                                : `Extended Expiry: ${sidePanelExtensionDate || 'N/A'}${newExpDate ? ` (Original: ${newExpDate})` : ''}`}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Save & Cancel Buttons (Only shown in Editing Mode) */}
                     {isEditingCertDetails && (
@@ -6886,13 +7081,65 @@ export const Dashboard = ({
                           <input 
                             type="date" 
                             required={!editingCertHasNoExpiration}
-                            value={editingCert.expiration_date || ''}
-                            onChange={(e) => setEditingCert({...editingCert, expiration_date: e.target.value})}
+                            value={editingCert.original_expiration_date || editingCert.expiration_date || ''}
+                            onChange={(e) => setEditingCert({
+                              ...editingCert, 
+                              original_expiration_date: e.target.value,
+                              expiration_date: e.target.value
+                            })}
                             className="w-full px-4 py-2 bg-blue-50/50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-500/20"
                           />
                         )}
                       </div>
                     </div>
+
+                    {/* Extension Applied Section in Edit Modal */}
+                    {!editingCertHasNoExpiration && (
+                      <div className="p-3.5 bg-purple-50/70 border border-purple-200/80 rounded-2xl space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                            <input 
+                              type="checkbox"
+                              checked={Boolean(editingCert.extension_applied)}
+                              onChange={(e) => setEditingCert({ 
+                                ...editingCert, 
+                                extension_applied: e.target.checked 
+                              })}
+                              className="w-4 h-4 rounded text-purple-600 border-purple-300 focus:ring-purple-500 cursor-pointer"
+                            />
+                            <span className="text-xs font-bold text-purple-900">
+                              Extension Applied
+                            </span>
+                          </label>
+                          {Boolean(editingCert.extension_applied) && (
+                            <span className="text-[10px] uppercase font-black text-purple-700 bg-purple-200/80 px-2 py-0.5 rounded-md">
+                              Active
+                            </span>
+                          )}
+                        </div>
+
+                        {Boolean(editingCert.extension_applied) && (
+                          <div className="space-y-1 pt-1.5 border-t border-purple-200/60">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-purple-800 block">
+                              Extension Expiration Date <span className="text-rose-500">*</span>
+                            </label>
+                            <input 
+                              type="date"
+                              required={Boolean(editingCert.extension_applied)}
+                              value={editingCert.extension_date || ''}
+                              onChange={(e) => setEditingCert({ 
+                                ...editingCert, 
+                                extension_date: e.target.value 
+                              })}
+                              className="w-full px-4 py-2 bg-white border border-purple-300 rounded-xl text-sm font-semibold text-slate-800 focus:ring-2 focus:ring-purple-500/20 outline-none"
+                            />
+                            <p className="text-[10px] text-purple-700 font-medium">
+                              The system treats this extension date as the certificate's new expiration date and applies all tagging and alert settings as normal.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <button 
                       onClick={handleUpdateCert}
                       className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"

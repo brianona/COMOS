@@ -158,3 +158,142 @@ export const parseCoordinate = (coordStr: string, isLat: boolean): number | null
     return null;
   }
 };
+
+export interface NoonSpeedResult {
+  speed: number | null; // knots (nautical miles per hour)
+  speedFormatted: string; // e.g. "14.7 kts" or "-"
+  hoursElapsed: number | null;
+  distCovered: number | null; // nautical miles
+  prevReportDate?: string | null;
+  prevReportDtg?: string | number | null;
+  isNewVoyageOrPort?: boolean;
+}
+
+/**
+ * Computes average vessel speed in knots (nautical miles per hour)
+ * by comparing distance to go (DTG) and UTC time between the recent and previous noon reports.
+ */
+export function computeNoonReportAvgSpeed(
+  currentReport: {
+    id?: number;
+    vessel_id?: number | string;
+    vessel_name?: string;
+    utc_date_time?: string;
+    distance_to_go?: string | number | null;
+    destination_port?: string | null;
+    voyage_number?: string | null;
+  },
+  allReports: Array<{
+    id?: number;
+    vessel_id?: number | string;
+    vessel_name?: string;
+    utc_date_time?: string;
+    distance_to_go?: string | number | null;
+    destination_port?: string | null;
+    voyage_number?: string | null;
+  }>
+): NoonSpeedResult {
+  if (!currentReport || !currentReport.utc_date_time || !allReports || allReports.length === 0) {
+    return { speed: null, speedFormatted: '-', hoursElapsed: null, distCovered: null };
+  }
+
+  const parseDtg = (val: string | number | null | undefined): number | null => {
+    if (val === null || val === undefined) return null;
+    const clean = String(val).replace(/,/g, '').replace(/[^0-9.]/g, '').trim();
+    if (!clean) return null;
+    const n = parseFloat(clean);
+    return isNaN(n) ? null : n;
+  };
+
+  const currDtg = parseDtg(currentReport.distance_to_go);
+  const currTime = new Date(currentReport.utc_date_time).getTime();
+  if (isNaN(currTime) || currDtg === null) {
+    return { speed: null, speedFormatted: '-', hoursElapsed: null, distCovered: null };
+  }
+
+  // Filter reports belonging to the exact same vessel
+  const vesselReports = allReports.filter(r => {
+    if (currentReport.id && r.id === currentReport.id) return false;
+    if (currentReport.vessel_id && r.vessel_id) {
+      return String(r.vessel_id) === String(currentReport.vessel_id);
+    }
+    if (currentReport.vessel_name && r.vessel_name) {
+      return r.vessel_name.toLowerCase().trim() === currentReport.vessel_name.toLowerCase().trim();
+    }
+    return false;
+  });
+
+  if (vesselReports.length === 0) {
+    return { speed: null, speedFormatted: '-', hoursElapsed: null, distCovered: null };
+  }
+
+  // Find reports chronologically before the current report
+  const priorReports = vesselReports
+    .map(r => ({
+      report: r,
+      time: new Date(r.utc_date_time || '').getTime()
+    }))
+    .filter(item => !isNaN(item.time) && (item.time < currTime || (item.time === currTime && (item.report.id || 0) < (currentReport.id || 0))))
+    .sort((a, b) => b.time - a.time); // Nearest prior report first
+
+  if (priorReports.length === 0) {
+    return { speed: null, speedFormatted: '-', hoursElapsed: null, distCovered: null };
+  }
+
+  const prev = priorReports[0].report;
+  const prevTime = priorReports[0].time;
+  const prevDtg = parseDtg(prev.distance_to_go);
+
+  if (prevDtg === null) {
+    return { speed: null, speedFormatted: '-', hoursElapsed: null, distCovered: null };
+  }
+
+  const hoursElapsed = (currTime - prevTime) / (1000 * 60 * 60);
+  if (hoursElapsed <= 0) {
+    return { speed: null, speedFormatted: '-', hoursElapsed: null, distCovered: null };
+  }
+
+  // As vessel proceeds along its route toward destination port, DTG decreases.
+  // Distance covered = Previous DTG - Current DTG.
+  const distCovered = prevDtg - currDtg;
+
+  // If distance to go increased, the vessel is on a different voyage leg or heading to a new port
+  if (distCovered < 0) {
+    return {
+      speed: null,
+      speedFormatted: '-',
+      hoursElapsed,
+      distCovered,
+      prevReportDate: prev.utc_date_time,
+      prevReportDtg: prev.distance_to_go,
+      isNewVoyageOrPort: true
+    };
+  }
+
+  // Calculate speed: distance run in nautical miles divided by hours elapsed (knots)
+  const speed = distCovered / hoursElapsed;
+
+  // Commercial cargo and container vessels operate within 0 to 30 knots.
+  // If speed exceeds 40 knots, DTG changed due to a destination/voyage change.
+  if (speed > 40) {
+    return {
+      speed: null,
+      speedFormatted: '-',
+      hoursElapsed,
+      distCovered,
+      prevReportDate: prev.utc_date_time,
+      prevReportDtg: prev.distance_to_go,
+      isNewVoyageOrPort: true
+    };
+  }
+
+  return {
+    speed,
+    speedFormatted: `${speed.toFixed(1)} kts`,
+    hoursElapsed,
+    distCovered,
+    prevReportDate: prev.utc_date_time,
+    prevReportDtg: prev.distance_to_go,
+    isNewVoyageOrPort: false
+  };
+}
