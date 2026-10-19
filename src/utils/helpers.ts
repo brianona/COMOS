@@ -11,8 +11,8 @@ export const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 export const getRoleLabel = (role: string) => {
   switch (role) {
     case "admin": return "Admin";
-    case "team_pic": return "Management";
-    case "user": return "PIC";
+    case "team_pic": return "Manager";
+    case "user": return "Superintendent";
     case "vessel": return "Vessel";
     default: return role;
   }

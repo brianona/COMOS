@@ -4672,7 +4672,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       reqUp
                         ? 'border-rose-300 bg-rose-50/15 shadow-xs'
                         : hasUploaded
-                          ? 'border-emerald-200/90'
+                          ? 'border-emerald-200/90 bg-emerald-50/25'
                           : 'border-slate-200/80 hover:border-slate-300'
                     }`}
                   >
@@ -4824,12 +4824,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                               className={`p-2.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs transition-colors ${
                                 up.replace_requested_at
                                   ? 'bg-rose-50/70 border-rose-200'
-                                  : 'bg-slate-50/80 border-slate-200/70 hover:bg-slate-100/60'
+                                  : 'bg-emerald-50/80 border-emerald-200/90 hover:bg-emerald-100/70'
                               }`}
                             >
                               <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
                                 <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                                  up.replace_requested_at ? 'bg-rose-100 text-rose-600' : 'bg-blue-100 text-blue-600'
+                                  up.replace_requested_at ? 'bg-rose-100 text-rose-600' : 'bg-emerald-100 text-emerald-700'
                                 }`}>
                                   <FileText className="w-4 h-4" />
                                 </div>

@@ -567,7 +567,7 @@ export const CertificateMasterTab: React.FC<CertificateMasterTabProps> = ({
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2.5 text-xs text-amber-800">
           <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
           <span>
-            <strong>Read-only access:</strong> Vessel accounts can view valid certificate definitions. Modifications and validity toggling are restricted to Shore Management (Admin & Team PIC).
+            <strong>Read-only access:</strong> Vessel accounts can view valid certificate definitions. Modifications and validity toggling are restricted to Shore Management (Admin & Manager).
           </span>
         </div>
       )}

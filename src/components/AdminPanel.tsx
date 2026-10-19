@@ -2921,8 +2921,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   >
                     <option value="all">All Roles</option>
                     <option value="admin">Administrators</option>
-                    <option value="team_pic">Team PIC / Managers</option>
-                    <option value="user">Technical PICs / Users</option>
+                    <option value="team_pic">Managers</option>
+                    <option value="user">Superintendents</option>
                     <option value="vessel">Vessel Accounts</option>
                   </select>
                 </div>
@@ -2979,7 +2979,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 u.role === 'vessel' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
                                 'bg-slate-100 text-slate-700 border border-slate-200'
                               }`}>
-                                {u.role === 'team_pic' ? 'Team PIC' : u.role}
+                                {u.role === 'team_pic' ? 'Manager' : u.role === 'user' ? 'Superintendent' : u.role}
                               </span>
                             </td>
                             <td className="py-3 px-4 text-slate-600">
@@ -4750,9 +4750,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     }}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-500 outline-none"
                   >
-                    <option value="user">Technical PIC / Superintendent</option>
+                    <option value="user">Superintendent</option>
                     <option value="admin">Administrator</option>
-                    <option value="team_pic">Team PIC / Manager</option>
+                    <option value="team_pic">Manager</option>
                     <option value="vessel">Vessel Account</option>
                   </select>
                 </div>

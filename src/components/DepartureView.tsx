@@ -20,7 +20,8 @@ import {
   X,
   Upload,
   RefreshCw,
-  Eye
+  Eye,
+  Users
 } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -65,6 +66,8 @@ interface DepartureReport {
   created_at: string;
   vessel_name?: string;
   attachment_name?: string;
+  team_id?: number;
+  team_name?: string;
 }
 
 interface DepartureViewProps {
@@ -89,8 +92,24 @@ export const DepartureView: React.FC<DepartureViewProps> = ({
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+  const [teamFilter, setTeamFilter] = useState<string>('');
   const [vesselFilter, setVesselFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
+
+  const availableTeams = useMemo(() => {
+    const map = new Map<number, string>();
+    vessels.forEach(v => {
+      if (v.team_id && v.team_name) {
+        map.set(Number(v.team_id), v.team_name);
+      }
+    });
+    (reports || []).forEach(r => {
+      if (r.team_id && r.team_name) {
+        map.set(Number(r.team_id), r.team_name);
+      }
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [vessels, reports]);
 
   const defaultForm = {
     vessel_id: String(user.vessel_id || (vessels[0]?.id ? String(vessels[0].id) : '')),
@@ -119,14 +138,21 @@ export const DepartureView: React.FC<DepartureViewProps> = ({
 
   const filteredReports = useMemo(() => {
     return (reports || []).filter(r => {
+      if (teamFilter !== '') {
+        const v = vessels.find(v => String(v.id) === String(r.vessel_id));
+        const rTeamId = String(r.team_id || v?.team_id || '');
+        if (rTeamId !== teamFilter) return false;
+      }
       const matchesVessel = vesselFilter === '' || String(r.vessel_id) === vesselFilter;
+      const q = searchQuery.toLowerCase();
       const matchesSearch = searchQuery === '' || 
-        (r.vessel_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (r.departure_port || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (r.voyage_number || '').toLowerCase().includes(searchQuery.toLowerCase());
+        (r.vessel_name || '').toLowerCase().includes(q) ||
+        (r.departure_port || '').toLowerCase().includes(q) ||
+        (r.voyage_number || '').toLowerCase().includes(q) ||
+        (r.team_name || '').toLowerCase().includes(q);
       return matchesVessel && matchesSearch;
     });
-  }, [reports, vesselFilter, searchQuery]);
+  }, [reports, teamFilter, vesselFilter, searchQuery, vessels]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -564,16 +590,42 @@ export const DepartureView: React.FC<DepartureViewProps> = ({
               />
             </div>
 
-            <select
-              value={vesselFilter}
-              onChange={e => setVesselFilter(e.target.value)}
-              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:border-blue-500 outline-none"
-            >
-              <option value="">All Vessels</option>
-              {vessels.map(v => (
-                <option key={v.id} value={v.id}>{v.name}</option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2 flex-wrap">
+              {availableTeams.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <Users className="w-3.5 h-3.5 text-indigo-600" />
+                    Team:
+                  </label>
+                  <select
+                    value={teamFilter}
+                    onChange={e => {
+                      setTeamFilter(e.target.value);
+                      setVesselFilter('');
+                    }}
+                    className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:border-blue-500 outline-none cursor-pointer"
+                  >
+                    <option value="">All Teams</option>
+                    {availableTeams.map(t => (
+                      <option key={t.id} value={String(t.id)}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <select
+                value={vesselFilter}
+                onChange={e => setVesselFilter(e.target.value)}
+                className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:bg-white focus:border-blue-500 outline-none cursor-pointer"
+              >
+                <option value="">{teamFilter ? 'All Team Vessels' : 'All Vessels'}</option>
+                {vessels
+                  .filter(v => !teamFilter || String(v.team_id) === teamFilter)
+                  .map(v => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))}
+              </select>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -605,7 +657,17 @@ export const DepartureView: React.FC<DepartureViewProps> = ({
                         {r.utc_date_time ? format(new Date(r.utc_date_time), 'yyyy-MM-dd HH:mm') : '-'}
                       </td>
                       <td className="py-3 px-4 font-bold text-blue-700">
-                        {r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || `Vessel #${r.vessel_id}`}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span>{r.vessel_name || vessels.find(v => v.id === r.vessel_id)?.name || `Vessel #${r.vessel_id}`}</span>
+                          {(() => {
+                            const teamLabel = r.team_name || vessels.find(v => v.id === r.vessel_id)?.team_name;
+                            return teamLabel ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/80">
+                                {teamLabel}
+                              </span>
+                            ) : null;
+                          })()}
+                        </div>
                       </td>
                       <td className="py-3 px-4 text-slate-600">{r.voyage_number || '-'}</td>
                       <td className="py-3 px-4 text-slate-700 font-medium">{r.departure_port || '-'}</td>

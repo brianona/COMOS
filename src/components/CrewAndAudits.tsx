@@ -445,7 +445,23 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
   })();
   const isVesselUser = activeUser?.role === 'vessel' && activeUser?.vessel_id;
   const isAdminOrPic = activeUser?.role === 'admin' || activeUser?.role === 'team_pic' || activeUser?.role === 'user';
+  const canDeleteCrewProfile = !isVesselUser && (activeUser?.role === 'admin' || activeUser?.role === 'team_pic');
   const userVesselId = isVesselUser ? String(activeUser.vessel_id) : '';
+
+  // Contract Extension Modal State
+  const [extendingMember, setExtendingMember] = useState<CrewMember | null>(null);
+  const [extendMonths, setExtendMonths] = useState<number>(1);
+  const [extendErrorMsg, setExtendErrorMsg] = useState<string | null>(null);
+  const [extendLoadingState, setExtendLoadingState] = useState(false);
+
+  // Delete Crew Profile State
+  const [memberToDelete, setMemberToDelete] = useState<CrewMember | null>(null);
+  const [deleteErrorMsg, setDeleteErrorMsg] = useState<string | null>(null);
+  const [deleteLoadingState, setDeleteLoadingState] = useState(false);
+
+  // Non-Conformity Closeout Modal State
+  const [closeoutNCId, setCloseoutNCId] = useState<string | null>(null);
+  const [closeoutActionText, setCloseoutActionText] = useState('');
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -761,6 +777,10 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
       const extM = Number(formData.extensionMonths || 0);
       const originalDuration = Number(formData.contractDuration) || 0;
       const newDuration = originalDuration + extM;
+      if (newDuration > 11) {
+        alert(`Total contract duration including extension cannot exceed 11 months (Total: ${newDuration} months).`);
+        return;
+      }
       const newExtensionsCount = (editingCrew.extensionsCount || 0) + (extM > 0 ? 1 : 0);
       const finalEndDate = calculateEndDate(formData.signOnDate, String(newDuration));
 
@@ -851,6 +871,78 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
     handleCloseModal();
   };
 
+  const handleExtendContract = (member: CrewMember) => {
+    const currentDuration = member.contractDuration || 6;
+    const maxAllowedExtension = Math.max(0, 11 - currentDuration);
+    setExtendingMember(member);
+    setExtendMonths(maxAllowedExtension > 0 ? 1 : 0);
+    if (maxAllowedExtension === 0) {
+      setExtendErrorMsg(`Contract duration is currently at the maximum limit of 11 months (${currentDuration} months). In accordance with MLC 2006 compliance, no further extension can be granted without sign-off.`);
+    } else {
+      setExtendErrorMsg(null);
+    }
+  };
+
+  const handleConfirmExtendContract = async () => {
+    if (!extendingMember) return;
+    const currentDuration = extendingMember.contractDuration || 6;
+    const maxAllowedExtension = Math.max(0, 11 - currentDuration);
+
+    if (isNaN(extendMonths) || extendMonths <= 0) {
+      setExtendErrorMsg('Please enter a valid number of months.');
+      return;
+    }
+
+    const newDuration = currentDuration + extendMonths;
+    if (newDuration > 11) {
+      setExtendErrorMsg(`Total contract duration including extension cannot exceed 11 months. (Current: ${currentDuration} mos + Extension: ${extendMonths} mos = ${newDuration} mos. Max allowed: 11 mos).`);
+      return;
+    }
+
+    const baseDateStr = extendingMember.contractEndDate || extendingMember.signOnDate || new Date().toISOString().split('T')[0];
+    const baseDate = new Date(baseDateStr);
+    baseDate.setMonth(baseDate.getMonth() + extendMonths);
+    const newEndDate = baseDate.toISOString().split('T')[0];
+
+    const newExtensionsCount = (extendingMember.extensionsCount || 0) + 1;
+
+    const updatedCrew: CrewMember = {
+      ...extendingMember,
+      contractDuration: newDuration,
+      contractEndDate: newEndDate,
+      extensionsCount: newExtensionsCount
+    };
+
+    setExtendLoadingState(true);
+    setExtendErrorMsg(null);
+    try {
+      if (token) {
+        const resp = await fetch(`/api/crew-members/${extendingMember.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(updatedCrew)
+        });
+        if (resp.ok) {
+          fetchCrew();
+          setExtendingMember(null);
+        } else {
+          const err = await resp.json().catch(() => ({}));
+          setExtendErrorMsg(err.error || 'Failed to extend contract.');
+        }
+      } else {
+        saveCrewFallback(crew.map(c => c.id === extendingMember.id ? updatedCrew : c));
+        setExtendingMember(null);
+      }
+    } catch (err: any) {
+      setExtendErrorMsg(err.message || 'Failed to extend contract.');
+    } finally {
+      setExtendLoadingState(false);
+    }
+  };
+
   const handleEditClick = (member: CrewMember) => {
     setEditingCrew(member);
     setFormData({
@@ -900,25 +992,36 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
     }
   };
 
-  const handleDeleteProfile = async (member: CrewMember) => {
-    if (!confirm(`Are you sure you want to delete profile for ${member.name}? This action can be restored from the Recycle Bin.`)) return;
-    if (token) {
-      try {
-        const resp = await fetch(`/api/crew-members/${member.id}/profile`, {
+  const handleDeleteProfile = (member: CrewMember) => {
+    setMemberToDelete(member);
+    setDeleteErrorMsg(null);
+  };
+
+  const handleConfirmDeleteCrewMember = async () => {
+    if (!memberToDelete) return;
+    setDeleteLoadingState(true);
+    setDeleteErrorMsg(null);
+    try {
+      if (token) {
+        const resp = await fetch(`/api/crew-members/${memberToDelete.id}/profile`, {
           method: 'DELETE',
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (resp.ok) {
           fetchCrew();
+          setMemberToDelete(null);
         } else {
-          const err = await resp.json();
-          alert(`Failed to delete profile: ${err.error || 'Server error'}`);
+          const err = await resp.json().catch(() => ({}));
+          setDeleteErrorMsg(err.error || 'Failed to delete profile');
         }
-      } catch (err) {
-        console.error('Failed to delete crew member profile:', err);
+      } else {
+        saveCrewFallback(crew.filter(c => c.id !== memberToDelete.id));
+        setMemberToDelete(null);
       }
-    } else {
-      saveCrewFallback(crew.filter(c => c.id !== member.id));
+    } catch (err: any) {
+      setDeleteErrorMsg(err.message || 'Failed to delete profile');
+    } finally {
+      setDeleteLoadingState(false);
     }
   };
 
@@ -1181,6 +1284,13 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                     </td>
                     <td className="px-6 py-4 text-center">
                       <div className="flex items-center justify-center gap-1.5">
+                        <button 
+                          onClick={() => handleExtendContract(member)}
+                          className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors"
+                          title="Extend Contract Date"
+                        >
+                          <Calendar className="w-4 h-4" />
+                        </button>
                         <button 
                           onClick={() => {
                             setViewingProfile(member);
@@ -1649,11 +1759,11 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                                               <Edit2 className="w-3.5 h-3.5" />
                                             </button>
                                           )}
-                                          {!isVesselUser && isAdminOrPic && (
+                                          {!isVesselUser && canDeleteCrewProfile && (
                                             <button 
                                               onClick={() => handleDeleteProfile(c)} 
                                               className="p-1.5 hover:bg-rose-50 text-rose-600 rounded-lg transition-colors cursor-pointer"
-                                              title="Delete Profile"
+                                              title="Delete Profile (Managers & Admins only)"
                                             >
                                               <Trash2 className="w-3.5 h-3.5" />
                                             </button>
@@ -2121,6 +2231,164 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
           </div>
         </div>
       )}
+      {/* Contract Extension Modal */}
+      {extendingMember && (
+        <div className="fixed inset-0 z-[1000] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Clock className="w-5 h-5 text-blue-600" />
+                <h3 className="font-bold text-slate-900 text-sm">Extend Contract: {extendingMember.name}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExtendingMember(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {extendErrorMsg && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{extendErrorMsg}</span>
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs">
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 space-y-1.5 text-slate-700">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Rank:</span>
+                  <span className="font-semibold">{extendingMember.rank}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Current Duration:</span>
+                  <span className="font-semibold">{extendingMember.contractDuration || 6} months</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Current End Date:</span>
+                  <span className="font-semibold">{extendingMember.contractEndDate || 'N/A'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Max Allowed Total:</span>
+                  <span className="font-semibold text-blue-600">11 months</span>
+                </div>
+              </div>
+
+              {11 - (extendingMember.contractDuration || 6) <= 0 ? (
+                <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 space-y-1">
+                  <p className="font-bold">Maximum Contract Duration Reached</p>
+                  <p className="text-[11px] text-amber-700">
+                    This seafarer has completed {extendingMember.contractDuration || 6} months onboard, reaching the regulatory 11-month maximum contract ceiling (MLC 2006). No further extension can be approved without disembarkation for rest.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Extension Duration (Months) *
+                  </label>
+                  <select
+                    value={extendMonths}
+                    onChange={e => setExtendMonths(Number(e.target.value))}
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 bg-white"
+                  >
+                    {Array.from({ length: 11 - (extendingMember.contractDuration || 6) }, (_, i) => i + 1).map(m => (
+                      <option key={m} value={m}>
+                        +{m} {m === 1 ? 'Month' : 'Months'} (New total: {(extendingMember.contractDuration || 6) + m} mos)
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Total contract duration including extension cannot exceed 11 months.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setExtendingMember(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                {11 - (extendingMember.contractDuration || 6) <= 0 ? 'Close' : 'Cancel'}
+              </button>
+              {11 - (extendingMember.contractDuration || 6) > 0 && (
+                <button
+                  type="button"
+                  onClick={handleConfirmExtendContract}
+                  disabled={extendLoadingState}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  {extendLoadingState ? 'Extending...' : 'Confirm Extension'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Crew Profile Modal */}
+      {memberToDelete && (
+        <div className="fixed inset-0 z-[1000] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+                <h3 className="font-bold text-slate-900 text-sm">Delete Crew Profile</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMemberToDelete(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {deleteErrorMsg && (
+              <div className="bg-rose-50 border border-rose-200 p-3 rounded-xl text-xs text-rose-800 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{deleteErrorMsg}</span>
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs text-slate-600">
+              <p>
+                Are you sure you want to permanently delete the crew profile of{' '}
+                <strong className="text-slate-900">{memberToDelete.name}</strong> ({memberToDelete.rank})?
+              </p>
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-900 space-y-1">
+                <p className="font-semibold">Notice for Managers & Admins:</p>
+                <p>
+                  This action removes this seafarer profile, licenses, documents, and historical sea service records.
+                </p>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setMemberToDelete(null)}
+                disabled={deleteLoadingState}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteCrewMember}
+                disabled={deleteLoadingState}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-lg shadow-xs cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {deleteLoadingState ? 'Deleting...' : 'Confirm Delete Profile'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -2341,6 +2609,12 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
   const isVesselUser = activeUser?.role === 'vessel' && activeUser?.vessel_id;
   const userVesselId = isVesselUser ? String(activeUser.vessel_id) : '';
   const isAdminOrPic = activeUser?.role === 'admin' || activeUser?.role === 'team_pic' || activeUser?.role === 'user';
+  const canDeleteCrewProfile = !isVesselUser && (activeUser?.role === 'admin' || activeUser?.role === 'team_pic');
+
+  // Delete Crew Profile Modal State
+  const [memberToDelete, setMemberToDelete] = useState<CrewMember | null>(null);
+  const [deleteErrorMsg, setDeleteErrorMsg] = useState<string | null>(null);
+  const [deleteLoadingState, setDeleteLoadingState] = useState(false);
 
   // States for updating Superintendent (SI) comments & Hiring status
   const [isEditing, setIsEditing] = useState(false);
@@ -2388,34 +2662,43 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
     });
   };
 
-  const handleDeleteProfile = async (member: CrewMember) => {
-    if (!confirm(`Are you sure you want to delete profile for ${member.name}? This action can be restored from the Recycle Bin.`)) return;
+  const handleDeleteProfile = (member: CrewMember) => {
+    setMemberToDelete(member);
+    setDeleteErrorMsg(null);
+  };
 
-    if (token) {
-      try {
-        const resp = await fetch(`/api/crew-members/${member.id}/profile`, {
+  const handleConfirmDeleteCrewMember = async () => {
+    if (!memberToDelete) return;
+    setDeleteLoadingState(true);
+    setDeleteErrorMsg(null);
+    try {
+      if (token) {
+        const resp = await fetch(`/api/crew-members/${memberToDelete.id}/profile`, {
           method: 'DELETE',
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (resp.ok) {
           fetchCrew();
-          if (selectedCrew && selectedCrew.id === member.id) {
+          if (selectedCrew && selectedCrew.id === memberToDelete.id) {
             setSelectedCrew(null);
           }
+          setMemberToDelete(null);
         } else {
-          const err = await resp.json();
-          alert(`Failed to delete profile: ${err.error || 'Server error'}`);
+          const err = await resp.json().catch(() => ({}));
+          setDeleteErrorMsg(err.error || 'Failed to delete profile');
         }
-      } catch (err) {
-        console.error('Failed to delete crew member profile:', err);
+      } else {
+        const updatedList = crew.filter(c => c.id !== memberToDelete.id);
+        saveCrewFallback(updatedList);
+        if (selectedCrew && selectedCrew.id === memberToDelete.id) {
+          setSelectedCrew(null);
+        }
+        setMemberToDelete(null);
       }
-    } else {
-      const updatedList = crew.filter(c => c.id !== member.id);
-      setCrew(updatedList);
-      localStorage.setItem('comos_crew_list', JSON.stringify(updatedList));
-      if (selectedCrew && selectedCrew.id === member.id) {
-        setSelectedCrew(null);
-      }
+    } catch (err: any) {
+      setDeleteErrorMsg(err.message || 'Failed to delete profile');
+    } finally {
+      setDeleteLoadingState(false);
     }
   };
 
@@ -2841,14 +3124,14 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                             <span>Edit</span>
                           </button>
                         )}
-                        {!isVesselUser && isAdminOrPic && (
+                        {!isVesselUser && canDeleteCrewProfile && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               handleDeleteProfile(member);
                             }}
                             className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-600 hover:text-white transition-colors cursor-pointer"
-                            title="Delete Profile"
+                            title="Delete Profile (Managers & Admins only)"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             <span>Delete</span>
@@ -3126,15 +3409,17 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                   >
                     <Edit2 className="w-3.5 h-3.5" /> Edit Profile
                   </button>
-                  <button 
-                    onClick={() => {
-                      const memberToDelete = selectedCrew;
-                      handleDeleteProfile(memberToDelete);
-                    }}
-                    className="px-4 py-2 bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-600 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer animate-in fade-in"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" /> Delete Profile
-                  </button>
+                  {canDeleteCrewProfile && (
+                    <button 
+                      onClick={() => {
+                        const memberToDelete = selectedCrew;
+                        handleDeleteProfile(memberToDelete);
+                      }}
+                      className="px-4 py-2 bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-600 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer animate-in fade-in"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Delete Profile
+                    </button>
+                  )}
                 </>
               )}
               <button 
@@ -3244,7 +3529,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                       className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-indigo-500 bg-white text-slate-700 font-semibold"
                     >
                       <option value="">Select Rank...</option>
-                      {['Master', 'Chief Officer', '2nd Officer', '3rd Officer', 'Chief Engineer', '2nd Engineer', '3rd Engineer', '4th Engineer', 'Electrical Engineer', 'Bosun', 'AB', 'OS', 'Fitter', 'Oiler', 'Wiper', 'Cook', 'Messman'].map(r => (
+                      {['Master', 'Chief Officer', '2nd Officer', '3rd Officer', 'Chief Engineer', '2nd Engineer', '3rd Engineer', '4th Engineer', 'Deck Cadet', 'Engine Cadet', 'Bosun', 'AB', 'OS', 'Oiler', 'Cook', 'Messman'].map(r => (
                         <option key={r} value={r}>{r}</option>
                       ))}
                     </select>
@@ -3776,6 +4061,66 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Delete Crew Profile Modal */}
+      {memberToDelete && (
+        <div className="fixed inset-0 z-[1000] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+                <h3 className="font-bold text-slate-900 text-sm">Delete Crew Profile</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMemberToDelete(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {deleteErrorMsg && (
+              <div className="bg-rose-50 border border-rose-200 p-3 rounded-xl text-xs text-rose-800 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{deleteErrorMsg}</span>
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs text-slate-600">
+              <p>
+                Are you sure you want to permanently delete the crew profile of{' '}
+                <strong className="text-slate-900">{memberToDelete.name}</strong> ({memberToDelete.rank})?
+              </p>
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-900 space-y-1">
+                <p className="font-semibold">Notice for Managers & Admins:</p>
+                <p>
+                  This action removes this seafarer profile, licenses, documents, and historical sea service records.
+                </p>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setMemberToDelete(null)}
+                disabled={deleteLoadingState}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteCrewMember}
+                disabled={deleteLoadingState}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold rounded-lg shadow-xs cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {deleteLoadingState ? 'Deleting...' : 'Confirm Delete Profile'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -4852,6 +5197,10 @@ export const NonConformityTrackerView = ({ vessels, token }: { vessels: any[], t
   const [filterStatus, setFilterStatus] = useState('All');
   const [showModal, setShowModal] = useState(false);
 
+  // Closeout Modal State (No prompt() calls)
+  const [closeoutNCId, setCloseoutNCId] = useState<string | null>(null);
+  const [closeoutActionText, setCloseoutActionText] = useState('');
+
   // Form State
   const [formData, setFormData] = useState({
     sourceType: 'Internal',
@@ -4925,23 +5274,27 @@ export const NonConformityTrackerView = ({ vessels, token }: { vessels: any[], t
     });
   };
 
-  const handleCloseout = async (id: string) => {
-    const action = prompt('Enter closeout action/corrective comments:');
-    if (action === null) return; // cancel
+  const handleCloseout = (id: string) => {
+    setCloseoutNCId(id);
+    const item = ncs.find(i => i.id === id);
+    setCloseoutActionText(item?.actionPlan || '');
+  };
 
-    const itemToClose = ncs.find(item => item.id === id);
+  const handleConfirmCloseout = async () => {
+    if (!closeoutNCId) return;
+    const itemToClose = ncs.find(item => item.id === closeoutNCId);
     if (!itemToClose) return;
 
     const updatedItem = {
       ...itemToClose,
       status: 'Closed' as const,
       closeoutDate: new Date().toISOString().split('T')[0],
-      actionPlan: action || itemToClose.actionPlan
+      actionPlan: closeoutActionText || itemToClose.actionPlan
     };
 
     if (token) {
       try {
-        const resp = await fetch(`/api/non-conformities/${id}`, {
+        const resp = await fetch(`/api/non-conformities/${closeoutNCId}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -4952,15 +5305,16 @@ export const NonConformityTrackerView = ({ vessels, token }: { vessels: any[], t
         if (resp.ok) {
           fetchNcs();
         } else {
-          const err = await resp.json();
-          alert(`Failed to closeout non-conformity: ${err.error || 'Server error'}`);
+          const err = await resp.json().catch(() => ({}));
+          console.error('Failed to closeout NC:', err);
         }
       } catch (err) {
         console.error('Failed to close NC:', err);
       }
     } else {
-      setNcs(ncs.map(item => item.id === id ? updatedItem : item));
+      setNcs(ncs.map(item => item.id === closeoutNCId ? updatedItem : item));
     }
+    setCloseoutNCId(null);
   };
 
   const filteredNcs = ncs.filter(nc => {
@@ -5290,6 +5644,62 @@ export const NonConformityTrackerView = ({ vessels, token }: { vessels: any[], t
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Closeout Non-Conformity Modal */}
+      {closeoutNCId && (
+        <div className="fixed inset-0 z-[1000] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                <h3 className="font-bold text-slate-900 text-sm">Closeout Non-Conformity</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCloseoutNCId(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <p className="text-slate-600">
+                Record the corrective action taken or closeout remarks to mark this non-conformity item as verified and closed:
+              </p>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Corrective Action / Closeout Remarks *
+                </label>
+                <textarea
+                  value={closeoutActionText}
+                  onChange={(e) => setCloseoutActionText(e.target.value)}
+                  placeholder="Enter closeout action/corrective comments..."
+                  rows={3}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-blue-500 bg-white"
+                />
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCloseoutNCId(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmCloseout}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Confirm Closeout
+              </button>
+            </div>
           </div>
         </div>
       )}

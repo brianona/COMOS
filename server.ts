@@ -1564,6 +1564,44 @@ async function startServer() {
       await pool.query("ALTER TABLE crew_members MODIFY vessel_id VARCHAR(50) NULL");
     } catch (_) {}
 
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN profile_data LONGTEXT NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN email VARCHAR(255) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN availability_status VARCHAR(50) DEFAULT 'available'");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN ready_date DATE NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN emergency_contact_name VARCHAR(255) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN emergency_contact_phone VARCHAR(100) NULL");
+    } catch (_) {}
+    try {
+      await pool.query("ALTER TABLE crew_members ADD COLUMN emergency_contact_relation VARCHAR(100) NULL");
+    } catch (_) {}
+
+    // Create table for Crew Documents
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS crew_documents (
+        id VARCHAR(100) PRIMARY KEY,
+        crew_id VARCHAR(100) NOT NULL,
+        doc_name VARCHAR(255) NOT NULL,
+        doc_type VARCHAR(100) NOT NULL,
+        file_name VARCHAR(255) NOT NULL,
+        file_size VARCHAR(50) NULL,
+        file_data LONGTEXT NULL,
+        uploaded_by VARCHAR(255) NULL,
+        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_crew_doc (crew_id)
+      )
+    `);
+
     // Migration: Add remarks to Lube Oil Analysis and Bunker BDN reports
     try {
       await pool.query("ALTER TABLE lube_oil_analysis_reports ADD COLUMN remarks TEXT NULL");
@@ -4769,7 +4807,17 @@ async function startServer() {
       if (!vesselId) {
         return res.json([]);
       }
-      [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
+      try {
+        const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
+        const vesselTeamId = vRows[0]?.team_id;
+        if (vesselTeamId) {
+          [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE (v.team_id = ? OR v.id = ?) AND v.deleted_at IS NULL ORDER BY (v.id = ?) DESC, v.name ASC", [vesselTeamId, vesselId, vesselId]);
+        } else {
+          [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
+        }
+      } catch (err) {
+        [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
+      }
     } else {
       const teamIds = await getEffectiveTeamIds(req.user);
       if (teamIds.length === 0) {
@@ -9877,9 +9925,10 @@ Generated by COMOS System
   app.get('/api/departure-reports', authenticate, async (req: any, res) => {
     try {
       let query = `
-        SELECT dr.*, v.name as vessel_name, da.original_name as attachment_name
+        SELECT dr.*, v.name as vessel_name, v.team_id, t.name as team_name, da.original_name as attachment_name
         FROM departure_reports dr
         JOIN vessels v ON dr.vessel_id = v.id
+        LEFT JOIN teams t ON v.team_id = t.id
         LEFT JOIN departure_attachments da ON dr.attachment_id = da.id
         WHERE dr.deleted_at IS NULL
       `;
@@ -9896,8 +9945,20 @@ Generated by COMOS System
         if (!vesselId) {
           return res.json([]);
         }
-        query += ' AND dr.vessel_id = ?';
-        params.push(vesselId);
+        try {
+          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
+          const vesselTeamId = vRows[0]?.team_id;
+          if (vesselTeamId) {
+            query += ' AND (v.team_id = ? OR dr.vessel_id = ?)';
+            params.push(vesselTeamId, vesselId);
+          } else {
+            query += ' AND dr.vessel_id = ?';
+            params.push(vesselId);
+          }
+        } catch (err) {
+          query += ' AND dr.vessel_id = ?';
+          params.push(vesselId);
+        }
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const teamIds = await getEffectiveTeamIds(req.user);
         if (teamIds.length === 0) {
@@ -10108,9 +10169,10 @@ Generated by COMOS System
   app.get('/api/arrival-reports', authenticate, async (req: any, res) => {
     try {
       let query = `
-        SELECT ar.*, v.name as vessel_name, aa.original_name as attachment_name
+        SELECT ar.*, v.name as vessel_name, v.team_id, t.name as team_name, aa.original_name as attachment_name
         FROM arrival_reports ar
         JOIN vessels v ON ar.vessel_id = v.id
+        LEFT JOIN teams t ON v.team_id = t.id
         LEFT JOIN arrival_attachments aa ON ar.attachment_id = aa.id
         WHERE ar.deleted_at IS NULL
       `;
@@ -10127,8 +10189,20 @@ Generated by COMOS System
         if (!vesselId) {
           return res.json([]);
         }
-        query += ' AND ar.vessel_id = ?';
-        params.push(vesselId);
+        try {
+          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
+          const vesselTeamId = vRows[0]?.team_id;
+          if (vesselTeamId) {
+            query += ' AND (v.team_id = ? OR ar.vessel_id = ?)';
+            params.push(vesselTeamId, vesselId);
+          } else {
+            query += ' AND ar.vessel_id = ?';
+            params.push(vesselId);
+          }
+        } catch (err) {
+          query += ' AND ar.vessel_id = ?';
+          params.push(vesselId);
+        }
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const teamIds = await getEffectiveTeamIds(req.user);
         if (teamIds.length === 0) {
@@ -10453,9 +10527,10 @@ Generated by COMOS System
   app.get('/api/noon-reports', authenticate, async (req: any, res) => {
     try {
       let query = `
-        SELECT nr.*, v.name as vessel_name, na.original_name as attachment_name
+        SELECT nr.*, v.name as vessel_name, v.team_id, t.name as team_name, na.original_name as attachment_name
         FROM noon_reports nr
         JOIN vessels v ON nr.vessel_id = v.id
+        LEFT JOIN teams t ON v.team_id = t.id
         LEFT JOIN noon_attachments na ON nr.attachment_id = na.id
         WHERE nr.deleted_at IS NULL
       `;
@@ -10472,8 +10547,20 @@ Generated by COMOS System
         if (!vesselId) {
           return res.json([]);
         }
-        query += ' AND nr.vessel_id = ?';
-        params.push(vesselId);
+        try {
+          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
+          const vesselTeamId = vRows[0]?.team_id;
+          if (vesselTeamId) {
+            query += ' AND (v.team_id = ? OR nr.vessel_id = ?)';
+            params.push(vesselTeamId, vesselId);
+          } else {
+            query += ' AND nr.vessel_id = ?';
+            params.push(vesselId);
+          }
+        } catch (err) {
+          query += ' AND nr.vessel_id = ?';
+          params.push(vesselId);
+        }
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const teamIds = await getEffectiveTeamIds(req.user);
         if (teamIds.length === 0) {
@@ -10855,9 +10942,10 @@ Generated by COMOS System
   app.get('/api/other-reports', authenticate, async (req: any, res) => {
     try {
       let query = `
-        SELECT orr.*, v.name as vessel_name
+        SELECT orr.*, v.name as vessel_name, v.team_id, t.name as team_name
         FROM other_reports orr
         JOIN vessels v ON orr.vessel_id = v.id
+        LEFT JOIN teams t ON v.team_id = t.id
         WHERE orr.deleted_at IS NULL
       `;
       let params: any[] = [];
@@ -10873,8 +10961,20 @@ Generated by COMOS System
         if (!vesselId) {
           return res.json([]);
         }
-        query += ' AND orr.vessel_id = ?';
-        params.push(vesselId);
+        try {
+          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
+          const vesselTeamId = vRows[0]?.team_id;
+          if (vesselTeamId) {
+            query += ' AND (v.team_id = ? OR orr.vessel_id = ?)';
+            params.push(vesselTeamId, vesselId);
+          } else {
+            query += ' AND orr.vessel_id = ?';
+            params.push(vesselId);
+          }
+        } catch (err) {
+          query += ' AND orr.vessel_id = ?';
+          params.push(vesselId);
+        }
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const teamIds = await getEffectiveTeamIds(req.user);
         if (teamIds.length === 0) {
@@ -13090,24 +13190,260 @@ Generated by COMOS System
   });
 
   // ==========================================
-  // CREW MEMBERS ROUTES
+  // CREW MEMBERS ROUTES & PROFILE MANAGEMENT
   // ==========================================
+
+  const canUserManageVesselCrew = async (user: any, targetVesselId: string | number | undefined | null): Promise<boolean> => {
+    if (!user) return false;
+    if (user.role === 'admin') return true;
+
+    const vIdStr = targetVesselId !== undefined && targetVesselId !== null ? String(targetVesselId).trim() : '';
+
+    if (user.role === 'vessel') {
+      if (!user.vessel_id) return false;
+      return String(user.vessel_id) === vIdStr;
+    }
+
+    if (user.role === 'team_pic' || user.role === 'user') {
+      if (!vIdStr || vIdStr === 'any' || vIdStr === 'all' || vIdStr === 'pool' || vIdStr === '0') {
+        return true;
+      }
+      const teamIds = await getEffectiveTeamIds(user);
+      if (teamIds.length === 0) return false;
+      const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vIdStr]);
+      if (vRows.length === 0) return false;
+      return teamIds.includes(Number(vRows[0].team_id));
+    }
+
+    return false;
+  };
+
+  const buildDefaultCrewProfile = (m: any, vesselName?: string) => {
+    let rawProfile: any = null;
+    if (m.profile_data) {
+      try {
+        rawProfile = typeof m.profile_data === 'string' ? JSON.parse(m.profile_data) : m.profile_data;
+      } catch (_) {}
+    }
+    if (rawProfile && typeof rawProfile === 'object') {
+      return rawProfile;
+    }
+
+    const nameParts = (m.name || '').trim().split(' ');
+    const firstName = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : (nameParts[0] || 'Unknown');
+    const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
+
+    return {
+      basicInfo: {
+        firstName: firstName,
+        middleName: '',
+        lastName: lastName,
+        rank: m.rank_name || 'Crew',
+        nationality: m.nationality || 'Filipino',
+        gender: m.gender || 'Male',
+        maritalStatus: m.marital_status || 'Single',
+        birthdate: m.birthdate ? new Date(m.birthdate).toISOString().split('T')[0] : '',
+        placeOfBirth: m.place_of_birth || '',
+        passportNo: m.passport_no || 'N/A',
+        passportExpiry: m.passport_expiry ? new Date(m.passport_expiry).toISOString().split('T')[0] : '',
+        seamanBookNo: m.seaman_book_no || 'N/A',
+        seamanBookExpiry: m.seaman_book_expiry ? new Date(m.seaman_book_expiry).toISOString().split('T')[0] : '',
+        photo: m.photo || ''
+      },
+      contactInfo: {
+        phone: m.contact_number || '',
+        secondaryPhone: '',
+        email: m.email || '',
+        skypeOrMessaging: '',
+        address: {
+          street: m.address || '',
+          city: '',
+          provinceState: '',
+          country: m.nationality || 'Philippines',
+          postalCode: ''
+        }
+      },
+      vesselAssignment: {
+        currentVesselId: m.vessel_id || '',
+        vesselName: vesselName || '',
+        status: m.vessel_id && m.vessel_id !== 'any' && m.vessel_id !== 'all' ? 'Onboard' : 'Available',
+        signOnDate: m.sign_on_date ? new Date(m.sign_on_date).toISOString().split('T')[0] : '',
+        contractDuration: m.contract_duration || 6,
+        contractEndDate: m.contract_end_date ? new Date(m.contract_end_date).toISOString().split('T')[0] : '',
+        extensionsCount: m.extensions_count || 0,
+        relieverName: '',
+        remarks: m.si_comments || ''
+      },
+      seaService: [
+        {
+          id: 'sea_1',
+          vesselName: vesselName || 'MV Ocean Pioneer',
+          vesselType: 'Bulk Carrier',
+          dwtGrt: '55,000 DWT',
+          engineTypePower: 'MAN B&W 6S50MC',
+          rank: m.rank_name || 'Crew',
+          signOnDate: '2024-03-01',
+          signOffDate: '2024-11-15',
+          durationMonths: 8,
+          flag: 'Panama',
+          companyManning: 'Global Maritime Services',
+          reasonForSignOff: 'Completed contract'
+        }
+      ],
+      certificates: [
+        {
+          id: 'cert_1',
+          name: 'Certificate of Competency (CoC)',
+          certificateNo: m.seaman_book_no ? `COC-${m.seaman_book_no}` : 'COC-883921',
+          issuingCountry: m.nationality || 'Philippines',
+          issueDate: '2024-01-15',
+          expiryDate: '2029-01-15',
+          status: 'Valid',
+          remarks: 'Flag State STCW Endorsement'
+        },
+        {
+          id: 'cert_2',
+          name: 'Basic Safety Training (STCW A-VI/1)',
+          certificateNo: 'BST-77312',
+          issuingCountry: m.nationality || 'Philippines',
+          issueDate: '2023-06-10',
+          expiryDate: m.next_safety_training ? new Date(m.next_safety_training).toISOString().split('T')[0] : '2028-06-10',
+          status: 'Valid',
+          remarks: 'EFA, FPFF, PST, PSSR'
+        },
+        {
+          id: 'cert_3',
+          name: 'Seafarers Medical Fitness (STCW I/9)',
+          certificateNo: 'MED-5501',
+          issuingCountry: m.nationality || 'Philippines',
+          issueDate: '2025-05-10',
+          expiryDate: m.next_medical_exam ? new Date(m.next_medical_exam).toISOString().split('T')[0] : '2027-05-10',
+          status: 'Valid',
+          remarks: 'Fit for sea service'
+        }
+      ],
+      training: [
+        {
+          id: 'tr_1',
+          courseName: 'Bridge / Engine Resource Management',
+          trainingCenter: 'Maritime Training Institute',
+          completionDate: '2024-03-20',
+          expiryDate: '2029-03-20',
+          certificateNo: 'TR-MTI-4091',
+          status: 'Valid'
+        },
+        {
+          id: 'tr_2',
+          courseName: 'Security Awareness & Designated Duties',
+          trainingCenter: 'Global Seafarers Academy',
+          completionDate: '2023-11-12',
+          expiryDate: '2028-11-12',
+          certificateNo: 'TR-GSA-1102',
+          status: 'Valid'
+        }
+      ],
+      medicalCertification: {
+        pemeStatus: 'Fit for Sea Duty',
+        examDate: '2025-05-10',
+        expiryDate: m.next_medical_exam ? new Date(m.next_medical_exam).toISOString().split('T')[0] : '2027-05-10',
+        clinicName: 'Seafarers Diagnostic Center',
+        doctorName: 'Dr. Roberto Santos',
+        restrictionsRemarks: 'None - Passed all standard tests',
+        drugAlcoholDate: '2025-05-10',
+        drugAlcoholResult: 'Negative',
+        vaccinations: [
+          { name: 'Yellow Fever', dateGiven: '2021-08-14', expiryDate: 'Lifetime', batchNo: 'YF-9921' },
+          { name: 'COVID-19 Full Regimen', dateGiven: '2022-04-18', expiryDate: 'N/A', batchNo: 'BNT-019' }
+        ]
+      },
+      documents: [],
+      emergencyContact: {
+        nextOfKinName: m.emergency_contact_name || '',
+        relationship: m.emergency_contact_relation || 'Spouse',
+        phonePrimary: m.emergency_contact_phone || '',
+        phoneSecondary: '',
+        email: '',
+        address: ''
+      }
+    };
+  };
+
   app.get('/api/crew-members', authenticate, async (req: any, res) => {
     try {
-      let query = 'SELECT * FROM crew_members WHERE deleted_at IS NULL';
+      let query = 'SELECT c.*, v.name as vessel_name, v.team_id as vessel_team_id, v.owner as vessel_owner FROM crew_members c LEFT JOIN vessels v ON c.vessel_id = v.id WHERE c.deleted_at IS NULL';
       let params: any[] = [];
-      if (req.user.role === 'vessel' && req.user.vessel_id) {
-        query += ' AND (vessel_id = ? OR vessel_id IS NULL OR vessel_id = "" OR vessel_id = "all" OR vessel_id = "any")';
-        params.push(String(req.user.vessel_id));
-      }
-      query += ' ORDER BY created_at DESC';
+      query += ' ORDER BY c.created_at DESC';
       const [members]: any = await pool.execute(query, params);
-      res.json(members.map((m: any) => {
+
+      const userTeamIds = await getEffectiveTeamIds(req.user);
+      const isVesselUser = req.user.role === 'vessel';
+      const userVesselId = req.user.vessel_id ? String(req.user.vessel_id) : '';
+
+      // Also fetch documents count per crew member
+      let allDocs: any[] = [];
+      try {
+        const [docs]: any = await pool.execute('SELECT id, crew_id, doc_name, doc_type, file_name, file_size, uploaded_at FROM crew_documents');
+        allDocs = docs || [];
+      } catch (docErr: any) {
+        try {
+          await pool.query(`
+            CREATE TABLE IF NOT EXISTS crew_documents (
+              id VARCHAR(100) PRIMARY KEY,
+              crew_id VARCHAR(100) NOT NULL,
+              doc_name VARCHAR(255) NOT NULL,
+              doc_type VARCHAR(100) NOT NULL,
+              file_name VARCHAR(255) NOT NULL,
+              file_size VARCHAR(50) NULL,
+              file_data LONGTEXT NULL,
+              uploaded_by VARCHAR(255) NULL,
+              uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              INDEX idx_crew_doc (crew_id)
+            )
+          `);
+        } catch (_) {}
+      }
+      const docsByCrew = new Map<string, any[]>();
+      for (const d of allDocs) {
+        if (!docsByCrew.has(d.crew_id)) docsByCrew.set(d.crew_id, []);
+        docsByCrew.get(d.crew_id)!.push({
+          id: d.id,
+          documentType: d.doc_type,
+          documentName: d.doc_name,
+          fileName: d.file_name,
+          fileSize: d.file_size,
+          uploadedAt: d.uploaded_at ? new Date(d.uploaded_at).toISOString().split('T')[0] : ''
+        });
+      }
+
+      const formatted = members.map((m: any) => {
         let photoUrl = m.photo || '';
         if (photoUrl && !photoUrl.startsWith('http://') && !photoUrl.startsWith('https://')) {
           const tokenStr = req.query.token || req.headers.authorization?.split(' ')[1] || '';
           photoUrl = `/api/crew-members/${m.id}/photo?token=${tokenStr}`;
         }
+
+        const crewVesselId = m.vessel_id ? String(m.vessel_id) : '';
+        let canEdit = false;
+
+        if (req.user.role === 'admin') {
+          canEdit = true;
+        } else if (isVesselUser) {
+          canEdit = crewVesselId !== '' && crewVesselId === userVesselId;
+        } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+          if (!crewVesselId || crewVesselId === 'any' || crewVesselId === 'all' || crewVesselId === 'pool') {
+            canEdit = true;
+          } else if (m.vessel_team_id && userTeamIds.includes(Number(m.vessel_team_id))) {
+            canEdit = true;
+          }
+        }
+
+        const profile = buildDefaultCrewProfile(m, m.vessel_name);
+        // Merge attached docs
+        if (docsByCrew.has(m.id)) {
+          const dbDocs = docsByCrew.get(m.id)!;
+          profile.documents = dbDocs;
+        }
+
         return {
           id: m.id,
           name: m.name,
@@ -13121,15 +13457,25 @@ Generated by COMOS System
           nextMedicalExam: m.next_medical_exam ? new Date(m.next_medical_exam).toISOString().split('T')[0] : '',
           nextSafetyTraining: m.next_safety_training ? new Date(m.next_safety_training).toISOString().split('T')[0] : '',
           vesselId: m.vessel_id || '',
+          vesselName: m.vessel_name || '',
+          vesselTeamId: m.vessel_team_id || null,
+          vesselOwner: m.vessel_owner || null,
           birthdate: m.birthdate ? new Date(m.birthdate).toISOString().split('T')[0] : '',
           contactNumber: m.contact_number || '',
+          email: m.email || '',
           photo: photoUrl,
           hiringStatus: m.hiring_status || 'for rehire',
+          availabilityStatus: m.availability_status || (m.vessel_id ? 'onboard' : 'available'),
+          readyDate: m.ready_date ? new Date(m.ready_date).toISOString().split('T')[0] : '',
           siComments: m.si_comments || '',
           extensionsCount: m.extensions_count || 0,
-          contractEndDate: m.contract_end_date ? new Date(m.contract_end_date).toISOString().split('T')[0] : ''
+          contractEndDate: m.contract_end_date ? new Date(m.contract_end_date).toISOString().split('T')[0] : '',
+          canEdit: canEdit,
+          profileData: profile
         };
-      }));
+      });
+
+      res.json(formatted);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -13148,7 +13494,7 @@ Generated by COMOS System
         const b2Key = photoStr.slice(7);
         const ext = b2Key.split('.').pop() || 'jpeg';
         res.setHeader('Content-Type', `image/${ext === 'jpg' ? 'jpeg' : ext}`);
-        res.setHeader('Cache-Control', 'public, max-age=86400'); // Cache for 24 hours
+        res.setHeader('Cache-Control', 'public, max-age=86400');
         return res.send(retrievedData);
       } else if (photoStr.startsWith('data:')) {
         const parsed = parseBase64DataUrl(photoStr);
@@ -13172,9 +13518,26 @@ Generated by COMOS System
     const {
       id, name, rank, nationality, signOnDate, passportNo, seamanBookNo,
       status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId,
-      birthdate, contactNumber, photo, hiringStatus, siComments, extensionsCount, contractEndDate
+      birthdate, contactNumber, photo, hiringStatus, siComments, extensionsCount, contractEndDate,
+      email, availabilityStatus, readyDate, emergencyContactName, emergencyContactPhone, emergencyContactRelation,
+      profileData
     } = req.body;
+
     try {
+      // Permission check:
+      if (vesselId && vesselId !== 'any' && vesselId !== 'all' && vesselId !== 'pool') {
+        const canManage = await canUserManageVesselCrew(req.user, vesselId);
+        if (!canManage) {
+          const msg = req.user.role === 'vessel' 
+            ? 'Vessel users can only add crew to their assigned vessel.' 
+            : 'PIC users can only add crew to vessels under their team.';
+          return res.status(403).json({ error: msg });
+        }
+      } else if (req.user.role === 'vessel') {
+        // Vessel user cannot create unassigned pool crew
+        return res.status(403).json({ error: 'Vessel users can only add crew to their assigned vessel.' });
+      }
+
       let finalPhoto = photo || '';
       if (photo && photo.startsWith('data:')) {
         const parsed = parseBase64DataUrl(photo);
@@ -13192,21 +13555,29 @@ Generated by COMOS System
         }
       }
 
+      const newId = id || ('c_' + Math.random().toString(36).substring(2, 11));
+      const profileJsonStr = profileData ? JSON.stringify(profileData) : null;
+
       await pool.execute(
         `INSERT INTO crew_members (
           id, name, rank_name, nationality, sign_on_date, passport_no, seaman_book_no,
           status, contract_duration, next_medical_exam, next_safety_training, vessel_id,
-          birthdate, contact_number, photo, hiring_status, si_comments, extensions_count, contract_end_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          birthdate, contact_number, photo, hiring_status, si_comments, extensions_count, contract_end_date,
+          email, availability_status, ready_date, emergency_contact_name, emergency_contact_phone, emergency_contact_relation,
+          profile_data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          id, name, rank, nationality || 'Filipino', signOnDate || null, passportNo || 'N/A', seamanBookNo || 'N/A',
+          newId, name, rank, nationality || 'Filipino', signOnDate || null, passportNo || 'N/A', seamanBookNo || 'N/A',
           status || 'Compliant', contractDuration || null, nextMedicalExam || null, nextSafetyTraining || null, vesselId || '',
           birthdate || null, contactNumber || '', finalPhoto, hiringStatus || 'for rehire', siComments || '',
-          extensionsCount || 0, contractEndDate || null
+          extensionsCount || 0, contractEndDate || null,
+          email || '', availabilityStatus || (vesselId ? 'onboard' : 'available'), readyDate || null,
+          emergencyContactName || '', emergencyContactPhone || '', emergencyContactRelation || '',
+          profileJsonStr
         ]
       );
-      await logAudit(req.user.id, req.user.username, 'CREATE_CREW_MEMBER', `Created crew member ID ${id}`);
-      res.status(201).json({ success: true });
+      await logAudit(req.user.id, req.user.username, 'CREATE_CREW_MEMBER', `Created crew member ID ${newId} (${name})`);
+      res.status(201).json({ success: true, id: newId });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -13217,16 +13588,42 @@ Generated by COMOS System
     const {
       name, rank, nationality, signOnDate, passportNo, seamanBookNo,
       status, contractDuration, nextMedicalExam, nextSafetyTraining, vesselId,
-      birthdate, contactNumber, photo, hiringStatus, siComments, extensionsCount, contractEndDate
+      birthdate, contactNumber, photo, hiringStatus, siComments, extensionsCount, contractEndDate,
+      email, availabilityStatus, readyDate, emergencyContactName, emergencyContactPhone, emergencyContactRelation,
+      profileData
     } = req.body;
+
     try {
+      // Find current crew member
+      const [existing]: any = await pool.execute('SELECT * FROM crew_members WHERE id = ?', [id]);
+      if (existing.length === 0) {
+        return res.status(404).json({ error: 'Crew member not found' });
+      }
+      const current = existing[0];
+
+      // Permission check on current vessel
+      const canManageCurrent = await canUserManageVesselCrew(req.user, current.vessel_id);
+      if (!canManageCurrent) {
+        const msg = req.user.role === 'vessel'
+          ? 'Vessel users can only update crew members assigned to their vessel.'
+          : 'PIC users can only update crew members of vessels under their team.';
+        return res.status(403).json({ error: msg });
+      }
+
+      // If target vessel is different, check permission on target vessel
+      if (vesselId !== undefined && vesselId !== current.vessel_id) {
+        const canManageTarget = await canUserManageVesselCrew(req.user, vesselId);
+        if (!canManageTarget) {
+          const msg = req.user.role === 'vessel'
+            ? 'Vessel users cannot reassign crew to other vessels.'
+            : 'PIC users can only reassign crew to vessels under their team.';
+          return res.status(403).json({ error: msg });
+        }
+      }
+
       let finalPhoto = photo || '';
       if (photo && (photo.startsWith('/api/crew-members/') || photo.includes('/photo?token='))) {
-        // Keep existing photo from database
-        const [existing]: any = await pool.execute('SELECT photo FROM crew_members WHERE id = ?', [id]);
-        if (existing.length > 0) {
-          finalPhoto = existing[0].photo || '';
-        }
+        finalPhoto = current.photo || '';
       } else if (photo && photo.startsWith('data:')) {
         const parsed = parseBase64DataUrl(photo);
         if (parsed) {
@@ -13243,22 +13640,307 @@ Generated by COMOS System
         }
       }
 
+      const profileJsonStr = profileData ? JSON.stringify(profileData) : current.profile_data;
+
       await pool.execute(
         `UPDATE crew_members SET 
           name = ?, rank_name = ?, nationality = ?, sign_on_date = ?, passport_no = ?, seaman_book_no = ?,
           status = ?, contract_duration = ?, next_medical_exam = ?, next_safety_training = ?, vessel_id = ?,
           birthdate = ?, contact_number = ?, photo = ?, hiring_status = ?, si_comments = ?,
-          extensions_count = ?, contract_end_date = ?
+          extensions_count = ?, contract_end_date = ?, email = ?, availability_status = ?, ready_date = ?,
+          emergency_contact_name = ?, emergency_contact_phone = ?, emergency_contact_relation = ?,
+          profile_data = ?
          WHERE id = ?`,
         [
-          name, rank, nationality || 'Filipino', signOnDate || null, passportNo || 'N/A', seamanBookNo || 'N/A',
-          status || 'Compliant', contractDuration || null, nextMedicalExam || null, nextSafetyTraining || null, vesselId || '',
-          birthdate || null, contactNumber || '', finalPhoto, hiringStatus || 'for rehire', siComments || '',
-          extensionsCount || 0, contractEndDate || null,
+          name !== undefined ? name : current.name,
+          rank !== undefined ? rank : current.rank_name,
+          nationality !== undefined ? nationality : current.nationality,
+          signOnDate !== undefined ? (signOnDate || null) : current.sign_on_date,
+          passportNo !== undefined ? passportNo : current.passport_no,
+          seamanBookNo !== undefined ? seamanBookNo : current.seaman_book_no,
+          status !== undefined ? status : current.status,
+          contractDuration !== undefined ? contractDuration : current.contract_duration,
+          nextMedicalExam !== undefined ? (nextMedicalExam || null) : current.next_medical_exam,
+          nextSafetyTraining !== undefined ? (nextSafetyTraining || null) : current.next_safety_training,
+          vesselId !== undefined ? vesselId : current.vessel_id,
+          birthdate !== undefined ? (birthdate || null) : current.birthdate,
+          contactNumber !== undefined ? contactNumber : current.contact_number,
+          finalPhoto || current.photo,
+          hiringStatus !== undefined ? hiringStatus : current.hiring_status,
+          siComments !== undefined ? siComments : current.si_comments,
+          extensionsCount !== undefined ? extensionsCount : current.extensions_count,
+          contractEndDate !== undefined ? (contractEndDate || null) : current.contract_end_date,
+          email !== undefined ? email : current.email,
+          availabilityStatus !== undefined ? availabilityStatus : current.availability_status,
+          readyDate !== undefined ? (readyDate || null) : current.ready_date,
+          emergencyContactName !== undefined ? emergencyContactName : current.emergency_contact_name,
+          emergencyContactPhone !== undefined ? emergencyContactPhone : current.emergency_contact_phone,
+          emergencyContactRelation !== undefined ? emergencyContactRelation : current.emergency_contact_relation,
+          profileJsonStr,
           id
         ]
       );
-      await logAudit(req.user.id, req.user.username, 'UPDATE_CREW_MEMBER', `Updated crew member ID ${id}`);
+      await logAudit(req.user.id, req.user.username, 'UPDATE_CREW_MEMBER', `Updated crew member ID ${id} (${name || current.name})`);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Assign crew from pool / candidate list to vessel
+  app.post('/api/crew-members/:id/assign', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const { vesselId, signOnDate, contractDuration, contractEndDate, rank } = req.body;
+
+    try {
+      if (!vesselId) {
+        return res.status(400).json({ error: 'Target vessel ID is required' });
+      }
+
+      const canManage = await canUserManageVesselCrew(req.user, vesselId);
+      if (!canManage) {
+        const msg = req.user.role === 'vessel'
+          ? 'Vessel users can only assign crew to their assigned vessel.'
+          : 'PIC users can only assign crew to vessels under their team.';
+        return res.status(403).json({ error: msg });
+      }
+
+      const [existing]: any = await pool.execute('SELECT * FROM crew_members WHERE id = ?', [id]);
+      if (existing.length === 0) {
+        return res.status(404).json({ error: 'Crew member not found' });
+      }
+      const current = existing[0];
+
+      // Update assignment
+      const sDate = signOnDate || new Date().toISOString().split('T')[0];
+      const cDuration = contractDuration ? Number(contractDuration) : (current.contract_duration || 6);
+      let eDate = contractEndDate;
+      if (!eDate && sDate) {
+        const d = new Date(sDate);
+        d.setMonth(d.getMonth() + cDuration);
+        eDate = d.toISOString().split('T')[0];
+      }
+
+      let profileObj = buildDefaultCrewProfile(current);
+      profileObj.vesselAssignment = {
+        ...profileObj.vesselAssignment,
+        currentVesselId: String(vesselId),
+        status: 'Onboard',
+        signOnDate: sDate,
+        contractDuration: cDuration,
+        contractEndDate: eDate
+      };
+
+      await pool.execute(
+        `UPDATE crew_members SET 
+          vessel_id = ?, 
+          sign_on_date = ?, 
+          contract_duration = ?, 
+          contract_end_date = ?, 
+          rank_name = COALESCE(?, rank_name),
+          availability_status = 'onboard',
+          status = 'Compliant',
+          profile_data = ?
+         WHERE id = ?`,
+        [vesselId, sDate, cDuration, eDate, rank || null, JSON.stringify(profileObj), id]
+      );
+
+      // Fetch vessel name for audit log
+      const [vRows]: any = await pool.execute('SELECT name FROM vessels WHERE id = ?', [vesselId]);
+      const vName = vRows.length > 0 ? vRows[0].name : vesselId;
+
+      await logAudit(req.user.id, req.user.username, 'ASSIGN_CREW_MEMBER', `Assigned crew member ${current.name} to vessel ${vName}`);
+      res.json({ success: true, vesselName: vName });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Candidate Searching Endpoint for Non-Vessel Users
+  app.get('/api/crew-candidates', authenticate, async (req: any, res) => {
+    try {
+      if (req.user.role === 'vessel') {
+        return res.status(403).json({ error: 'Candidate search is restricted to non-vessel users.' });
+      }
+
+      const { search, rank, availability, nationality, minSeaTime } = req.query;
+
+      let query = `
+        SELECT c.*, v.name as vessel_name, v.team_id as vessel_team_id, v.owner as vessel_owner 
+        FROM crew_members c 
+        LEFT JOIN vessels v ON c.vessel_id = v.id 
+        WHERE c.deleted_at IS NULL
+      `;
+      const params: any[] = [];
+
+      // Filter: typically candidates are not onboard or in pool or available
+      if (availability) {
+        if (availability === 'available') {
+          query += ` AND (c.vessel_id IS NULL OR c.vessel_id = '' OR c.vessel_id = 'any' OR c.vessel_id = 'all' OR c.vessel_id = 'pool' OR c.availability_status = 'available')`;
+        } else if (availability === 'on_leave') {
+          query += ` AND c.availability_status = 'on_leave'`;
+        } else if (availability === 'onboard') {
+          query += ` AND c.vessel_id IS NOT NULL AND c.vessel_id != '' AND c.vessel_id != 'any' AND c.vessel_id != 'all' AND c.vessel_id != 'pool'`;
+        }
+      }
+
+      if (rank) {
+        query += ` AND c.rank_name LIKE ?`;
+        params.push(`%${rank}%`);
+      }
+
+      if (nationality) {
+        query += ` AND c.nationality = ?`;
+        params.push(nationality);
+      }
+
+      if (search) {
+        query += ` AND (c.name LIKE ? OR c.passport_no LIKE ? OR c.seaman_book_no LIKE ? OR c.rank_name LIKE ?)`;
+        const s = `%${search}%`;
+        params.push(s, s, s, s);
+      }
+
+      query += ' ORDER BY c.created_at DESC';
+      const [members]: any = await pool.execute(query, params);
+
+      const userTeamIds = await getEffectiveTeamIds(req.user);
+
+      const candidates = members.map((m: any) => {
+        let photoUrl = m.photo || '';
+        if (photoUrl && !photoUrl.startsWith('http://') && !photoUrl.startsWith('https://')) {
+          const tokenStr = req.query.token || req.headers.authorization?.split(' ')[1] || '';
+          photoUrl = `/api/crew-members/${m.id}/photo?token=${tokenStr}`;
+        }
+
+        const profile = buildDefaultCrewProfile(m, m.vessel_name);
+
+        // Compute total sea time from sea service entries
+        const seaServiceEntries: any[] = profile.seaService || [];
+        const totalSeaMonths = seaServiceEntries.reduce((acc: number, entry: any) => {
+          return acc + (Number(entry.durationMonths) || 6);
+        }, 0);
+
+        return {
+          id: m.id,
+          name: m.name,
+          rank: m.rank_name,
+          nationality: m.nationality || 'Unknown',
+          birthdate: m.birthdate ? new Date(m.birthdate).toISOString().split('T')[0] : '',
+          passportNo: m.passport_no || 'N/A',
+          seamanBookNo: m.seaman_book_no || 'N/A',
+          status: m.status || 'Compliant',
+          vesselId: m.vessel_id || '',
+          vesselName: m.vessel_name || 'In Pool / Available',
+          vesselOwner: m.vessel_owner || null,
+          availabilityStatus: m.availability_status || (m.vessel_id ? 'onboard' : 'available'),
+          readyDate: m.ready_date ? new Date(m.ready_date).toISOString().split('T')[0] : '',
+          photo: photoUrl,
+          totalSeaMonths: totalSeaMonths,
+          hiringStatus: m.hiring_status || 'for rehire',
+          contactNumber: m.contact_number || '',
+          email: m.email || '',
+          profileData: profile
+        };
+      });
+
+      // Filter by minSeaTime if requested
+      const filtered = minSeaTime ? candidates.filter((c: any) => c.totalSeaMonths >= Number(minSeaTime)) : candidates;
+
+      res.json(filtered);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Crew document upload
+  app.post('/api/crew-members/:id/documents', authenticate, async (req: any, res) => {
+    const { id } = req.params;
+    const { docName, docType, fileName, fileSize, fileData } = req.body;
+
+    try {
+      const [members]: any = await pool.execute('SELECT vessel_id FROM crew_members WHERE id = ?', [id]);
+      if (members.length === 0) {
+        return res.status(404).json({ error: 'Crew member not found' });
+      }
+
+      const canManage = await canUserManageVesselCrew(req.user, members[0].vessel_id);
+      if (!canManage) {
+        return res.status(403).json({ error: 'Access denied: You cannot upload documents for this crew member.' });
+      }
+
+      const docId = 'cdoc_' + Math.random().toString(36).substring(2, 11);
+      let storedFile = fileData || '';
+
+      if (fileData && fileData.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(fileData);
+        if (parsed) {
+          try {
+            const ext = fileName ? fileName.split('.').pop() || 'pdf' : 'pdf';
+            const uploadResult = await handleFileUpload(`${docId}.${ext}`, parsed.mimetype, parsed.buffer, 'crew_documents');
+            if (uploadResult.toString().startsWith('B2_KEY:')) {
+              storedFile = uploadResult.toString();
+            }
+          } catch (err) {
+            console.error('Failed to upload crew document to B2:', err);
+          }
+        }
+      }
+
+      await pool.execute(
+        `INSERT INTO crew_documents (id, crew_id, doc_name, doc_type, file_name, file_size, file_data, uploaded_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [docId, id, docName || fileName, docType || 'General', fileName, fileSize || '0 KB', storedFile, req.user.username]
+      );
+
+      await logAudit(req.user.id, req.user.username, 'UPLOAD_CREW_DOCUMENT', `Uploaded document ${docName || fileName} for crew ${id}`);
+      res.status(201).json({ success: true, docId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Crew document download/retrieve
+  app.get('/api/crew-members/:id/documents/:docId', authenticate, async (req: any, res) => {
+    try {
+      const [rows]: any = await pool.execute('SELECT * FROM crew_documents WHERE id = ? AND crew_id = ?', [req.params.docId, req.params.id]);
+      if (rows.length === 0) {
+        return res.status(404).json({ error: 'Document not found' });
+      }
+
+      const doc = rows[0];
+      if (doc.file_data && doc.file_data.startsWith('B2_KEY:')) {
+        const retrievedData = await handleFileRetrieve(Buffer.from(doc.file_data));
+        res.setHeader('Content-Disposition', `inline; filename="${doc.file_name}"`);
+        return res.send(retrievedData);
+      } else if (doc.file_data && doc.file_data.startsWith('data:')) {
+        const parsed = parseBase64DataUrl(doc.file_data);
+        if (parsed) {
+          res.setHeader('Content-Type', parsed.mimetype);
+          res.setHeader('Content-Disposition', `inline; filename="${doc.file_name}"`);
+          return res.send(parsed.buffer);
+        }
+      }
+      res.status(404).json({ error: 'Document payload unavailable' });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Crew document delete
+  app.delete('/api/crew-members/:id/documents/:docId', authenticate, async (req: any, res) => {
+    try {
+      const [members]: any = await pool.execute('SELECT vessel_id FROM crew_members WHERE id = ?', [req.params.id]);
+      if (members.length === 0) {
+        return res.status(404).json({ error: 'Crew member not found' });
+      }
+
+      const canManage = await canUserManageVesselCrew(req.user, members[0].vessel_id);
+      if (!canManage) {
+        return res.status(403).json({ error: 'Access denied: You cannot delete documents for this crew member.' });
+      }
+
+      await pool.execute('DELETE FROM crew_documents WHERE id = ? AND crew_id = ?', [req.params.docId, req.params.id]);
+      await logAudit(req.user.id, req.user.username, 'DELETE_CREW_DOCUMENT', `Deleted document ${req.params.docId} for crew ${req.params.id}`);
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -13267,6 +13949,22 @@ Generated by COMOS System
 
   app.delete('/api/crew-members/:id/profile', authenticate, async (req: any, res) => {
     try {
+      if (req.user.role !== 'admin' && req.user.role !== 'team_pic') {
+        return res.status(403).json({ error: 'Access denied: Only Managers and Administrators can delete crew profiles.' });
+      }
+
+      const [members]: any = await pool.execute('SELECT vessel_id FROM crew_members WHERE id = ?', [req.params.id]);
+      if (members.length === 0) {
+        return res.status(404).json({ error: 'Crew member not found' });
+      }
+
+      if (members.length > 0 && members[0].vessel_id) {
+        const canManage = await canUserManageVesselCrew(req.user, members[0].vessel_id);
+        if (!canManage) {
+          return res.status(403).json({ error: 'Access denied: You are not authorized to delete crew members for this vessel.' });
+        }
+      }
+
       await pool.execute(
         'UPDATE crew_members SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?',
         [req.params.id]
@@ -13281,6 +13979,20 @@ Generated by COMOS System
   app.delete('/api/crew-members/:id', authenticate, async (req: any, res) => {
     try {
       if (req.query.mode === 'profile' || req.query.permanent === 'true') {
+        if (req.user.role !== 'admin' && req.user.role !== 'team_pic') {
+          return res.status(403).json({ error: 'Access denied: Only Managers and Administrators can delete crew profiles.' });
+        }
+      }
+
+      const [members]: any = await pool.execute('SELECT vessel_id FROM crew_members WHERE id = ?', [req.params.id]);
+      if (members.length > 0 && members[0].vessel_id) {
+        const canManage = await canUserManageVesselCrew(req.user, members[0].vessel_id);
+        if (!canManage) {
+          return res.status(403).json({ error: 'Access denied: You are not authorized to manage this crew member.' });
+        }
+      }
+
+      if (req.query.mode === 'profile' || req.query.permanent === 'true') {
         await pool.execute(
           'UPDATE crew_members SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?',
           [req.params.id]
@@ -13294,7 +14006,8 @@ Generated by COMOS System
           sign_on_date = NULL, 
           contract_end_date = NULL, 
           contract_duration = 0, 
-          extensions_count = 0 
+          extensions_count = 0,
+          availability_status = 'available'
          WHERE id = ?`, 
         [req.params.id]
       );
@@ -13339,6 +14052,11 @@ Generated by COMOS System
       }
       const m = members[0];
 
+      const canManage = await canUserManageVesselCrew(req.user, m.vessel_id);
+      if (!canManage) {
+        return res.status(403).json({ error: 'Access denied: You are not authorized to disembark crew from this vessel.' });
+      }
+
       const disembarkDate = new Date().toISOString().split('T')[0];
       const signOnDate = m.sign_on_date ? new Date(m.sign_on_date).toISOString().split('T')[0] : null;
       const contractRemarks = finishedContract ? 'Finished Contract' : remarks;
@@ -13374,14 +14092,38 @@ Generated by COMOS System
         ]
       );
 
+      // Also record into profile_data seaService array
+      let profileObj = buildDefaultCrewProfile(m, vesselName);
+      if (!Array.isArray(profileObj.seaService)) profileObj.seaService = [];
+      profileObj.seaService.unshift({
+        id: historyId,
+        vesselName: vesselName,
+        vesselType: 'Commercial Vessel',
+        rank: m.rank_name,
+        signOnDate: signOnDate || '',
+        signOffDate: disembarkDate,
+        durationMonths: m.contract_duration || 6,
+        reasonForSignOff: contractRemarks
+      });
+      profileObj.vesselAssignment = {
+        ...profileObj.vesselAssignment,
+        currentVesselId: '',
+        vesselName: '',
+        status: 'Available',
+        signOnDate: '',
+        contractEndDate: ''
+      };
+
       await pool.execute(
         `UPDATE crew_members SET 
           vessel_id = '', 
           sign_on_date = NULL, 
           contract_end_date = NULL, 
-          extensions_count = 0 
+          extensions_count = 0,
+          availability_status = 'available',
+          profile_data = ?
          WHERE id = ?`,
-        [id]
+        [JSON.stringify(profileObj), id]
       );
 
       await logAudit(req.user.id, req.user.username, 'DISEMBARK_CREW_MEMBER', `Crew member ID ${id} disembarked from vessel ${vesselName}. Remarks: ${contractRemarks}`);

@@ -4,7 +4,7 @@ import {
   RotateCcw, Check, CheckCircle, CheckCircle2, Clock, Trash2, File as FileIcon, X, ChevronDown, ArrowUp, 
   ArrowDown, ArrowLeft, ArrowUpDown, AlertCircle, RefreshCw, MapPin, 
   Activity, Anchor, Download, Droplets, Fuel, Info, FileText, Edit2,
-  Eye, Navigation, Compass, ExternalLink
+  Eye, Navigation, Compass, ExternalLink, Users
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, parseISO } from "date-fns";
@@ -63,12 +63,28 @@ export const ArrivalView = ({ user, token, vessels, reports, departureReports, o
   const [form, setForm] = useState(defaultForm);
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+  const [teamFilter, setTeamFilter] = useState<string>('');
   const [vesselFilter, setVesselFilter] = useState<string>('');
   const [cargoStatusFilter, setCargoStatusFilter] = useState<string>('all');
   const [operationTypeFilter, setOperationTypeFilter] = useState<string>('all');
   const [dateFilter, setDateFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedReportForDetails, setSelectedReportForDetails] = useState<ArrivalReport | null>(null);
+
+  const availableTeams = React.useMemo(() => {
+    const map = new Map<number, string>();
+    vessels.forEach(v => {
+      if (v.team_id && v.team_name) {
+        map.set(Number(v.team_id), v.team_name);
+      }
+    });
+    (reports || []).forEach(r => {
+      if (r.team_id && r.team_name) {
+        map.set(Number(r.team_id), r.team_name);
+      }
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [vessels, reports]);
 
   const filteredReports = React.useMemo(() => {
     return reports.filter(r => {

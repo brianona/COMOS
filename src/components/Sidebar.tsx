@@ -493,7 +493,7 @@ export const SidebarContent = ({
           <button 
             onClick={() => setIsCrewOpen(!isCrewOpen)}
             className={getCategoryToggleClass(
-              user.role === 'vessel' ? ['crew_list'].includes(view) : ['crew_list', 'crew_compliance'].includes(view),
+              ['crew_management', 'crew_candidates', 'crew_list', 'crew_compliance'].includes(view),
               isCrewOpen
             )}
           >
@@ -512,20 +512,41 @@ export const SidebarContent = ({
                 transition={{ duration: 0.2 }}
                 className="overflow-hidden pl-1 space-y-1"
               >
+                {/* 1. Remade Comprehensive Crew Management Hub */}
+                <button 
+                  onClick={() => { setView('crew_management'); setIsSidebarOpen(false); }}
+                  className={getSubItemClass(view === 'crew_management')}
+                >
+                  <Users className="w-3.5 h-3.5 shrink-0 text-blue-600" /> Crew Management
+                </button>
+
+                {/* 2. Crew Search (Non-Vessel Users Only) */}
+                {user.role !== 'vessel' && (
+                  <button 
+                    onClick={() => { setView('crew_candidates'); setIsSidebarOpen(false); }}
+                    className={getSubItemClass(view === 'crew_candidates')}
+                  >
+                    <Search className="w-3.5 h-3.5 shrink-0 text-indigo-500" /> Crew Search
+                  </button>
+                )}
+
+                {/* 3. Legacy / Classic Views (Kept for development purposes) - Hidden per user request */}
+                {/*
                 <button 
                   onClick={() => { setView('crew_list'); setIsSidebarOpen(false); }}
                   className={getSubItemClass(view === 'crew_list')}
                 >
-                  <Users className="w-3.5 h-3.5 shrink-0" /> Onboard Crew
+                  <Clock className="w-3.5 h-3.5 shrink-0 text-slate-400" /> Legacy Crew Matrix
                 </button>
                 {user.role !== 'vessel' && (
                   <button 
                     onClick={() => { setView('crew_compliance'); setIsSidebarOpen(false); }}
                     className={getSubItemClass(view === 'crew_compliance')}
                   >
-                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Crew Pool List
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-slate-400" /> Legacy Crew Pool
                   </button>
                 )}
+                */}
               </motion.div>
             )}
           </AnimatePresence>

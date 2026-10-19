@@ -156,6 +156,8 @@ export interface DepartureReport {
   created_at: string;
   vessel_name?: string;
   attachment_name?: string;
+  team_id?: number;
+  team_name?: string;
 }
 
 export interface ArrivalReport {
@@ -189,6 +191,8 @@ export interface ArrivalReport {
   created_at: string;
   vessel_name?: string;
   attachment_name?: string;
+  team_id?: number;
+  team_name?: string;
 }
 
 export interface NoonReport {
@@ -233,6 +237,8 @@ export interface NoonReport {
   charterer_max_mgo?: string | null;
   charterer_min_mdo?: string | null;
   charterer_max_mdo?: string | null;
+  team_id?: number;
+  team_name?: string;
 }
 
 export interface OtherReport {
@@ -260,6 +266,8 @@ export interface OtherReport {
   foc_port_mdo: number;
   created_at: string;
   vessel_name?: string;
+  team_id?: number;
+  team_name?: string;
 }
 
 export interface Note {
@@ -338,6 +346,8 @@ export type ViewType =
   | "store_requisition"
   | "chemical_requisition"
   | "store_chemical_requisition"
+  | "crew_management"
+  | "crew_candidates"
   | "crew_list"
   | "crew_compliance"
   | "crew_employment"

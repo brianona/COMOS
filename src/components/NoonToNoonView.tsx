@@ -4,7 +4,7 @@ import {
   RotateCcw, Check, CheckCircle2, CheckSquare, Clock, Trash2, File as FileIcon, X, Eye, 
   ChevronDown, ArrowUp, ArrowDown, ArrowLeft, ArrowUpDown, AlertCircle, 
   RefreshCw, MapPin, Activity, Anchor, Download, Droplets, Waves, 
-  Camera, Image, Fuel, Info, Edit2, FileText, Compass, Wind, Gauge, BarChart2, CheckCircle
+  Camera, Image, Fuel, Info, Edit2, FileText, Compass, Wind, Gauge, BarChart2, CheckCircle, Users
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { format, parseISO } from "date-fns";
@@ -77,8 +77,25 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
   };
   const [file, setFile] = useState<File | null>(null);
   const [activeTab, setActiveTab] = useState<'form' | 'history'>('form');
+  const [teamFilter, setTeamFilter] = useState<string>('');
   const [vesselFilter, setVesselFilter] = useState<string>('');
   const [dateFilter, setDateFilter] = useState<string>('');
+
+  // Teams derived from vessels & reports to filter by team
+  const availableTeams = React.useMemo(() => {
+    const map = new Map<number, string>();
+    vessels.forEach(v => {
+      if (v.team_id && v.team_name) {
+        map.set(Number(v.team_id), v.team_name);
+      }
+    });
+    reports.forEach(r => {
+      if (r.team_id && r.team_name) {
+        map.set(Number(r.team_id), r.team_name);
+      }
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [vessels, reports]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [cargoStatusFilter, setCargoStatusFilter] = useState<string>('all');
   const [reportTypeFilter, setReportTypeFilter] = useState<string>('all');
@@ -232,6 +249,12 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
 
   const filteredReports = React.useMemo(() => {
     return reports.filter(r => {
+      // Team filter
+      if (teamFilter !== '') {
+        const v = vessels.find(v => String(v.id) === String(r.vessel_id));
+        const rTeamId = String(r.team_id || v?.team_id || '');
+        if (rTeamId !== teamFilter) return false;
+      }
       if (vesselFilter !== '' && String(r.vessel_id) !== vesselFilter) return false;
       if (cargoStatusFilter !== 'all' && r.cargo_status?.toLowerCase() !== cargoStatusFilter.toLowerCase()) return false;
       if (reportTypeFilter !== 'all' && r.report_type?.toLowerCase() !== reportTypeFilter.toLowerCase()) return false;
@@ -262,6 +285,7 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
         const matchesWeather = r.weather_notation?.toLowerCase().includes(q) || r.weather_direction?.toLowerCase().includes(q);
         const matchesVessel = r.vessel_name?.toLowerCase().includes(q);
         const matchesReportType = r.report_type?.toLowerCase().includes(q);
+        const matchesTeam = r.team_name?.toLowerCase().includes(q);
 
         let matchesDate = false;
         if (r.utc_date_time) {
@@ -284,13 +308,13 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
           }
         }
 
-        if (!matchesVoyage && !matchesPort && !matchesRemarks && !matchesAgent && !matchesWeather && !matchesVessel && !matchesDate && !matchesReportType) {
+        if (!matchesVoyage && !matchesPort && !matchesRemarks && !matchesAgent && !matchesWeather && !matchesVessel && !matchesDate && !matchesReportType && !matchesTeam) {
           return false;
         }
       }
       return true;
     });
-  }, [reports, vesselFilter, cargoStatusFilter, reportTypeFilter, dateFilter, searchQuery]);
+  }, [reports, teamFilter, vesselFilter, cargoStatusFilter, reportTypeFilter, dateFilter, searchQuery, vessels]);
 
   const historyStats = React.useMemo(() => {
     if (!filteredReports || filteredReports.length === 0) {
@@ -1236,7 +1260,11 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                 <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Reports Logged</p>
                 <p className="text-2xl font-black text-slate-900 mt-1">{historyStats.totalReports}</p>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  {vesselFilter ? 'For selected vessel' : 'Across all fleet vessels'}
+                  {vesselFilter 
+                    ? 'For selected vessel' 
+                    : teamFilter 
+                      ? `For ${availableTeams.find(t => String(t.id) === teamFilter)?.name || 'selected team'}`
+                      : 'Across accessible fleet vessels'}
                 </p>
               </div>
               <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
@@ -1291,6 +1319,35 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
           {/* Filter & Search Bar */}
           <div className="bg-white p-4 rounded-2xl border border-blue-100 shadow-sm flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
+              {/* Team Filter */}
+              {availableTeams.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <Users className="w-3.5 h-3.5 text-indigo-600" />
+                    Team:
+                  </label>
+                  <select 
+                    value={teamFilter}
+                    onChange={(e) => {
+                      setTeamFilter(e.target.value);
+                      setVesselFilter('');
+                    }}
+                    className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-indigo-500/20 outline-none cursor-pointer"
+                  >
+                    <option value="">All Teams ({availableTeams.length})</option>
+                    {availableTeams.map(t => {
+                      const count = reports.filter(r => {
+                        const v = vessels.find(v => String(v.id) === String(r.vessel_id));
+                        return String(r.team_id || v?.team_id || '') === String(t.id);
+                      }).length;
+                      return (
+                        <option key={t.id} value={String(t.id)}>{t.name} ({count})</option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
+
               {/* Vessel Filter */}
               <div className="flex items-center gap-2">
                 <label className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
@@ -1300,15 +1357,19 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                 <select 
                   value={vesselFilter}
                   onChange={(e) => setVesselFilter(e.target.value)}
-                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none"
+                  className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 focus:ring-2 focus:ring-blue-500/20 outline-none cursor-pointer"
                 >
-                  <option value="">All Vessels ({reports.length})</option>
-                  {vessels.map(v => {
-                    const count = reports.filter(r => String(r.vessel_id) === String(v.id)).length;
-                    return (
-                      <option key={v.id} value={String(v.id)}>{v.name} ({count})</option>
-                    );
-                  })}
+                  <option value="">
+                    {teamFilter ? 'All Team Vessels' : `All Vessels (${reports.length})`}
+                  </option>
+                  {vessels
+                    .filter(v => !teamFilter || String(v.team_id) === teamFilter)
+                    .map(v => {
+                      const count = reports.filter(r => String(r.vessel_id) === String(v.id)).length;
+                      return (
+                        <option key={v.id} value={String(v.id)}>{v.name} ({count})</option>
+                      );
+                    })}
                 </select>
               </div>
 
@@ -1375,10 +1436,11 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
               </div>
 
               {/* Reset All Filters Button */}
-              {(vesselFilter || cargoStatusFilter !== 'all' || reportTypeFilter !== 'all' || dateFilter || searchQuery) && (
+              {(teamFilter || vesselFilter || cargoStatusFilter !== 'all' || reportTypeFilter !== 'all' || dateFilter || searchQuery) && (
                 <button
                   type="button"
                   onClick={() => {
+                    setTeamFilter('');
                     setVesselFilter('');
                     setCargoStatusFilter('all');
                     setReportTypeFilter('all');
@@ -1463,8 +1525,16 @@ export const NoonToNoonView = ({ user, token, vessels, reports, onRefresh, notif
                                 {format(parseISO(report.utc_date_time), 'HH:mm')} UTC
                               </span>
                             </div>
-                            <div className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                            <div className="font-bold text-slate-800 text-sm flex items-center gap-2 flex-wrap">
                               <span>{report.vessel_name}</span>
+                              {(() => {
+                                const teamLabel = report.team_name || vessels.find(v => String(v.id) === String(report.vessel_id))?.team_name;
+                                return teamLabel ? (
+                                  <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200/80 rounded-md text-[10px] font-bold tracking-wide">
+                                    {teamLabel}
+                                  </span>
+                                ) : null;
+                              })()}
                               {report.voyage_number && (
                                 <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-mono font-semibold">
                                   {report.voyage_number}
