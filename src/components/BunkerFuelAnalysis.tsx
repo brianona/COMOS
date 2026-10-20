@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   FileText, Plus, X, Search, Calendar, Droplet, Ship, 
   Trash2, Download, Eye, Upload, Filter, Compass, 
-  ShieldAlert, Check, CheckCircle2, AlertTriangle, HelpCircle
+  ShieldAlert, Check, CheckCircle2, AlertTriangle, HelpCircle, CheckCheck
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -55,6 +55,8 @@ interface BunkerFuelAnalysisProps {
   token: string;
   title?: string;
   storageKey?: string;
+  onMarkAllRead?: () => void;
+  unreadCount?: number;
 }
 
 export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
@@ -62,7 +64,9 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
   currentUser,
   token,
   title = "Fuel Analysis Report Registry",
-  storageKey = "comos_bunker_fuel_analysis_logs"
+  storageKey = "comos_bunker_fuel_analysis_logs",
+  onMarkAllRead,
+  unreadCount
 }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
   const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic' || currentUser?.role === 'user';
@@ -384,12 +388,30 @@ export const BunkerFuelAnalysisView: React.FC<BunkerFuelAnalysisProps> = ({
           </p>
         </div>
 
-        <button 
-          onClick={() => setShowFormModal(true)}
-          className="relative z-20 shrink-0 self-start md:self-center bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs tracking-tight uppercase px-5 py-3.5 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer hover:shadow-lg hover:shadow-amber-900/20"
-        >
-          <Plus className="w-4 h-4" /> Log Fuel Analysis
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 relative z-20 shrink-0 self-start md:self-center">
+          {onMarkAllRead && (
+            <button
+              type="button"
+              onClick={onMarkAllRead}
+              className="bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-white font-bold text-xs px-4 py-3.5 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-1.5 cursor-pointer"
+              title="Mark all notifications as read (clears badge)"
+            >
+              <CheckCheck className="w-4 h-4 text-emerald-400" />
+              <span>Mark all read</span>
+              {unreadCount && unreadCount > 0 ? (
+                <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-black leading-none ml-1">
+                  {unreadCount}
+                </span>
+              ) : null}
+            </button>
+          )}
+          <button 
+            onClick={() => setShowFormModal(true)}
+            className="bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs tracking-tight uppercase px-5 py-3.5 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer hover:shadow-lg hover:shadow-amber-900/20"
+          >
+            <Plus className="w-4 h-4" /> Log Fuel Analysis
+          </button>
+        </div>
       </div>
 
       {/* Filters Toolbar */}

@@ -125,6 +125,16 @@ export interface CertSidebarStatus {
   newlyPostedCount: number;
 }
 
+export interface MonitoringSidebarStatus {
+  openDefectsCount: number;
+  pendingSpareRequisitionsCount: number;
+  pendingBunkerBDNCount: number;
+  pendingFuelAnalysisCount: number;
+  pendingLubeOilLDRCount: number;
+  pendingLubeOilAnalysisCount: number;
+  pendingStoreRequisitionsCount: number;
+}
+
 export interface DepartureReport {
   id: number;
   vessel_id: number;

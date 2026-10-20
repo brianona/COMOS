@@ -10,7 +10,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { cn, getRoleLabel } from "../utils/helpers";
 import { LogoContainer } from "./Logo";
-import { User, ViewType, CertSidebarStatus } from "../types";
+import { User, ViewType, CertSidebarStatus, MonitoringSidebarStatus } from "../types";
 
 export const SidebarContent = ({ 
   view, setView, setIsSidebarOpen, user, isAdminTreeOpen, setIsAdminTreeOpen, isVoyageReportOpen, setIsVoyageReportOpen, isMonitoringOpen, setIsMonitoringOpen, isDefectsOpen, setIsDefectsOpen, isSparePartsOpen, setIsSparePartsOpen, isBunkerOpen, setIsBunkerOpen, isLubeOilOpen, setIsLubeOilOpen, isStoreChemicalsOpen, setIsStoreChemicalsOpen, isCrewOpen, setIsCrewOpen, isAuditsOpen, setIsAuditsOpen, isCertificatesOpen, setIsCertificatesOpen,  onLogout,
@@ -18,7 +18,8 @@ export const SidebarContent = ({
   pendingAckCount,
   pendingDeviceRequestsCount = 0,
   smsSidebarStatus,
-  certSidebarStatus
+  certSidebarStatus,
+  monitoringSidebarStatus
 }: { 
   view: string, 
   setView: (v: any) => void, 
@@ -59,7 +60,8 @@ export const SidebarContent = ({
     hasUrgentDeadline?: boolean;
     hasUncheckedUploads?: boolean;
   },
-  certSidebarStatus?: CertSidebarStatus
+  certSidebarStatus?: CertSidebarStatus,
+  monitoringSidebarStatus?: MonitoringSidebarStatus
 }) => {
   const [isSmsReportingOpen, setIsSmsReportingOpen] = React.useState(false);
   // Beautiful interactive helper styling functions
@@ -306,10 +308,35 @@ export const SidebarContent = ({
               isMonitoringOpen
             )}
           >
-            <div className="flex items-center gap-3">
-              <Activity className="w-4 h-4" /> Operations &amp; Monitoring
+            <div className="flex items-center gap-3 min-w-0">
+              <Activity className="w-4 h-4 shrink-0" />
+              <span className="truncate">Operations &amp; Monitoring</span>
             </div>
-            <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isMonitoringOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+            <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+              {monitoringSidebarStatus && (
+                ((monitoringSidebarStatus.openDefectsCount || 0) + 
+                 (monitoringSidebarStatus.pendingSpareRequisitionsCount || 0) +
+                 (monitoringSidebarStatus.pendingBunkerBDNCount || 0) +
+                 (monitoringSidebarStatus.pendingFuelAnalysisCount || 0) +
+                 (monitoringSidebarStatus.pendingLubeOilLDRCount || 0) +
+                 (monitoringSidebarStatus.pendingLubeOilAnalysisCount || 0) +
+                 (monitoringSidebarStatus.pendingStoreRequisitionsCount || 0)) > 0
+              ) && (
+                <span 
+                  className="px-1.5 py-0.5 text-[10px] font-black rounded-full leading-none shadow-2xs shrink-0 bg-blue-600 text-white"
+                  title="Total Operations & Monitoring items"
+                >
+                  {(monitoringSidebarStatus.openDefectsCount || 0) + 
+                   (monitoringSidebarStatus.pendingSpareRequisitionsCount || 0) +
+                   (monitoringSidebarStatus.pendingBunkerBDNCount || 0) +
+                   (monitoringSidebarStatus.pendingFuelAnalysisCount || 0) +
+                   (monitoringSidebarStatus.pendingLubeOilLDRCount || 0) +
+                   (monitoringSidebarStatus.pendingLubeOilAnalysisCount || 0) +
+                   (monitoringSidebarStatus.pendingStoreRequisitionsCount || 0)}
+                </span>
+              )}
+              <ChevronDown className={cn("w-4 h-4 transition-transform duration-250", isMonitoringOpen ? "rotate-180 text-blue-600" : "text-slate-400")} />
+            </div>
           </button>
           
           <AnimatePresence>
@@ -323,51 +350,86 @@ export const SidebarContent = ({
               >
                 <button 
                   onClick={() => { setView('defects_5_2'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'defects_5_2')}
+                  className={cn(getSubItemClass(view === 'defects_5_2'), "justify-between")}
                 >
-                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-500" /> Defects &amp; Troubles
+                  <div className="flex items-center gap-3">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-500" /> Defects &amp; Troubles
+                  </div>
+                  {monitoringSidebarStatus?.openDefectsCount > 0 && (
+                     <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-amber-500 text-white rounded-full leading-none shadow-2xs shrink-0">{monitoringSidebarStatus.openDefectsCount}</span>
+                  )}
                 </button>
 
                 <button 
                   onClick={() => { setView('spare_requisition_ship'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(['spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship'].includes(view))}
+                  className={cn(getSubItemClass(['spare_requisition_ship', 'spare_quotation_pic', 'spare_logistic_pic', 'spare_delivery_note_ship'].includes(view)), "justify-between")}
                 >
-                  <Package className="w-3.5 h-3.5 shrink-0" /> Spare Requisitions
+                  <div className="flex items-center gap-3">
+                    <Package className="w-3.5 h-3.5 shrink-0" /> Spare Requisitions
+                  </div>
+                  {monitoringSidebarStatus?.pendingSpareRequisitionsCount > 0 && (
+                     <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-blue-600 text-white rounded-full leading-none shadow-2xs shrink-0">{monitoringSidebarStatus.pendingSpareRequisitionsCount}</span>
+                  )}
                 </button>
 
                 <button 
                   onClick={() => { setView('bunker_bdn'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'bunker_bdn')}
+                  className={cn(getSubItemClass(view === 'bunker_bdn'), "justify-between")}
                 >
-                  <Fuel className="w-3.5 h-3.5 shrink-0" /> Bunker BDN Logs
+                  <div className="flex items-center gap-3">
+                    <Fuel className="w-3.5 h-3.5 shrink-0" /> Bunker BDN Logs
+                  </div>
+                  {monitoringSidebarStatus?.pendingBunkerBDNCount > 0 && (
+                     <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-blue-600 text-white rounded-full leading-none shadow-2xs shrink-0">{monitoringSidebarStatus.pendingBunkerBDNCount}</span>
+                  )}
                 </button>
 
                 <button 
                   onClick={() => { setView('bunker_fuel_analysis'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'bunker_fuel_analysis')}
+                  className={cn(getSubItemClass(view === 'bunker_fuel_analysis'), "justify-between")}
                 >
-                  <Droplets className="w-3.5 h-3.5 shrink-0 text-sky-500" /> Fuel Lab Analysis
+                  <div className="flex items-center gap-3">
+                    <Droplets className="w-3.5 h-3.5 shrink-0 text-sky-500" /> Fuel Lab Analysis
+                  </div>
+                  {monitoringSidebarStatus?.pendingFuelAnalysisCount > 0 && (
+                     <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-blue-600 text-white rounded-full leading-none shadow-2xs shrink-0">{monitoringSidebarStatus.pendingFuelAnalysisCount}</span>
+                  )}
                 </button>
 
                 <button 
                   onClick={() => { setView('lube_oil_ldr'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'lube_oil_ldr')}
+                  className={cn(getSubItemClass(view === 'lube_oil_ldr'), "justify-between")}
                 >
-                  <Waves className="w-3.5 h-3.5 shrink-0 text-blue-400" /> Lube Oil LDR
+                  <div className="flex items-center gap-3">
+                    <Waves className="w-3.5 h-3.5 shrink-0 text-blue-400" /> Lube Oil LDR
+                  </div>
+                  {monitoringSidebarStatus?.pendingLubeOilLDRCount > 0 && (
+                     <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-blue-600 text-white rounded-full leading-none shadow-2xs shrink-0">{monitoringSidebarStatus.pendingLubeOilLDRCount}</span>
+                  )}
                 </button>
 
                 <button 
                   onClick={() => { setView('lube_oil_analysis'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'lube_oil_analysis')}
+                  className={cn(getSubItemClass(view === 'lube_oil_analysis'), "justify-between")}
                 >
-                  <Activity className="w-3.5 h-3.5 shrink-0" /> Lube Oil Analysis
+                  <div className="flex items-center gap-3">
+                    <Activity className="w-3.5 h-3.5 shrink-0" /> Lube Oil Analysis
+                  </div>
+                  {monitoringSidebarStatus?.pendingLubeOilAnalysisCount > 0 && (
+                     <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-blue-600 text-white rounded-full leading-none shadow-2xs shrink-0">{monitoringSidebarStatus.pendingLubeOilAnalysisCount}</span>
+                  )}
                 </button>
 
                 <button 
                   onClick={() => { setView('store_chemical_requisition'); setIsSidebarOpen(false); }}
-                  className={getSubItemClass(view === 'store_chemical_requisition')}
+                  className={cn(getSubItemClass(view === 'store_chemical_requisition'), "justify-between")}
                 >
-                  <FlaskConical className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Store &amp; Chemicals
+                  <div className="flex items-center gap-3">
+                    <FlaskConical className="w-3.5 h-3.5 shrink-0 text-emerald-500" /> Store &amp; Chemicals
+                  </div>
+                  {monitoringSidebarStatus?.pendingStoreRequisitionsCount > 0 && (
+                     <span className="ml-auto px-1.5 py-0.5 text-[10px] font-black bg-blue-600 text-white rounded-full leading-none shadow-2xs shrink-0">{monitoringSidebarStatus.pendingStoreRequisitionsCount}</span>
+                  )}
                 </button>
               </motion.div>
             )}

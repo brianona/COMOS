@@ -9,6 +9,7 @@ import {
   Clock, 
   AlertTriangle, 
   CheckCircle, 
+  CheckCircle2, 
   Calendar, 
   ShieldCheck, 
   AlertCircle, 
@@ -2689,7 +2690,10 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
         }
       } else {
         const updatedList = crew.filter(c => c.id !== memberToDelete.id);
-        saveCrewFallback(updatedList);
+        setCrew(updatedList);
+        try {
+          localStorage.setItem('comos_crew_list', JSON.stringify(updatedList));
+        } catch (e) {}
         if (selectedCrew && selectedCrew.id === memberToDelete.id) {
           setSelectedCrew(null);
         }

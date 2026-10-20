@@ -50,7 +50,7 @@ import {
   CAT4_CERTS, CAT5_CERTS, CAT6_CERTS, CAT7_CERTS, getViewTitle 
 } from "../data/certificates";
 import { 
-  Team, User, Vessel, Certificate, CertSidebarStatus, DepartureReport, ArrivalReport, 
+  Team, User, Vessel, Certificate, CertSidebarStatus, MonitoringSidebarStatus, DepartureReport, ArrivalReport, 
   NoonReport, OtherReport, Note, FileData, Notification, DBStatus, 
   ViewType, VesselFlag 
 } from "../types";
@@ -106,6 +106,12 @@ export const Dashboard = ({
       } else if (user.role === 'vessel' && targetView === 'sms') {
         targetView = 'sms_overview';
       }
+      
+      // Restrict vessels list for vessel users
+      if (user.role === 'vessel' && targetView === 'vessels') {
+        targetView = 'dashboard';
+      }
+
       if (targetView !== currentView) {
         try {
           if (window.location.hash !== '#' + targetView) {
@@ -142,6 +148,10 @@ export const Dashboard = ({
       } else if (user.role === 'vessel' && hashView === 'sms') {
         hashView = 'sms_overview';
       }
+      if (user.role === 'vessel' && hashView === 'vessels') {
+        hashView = 'dashboard';
+      }
+
       if (hashView && hashView !== view) {
         setRawView(hashView);
       } else if (event.state?.view) {
@@ -150,6 +160,9 @@ export const Dashboard = ({
           stateView = user.role === 'vessel' ? 'sms_overview' : 'sms';
         } else if (user.role === 'vessel' && stateView === 'sms') {
           stateView = 'sms_overview';
+        }
+        if (user.role === 'vessel' && stateView === 'vessels') {
+          stateView = 'dashboard';
         }
         setRawView(stateView);
       }
@@ -163,8 +176,12 @@ export const Dashboard = ({
       setView(user.role === 'vessel' ? 'sms_overview' : 'sms');
     } else if (user.role === 'vessel' && view === 'sms') {
       setView('sms_overview');
+    } else if (user.role === 'vessel' && view === 'vessels') {
+      setView('dashboard');
     }
   }, [user.role, view, setView]);
+
+  
   const [isAdminTreeOpen, setIsAdminTreeOpen] = useState(false);
   const [isVoyageReportOpen, setIsVoyageReportOpen] = useState(false);
   const [isMonitoringOpen, setIsMonitoringOpen] = useState(false);
@@ -229,6 +246,36 @@ export const Dashboard = ({
   const [nonConformities, setNonConformities] = useState<any[]>([]);
   const [troubleReports, setTroubleReports] = useState<any[]>([]);
   const [spareRequisitions, setSpareRequisitions] = useState<any[]>([]);
+  const [bunkerBdnReports, setBunkerBdnReports] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('comos_bunker_bdn_logs');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) { return []; }
+  });
+  const [fuelAnalysisReports, setFuelAnalysisReports] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('comos_fuel_analysis_reports');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) { return []; }
+  });
+  const [lubeOilLdrReports, setLubeOilLdrReports] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('comos_lube_oil_ldr_reports');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) { return []; }
+  });
+  const [lubeOilAnalysisReports, setLubeOilAnalysisReports] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('comos_lube_oil_analysis_reports');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) { return []; }
+  });
+  const [storeChemicalRequisitions, setStoreChemicalRequisitions] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('comos_store_chemical_requisitions');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) { return []; }
+  });
   const [selectedCert, setSelectedCert] = useState<Certificate | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [files, setFiles] = useState<FileData[]>([]);
@@ -254,6 +301,14 @@ export const Dashboard = ({
   const [vesselCertSearch, setVesselCertSearch] = useState('');
   const [vesselSearch, setVesselSearch] = useState('');
   const [vesselFilterTeam, setVesselFilterTeam] = useState('');
+
+  useEffect(() => {
+    if (view === 'vessel_details' && user.role === 'vessel') {
+      if (!selectedVessel || String(selectedVessel.id) !== String(user.vessel_id)) {
+        setView('dashboard');
+      }
+    }
+  }, [view, selectedVessel, user.role, user.vessel_id, setView]);
   const [vesselFilterOwner, setVesselFilterOwner] = useState('');
   const [vesselSortField, setVesselSortField] = useState<'name' | 'team' | 'owner'>('name');
   const [vesselSortOrder, setVesselSortOrder] = useState<'asc' | 'desc'>('asc');
@@ -311,6 +366,158 @@ export const Dashboard = ({
     notify('success', 'All certificates marked as read');
   }, [certs, notify]);
 
+  // Operations & Monitoring Read Notifications Tracking
+  const [readMonitoringIds, setReadMonitoringIds] = useState<{
+    defects: Set<string | number>;
+    spares: Set<string | number>;
+    bunkerBdn: Set<string | number>;
+    fuelAnalysis: Set<string | number>;
+    lubeLdr: Set<string | number>;
+    lubeAnalysis: Set<string | number>;
+    stores: Set<string | number>;
+  }>(() => {
+    const getSaved = (key: string) => {
+      try {
+        const item = localStorage.getItem(key);
+        return item ? new Set<string | number>(JSON.parse(item)) : new Set<string | number>();
+      } catch {
+        return new Set<string | number>();
+      }
+    };
+    return {
+      defects: getSaved('comos_read_defects_ids'),
+      spares: getSaved('comos_read_spares_ids'),
+      bunkerBdn: getSaved('comos_read_bunker_bdn_ids'),
+      fuelAnalysis: getSaved('comos_read_fuel_analysis_ids'),
+      lubeLdr: getSaved('comos_read_lube_ldr_ids'),
+      lubeAnalysis: getSaved('comos_read_lube_analysis_ids'),
+      stores: getSaved('comos_read_stores_ids'),
+    };
+  });
+
+  const markMonitoringCategoryRead = useCallback((category: 'defects' | 'spares' | 'bunkerBdn' | 'fuelAnalysis' | 'lubeLdr' | 'lubeAnalysis' | 'stores', label: string) => {
+    let idsToMark: (string | number)[] = [];
+    let storageKey = '';
+    
+    switch (category) {
+      case 'defects':
+        idsToMark = troubleReports.map(r => r.id);
+        storageKey = 'comos_read_defects_ids';
+        break;
+      case 'spares':
+        idsToMark = spareRequisitions.map(r => r.id);
+        storageKey = 'comos_read_spares_ids';
+        break;
+      case 'bunkerBdn':
+        idsToMark = bunkerBdnReports.map(r => r.id);
+        storageKey = 'comos_read_bunker_bdn_ids';
+        break;
+      case 'fuelAnalysis':
+        idsToMark = fuelAnalysisReports.map(r => r.id);
+        storageKey = 'comos_read_fuel_analysis_ids';
+        break;
+      case 'lubeLdr':
+        idsToMark = lubeOilLdrReports.map(r => r.id);
+        storageKey = 'comos_read_lube_ldr_ids';
+        break;
+      case 'lubeAnalysis':
+        idsToMark = lubeOilAnalysisReports.map(r => r.id);
+        storageKey = 'comos_read_lube_analysis_ids';
+        break;
+      case 'stores':
+        idsToMark = storeChemicalRequisitions.map(r => r.id);
+        storageKey = 'comos_read_stores_ids';
+        break;
+    }
+
+    setReadMonitoringIds(prev => {
+      const updatedSet = new Set(prev[category]);
+      idsToMark.forEach(id => {
+        if (id != null) updatedSet.add(id);
+      });
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(Array.from(updatedSet)));
+      } catch (e) {}
+      return {
+        ...prev,
+        [category]: updatedSet
+      };
+    });
+
+    notify('success', `All ${label} marked as read`);
+  }, [troubleReports, spareRequisitions, bunkerBdnReports, fuelAnalysisReports, lubeOilLdrReports, lubeOilAnalysisReports, storeChemicalRequisitions, notify]);
+
+  const monitoringSidebarStatus = React.useMemo<MonitoringSidebarStatus>(() => {
+    const unreadDefects = troubleReports.filter(r => r.status !== 'Closed' && !readMonitoringIds.defects.has(r.id)).length;
+    const unreadSpares = spareRequisitions.filter(r => (r.status === 'Pending' || r.status === 'Draft' || !r.status) && !readMonitoringIds.spares.has(r.id)).length;
+    const unreadBunkerBdn = bunkerBdnReports.filter(r => !readMonitoringIds.bunkerBdn.has(r.id)).length;
+    const unreadFuelAnalysis = fuelAnalysisReports.filter(r => !readMonitoringIds.fuelAnalysis.has(r.id)).length;
+    const unreadLubeLdr = lubeOilLdrReports.filter(r => !readMonitoringIds.lubeLdr.has(r.id)).length;
+    const unreadLubeAnalysis = lubeOilAnalysisReports.filter(r => !readMonitoringIds.lubeAnalysis.has(r.id)).length;
+    const unreadStores = storeChemicalRequisitions.filter(r => (r.status === 'Pending' || r.status === 'Draft' || !r.status) && !readMonitoringIds.stores.has(r.id)).length;
+
+    return {
+      openDefectsCount: unreadDefects,
+      pendingSpareRequisitionsCount: unreadSpares,
+      pendingBunkerBDNCount: unreadBunkerBdn,
+      pendingFuelAnalysisCount: unreadFuelAnalysis,
+      pendingLubeOilLDRCount: unreadLubeLdr,
+      pendingLubeOilAnalysisCount: unreadLubeAnalysis,
+      pendingStoreRequisitionsCount: unreadStores
+    };
+  }, [troubleReports, spareRequisitions, bunkerBdnReports, fuelAnalysisReports, lubeOilLdrReports, lubeOilAnalysisReports, storeChemicalRequisitions, readMonitoringIds]);
+
+  const currentMonitoringPageInfo = React.useMemo(() => {
+    switch (view) {
+      case 'defects_5_2':
+        return {
+          label: 'Defects & Troubles',
+          unreadCount: monitoringSidebarStatus.openDefectsCount,
+          onMarkRead: () => markMonitoringCategoryRead('defects', 'Defects & Troubles')
+        };
+      case 'spare_requisition_ship':
+      case 'spare_quotation_pic':
+      case 'spare_logistic_pic':
+      case 'spare_delivery_note_ship':
+        return {
+          label: 'Spare Requisitions',
+          unreadCount: monitoringSidebarStatus.pendingSpareRequisitionsCount,
+          onMarkRead: () => markMonitoringCategoryRead('spares', 'Spare Requisitions')
+        };
+      case 'bunker_bdn':
+        return {
+          label: 'Bunker BDN Logs',
+          unreadCount: monitoringSidebarStatus.pendingBunkerBDNCount,
+          onMarkRead: () => markMonitoringCategoryRead('bunkerBdn', 'Bunker BDN Logs')
+        };
+      case 'bunker_fuel_analysis':
+        return {
+          label: 'Fuel Lab Analysis',
+          unreadCount: monitoringSidebarStatus.pendingFuelAnalysisCount,
+          onMarkRead: () => markMonitoringCategoryRead('fuelAnalysis', 'Fuel Lab Analysis')
+        };
+      case 'lube_oil_ldr':
+        return {
+          label: 'Lube Oil LDR',
+          unreadCount: monitoringSidebarStatus.pendingLubeOilLDRCount,
+          onMarkRead: () => markMonitoringCategoryRead('lubeLdr', 'Lube Oil LDR')
+        };
+      case 'lube_oil_analysis':
+        return {
+          label: 'Lube Oil Analysis',
+          unreadCount: monitoringSidebarStatus.pendingLubeOilAnalysisCount,
+          onMarkRead: () => markMonitoringCategoryRead('lubeAnalysis', 'Lube Oil Analysis')
+        };
+      case 'store_chemical_requisition':
+        return {
+          label: 'Store & Chemicals',
+          unreadCount: monitoringSidebarStatus.pendingStoreRequisitionsCount,
+          onMarkRead: () => markMonitoringCategoryRead('stores', 'Store & Chemicals')
+        };
+      default:
+        return null;
+    }
+  }, [view, monitoringSidebarStatus, markMonitoringCategoryRead]);
   // Compute number badge counts for Certificates & Reports
   const certSidebarStatus = React.useMemo<CertSidebarStatus>(() => {
     let expiredCount = 0;
@@ -1064,6 +1271,10 @@ export const Dashboard = ({
         arrRes,
         noonRes,
         otherRes,
+        bdnRes,
+        fuelAnalysisRes,
+        lubeLdrRes,
+        lubeAnalysisRes,
       ] = await Promise.all([
         fetch('/api/certificates', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
         fetch('/api/vessels', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
@@ -1078,6 +1289,10 @@ export const Dashboard = ({
         fetch('/api/arrival-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
         fetch('/api/noon-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
         fetch('/api/other-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/bunker-bdn-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/fuel-analysis-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/lube-oil-ldr-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
+        fetch('/api/lube-oil-analysis-reports', { headers }).catch(e => ({ ok: false, status: 500, headers: new Headers() } as any)),
       ]);
       
       const processResponse = async (res: Response, setter: (data: any) => void, name: string) => {
@@ -1116,6 +1331,10 @@ export const Dashboard = ({
         processResponse(arrRes, setArrivalReports, 'arrivalreports'),
         processResponse(noonRes, setNoonReports, 'noonreports'),
         processResponse(otherRes, setOtherReports, 'otherreports'),
+        processResponse(bdnRes, setBunkerBdnReports, 'bunkerbdn'),
+        processResponse(fuelAnalysisRes, setFuelAnalysisReports, 'fuelanalysis'),
+        processResponse(lubeLdrRes, setLubeOilLdrReports, 'lubeldr'),
+        processResponse(lubeAnalysisRes, setLubeOilAnalysisReports, 'lubeanalysis'),
       ]);
     } catch (err) {
       console.error('Failed to fetch data:', err);
@@ -1848,6 +2067,7 @@ export const Dashboard = ({
           pendingDeviceRequestsCount={pendingDeviceRequestsCount}
           smsSidebarStatus={smsSidebarStatus}
           certSidebarStatus={certSidebarStatus}
+          monitoringSidebarStatus={monitoringSidebarStatus}
         />
       </aside>
 
@@ -1916,6 +2136,7 @@ export const Dashboard = ({
                   pendingDeviceRequestsCount={pendingDeviceRequestsCount}
                   smsSidebarStatus={smsSidebarStatus}
                   certSidebarStatus={certSidebarStatus}
+                  monitoringSidebarStatus={monitoringSidebarStatus}
                 />
               </div>
             </motion.aside>
@@ -2009,6 +2230,29 @@ export const Dashboard = ({
                 </span>
               </button>
 
+              {/* Operations & Monitoring: Mark All Read button */}
+              {currentMonitoringPageInfo && (
+                <button
+                  type="button"
+                  onClick={currentMonitoringPageInfo.onMarkRead}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-extrabold border transition-all cursor-pointer shadow-2xs active:scale-95",
+                    currentMonitoringPageInfo.unreadCount > 0
+                      ? "bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700 shadow-sm"
+                      : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200"
+                  )}
+                  title={`Mark all notifications in ${currentMonitoringPageInfo.label} as read (clears badge)`}
+                >
+                  <CheckCheck className="w-3.5 h-3.5" />
+                  <span>Mark all read</span>
+                  {currentMonitoringPageInfo.unreadCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-white text-emerald-800 text-[10px] font-black leading-none ml-0.5">
+                      {currentMonitoringPageInfo.unreadCount}
+                    </span>
+                  )}
+                </button>
+              )}
+
               {viewHistory.length > 0 && (
                 <span className="hidden md:inline text-[11px] font-bold text-slate-500 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200/60">
                   Previous: <strong className="text-slate-800">{getViewTitle(viewHistory[viewHistory.length - 1])}</strong>
@@ -2070,7 +2314,19 @@ export const Dashboard = ({
                       Refresh Data
                     </button>
                     <button 
-                      onClick={() => setView('vessels')}
+                      onClick={() => {
+                        if (user.role === 'vessel' && user.vessel_id) {
+                          const myVessel = vessels.find(v => String(v.id) === String(user.vessel_id));
+                          if (myVessel) {
+                            setSelectedVessel(myVessel);
+                            setView('vessel_details');
+                          } else {
+                            setView('dashboard');
+                          }
+                        } else {
+                          setView('vessels');
+                        }
+                      }}
                       className="px-4 py-2.5 bg-blue-500 hover:bg-blue-600 active:scale-95 text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20"
                     >
                       <Ship className="w-3.5 h-3.5" />
@@ -2084,7 +2340,19 @@ export const Dashboard = ({
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
                 {/* 1. Vessels List KPI */}
                 <div 
-                  onClick={() => setView('vessels')}
+                  onClick={() => {
+                    if (user.role === 'vessel' && user.vessel_id) {
+                      const myVessel = vessels.find(v => String(v.id) === String(user.vessel_id));
+                      if (myVessel) {
+                        setSelectedVessel(myVessel);
+                        setView('vessel_details');
+                      } else {
+                        setView('dashboard');
+                      }
+                    } else {
+                      setView('vessels');
+                    }
+                  }}
                   className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
                 >
                   <div className="flex items-center justify-between mb-4">
@@ -5628,13 +5896,25 @@ export const Dashboard = ({
 
           {view === 'defects_5_2' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <TroubleReportView vessels={vessels} currentUser={user} token={token} />
+              <TroubleReportView 
+                vessels={vessels} 
+                currentUser={user} 
+                token={token} 
+                onMarkAllRead={() => markMonitoringCategoryRead('defects', 'Defects & Troubles')}
+                unreadCount={monitoringSidebarStatus.openDefectsCount}
+              />
             </div>
           )}
 
           {view === 'spare_requisition_ship' && (
             <div className="animate-in fade-in slide-in-from-bottom-3 duration-300">
-              <SparePartsRequisitionView vessels={vessels} currentUser={user} token={token} />
+              <SparePartsRequisitionView 
+                vessels={vessels} 
+                currentUser={user} 
+                token={token} 
+                onMarkAllRead={() => markMonitoringCategoryRead('spares', 'Spare Requisitions')}
+                unreadCount={monitoringSidebarStatus.pendingSpareRequisitionsCount}
+              />
             </div>
           )}
 
@@ -5646,6 +5926,8 @@ export const Dashboard = ({
                 title="Store and Chemical Requisition" 
                 storageKey="comos_store_chemical_requisitions" 
                 token={token}
+                onMarkAllRead={() => markMonitoringCategoryRead('stores', 'Store & Chemicals')}
+                unreadCount={monitoringSidebarStatus.pendingStoreRequisitionsCount}
               />
             </div>
           )}
@@ -5656,6 +5938,8 @@ export const Dashboard = ({
                 vessels={vessels} 
                 currentUser={user} 
                 token={token}
+                onMarkAllRead={() => markMonitoringCategoryRead('bunkerBdn', 'Bunker BDN Logs')}
+                unreadCount={monitoringSidebarStatus.pendingBunkerBDNCount}
               />
             </div>
           )}
@@ -5666,6 +5950,8 @@ export const Dashboard = ({
                 vessels={vessels} 
                 currentUser={user} 
                 token={token}
+                onMarkAllRead={() => markMonitoringCategoryRead('lubeLdr', 'Lube Oil LDR')}
+                unreadCount={monitoringSidebarStatus.pendingLubeOilLDRCount}
               />
             </div>
           )}
@@ -5676,6 +5962,8 @@ export const Dashboard = ({
                 vessels={vessels} 
                 currentUser={user} 
                 token={token}
+                onMarkAllRead={() => markMonitoringCategoryRead('fuelAnalysis', 'Fuel Lab Analysis')}
+                unreadCount={monitoringSidebarStatus.pendingFuelAnalysisCount}
               />
             </div>
           )}
@@ -5686,6 +5974,8 @@ export const Dashboard = ({
                 vessels={vessels} 
                 currentUser={user} 
                 token={token}
+                onMarkAllRead={() => markMonitoringCategoryRead('lubeAnalysis', 'Lube Oil Analysis')}
+                unreadCount={monitoringSidebarStatus.pendingLubeOilAnalysisCount}
               />
             </div>
           )}

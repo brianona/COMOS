@@ -297,3 +297,18 @@ export function computeNoonReportAvgSpeed(
     isNewVoyageOrPort: false
   };
 }
+
+export function calculateCrewAge(birthdate?: string | null): number | null {
+  if (!birthdate) return null;
+  const dateStr = String(birthdate).trim();
+  if (!dateStr) return null;
+  const birth = new Date(dateStr);
+  if (isNaN(birth.getTime())) return null;
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const m = today.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
+    age--;
+  }
+  return age >= 10 && age <= 110 ? age : null;
+}

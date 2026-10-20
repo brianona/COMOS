@@ -16,7 +16,8 @@ import {
   ChevronDown,
   ChevronUp,
   MessageSquare,
-  Lock
+  Lock,
+  CheckCheck
 } from 'lucide-react';
 import { useRealtimeAutoRefresh } from '../services/realtimeSync';
 
@@ -89,6 +90,8 @@ interface SparePartsRequisitionProps {
   title?: string;
   storageKey?: string;
   token?: string;
+  onMarkAllRead?: () => void;
+  unreadCount?: number;
 }
 
 const INITIAL_REQUISITIONS: SparePartsRequisition[] = [
@@ -319,7 +322,9 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
   currentUser,
   title = "Spare Parts Requisition Board",
   storageKey = "comos_spare_requisitions",
-  token
+  token,
+  onMarkAllRead,
+  unreadCount
 }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
   const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic' || currentUser?.role === 'user';
@@ -877,16 +882,34 @@ export const SparePartsRequisitionView: React.FC<SparePartsRequisitionProps> = (
           </p>
         </div>
 
-        <button
-          onClick={() => setShowFormModal(true)}
-          className={`relative z-20 shrink-0 self-start md:self-center text-white font-extrabold text-xs tracking-tight uppercase px-5 py-3 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer hover:shadow-lg ${
-            isStoreChemicals 
-              ? 'bg-emerald-600 hover:bg-emerald-700' 
-              : 'bg-blue-600 hover:bg-blue-700'
-          }`}
-        >
-          <Plus className="w-4 h-4" /> Log New Requisition
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 relative z-20 shrink-0 self-start md:self-center">
+          {onMarkAllRead && (
+            <button
+              type="button"
+              onClick={onMarkAllRead}
+              className="bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-white font-bold text-xs px-4 py-3 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-1.5 cursor-pointer"
+              title="Mark all notifications as read (clears badge)"
+            >
+              <CheckCheck className="w-4 h-4 text-emerald-400" />
+              <span>Mark all read</span>
+              {unreadCount && unreadCount > 0 ? (
+                <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-black leading-none ml-1">
+                  {unreadCount}
+                </span>
+              ) : null}
+            </button>
+          )}
+          <button
+            onClick={() => setShowFormModal(true)}
+            className={`text-white font-extrabold text-xs tracking-tight uppercase px-5 py-3 rounded-2xl transition-all shadow-md active:scale-95 flex items-center gap-2 cursor-pointer hover:shadow-lg ${
+              isStoreChemicals 
+                ? 'bg-emerald-600 hover:bg-emerald-700' 
+                : 'bg-blue-600 hover:bg-blue-700'
+            }`}
+          >
+            <Plus className="w-4 h-4" /> Log New Requisition
+          </button>
+        </div>
       </div>
 
       {/* Filter and Control Panel bar */}

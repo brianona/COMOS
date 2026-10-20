@@ -21,7 +21,8 @@ import {
   Upload,
   Paperclip,
   Edit2,
-  Check
+  Check,
+  CheckCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useRealtimeAutoRefresh } from '../services/realtimeSync';
@@ -111,9 +112,11 @@ interface TroubleReportViewProps {
     email?: string;
   } | null;
   token?: string;
+  onMarkAllRead?: () => void;
+  unreadCount?: number;
 }
 
-export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, currentUser, token }) => {
+export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, currentUser, token, onMarkAllRead, unreadCount }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
   const userVesselId = isVesselUser ? String(currentUser.vessel_id) : null;
   const allowedVessels = isVesselUser 
@@ -576,12 +579,30 @@ export const TroubleReportView: React.FC<TroubleReportViewProps> = ({ vessels, c
             Record, classify and monitor marine deficiencies, incidents, malfunctions or PSC observations across fleet vessels. Ensuring safety code compliance and swift close-out.
           </p>
         </div>
-        <button
-          onClick={() => setShowFormModal(true)}
-          className="flex items-center justify-center gap-2 bg-white text-blue-700 px-5 py-3 rounded-xl font-bold hover:bg-blue-50 hover:scale-[1.02] active:scale-[0.98] transition-all relative z-10 shadow-sm"
-        >
-          <Plus className="w-5 h-5" /> File New Report
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 relative z-10 self-start md:self-center">
+          {onMarkAllRead && (
+            <button
+              type="button"
+              onClick={onMarkAllRead}
+              className="flex items-center justify-center gap-1.5 bg-blue-600/70 hover:bg-blue-600 border border-blue-400/50 text-white px-4 py-3 rounded-xl font-bold transition-all shadow-xs text-xs cursor-pointer active:scale-95"
+              title="Mark all notifications as read (clears badge)"
+            >
+              <CheckCheck className="w-4 h-4 text-emerald-300" />
+              <span>Mark all read</span>
+              {unreadCount && unreadCount > 0 ? (
+                <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-black leading-none ml-1">
+                  {unreadCount}
+                </span>
+              ) : null}
+            </button>
+          )}
+          <button
+            onClick={() => setShowFormModal(true)}
+            className="flex items-center justify-center gap-2 bg-white text-blue-700 px-5 py-3 rounded-xl font-bold hover:bg-blue-50 hover:scale-[1.02] active:scale-[0.98] transition-all shadow-sm cursor-pointer"
+          >
+            <Plus className="w-5 h-5" /> File New Report
+          </button>
+        </div>
       </div>
 
       {/* Stats Board */}

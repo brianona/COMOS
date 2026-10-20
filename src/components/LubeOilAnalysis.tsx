@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   FileText, Plus, X, Search, Calendar, Droplet, Ship, 
   Trash2, Download, Eye, Upload, Filter, Compass, 
-  ShieldAlert, Check, CheckCircle2, AlertTriangle, HelpCircle, Waves, Pencil
+  ShieldAlert, Check, CheckCircle2, AlertTriangle, HelpCircle, Waves, Pencil, CheckCheck
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -54,13 +54,17 @@ interface LubeOilAnalysisProps {
   currentUser: User;
   token: string;
   title?: string;
+  onMarkAllRead?: () => void;
+  unreadCount?: number;
 }
 
 export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
   vessels = [],
   currentUser,
   token,
-  title = "Lube Oil Analysis Registry"
+  title = "Lube Oil Analysis Registry",
+  onMarkAllRead,
+  unreadCount
 }) => {
   const isVesselUser = currentUser?.role === 'vessel' && currentUser?.vessel_id;
   const isAdminOrPic = currentUser?.role === 'admin' || currentUser?.role === 'team_pic' || currentUser?.role === 'user';
@@ -476,10 +480,26 @@ export const LubeOilAnalysisView: React.FC<LubeOilAnalysisProps> = ({
           </p>
         </div>
         
-        <div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {onMarkAllRead && (
+            <button
+              type="button"
+              onClick={onMarkAllRead}
+              className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-black tracking-wider uppercase rounded-xl transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+              title="Mark all notifications as read (clears badge)"
+            >
+              <CheckCheck className="w-4 h-4 text-emerald-600" />
+              <span>Mark all read</span>
+              {unreadCount && unreadCount > 0 ? (
+                <span className="px-1.5 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-black leading-none ml-1">
+                  {unreadCount}
+                </span>
+              ) : null}
+            </button>
+          )}
           <button
             onClick={() => setShowFormModal(true)}
-            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black tracking-wider uppercase rounded-xl shadow-lg shadow-blue-100 transition-all hover:shadow-blue-200 active:scale-95 flex items-center justify-center gap-2"
+            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-black tracking-wider uppercase rounded-xl shadow-lg shadow-blue-100 transition-all hover:shadow-blue-200 active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
           >
             <Plus className="w-4 h-4" /> Submit Analysis Report
           </button>

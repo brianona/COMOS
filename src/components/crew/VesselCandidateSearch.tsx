@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { CandidateItem, CrewMemberItem } from '../../types/crew';
 import { CrewProfileModal } from './CrewProfileModal';
+import { calculateCrewAge } from '../../utils/helpers';
 
 interface VesselOption {
   id: number | string;
@@ -426,6 +427,21 @@ export const VesselCandidateSearch: React.FC<VesselCandidateSearchProps> = ({
 
                   {/* Highlights & Qualifications */}
                   <div className="mt-4 pt-3.5 border-t border-slate-100 space-y-2 text-xs">
+                    {(() => {
+                      const bdate = cand.birthdate || cand.profileData?.basicInfo?.birthdate;
+                      const cage = calculateCrewAge(bdate);
+                      return cage !== null ? (
+                        <div className="flex items-center justify-between text-slate-600">
+                          <span className="flex items-center gap-1.5 text-slate-500">
+                            <Calendar className="w-3.5 h-3.5 text-slate-400" /> Age & Birthdate
+                          </span>
+                          <span className="font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+                            {cage} yrs {bdate ? `(${bdate})` : ''}
+                          </span>
+                        </div>
+                      ) : null;
+                    })()}
+
                     <div className="flex items-center justify-between text-slate-600">
                       <span className="flex items-center gap-1.5 text-slate-500">
                         <Compass className="w-3.5 h-3.5 text-slate-400" /> Total Sea Time
@@ -476,13 +492,25 @@ export const VesselCandidateSearch: React.FC<VesselCandidateSearchProps> = ({
                     View Full Profile
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => handleOpenAssignModal(cand)}
-                    className="py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors cursor-pointer text-center flex items-center gap-1.5"
-                  >
-                    <Anchor className="w-3.5 h-3.5" /> Assign to Vessel
-                  </button>
+                  {(() => {
+                    const cEndDate = cand.profileData?.vesselAssignment?.contractEndDate;
+                    const hasActiveContract = isAssigned || (cEndDate && new Date(cEndDate).getTime() > Date.now());
+                    return (
+                      <button
+                        type="button"
+                        disabled={Boolean(hasActiveContract)}
+                        onClick={() => handleOpenAssignModal(cand)}
+                        className={`py-2 px-3 font-semibold text-xs rounded-xl shadow-xs transition-colors text-center flex items-center gap-1.5 ${
+                          hasActiveContract 
+                            ? 'bg-slate-200 text-slate-400 cursor-not-allowed' 
+                            : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
+                        }`}
+                        title={hasActiveContract ? 'Cannot assign: Crew member has an active contract or is currently onboard/assigned' : 'Assign to Vessel'}
+                      >
+                        <Anchor className="w-3.5 h-3.5" /> Assign to Vessel
+                      </button>
+                    );
+                  })()}
 
                   {canDeleteCandidate && (
                     <button

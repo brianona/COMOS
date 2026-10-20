@@ -20,10 +20,107 @@ import {
   Lock,
   ChevronDown,
   Download,
-  Trash2
+  Trash2,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { CrewMemberItem, CrewProfile } from '../../types/crew';
 import { CrewProfileModal } from './CrewProfileModal';
+import { calculateCrewAge } from '../../utils/helpers';
+
+export type CrewSortField = 'rank' | 'name' | 'age' | 'nationality' | 'signOnDate' | 'contractEndDate' | 'nextMedicalExam' | 'status';
+export type CrewSortDirection = 'asc' | 'desc';
+
+const RANK_ORDER: Record<string, number> = {
+  // Deck Officers & Command
+  'master': 1,
+  'master (captain)': 1,
+  'captain': 1,
+  'chief officer': 2,
+  'chief mate': 2,
+  '2nd officer': 3,
+  'second officer': 3,
+  '3rd officer': 4,
+  'third officer': 4,
+  'deck cadet': 5,
+  'cadet (deck)': 5,
+
+  // Engine Officers & Command
+  'chief engineer': 6,
+  '2nd engineer': 7,
+  'second engineer': 7,
+  'first assistant engineer': 7,
+  '3rd engineer': 8,
+  'third engineer': 8,
+  'second assistant engineer': 8,
+  '4th engineer': 9,
+  'fourth engineer': 9,
+  'third assistant engineer': 9,
+  'electro-technical officer': 10,
+  'electro technical officer': 10,
+  'eto': 10,
+  'electrician': 11,
+  'engine cadet': 12,
+  'cadet (engine)': 12,
+
+  // Deck Ratings
+  'bosun': 13,
+  'boatswain': 13,
+  'able seaman': 14,
+  'able seaman (ab)': 14,
+  'ab': 14,
+  'ordinary seaman': 15,
+  'ordinary seaman (os)': 15,
+  'os': 15,
+
+  // Engine Ratings
+  'fitter': 16,
+  'pumpman': 16,
+  'motorman': 17,
+  'oiler': 18,
+  'wiper': 19,
+
+  // Catering & Service
+  'chief cook': 20,
+  'cook': 21,
+  'second cook': 21,
+  'baker': 21,
+  'messman': 22,
+  'steward': 23
+};
+
+function getRankWeight(rank?: string): number {
+  if (!rank) return 999;
+  const normalized = rank.toLowerCase().trim();
+  if (RANK_ORDER[normalized] !== undefined) {
+    return RANK_ORDER[normalized];
+  }
+  if (normalized.includes('master') || normalized.includes('captain')) return 1;
+  if (normalized.includes('chief off') || normalized.includes('chief mate')) return 2;
+  if (normalized.includes('2nd off') || normalized.includes('second off')) return 3;
+  if (normalized.includes('3rd off') || normalized.includes('third off')) return 4;
+  if (normalized.includes('deck cadet')) return 5;
+  if (normalized.includes('chief eng')) return 6;
+  if (normalized.includes('2nd eng') || normalized.includes('second eng') || normalized.includes('1st assist') || normalized.includes('first assist')) return 7;
+  if (normalized.includes('3rd eng') || normalized.includes('third eng') || normalized.includes('2nd assist') || normalized.includes('second assist')) return 8;
+  if (normalized.includes('4th eng') || normalized.includes('fourth eng') || normalized.includes('3rd assist') || normalized.includes('third assist')) return 9;
+  if (normalized.includes('eto') || normalized.includes('electro')) return 10;
+  if (normalized.includes('electrician')) return 11;
+  if (normalized.includes('engine cadet')) return 12;
+  if (normalized.includes('bosun') || normalized.includes('boatswain')) return 13;
+  if (normalized.includes('able seaman') || normalized.includes('(ab)') || normalized === 'ab') return 14;
+  if (normalized.includes('ordinary seaman') || normalized.includes('(os)') || normalized === 'os') return 15;
+  if (normalized.includes('fitter') || normalized.includes('pumpman')) return 16;
+  if (normalized.includes('motorman')) return 17;
+  if (normalized.includes('oiler')) return 18;
+  if (normalized.includes('wiper')) return 19;
+  if (normalized.includes('chief cook')) return 20;
+  if (normalized.includes('cook')) return 21;
+  if (normalized.includes('messman')) return 22;
+  if (normalized.includes('steward')) return 23;
+  return 100;
+}
 
 interface VesselOption {
   id: number | string;
@@ -80,10 +177,33 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
     return 'all';
   });
 
-  // Table filters
+  // Table filters & sorting
   const [tableSearch, setTableSearch] = useState('');
   const [rankCategoryFilter, setRankCategoryFilter] = useState<'all' | 'deck' | 'engine' | 'catering'>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'compliant' | 'warning' | 'expiring'>('all');
+  // Default sorting is by rank (hierarchical: Master, Officers, Ratings, Catering)
+  const [sortField, setSortField] = useState<CrewSortField>('rank');
+  const [sortDirection, setSortDirection] = useState<CrewSortDirection>('asc');
+
+  const handleToggleSort = (field: CrewSortField) => {
+    if (sortField === field) {
+      setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  const renderSortIndicator = (field: CrewSortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown className="w-3 h-3 text-slate-300 opacity-60 group-hover:opacity-100 transition-opacity shrink-0" />;
+    }
+    return sortDirection === 'asc' ? (
+      <ArrowUp className="w-3 h-3 text-blue-600 font-extrabold stroke-[2.5] shrink-0" />
+    ) : (
+      <ArrowDown className="w-3 h-3 text-blue-600 font-extrabold stroke-[2.5] shrink-0" />
+    );
+  };
 
   // Modal states
   const [activeProfileCrew, setActiveProfileCrew] = useState<CrewMemberItem | null>(null);
@@ -161,7 +281,7 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
 
   // Filtered crew members for display
   const displayedCrew = useMemo(() => {
-    return crewMembers.filter(m => {
+    const filtered = crewMembers.filter(m => {
       // Vessel filter
       if (selectedVesselId !== 'all') {
         if (String(m.vesselId) !== selectedVesselId) return false;
@@ -208,7 +328,69 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
 
       return true;
     });
-  }, [crewMembers, selectedVesselId, tableSearch, rankCategoryFilter, statusFilter]);
+
+    // Sort filtered crew list
+    return [...filtered].sort((a, b) => {
+      let comparison = 0;
+
+      switch (sortField) {
+        case 'rank': {
+          const weightA = getRankWeight(a.rank);
+          const weightB = getRankWeight(b.rank);
+          comparison = weightA - weightB;
+          // If ranks are equal in hierarchy, sub-sort alphabetically by seafarer name
+          if (comparison === 0) {
+            comparison = (a.name || '').localeCompare(b.name || '');
+          }
+          break;
+        }
+        case 'name': {
+          comparison = (a.name || '').localeCompare(b.name || '');
+          break;
+        }
+        case 'age': {
+          const bdateA = a.birthdate || a.profileData?.basicInfo?.birthdate;
+          const bdateB = b.birthdate || b.profileData?.basicInfo?.birthdate;
+          const ageA = calculateCrewAge(bdateA);
+          const ageB = calculateCrewAge(bdateB);
+          const valA = ageA !== null ? ageA : (sortDirection === 'asc' ? 999 : -1);
+          const valB = ageB !== null ? ageB : (sortDirection === 'asc' ? 999 : -1);
+          comparison = valA - valB;
+          break;
+        }
+        case 'nationality': {
+          comparison = (a.nationality || '').localeCompare(b.nationality || '');
+          break;
+        }
+        case 'signOnDate': {
+          const timeA = a.signOnDate ? new Date(a.signOnDate).getTime() : 0;
+          const timeB = b.signOnDate ? new Date(b.signOnDate).getTime() : 0;
+          comparison = timeA - timeB;
+          break;
+        }
+        case 'contractEndDate': {
+          const timeA = a.contractEndDate ? new Date(a.contractEndDate).getTime() : 0;
+          const timeB = b.contractEndDate ? new Date(b.contractEndDate).getTime() : 0;
+          comparison = timeA - timeB;
+          break;
+        }
+        case 'nextMedicalExam': {
+          const timeA = a.nextMedicalExam ? new Date(a.nextMedicalExam).getTime() : 0;
+          const timeB = b.nextMedicalExam ? new Date(b.nextMedicalExam).getTime() : 0;
+          comparison = timeA - timeB;
+          break;
+        }
+        case 'status': {
+          comparison = (a.status || '').localeCompare(b.status || '');
+          break;
+        }
+        default:
+          comparison = 0;
+      }
+
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+  }, [crewMembers, selectedVesselId, tableSearch, rankCategoryFilter, statusFilter, sortField, sortDirection]);
 
   // Summary Metrics for current scope
   const stats = useMemo(() => {
@@ -672,7 +854,85 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
                 Catering
               </button>
             </div>
+
+            {/* Sort toolbar controls */}
+            <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-lg text-xs">
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider pl-1.5 hidden sm:inline-flex items-center gap-1">
+                <ArrowUpDown className="w-3 h-3 text-slate-400" /> Sort:
+              </span>
+              <select
+                value={sortField}
+                onChange={e => setSortField(e.target.value as CrewSortField)}
+                className="bg-white text-slate-800 font-semibold px-2 py-1 rounded text-xs border border-slate-200 focus:outline-none focus:border-blue-500 cursor-pointer"
+                title="Select field to sort by"
+              >
+                <option value="rank">Rank (Hierarchy)</option>
+                <option value="name">Seafarer Name</option>
+                <option value="age">Age</option>
+                <option value="nationality">Nationality</option>
+                <option value="signOnDate">Sign-On Date</option>
+                <option value="contractEndDate">Contract End</option>
+                <option value="nextMedicalExam">Medical Expiry</option>
+                <option value="status">Compliance</option>
+              </select>
+
+              <button
+                type="button"
+                onClick={() => setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'))}
+                className="px-2 py-1 bg-white hover:bg-slate-50 text-slate-700 font-bold rounded text-xs border border-slate-200 transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                title={sortDirection === 'asc' ? 'Ascending (Click to invert)' : 'Descending (Click to invert)'}
+              >
+                {sortDirection === 'asc' ? (
+                  <>
+                    <ArrowUp className="w-3 h-3 text-blue-600 stroke-[2.5]" />
+                    <span className="text-[11px]">{sortField === 'rank' ? 'Top Rank' : 'Asc'}</span>
+                  </>
+                ) : (
+                  <>
+                    <ArrowDown className="w-3 h-3 text-blue-600 stroke-[2.5]" />
+                    <span className="text-[11px]">{sortField === 'rank' ? 'Ratings' : 'Desc'}</span>
+                  </>
+                )}
+              </button>
+
+              {/* Reset to default rank hierarchy */}
+              {(sortField !== 'rank' || sortDirection !== 'asc') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSortField('rank');
+                    setSortDirection('asc');
+                  }}
+                  className="px-1.5 py-1 text-[10px] font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                  title="Reset to default rank order"
+                >
+                  Reset
+                </button>
+              )}
+            </div>
           </div>
+        </div>
+
+        {/* Active sort summary badge */}
+        <div className="px-4 py-2 bg-slate-50/70 border-b border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="font-semibold text-slate-600">Active Order:</span>
+            <span className="inline-flex items-center gap-1 font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200/80">
+              {sortField === 'rank' && `Rank Hierarchy (${sortDirection === 'asc' ? 'Master → Officers → Ratings' : 'Ratings → Officers → Master'})`}
+              {sortField === 'name' && `Seafarer Name (${sortDirection === 'asc' ? 'A → Z' : 'Z → A'})`}
+              {sortField === 'age' && `Age (${sortDirection === 'asc' ? 'Youngest First' : 'Oldest First'})`}
+              {sortField === 'nationality' && `Nationality (${sortDirection === 'asc' ? 'A → Z' : 'Z → A'})`}
+              {sortField === 'signOnDate' && `Sign-On Date (${sortDirection === 'asc' ? 'Earliest First' : 'Latest First'})`}
+              {sortField === 'contractEndDate' && `Contract End Date (${sortDirection === 'asc' ? 'Expiring Soonest' : 'Furthest Out'})`}
+              {sortField === 'nextMedicalExam' && `Medical Expiry (${sortDirection === 'asc' ? 'Expiring Soonest' : 'Furthest Out'})`}
+              {sortField === 'status' && `Compliance Status (${sortDirection === 'asc' ? 'A → Z' : 'Z → A'})`}
+            </span>
+            <span className="text-slate-400">· Click column headers below to re-sort</span>
+          </div>
+
+          <span className="text-[11px] font-semibold text-slate-500">
+            {displayedCrew.length} {displayedCrew.length === 1 ? 'Seafarer' : 'Seafarers'}
+          </span>
         </div>
 
         {/* Roster Table */}
@@ -712,14 +972,127 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50/80 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+              <thead className="bg-slate-50/80 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider select-none">
                 <tr>
-                  <th className="py-3 px-4">Seafarer / Rank</th>
-                  <th className="py-3 px-4">Nationality & CDC</th>
-                  <th className="py-3 px-4">Sign-On Date</th>
-                  <th className="py-3 px-4">Contract End</th>
-                  <th className="py-3 px-4">Medical Expiry</th>
-                  <th className="py-3 px-4">Compliance</th>
+                  {/* Seafarer / Rank */}
+                  <th className="py-3 px-4">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSort('rank')}
+                        className={`group inline-flex items-center gap-1 font-bold text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                          sortField === 'rank' ? 'text-blue-600 font-extrabold' : 'text-slate-600 hover:text-blue-600'
+                        }`}
+                        title="Sort by Maritime Rank hierarchy (Default)"
+                      >
+                        <span>Rank</span>
+                        {renderSortIndicator('rank')}
+                      </button>
+                      <span className="text-slate-300">/</span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSort('name')}
+                        className={`group inline-flex items-center gap-1 font-bold text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                          sortField === 'name' ? 'text-blue-600 font-extrabold' : 'text-slate-600 hover:text-blue-600'
+                        }`}
+                        title="Sort by Seafarer Name"
+                      >
+                        <span>Seafarer</span>
+                        {renderSortIndicator('name')}
+                      </button>
+                    </div>
+                  </th>
+
+                  {/* Age */}
+                  <th className="py-3 px-4">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSort('age')}
+                      className={`group inline-flex items-center gap-1 font-bold text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                        sortField === 'age' ? 'text-blue-600 font-extrabold' : 'text-slate-600 hover:text-blue-600'
+                      }`}
+                      title="Sort by Age"
+                    >
+                      <span>Age</span>
+                      {renderSortIndicator('age')}
+                    </button>
+                  </th>
+
+                  {/* Nationality & CDC */}
+                  <th className="py-3 px-4">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSort('nationality')}
+                      className={`group inline-flex items-center gap-1 font-bold text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                        sortField === 'nationality' ? 'text-blue-600 font-extrabold' : 'text-slate-600 hover:text-blue-600'
+                      }`}
+                      title="Sort by Nationality"
+                    >
+                      <span>Nationality & CDC</span>
+                      {renderSortIndicator('nationality')}
+                    </button>
+                  </th>
+
+                  {/* Sign-On Date */}
+                  <th className="py-3 px-4">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSort('signOnDate')}
+                      className={`group inline-flex items-center gap-1 font-bold text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                        sortField === 'signOnDate' ? 'text-blue-600 font-extrabold' : 'text-slate-600 hover:text-blue-600'
+                      }`}
+                      title="Sort by Sign-On Date"
+                    >
+                      <span>Sign-On Date</span>
+                      {renderSortIndicator('signOnDate')}
+                    </button>
+                  </th>
+
+                  {/* Contract End */}
+                  <th className="py-3 px-4">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSort('contractEndDate')}
+                      className={`group inline-flex items-center gap-1 font-bold text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                        sortField === 'contractEndDate' ? 'text-blue-600 font-extrabold' : 'text-slate-600 hover:text-blue-600'
+                      }`}
+                      title="Sort by Contract End Date"
+                    >
+                      <span>Contract End</span>
+                      {renderSortIndicator('contractEndDate')}
+                    </button>
+                  </th>
+
+                  {/* Medical Expiry */}
+                  <th className="py-3 px-4">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSort('nextMedicalExam')}
+                      className={`group inline-flex items-center gap-1 font-bold text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                        sortField === 'nextMedicalExam' ? 'text-blue-600 font-extrabold' : 'text-slate-600 hover:text-blue-600'
+                      }`}
+                      title="Sort by Medical Expiry Date"
+                    >
+                      <span>Medical Expiry</span>
+                      {renderSortIndicator('nextMedicalExam')}
+                    </button>
+                  </th>
+
+                  {/* Compliance */}
+                  <th className="py-3 px-4">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleSort('status')}
+                      className={`group inline-flex items-center gap-1 font-bold text-[11px] uppercase tracking-wider transition-colors cursor-pointer ${
+                        sortField === 'status' ? 'text-blue-600 font-extrabold' : 'text-slate-600 hover:text-blue-600'
+                      }`}
+                      title="Sort by Compliance Status"
+                    >
+                      <span>Compliance</span>
+                      {renderSortIndicator('status')}
+                    </button>
+                  </th>
+
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
@@ -759,6 +1132,30 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
                           </div>
                         </div>
                       </td>
+
+                      {/* Age */}
+                      {(() => {
+                        const bdate = c.birthdate || c.profileData?.basicInfo?.birthdate;
+                        const cage = calculateCrewAge(bdate);
+                        return (
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            {cage !== null ? (
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-bold text-slate-800 bg-slate-100 text-xs px-2 py-0.5 rounded-md border border-slate-200">
+                                  {cage} yrs
+                                </span>
+                                {bdate && (
+                                  <span className="text-[10px] text-slate-400 font-mono hidden xl:inline" title={`Date of birth: ${bdate}`}>
+                                    ({bdate})
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 font-medium">—</span>
+                            )}
+                          </td>
+                        );
+                      })()}
 
                       {/* Nationality & CDC */}
                       <td className="py-3 px-4">
@@ -991,11 +1388,15 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
                     onChange={e => setSelectedPoolCrewId(e.target.value)}
                     className="w-full px-3 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 bg-white"
                   >
-                    {poolCandidates.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} — {c.rank} ({c.nationality})
-                      </option>
-                    ))}
+                    {poolCandidates.map(c => {
+                      const pDate = c.birthdate || c.profileData?.basicInfo?.birthdate;
+                      const pAge = calculateCrewAge(pDate);
+                      return (
+                        <option key={c.id} value={c.id}>
+                          {c.name} — {c.rank} ({c.nationality}{pAge !== null ? `, Age: ${pAge}` : ''})
+                        </option>
+                      );
+                    })}
                   </select>
                 )}
               </div>

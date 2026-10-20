@@ -147,7 +147,9 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
     },
     seaService: [],
     nationalLicenses: crewItem?.profileData?.nationalLicenses || [],
-    training: [],
+    flagRegistryLicenses: crewItem?.profileData?.flagRegistryLicenses || [],
+    visaDetails: crewItem?.profileData?.visaDetails || [],
+    trainingCertificates: crewItem?.profileData?.trainingCertificates || [],
     medicalCertification: {
       pemeStatus: 'Fit for Sea Duty',
       examDate: '',
@@ -568,6 +570,14 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
       }
       if (!profile.basicInfo.rank) {
         throw new Error('Please select a rank.');
+      }
+
+      if (profile.remarksSection?.notForRehire) {
+        const hasComments = (profile.remarksSection?.comments || []).length > 0;
+        const hasRemarks = Boolean(profile.vesselAssignment?.remarks && profile.vesselAssignment.remarks.trim().length > 0);
+        if (!hasComments && !hasRemarks) {
+          throw new Error('Remarks cannot be blank when "Not For Rehire" is ticked. Please add a performance remark or comment explaining the reason.');
+        }
       }
 
       const assignedVessel = vessels.find(v => String(v.id) === String(profile.vesselAssignment.currentVesselId));
