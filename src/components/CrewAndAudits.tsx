@@ -1702,7 +1702,7 @@ export const CrewListView = ({ vessels, token, currentUser }: { vessels: any[], 
                                 {!isVesselUser && (
                                   <th className="px-3 py-2.5 cursor-pointer hover:bg-slate-50 text-slate-500 font-extrabold uppercase tracking-wider text-[10px]" onClick={() => handlePoolSort('hiringStatus')}>Status</th>
                                 )}
-                                <th className="px-3 py-2.5 text-slate-500 font-extrabold uppercase tracking-wider text-[10px] text-right">Actions</th>
+                                <th className="px-3 py-2.5 text-slate-500 font-extrabold uppercase tracking-wider text-[10px] text-center">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 bg-white">
@@ -3039,7 +3039,7 @@ export const CrewEmploymentStatusView = ({ vessels, token, currentUser }: { vess
                   <th className="p-4 px-6">Age / Contact</th>
                   <th className="p-4 px-6">Employment Status</th>
                   <th className="p-4 px-6">SI Remarks</th>
-                  <th className="p-4 px-6 text-right">Actions</th>
+                  <th className="p-4 px-6 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">

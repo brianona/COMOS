@@ -871,6 +871,26 @@ async function startServer() {
         console.log('Adding etb column to vessels table...');
         await pool.query("ALTER TABLE vessels ADD COLUMN etb VARCHAR(255)");
       }
+
+      const particularsColumns = [
+        'port_of_registry', 'owners', 'managing_operator', 'call_sign', 'official_number', 'imo_number',
+        'keel_laid', 'mmsi', 'gross_tonnage', 'net_tonnage', 'length_overall', 'length_between_perpendiculars',
+        'breadth_moulded', 'depth_moulded', 'design_draft', 'scantling_draft', 'deadweight', 'displacement',
+        'lightship', 'container_capacity', 'hatchcover_type', 'on_deck_stacking_weight', 'in_hold_stacking_weight',
+        'tanktop_stacking_weight', 'reefer_sockets', 'block_coefficient', 'ship_built', 'air_draft',
+        'cargo_handling_gear', 'fresh_water_capacity', 'ballast_water_capacity', 'bunker_capacity',
+        'main_engine_type', 'auxilliary_engine_type', 'propeller_type', 'bowthruster', 'rudder_type',
+        'service_speed', 'suez_canal_gross_tonnage', 'suez_canal_net_tonnage', 'classification_society',
+        'vsat', 'fbb', 'satc', 'company_address'
+      ];
+      for (const col of particularsColumns) {
+        if (!columnNames.includes(col)) {
+          await pool.query(`ALTER TABLE vessels ADD COLUMN ${col} TEXT NULL`);
+        }
+      }
+      if (!columnNames.includes('loadline_table')) {
+        await pool.query("ALTER TABLE vessels ADD COLUMN loadline_table LONGTEXT NULL");
+      }
     } catch (e: any) {
       console.error('Error during vessels table migration:', e.message);
     }
@@ -2596,17 +2616,16 @@ async function startServer() {
       "font-src 'self' https://fonts.gstatic.com; " +
       "connect-src 'self' ws: wss: https:; " +
       "worker-src 'self' blob: https://unpkg.com; " +
-      "frame-src 'self'; " +
+      "frame-src 'self' *; " +
+      "frame-ancestors *; " +
       "object-src 'none'; " +
       "base-uri 'self'; " +
       "form-action 'self';"
     );
     // Other helpful security headers
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
     next();
   });
 
@@ -2790,7 +2809,13 @@ async function startServer() {
 
   // Auth Middleware
   const authenticate = (req: any, res: any, next: any) => {
-    const token = req.headers.authorization?.split(' ')[1] || req.query.token;
+    let token = req.headers.authorization?.split(' ')[1] || req.query.token || req.headers['x-access-token'];
+    if (typeof token === 'string') {
+      token = token.trim();
+      if (token.startsWith('Bearer ')) {
+        token = token.substring(7).trim();
+      }
+    }
     if (!token) return res.status(401).json({ error: 'Unauthorized' });
     try {
       req.user = jwt.verify(token, JWT_SECRET);
@@ -2799,6 +2824,7 @@ async function startServer() {
       res.status(401).json({ error: 'Invalid token' });
     }
   };
+
 
   const getEffectiveTeamIds = async (user: any): Promise<number[]> => {
     let teamIds: number[] = Array.isArray(user?.team_ids) ? user.team_ids.map(Number).filter((id: number) => !isNaN(id) && id > 0) : [];
@@ -4791,33 +4817,41 @@ async function startServer() {
     }
   });
 
+  const VESSEL_SELECT_FIELDS = `
+    v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, 
+    v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, 
+    v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, 
+    v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, 
+    v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, 
+    v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo,
+    v.port_of_registry, v.owners, v.managing_operator, v.call_sign, v.official_number, v.imo_number,
+    v.keel_laid, v.mmsi, v.gross_tonnage, v.net_tonnage, v.length_overall, v.length_between_perpendiculars,
+    v.breadth_moulded, v.depth_moulded, v.design_draft, v.scantling_draft, v.deadweight, v.displacement,
+    v.lightship, v.container_capacity, v.hatchcover_type, v.on_deck_stacking_weight, v.in_hold_stacking_weight,
+    v.tanktop_stacking_weight, v.reefer_sockets, v.block_coefficient, v.ship_built, v.air_draft,
+    v.cargo_handling_gear, v.fresh_water_capacity, v.ballast_water_capacity, v.bunker_capacity,
+    v.main_engine_type, v.auxilliary_engine_type, v.propeller_type, v.bowthruster, v.rudder_type,
+    v.service_speed, v.suez_canal_gross_tonnage, v.suez_canal_net_tonnage, v.classification_society,
+    v.vsat, v.fbb, v.satc, v.company_address, v.loadline_table
+  `;
+
   // Vessel Routes
   app.get('/api/vessels', authenticate, async (req: any, res) => {
     let vessels;
     if (req.user.role === 'admin') {
-      [vessels] = await pool.query("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL");
+      [vessels] = await pool.query(`SELECT ${VESSEL_SELECT_FIELDS} FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.deleted_at IS NULL`);
     } else if (req.user.role === 'vessel') {
       let vesselId = req.user.vessel_id;
       if (!vesselId && req.user.username) {
         try {
-          const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+          const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ? LIMIT 1', [req.user.username, req.user.username.toLowerCase(), `%${req.user.username.toLowerCase()}%`]);
           if (vRows.length > 0) vesselId = vRows[0].id;
         } catch (e) {}
       }
       if (!vesselId) {
         return res.json([]);
       }
-      try {
-        const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
-        const vesselTeamId = vRows[0]?.team_id;
-        if (vesselTeamId) {
-          [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE (v.team_id = ? OR v.id = ?) AND v.deleted_at IS NULL ORDER BY (v.id = ?) DESC, v.name ASC", [vesselTeamId, vesselId, vesselId]);
-        } else {
-          [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
-        }
-      } catch (err) {
-        [vessels] = await pool.execute("SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL", [vesselId]);
-      }
+      [vessels] = await pool.execute(`SELECT ${VESSEL_SELECT_FIELDS} FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL`, [vesselId]);
     } else {
       const teamIds = await getEffectiveTeamIds(req.user);
       if (teamIds.length === 0) {
@@ -4825,9 +4859,19 @@ async function startServer() {
       }
       const placeholders = teamIds.map(() => '?').join(',');
       const params = [...teamIds];
-      [vessels] = await pool.execute(`SELECT v.id, v.name, v.team_id, v.owner, COALESCE(v.fleet_status, 'In Active Fleet') as fleet_status, v.email, v.next_port, v.route_status, v.shackles, v.loading_status, v.eta_atb, v.etb, v.etd_atd, v.cargo, v.operation_type, v.remark_from_vessel, v.flag, v.date_built, v.min_fuel_consumption, v.max_fuel_consumption, v.charterer_min_hsfo, v.charterer_max_hsfo, v.charterer_min_lsfo, v.charterer_max_lsfo, v.charterer_min_mgo, v.charterer_max_mgo, v.charterer_min_mdo, v.charterer_max_mdo, v.type, t.name as team_name, (v.photo_data IS NOT NULL) as has_photo FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
+      [vessels] = await pool.execute(`SELECT ${VESSEL_SELECT_FIELDS} FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.team_id IN (${placeholders}) AND v.deleted_at IS NULL`, params);
     }
     res.json(vessels);
+  });
+
+  app.get('/api/vessels/:id', authenticate, async (req: any, res) => {
+    try {
+      const [rows]: any = await pool.execute(`SELECT ${VESSEL_SELECT_FIELDS} FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ? AND v.deleted_at IS NULL`, [req.params.id]);
+      if (rows.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+      res.json(rows[0]);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.get('/api/vessels/:id/photo', authenticate, async (req, res) => {
@@ -4872,34 +4916,153 @@ async function startServer() {
   });
 
   app.put('/api/vessels/:id', authenticate, isTeamPicOrAdmin, upload.single('photo'), async (req: any, res) => {
-    const { name, team_id, owner, flag, date_built, min_fuel_consumption, max_fuel_consumption, type, fleet_status, email } = req.body;
     try {
-      const [vessels]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [req.params.id]);
-      if (vessels.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+      const [existingRows]: any = await pool.execute('SELECT * FROM vessels WHERE id = ?', [req.params.id]);
+      if (existingRows.length === 0) return res.status(404).json({ error: 'Vessel not found' });
+      const existing = existingRows[0];
       
       if (req.user.role === 'team_pic' || req.user.role === 'user') {
-        const oldTeamId = vessels[0].team_id;
-        if (!req.user.team_ids.includes(oldTeamId)) return res.status(403).json({ error: 'Forbidden' });
-        if (team_id && !req.user.team_ids.includes(Number(team_id))) return res.status(403).json({ error: 'Forbidden' });
+        const userTeamIds = await getEffectiveTeamIds(req.user);
+        if (existing.team_id && !userTeamIds.includes(Number(existing.team_id))) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+        if (req.body.team_id && !userTeamIds.includes(Number(req.body.team_id))) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
       }
 
       const photoData = req.file ? await handleFileUpload(req.file.originalname, req.file.mimetype, req.file.buffer, 'vessel_photos') : undefined;
       const photoMimetype = req.file ? req.file.mimetype : undefined;
 
+      const finalName = req.body.name !== undefined ? req.body.name : existing.name;
+      const finalTeamId = req.body.team_id !== undefined ? (req.body.team_id ? Number(req.body.team_id) : null) : existing.team_id;
+      const finalOwner = (req.body.owner === 'Nissen' || req.body.owner === 'Goodwill') ? req.body.owner : existing.owner;
+      const finalFleetStatus = req.body.fleet_status !== undefined ? req.body.fleet_status : (existing.fleet_status || 'In Active Fleet');
+      const finalFlag = req.body.flag !== undefined ? req.body.flag : existing.flag;
+      const finalDateBuilt = req.body.date_built !== undefined ? req.body.date_built : existing.date_built;
+      const finalMinFuel = req.body.min_fuel_consumption !== undefined ? req.body.min_fuel_consumption : existing.min_fuel_consumption;
+      const finalMaxFuel = req.body.max_fuel_consumption !== undefined ? req.body.max_fuel_consumption : existing.max_fuel_consumption;
+      const finalType = req.body.type !== undefined ? req.body.type : (existing.type || 'Bulk Carrier');
+      const finalEmail = req.body.email !== undefined ? req.body.email : existing.email;
+
+      const finalOwners = req.body.owners !== undefined ? req.body.owners : (existing.owners || null);
+      const finalPortOfRegistry = req.body.port_of_registry !== undefined ? req.body.port_of_registry : (existing.port_of_registry || null);
+      const finalManagingOperator = req.body.managing_operator !== undefined ? req.body.managing_operator : (existing.managing_operator || null);
+      const finalCallSign = req.body.call_sign !== undefined ? req.body.call_sign : (existing.call_sign || null);
+      const finalOfficialNumber = req.body.official_number !== undefined ? req.body.official_number : (existing.official_number || null);
+      const finalImoNumber = req.body.imo_number !== undefined ? req.body.imo_number : (existing.imo_number || null);
+      const finalKeelLaid = req.body.keel_laid !== undefined ? req.body.keel_laid : (existing.keel_laid || null);
+      const finalMmsi = req.body.mmsi !== undefined ? req.body.mmsi : (existing.mmsi || null);
+      const finalGrossTonnage = req.body.gross_tonnage !== undefined ? req.body.gross_tonnage : (existing.gross_tonnage || null);
+      const finalNetTonnage = req.body.net_tonnage !== undefined ? req.body.net_tonnage : (existing.net_tonnage || null);
+      const finalLengthOverall = req.body.length_overall !== undefined ? req.body.length_overall : (existing.length_overall || null);
+      const finalLengthBetweenPerpendiculars = req.body.length_between_perpendiculars !== undefined ? req.body.length_between_perpendiculars : (existing.length_between_perpendiculars || null);
+      const finalBreadthMoulded = req.body.breadth_moulded !== undefined ? req.body.breadth_moulded : (existing.breadth_moulded || null);
+      const finalDepthMoulded = req.body.depth_moulded !== undefined ? req.body.depth_moulded : (existing.depth_moulded || null);
+      const finalDesignDraft = req.body.design_draft !== undefined ? req.body.design_draft : (existing.design_draft || null);
+      const finalScantlingDraft = req.body.scantling_draft !== undefined ? req.body.scantling_draft : (existing.scantling_draft || null);
+      const finalDeadweight = req.body.deadweight !== undefined ? req.body.deadweight : (existing.deadweight || null);
+      const finalDisplacement = req.body.displacement !== undefined ? req.body.displacement : (existing.displacement || null);
+      const finalLightship = req.body.lightship !== undefined ? req.body.lightship : (existing.lightship || null);
+      const finalContainerCapacity = req.body.container_capacity !== undefined ? req.body.container_capacity : (existing.container_capacity || null);
+      const finalHatchcoverType = req.body.hatchcover_type !== undefined ? req.body.hatchcover_type : (existing.hatchcover_type || null);
+      const finalOnDeckStackingWeight = req.body.on_deck_stacking_weight !== undefined ? req.body.on_deck_stacking_weight : (existing.on_deck_stacking_weight || null);
+      const finalInHoldStackingWeight = req.body.in_hold_stacking_weight !== undefined ? req.body.in_hold_stacking_weight : (existing.in_hold_stacking_weight || null);
+      const finalTanktopStackingWeight = req.body.tanktop_stacking_weight !== undefined ? req.body.tanktop_stacking_weight : (existing.tanktop_stacking_weight || null);
+      const finalReeferSockets = req.body.reefer_sockets !== undefined ? req.body.reefer_sockets : (existing.reefer_sockets || null);
+      const finalBlockCoefficient = req.body.block_coefficient !== undefined ? req.body.block_coefficient : (existing.block_coefficient || null);
+      const finalShipBuilt = req.body.ship_built !== undefined ? req.body.ship_built : (existing.ship_built || null);
+      const finalAirDraft = req.body.air_draft !== undefined ? req.body.air_draft : (existing.air_draft || null);
+      const finalCargoHandlingGear = req.body.cargo_handling_gear !== undefined ? req.body.cargo_handling_gear : (existing.cargo_handling_gear || null);
+      const finalFreshWaterCapacity = req.body.fresh_water_capacity !== undefined ? req.body.fresh_water_capacity : (existing.fresh_water_capacity || null);
+      const finalBallastWaterCapacity = req.body.ballast_water_capacity !== undefined ? req.body.ballast_water_capacity : (existing.ballast_water_capacity || null);
+      const finalBunkerCapacity = req.body.bunker_capacity !== undefined ? req.body.bunker_capacity : (existing.bunker_capacity || null);
+      const finalMainEngineType = req.body.main_engine_type !== undefined ? req.body.main_engine_type : (existing.main_engine_type || null);
+      const finalAuxilliaryEngineType = req.body.auxilliary_engine_type !== undefined ? req.body.auxilliary_engine_type : (existing.auxilliary_engine_type || null);
+      const finalPropellerType = req.body.propeller_type !== undefined ? req.body.propeller_type : (existing.propeller_type || null);
+      const finalBowthruster = req.body.bowthruster !== undefined ? req.body.bowthruster : (existing.bowthruster || null);
+      const finalRudderType = req.body.rudder_type !== undefined ? req.body.rudder_type : (existing.rudder_type || null);
+      const finalServiceSpeed = req.body.service_speed !== undefined ? req.body.service_speed : (existing.service_speed || null);
+      const finalSuezCanalGrossTonnage = req.body.suez_canal_gross_tonnage !== undefined ? req.body.suez_canal_gross_tonnage : (existing.suez_canal_gross_tonnage || null);
+      const finalSuezCanalNetTonnage = req.body.suez_canal_net_tonnage !== undefined ? req.body.suez_canal_net_tonnage : (existing.suez_canal_net_tonnage || null);
+      const finalClassificationSociety = req.body.classification_society !== undefined ? req.body.classification_society : (existing.classification_society || null);
+      const finalVsat = req.body.vsat !== undefined ? req.body.vsat : (existing.vsat || null);
+      const finalFbb = req.body.fbb !== undefined ? req.body.fbb : (existing.fbb || null);
+      const finalSatc = req.body.satc !== undefined ? req.body.satc : (existing.satc || null);
+      const finalCompanyAddress = req.body.company_address !== undefined ? req.body.company_address : (existing.company_address || null);
+
+      let finalLoadlineJson = existing.loadline_table;
+      if (req.body.loadline_table !== undefined) {
+        finalLoadlineJson = typeof req.body.loadline_table === 'string' ? req.body.loadline_table : JSON.stringify(req.body.loadline_table);
+      }
+
       if (photoData !== undefined) {
         await pool.execute(
-          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, fleet_status = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, type = ?, email = ?, photo_data = ?, photo_mimetype = ? WHERE id = ?', 
-          [name, team_id || null, owner, fleet_status || 'In Active Fleet', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', email || null, photoData, photoMimetype, req.params.id]
+          `UPDATE vessels SET 
+            name = ?, team_id = ?, owner = ?, fleet_status = ?, flag = ?, date_built = ?, 
+            min_fuel_consumption = ?, max_fuel_consumption = ?, type = ?, email = ?, 
+            port_of_registry = ?, owners = ?, managing_operator = ?, call_sign = ?, official_number = ?, imo_number = ?,
+            keel_laid = ?, mmsi = ?, gross_tonnage = ?, net_tonnage = ?, length_overall = ?, length_between_perpendiculars = ?,
+            breadth_moulded = ?, depth_moulded = ?, design_draft = ?, scantling_draft = ?, deadweight = ?, displacement = ?,
+            lightship = ?, container_capacity = ?, hatchcover_type = ?, on_deck_stacking_weight = ?, in_hold_stacking_weight = ?,
+            tanktop_stacking_weight = ?, reefer_sockets = ?, block_coefficient = ?, ship_built = ?, air_draft = ?,
+            cargo_handling_gear = ?, fresh_water_capacity = ?, ballast_water_capacity = ?, bunker_capacity = ?,
+            main_engine_type = ?, auxilliary_engine_type = ?, propeller_type = ?, bowthruster = ?, rudder_type = ?,
+            service_speed = ?, suez_canal_gross_tonnage = ?, suez_canal_net_tonnage = ?, classification_society = ?,
+            vsat = ?, fbb = ?, satc = ?, company_address = ?, loadline_table = ?,
+            photo_data = ?, photo_mimetype = ? 
+           WHERE id = ?`, 
+          [
+            finalName, finalTeamId, finalOwner, finalFleetStatus, finalFlag, finalDateBuilt, 
+            finalMinFuel, finalMaxFuel, finalType, finalEmail,
+            finalPortOfRegistry, finalOwners, finalManagingOperator, finalCallSign, finalOfficialNumber, finalImoNumber,
+            finalKeelLaid, finalMmsi, finalGrossTonnage, finalNetTonnage, finalLengthOverall, finalLengthBetweenPerpendiculars,
+            finalBreadthMoulded, finalDepthMoulded, finalDesignDraft, finalScantlingDraft, finalDeadweight, finalDisplacement,
+            finalLightship, finalContainerCapacity, finalHatchcoverType, finalOnDeckStackingWeight, finalInHoldStackingWeight,
+            finalTanktopStackingWeight, finalReeferSockets, finalBlockCoefficient, finalShipBuilt, finalAirDraft,
+            finalCargoHandlingGear, finalFreshWaterCapacity, finalBallastWaterCapacity, finalBunkerCapacity,
+            finalMainEngineType, finalAuxilliaryEngineType, finalPropellerType, finalBowthruster, finalRudderType,
+            finalServiceSpeed, finalSuezCanalGrossTonnage, finalSuezCanalNetTonnage, finalClassificationSociety,
+            finalVsat, finalFbb, finalSatc, finalCompanyAddress, finalLoadlineJson,
+            photoData, photoMimetype, req.params.id
+          ]
         );
       } else {
         await pool.execute(
-          'UPDATE vessels SET name = ?, team_id = ?, owner = ?, fleet_status = ?, flag = ?, date_built = ?, min_fuel_consumption = ?, max_fuel_consumption = ?, type = ?, email = ? WHERE id = ?', 
-          [name, team_id || null, owner, fleet_status || 'In Active Fleet', flag || null, date_built || null, min_fuel_consumption || null, max_fuel_consumption || null, type || 'Bulk Carrier', email || null, req.params.id]
+          `UPDATE vessels SET 
+            name = ?, team_id = ?, owner = ?, fleet_status = ?, flag = ?, date_built = ?, 
+            min_fuel_consumption = ?, max_fuel_consumption = ?, type = ?, email = ?, 
+            port_of_registry = ?, owners = ?, managing_operator = ?, call_sign = ?, official_number = ?, imo_number = ?,
+            keel_laid = ?, mmsi = ?, gross_tonnage = ?, net_tonnage = ?, length_overall = ?, length_between_perpendiculars = ?,
+            breadth_moulded = ?, depth_moulded = ?, design_draft = ?, scantling_draft = ?, deadweight = ?, displacement = ?,
+            lightship = ?, container_capacity = ?, hatchcover_type = ?, on_deck_stacking_weight = ?, in_hold_stacking_weight = ?,
+            tanktop_stacking_weight = ?, reefer_sockets = ?, block_coefficient = ?, ship_built = ?, air_draft = ?,
+            cargo_handling_gear = ?, fresh_water_capacity = ?, ballast_water_capacity = ?, bunker_capacity = ?,
+            main_engine_type = ?, auxilliary_engine_type = ?, propeller_type = ?, bowthruster = ?, rudder_type = ?,
+            service_speed = ?, suez_canal_gross_tonnage = ?, suez_canal_net_tonnage = ?, classification_society = ?,
+            vsat = ?, fbb = ?, satc = ?, company_address = ?, loadline_table = ?
+           WHERE id = ?`, 
+          [
+            finalName, finalTeamId, finalOwner, finalFleetStatus, finalFlag, finalDateBuilt, 
+            finalMinFuel, finalMaxFuel, finalType, finalEmail,
+            finalPortOfRegistry, finalOwners, finalManagingOperator, finalCallSign, finalOfficialNumber, finalImoNumber,
+            finalKeelLaid, finalMmsi, finalGrossTonnage, finalNetTonnage, finalLengthOverall, finalLengthBetweenPerpendiculars,
+            finalBreadthMoulded, finalDepthMoulded, finalDesignDraft, finalScantlingDraft, finalDeadweight, finalDisplacement,
+            finalLightship, finalContainerCapacity, finalHatchcoverType, finalOnDeckStackingWeight, finalInHoldStackingWeight,
+            finalTanktopStackingWeight, finalReeferSockets, finalBlockCoefficient, finalShipBuilt, finalAirDraft,
+            finalCargoHandlingGear, finalFreshWaterCapacity, finalBallastWaterCapacity, finalBunkerCapacity,
+            finalMainEngineType, finalAuxilliaryEngineType, finalPropellerType, finalBowthruster, finalRudderType,
+            finalServiceSpeed, finalSuezCanalGrossTonnage, finalSuezCanalNetTonnage, finalClassificationSociety,
+            finalVsat, finalFbb, finalSatc, finalCompanyAddress, finalLoadlineJson,
+            req.params.id
+          ]
         );
       }
       
-      await logAudit(req.user.id, req.user.username, 'UPDATE_VESSEL', `Updated vessel ID ${req.params.id}: ${name}`);
-      res.json({ success: true });
+      const [updatedRows]: any = await pool.execute(`SELECT ${VESSEL_SELECT_FIELDS} FROM vessels v LEFT JOIN teams t ON v.team_id = t.id WHERE v.id = ?`, [req.params.id]);
+
+      await logAudit(req.user.id, req.user.username, 'UPDATE_VESSEL', `Updated vessel ID ${req.params.id}: ${finalName}`);
+      res.json({ success: true, vessel: updatedRows[0] || null });
     } catch (e: any) {
       if (e.code === 'ER_DUP_ENTRY') {
         res.status(400).json({ error: 'A vessel with this name already exists' });
@@ -5576,10 +5739,24 @@ async function startServer() {
       const activeId = id && String(id).trim() ? String(id).trim() : ('f_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
 
       let [exists]: any = await pool.execute(
-        'SELECT id, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files FROM sms_forms WHERE id = ?',
+        'SELECT id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, isAcknowledgementRequired, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files FROM sms_forms WHERE id = ?',
         [activeId]
       );
-      
+
+      if (!exists || exists.length === 0) {
+        const [byCode]: any = await pool.execute(
+          'SELECT id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, isAcknowledgementRequired, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files FROM sms_forms WHERE (formCode = ? OR TRIM(formCode) = ?) AND deleted_at IS NULL LIMIT 1',
+          [formCode, (formCode || '').trim()]
+        );
+        if (byCode && byCode.length > 0) {
+          exists = byCode;
+        }
+      }
+
+      const oldForm = (exists && exists.length > 0) ? exists[0] : null;
+      const oldFormId = oldForm?.id ? String(oldForm.id).trim() : '';
+      const oldFormCode = oldForm?.formCode ? String(oldForm.formCode).trim() : '';
+
       let finalTFileName = tFileName;
       let finalTFileData: Buffer | null = null;
       let finalTFileMime = tFileMime;
@@ -5678,17 +5855,200 @@ async function startServer() {
         finalTemplateFilesVal = exists[0].template_files || null;
       }
 
+      const safeCategory = category || (exists && exists.length > 0 ? exists[0].category : '1. Monthly') || '1. Monthly';
+      const safeFormCode = formCode || (exists && exists.length > 0 ? exists[0].formCode : '') || '';
+      const safeDescription = description ?? (exists && exists.length > 0 ? exists[0].description : '') ?? '';
+      const safeFormDate = formDate ?? (exists && exists.length > 0 ? exists[0].formDate : null) ?? null;
+      const safeScope = scope ?? (exists && exists.length > 0 ? exists[0].scope : null) ?? null;
+      const safeType = type || (exists && exists.length > 0 ? exists[0].type : 'Form') || 'Form';
+      const safeVesselType = vesselType || (exists && exists.length > 0 ? exists[0].vesselType : 'All Vessels') || 'All Vessels';
+      const safeRemoveFilename = removeFilenameRestriction ? 1 : 0;
+      const safeAllowedTypes = allowedTypesVal ?? (exists && exists.length > 0 ? exists[0].allowedFileTypes : null) ?? null;
+      const safeOrderVal = typeof sort_order === 'number' ? sort_order : (exists && exists.length > 0 ? (exists[0].sort_order ?? 0) : 0);
+      const safeIsHira = isHiraVal;
+      const safeIsAckReq = isAckReqVal;
+      const safeTFileName = finalTFileName ?? null;
+      const safeTFileData = finalTFileData ?? null;
+      const safeTFileMime = finalTFileMime ?? null;
+      const safeTFileSize = finalTFileSize ?? null;
+      const safeTemplateFiles = finalTemplateFilesVal ?? null;
+
       if (exists && exists.length > 0) {
         await pool.execute(
           'UPDATE sms_forms SET category = ?, formCode = ?, description = ?, formDate = ?, scope = ?, type = ?, vesselType = ?, removeFilenameRestriction = ?, allowedFileTypes = ?, sort_order = ?, isHira = ?, isAcknowledgementRequired = ?, template_file_name = ?, template_file_data = ?, template_file_mimetype = ?, template_file_size = ?, template_files = ?, deleted_at = NULL WHERE id = ?',
-          [category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, isAckReqVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal, activeId]
+          [safeCategory, safeFormCode, safeDescription, safeFormDate, safeScope, safeType, safeVesselType, safeRemoveFilename, safeAllowedTypes, safeOrderVal, safeIsHira, safeIsAckReq, safeTFileName, safeTFileData, safeTFileMime, safeTFileSize, safeTemplateFiles, activeId]
         );
       } else {
         await pool.execute(
           'INSERT INTO sms_forms (id, category, formCode, description, formDate, scope, type, vesselType, removeFilenameRestriction, allowedFileTypes, sort_order, isHira, isAcknowledgementRequired, template_file_name, template_file_data, template_file_mimetype, template_file_size, template_files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [activeId, category, formCode, description, formDate, scope, type || 'Form', vesselType || 'All Vessels', removeFilenameRestriction ? 1 : 0, allowedTypesVal, orderVal, isHiraVal, isAckReqVal, finalTFileName, finalTFileData, finalTFileMime, finalTFileSize, finalTemplateFilesVal]
+          [activeId, safeCategory, safeFormCode, safeDescription, safeFormDate, safeScope, safeType, safeVesselType, safeRemoveFilename, safeAllowedTypes, safeOrderVal, safeIsHira, safeIsAckReq, safeTFileName, safeTFileData, safeTFileMime, safeTFileSize, safeTemplateFiles]
         );
       }
+
+      // Cascade form changes to all existing orders (sms_order_items and sms_order_uploads) and templates (sms_order_templates)
+      const newFormCode = safeFormCode.trim();
+      const newCategory = safeCategory;
+      const newDescription = safeDescription;
+      const newFormDate = safeFormDate;
+      const newType = safeType;
+      const newAllowedTypes = safeAllowedTypes;
+      const newTFileName = safeTFileName;
+      const newTemplateFiles = safeTemplateFiles;
+      const newIsHira = safeIsHira;
+      const newRemoveFilename = safeRemoveFilename;
+      const newIsAckReq = safeIsAckReq;
+
+      try {
+        const whereClauses: string[] = ['form_id = ?'];
+        const whereParams: any[] = [activeId];
+
+        if (oldFormId && oldFormId !== activeId) {
+          whereClauses.push('form_id = ?');
+          whereParams.push(oldFormId);
+        }
+        if (oldFormCode) {
+          whereClauses.push('TRIM(BOTH "\\t" FROM TRIM(form_code)) = ?');
+          whereParams.push(oldFormCode);
+        }
+        if (newFormCode && newFormCode !== oldFormCode) {
+          whereClauses.push('TRIM(BOTH "\\t" FROM TRIM(form_code)) = ?');
+          whereParams.push(newFormCode);
+        }
+
+        const whereSql = `(${whereClauses.join(' OR ')}) AND deleted_at IS NULL`;
+
+        // 1. Update matching order items across all active/existing orders
+        await pool.execute(
+          `UPDATE sms_order_items SET 
+            form_id = ?, 
+            form_code = ?, 
+            category = ?, 
+            description = ?, 
+            form_date = ?, 
+            type = ?, 
+            is_hira = ?, 
+            remove_filename_restriction = ?, 
+            allowed_file_types = ?, 
+            template_file_name = ?, 
+            template_files = ?, 
+            is_acknowledgement_required = ? 
+           WHERE ${whereSql}`,
+          [
+            activeId,
+            newFormCode,
+            newCategory,
+            newDescription,
+            newFormDate,
+            newType,
+            newIsHira,
+            newRemoveFilename,
+            newAllowedTypes,
+            newTFileName,
+            newTemplateFiles,
+            newIsAckReq,
+            ...whereParams
+          ]
+        );
+
+        // 2. Update matching order uploads so form_code and form_id remain synchronized
+        await pool.execute(
+          `UPDATE sms_order_uploads SET 
+            form_id = ?, 
+            form_code = ? 
+           WHERE ${whereSql}`,
+          [
+            activeId,
+            newFormCode,
+            ...whereParams
+          ]
+        );
+
+        // 3. Touch updated_at on all affected SMS orders
+        const [affectedOrders]: any = await pool.execute(
+          'SELECT DISTINCT order_id FROM sms_order_items WHERE form_id = ? AND deleted_at IS NULL',
+          [activeId]
+        );
+        if (affectedOrders && affectedOrders.length > 0) {
+          const oIds = affectedOrders.map((r: any) => r.order_id);
+          const placeholders = oIds.map(() => '?').join(',');
+          await pool.execute(
+            `UPDATE sms_orders SET updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`,
+            oIds
+          );
+        }
+
+        // 4. Update SMS order templates where this form is referenced
+        const [allTemplates]: any = await pool.execute(
+          'SELECT id, item_form_ids FROM sms_order_templates WHERE deleted_at IS NULL'
+        );
+        for (const tpl of allTemplates) {
+          let formIds: string[] = [];
+          try {
+            formIds = tpl.item_form_ids ? JSON.parse(tpl.item_form_ids) : [];
+          } catch {
+            formIds = [];
+          }
+          if (!Array.isArray(formIds)) continue;
+
+          let modified = false;
+          const updatedIds = formIds.map((fid: string) => {
+            const cleanFid = String(fid || '').trim();
+            if (
+              cleanFid === activeId ||
+              (oldFormId && cleanFid === oldFormId) ||
+              (oldFormCode && cleanFid.toUpperCase() === oldFormCode.toUpperCase()) ||
+              (newFormCode && cleanFid.toUpperCase() === newFormCode.toUpperCase())
+            ) {
+              if (cleanFid !== activeId) {
+                modified = true;
+              }
+              return activeId;
+            }
+            return fid;
+          });
+
+          if (modified) {
+            await pool.execute(
+              'UPDATE sms_order_templates SET item_form_ids = ? WHERE id = ?',
+              [JSON.stringify(updatedIds), tpl.id]
+            );
+          }
+        }
+
+        // 5. Invalidate caches and broadcast realtime sync
+        try {
+          pollingCache.invalidateDomain('sms_orders');
+          pollingCache.invalidateDomain('sms_forms');
+          globalRealtimeEngine.notifyChange({
+            domain: 'sms_orders',
+            action: 'update',
+            table: 'sms_order_items',
+            userId: (req as any).user?.id ?? null,
+            username: (req as any).user?.username ?? null
+          });
+          globalRealtimeEngine.notifyChange({
+            domain: 'sms_forms',
+            action: 'update',
+            table: 'sms_forms',
+            userId: (req as any).user?.id ?? null,
+            username: (req as any).user?.username ?? null
+          });
+        } catch (rtErr) {
+          console.warn('Realtime notify warning on form cascade:', rtErr);
+        }
+
+        if ((req as any).user) {
+          await logAudit(
+            (req as any).user.id,
+            (req as any).user.username,
+            'UPDATE_SMS_FORM_CASCADE',
+            `Updated form ${newFormCode} (${activeId}) and cascaded updates to existing SMS orders and templates`
+          );
+        }
+      } catch (cascadeErr: any) {
+        console.error('Error cascading SMS form updates to orders and templates:', cascadeErr);
+      }
+
       res.json({ success: true, id: activeId });
     } catch (e: any) {
       console.error('Error in POST /api/sms/forms:', e);
@@ -9938,27 +10298,15 @@ Generated by COMOS System
         let vesselId = req.user.vessel_id;
         if (!vesselId && req.user.username) {
           try {
-            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ? LIMIT 1', [req.user.username, req.user.username.toLowerCase(), `%${req.user.username.toLowerCase()}%`]);
             if (vRows.length > 0) vesselId = vRows[0].id;
           } catch (e) {}
         }
         if (!vesselId) {
           return res.json([]);
         }
-        try {
-          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
-          const vesselTeamId = vRows[0]?.team_id;
-          if (vesselTeamId) {
-            query += ' AND (v.team_id = ? OR dr.vessel_id = ?)';
-            params.push(vesselTeamId, vesselId);
-          } else {
-            query += ' AND dr.vessel_id = ?';
-            params.push(vesselId);
-          }
-        } catch (err) {
-          query += ' AND dr.vessel_id = ?';
-          params.push(vesselId);
-        }
+        query += ' AND dr.vessel_id = ?';
+        params.push(vesselId);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const teamIds = await getEffectiveTeamIds(req.user);
         if (teamIds.length === 0) {
@@ -10182,27 +10530,15 @@ Generated by COMOS System
         let vesselId = req.user.vessel_id;
         if (!vesselId && req.user.username) {
           try {
-            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ? LIMIT 1', [req.user.username, req.user.username.toLowerCase(), `%${req.user.username.toLowerCase()}%`]);
             if (vRows.length > 0) vesselId = vRows[0].id;
           } catch (e) {}
         }
         if (!vesselId) {
           return res.json([]);
         }
-        try {
-          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
-          const vesselTeamId = vRows[0]?.team_id;
-          if (vesselTeamId) {
-            query += ' AND (v.team_id = ? OR ar.vessel_id = ?)';
-            params.push(vesselTeamId, vesselId);
-          } else {
-            query += ' AND ar.vessel_id = ?';
-            params.push(vesselId);
-          }
-        } catch (err) {
-          query += ' AND ar.vessel_id = ?';
-          params.push(vesselId);
-        }
+        query += ' AND ar.vessel_id = ?';
+        params.push(vesselId);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const teamIds = await getEffectiveTeamIds(req.user);
         if (teamIds.length === 0) {
@@ -10540,27 +10876,15 @@ Generated by COMOS System
         let vesselId = req.user.vessel_id;
         if (!vesselId && req.user.username) {
           try {
-            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ? LIMIT 1', [req.user.username, req.user.username.toLowerCase(), `%${req.user.username.toLowerCase()}%`]);
             if (vRows.length > 0) vesselId = vRows[0].id;
           } catch (e) {}
         }
         if (!vesselId) {
           return res.json([]);
         }
-        try {
-          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
-          const vesselTeamId = vRows[0]?.team_id;
-          if (vesselTeamId) {
-            query += ' AND (v.team_id = ? OR nr.vessel_id = ?)';
-            params.push(vesselTeamId, vesselId);
-          } else {
-            query += ' AND nr.vessel_id = ?';
-            params.push(vesselId);
-          }
-        } catch (err) {
-          query += ' AND nr.vessel_id = ?';
-          params.push(vesselId);
-        }
+        query += ' AND nr.vessel_id = ?';
+        params.push(vesselId);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const teamIds = await getEffectiveTeamIds(req.user);
         if (teamIds.length === 0) {
@@ -10954,27 +11278,15 @@ Generated by COMOS System
         let vesselId = req.user.vessel_id;
         if (!vesselId && req.user.username) {
           try {
-            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? LIMIT 1', [req.user.username, req.user.username.toLowerCase()]);
+            const [vRows]: any = await pool.execute('SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ? LIMIT 1', [req.user.username, req.user.username.toLowerCase(), `%${req.user.username.toLowerCase()}%`]);
             if (vRows.length > 0) vesselId = vRows[0].id;
           } catch (e) {}
         }
         if (!vesselId) {
           return res.json([]);
         }
-        try {
-          const [vRows]: any = await pool.execute('SELECT team_id FROM vessels WHERE id = ?', [vesselId]);
-          const vesselTeamId = vRows[0]?.team_id;
-          if (vesselTeamId) {
-            query += ' AND (v.team_id = ? OR orr.vessel_id = ?)';
-            params.push(vesselTeamId, vesselId);
-          } else {
-            query += ' AND orr.vessel_id = ?';
-            params.push(vesselId);
-          }
-        } catch (err) {
-          query += ' AND orr.vessel_id = ?';
-          params.push(vesselId);
-        }
+        query += ' AND orr.vessel_id = ?';
+        params.push(vesselId);
       } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
         const teamIds = await getEffectiveTeamIds(req.user);
         if (teamIds.length === 0) {
@@ -13378,6 +13690,34 @@ Generated by COMOS System
     try {
       let query = 'SELECT c.*, v.name as vessel_name, v.team_id as vessel_team_id, v.owner as vessel_owner FROM crew_members c LEFT JOIN vessels v ON c.vessel_id = v.id WHERE c.deleted_at IS NULL';
       let params: any[] = [];
+
+      if (req.user.role === 'vessel') {
+        let vesselId = req.user.vessel_id;
+        if (!vesselId && req.user.username) {
+          try {
+            const [vRows]: any = await pool.execute(
+              'SELECT id FROM vessels WHERE name = ? OR LOWER(name) = ? OR LOWER(name) LIKE ? LIMIT 1',
+              [req.user.username, req.user.username.toLowerCase(), `%${req.user.username.toLowerCase()}%`]
+            );
+            if (vRows.length > 0) vesselId = vRows[0].id;
+          } catch (e) {}
+        }
+        if (!vesselId) {
+          return res.json([]);
+        }
+
+        query += ' AND c.vessel_id = ?';
+        params.push(String(vesselId));
+      } else if (req.user.role === 'team_pic' || req.user.role === 'user') {
+        const teamIds = await getEffectiveTeamIds(req.user);
+        if (teamIds.length === 0) {
+          return res.json([]);
+        }
+        const placeholders = teamIds.map(() => '?').join(',');
+        query += ` AND (v.team_id IN (${placeholders}) OR c.vessel_id IS NULL OR c.vessel_id = '' OR c.vessel_id = 'pool' OR c.vessel_id = 'any' OR c.vessel_id = 'all')`;
+        params.push(...teamIds);
+      }
+
       query += ' ORDER BY c.created_at DESC';
       const [members]: any = await pool.execute(query, params);
 
@@ -13905,29 +14245,106 @@ Generated by COMOS System
     }
   });
 
+  // Crew document list
+  app.get('/api/crew-members/:id/documents', authenticate, async (req: any, res) => {
+    try {
+      const [docs]: any = await pool.execute(
+        'SELECT id, crew_id, doc_name, doc_type, file_name, file_size, uploaded_at, uploaded_by FROM crew_documents WHERE crew_id = ? ORDER BY uploaded_at DESC',
+        [req.params.id]
+      );
+      const formatted = (docs || []).map((d: any) => ({
+        id: d.id,
+        documentType: d.doc_type,
+        documentName: d.doc_name,
+        fileName: d.file_name,
+        fileSize: d.file_size,
+        uploadedAt: d.uploaded_at ? new Date(d.uploaded_at).toISOString().split('T')[0] : '',
+        uploadedBy: d.uploaded_by || ''
+      }));
+      res.json(formatted);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Crew document download/retrieve
   app.get('/api/crew-members/:id/documents/:docId', authenticate, async (req: any, res) => {
     try {
-      const [rows]: any = await pool.execute('SELECT * FROM crew_documents WHERE id = ? AND crew_id = ?', [req.params.docId, req.params.id]);
+      let [rows]: any = await pool.execute(
+        'SELECT * FROM crew_documents WHERE id = ? AND crew_id = ?',
+        [req.params.docId, req.params.id]
+      );
+      if (rows.length === 0) {
+        // Fallback: search by document ID alone in case crew ID formatting differs
+        const [fallbackRows]: any = await pool.execute(
+          'SELECT * FROM crew_documents WHERE id = ?',
+          [req.params.docId]
+        );
+        rows = fallbackRows;
+      }
+
       if (rows.length === 0) {
         return res.status(404).json({ error: 'Document not found' });
       }
 
       const doc = rows[0];
+      const fileName = doc.file_name || 'document.pdf';
+      const ext = fileName.split('.').pop()?.toLowerCase() || '';
+
+      const getMimeTypeFromExt = (extension: string) => {
+        switch (extension) {
+          case 'pdf': return 'application/pdf';
+          case 'jpg':
+          case 'jpeg': return 'image/jpeg';
+          case 'png': return 'image/png';
+          case 'webp': return 'image/webp';
+          case 'gif': return 'image/gif';
+          case 'svg': return 'image/svg+xml';
+          case 'txt': return 'text/plain';
+          case 'doc': return 'application/msword';
+          case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          case 'xls': return 'application/vnd.ms-excel';
+          case 'xlsx': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+          case 'csv': return 'text/csv';
+          default: return 'application/octet-stream';
+        }
+      };
+
+      const mimeType = getMimeTypeFromExt(ext);
+      const isDownload = req.query.download === 'true';
+      const encodedFilename = encodeURIComponent(fileName);
+
+      const setFileHeaders = (contentType: string) => {
+        res.setHeader('Content-Type', contentType);
+        res.setHeader(
+          'Content-Disposition',
+          `${isDownload ? 'attachment' : 'inline'}; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
+        );
+        res.setHeader('Content-Security-Policy', "frame-ancestors 'self' *");
+      };
+
       if (doc.file_data && doc.file_data.startsWith('B2_KEY:')) {
         const retrievedData = await handleFileRetrieve(Buffer.from(doc.file_data));
-        res.setHeader('Content-Disposition', `inline; filename="${doc.file_name}"`);
+        setFileHeaders(mimeType);
         return res.send(retrievedData);
       } else if (doc.file_data && doc.file_data.startsWith('data:')) {
         const parsed = parseBase64DataUrl(doc.file_data);
         if (parsed) {
-          res.setHeader('Content-Type', parsed.mimetype);
-          res.setHeader('Content-Disposition', `inline; filename="${doc.file_name}"`);
+          setFileHeaders(parsed.mimetype || mimeType);
           return res.send(parsed.buffer);
         }
+      } else if (doc.file_data) {
+        // Plain base64 or raw payload
+        try {
+          const rawBuffer = Buffer.from(doc.file_data, 'base64');
+          setFileHeaders(mimeType);
+          return res.send(rawBuffer);
+        } catch (_) {}
       }
+
       res.status(404).json({ error: 'Document payload unavailable' });
     } catch (e: any) {
+      console.error('Crew document preview error:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -14050,7 +14467,7 @@ Generated by COMOS System
 
   app.post('/api/crew-members/:id/disembark', authenticate, async (req: any, res) => {
     const { id } = req.params;
-    const { finishedContract, remarks } = req.body;
+    const { finishedContract, remarks, signOffDate: customSignOffDate } = req.body;
     try {
       const [members]: any = await pool.execute('SELECT * FROM crew_members WHERE id = ?', [id]);
       if (members.length === 0) {
@@ -14063,9 +14480,32 @@ Generated by COMOS System
         return res.status(403).json({ error: 'Access denied: You are not authorized to disembark crew from this vessel.' });
       }
 
-      const disembarkDate = new Date().toISOString().split('T')[0];
+      const disembarkDate = customSignOffDate || new Date().toISOString().split('T')[0];
       const signOnDate = m.sign_on_date ? new Date(m.sign_on_date).toISOString().split('T')[0] : null;
       const contractRemarks = finishedContract ? 'Finished Contract' : remarks;
+
+      // Calculate length of service by comparing sign-on and sign-off dates, completely disregarding planned contract duration
+      let durationMonths = 6;
+      if (signOnDate && disembarkDate) {
+        const start = new Date(signOnDate);
+        const end = new Date(disembarkDate);
+        if (!isNaN(start.getTime()) && !isNaN(end.getTime()) && end >= start) {
+          let years = end.getFullYear() - start.getFullYear();
+          let months = end.getMonth() - start.getMonth();
+          let days = end.getDate() - start.getDate();
+          if (days < 0) {
+            months -= 1;
+            const prevMonthDays = new Date(end.getFullYear(), end.getMonth(), 0).getDate();
+            days += prevMonthDays;
+          }
+          if (months < 0) {
+            years -= 1;
+            months += 12;
+          }
+          const totalMonths = (years * 12 + months) + (days / 30.4375);
+          durationMonths = Math.max(0.1, Math.round(totalMonths * 10) / 10);
+        }
+      }
 
       let vesselName = 'Unassigned';
       if (m.vessel_id) {
@@ -14108,7 +14548,7 @@ Generated by COMOS System
         rank: m.rank_name,
         signOnDate: signOnDate || '',
         signOffDate: disembarkDate,
-        durationMonths: m.contract_duration || 6,
+        durationMonths: durationMonths,
         reasonForSignOff: contractRemarks
       });
       profileObj.vesselAssignment = {

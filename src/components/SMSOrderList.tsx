@@ -99,6 +99,8 @@ interface SMSForm {
   removeFilenameRestriction?: boolean;
   allowedFileTypes?: string[];
   templateFileName?: string;
+  template_file_name?: string;
+  template_files?: any;
   isAcknowledgementRequired?: boolean;
 }
 
@@ -114,6 +116,7 @@ interface OrderItem {
   remove_filename_restriction: boolean;
   allowed_file_types: string[];
   template_file_name?: string;
+  template_files?: any;
   is_acknowledgement_required?: boolean;
   isAcknowledgementRequired?: boolean;
 }
@@ -3796,6 +3799,14 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
           }}
           onApplyTemplate={(tpl) => {
             setIsTemplatesModalOpen(false);
+            const resolvedFormIds = tpl.itemFormIds.map(fid => {
+              const clean = String(fid || '').trim();
+              const match = availableForms.find(f =>
+                f.id === clean ||
+                (f.formCode && f.formCode.toLowerCase().trim() === clean.toLowerCase())
+              );
+              return match ? match.id : clean;
+            });
             setEditingOrder({
               id: '',
               label: tpl.title,
@@ -3805,7 +3816,7 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
               createdByName: currentUser.username,
               createdAt: new Date().toISOString(),
               vessels: [],
-              items: availableForms.filter(f => tpl.itemFormIds.includes(f.id)).map(f => ({
+              items: availableForms.filter(f => resolvedFormIds.includes(f.id)).map(f => ({
                 form_id: f.id,
                 form_code: f.formCode,
                 category: f.category,
@@ -3814,7 +3825,10 @@ export const SMSOrderListView: React.FC<SMSOrderListProps> = ({
                 type: f.type,
                 is_hira: Boolean(f.isHira),
                 remove_filename_restriction: Boolean(f.removeFilenameRestriction),
-                allowed_file_types: f.allowedFileTypes || []
+                allowed_file_types: f.allowedFileTypes || [],
+                template_file_name: f.template_file_name || null,
+                template_files: f.template_files || null,
+                is_acknowledgement_required: Boolean(f.isAcknowledgementRequired)
               }))
             });
             setIsCreateModalOpen(true);

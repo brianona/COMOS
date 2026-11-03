@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   User,
@@ -21,12 +21,16 @@ import {
   ShieldCheck,
   Download,
   Eye,
+  ExternalLink,
   Lock,
   MessageSquare,
   Flag,
-  CreditCard
+  CreditCard,
+  Printer
 } from 'lucide-react';
 import { CrewProfile, CrewMemberItem, BasicInformation } from '../../types/crew';
+import { calculateServiceDurationMonths } from '../../utils/helpers';
+import { DocumentPreviewModal, PreviewModalState } from '../DocumentPreviewModal';
 
 interface VesselOption {
   id: number | string;
@@ -100,6 +104,7 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
   if (!isOpen) return null;
 
   const isCreating = !crewItem || !crewItem.id;
+  const effectiveToken = token || (typeof window !== 'undefined' ? localStorage.getItem('token') || localStorage.getItem('auth_token') || sessionStorage.getItem('token') || '' : '');
 
   const initialProfile: CrewProfile = crewItem?.profileData || {
     basicInfo: {
@@ -161,7 +166,7 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
       drugAlcoholResult: 'Negative',
       vaccinations: []
     },
-    documents: [],
+    documents: crewItem?.profileData?.documents || [],
     travelDocuments: crewItem?.profileData?.travelDocuments || [],
     emergencyContact: {
       nextOfKinName: '',
@@ -183,6 +188,37 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [newCommentText, setNewCommentText] = useState('');
 
+  // Document Preview Modal State
+  const [previewModal, setPreviewModal] = useState<PreviewModalState>({
+    isOpen: false,
+    title: '',
+    fileName: '',
+    loading: false,
+    error: null,
+    blobUrl: null,
+    blob: null,
+    arrayBuffer: null
+  });
+
+  // Fetch freshest documents list from server on mount/crew select
+  useEffect(() => {
+    if (crewItem?.id) {
+      fetch(`/api/crew-members/${crewItem.id}/documents`, {
+        headers: effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {}
+      })
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (Array.isArray(data) && data.length > 0) {
+            setProfile(prev => ({
+              ...prev,
+              documents: data
+            }));
+          }
+        })
+        .catch(err => console.error('Failed to load crew documents:', err));
+    }
+  }, [crewItem?.id, effectiveToken]);
+
   // Delete Profile State (for Managers and Admins)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingProfile, setDeletingProfile] = useState(false);
@@ -198,7 +234,7 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
       const res = await fetch(`/api/crew-members/${crewItem.id}/profile`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${token || ''}`,
+          'Authorization': `Bearer ${effectiveToken}`,
           'Content-Type': 'application/json'
         }
       });
@@ -216,6 +252,358 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
     } finally {
       setDeletingProfile(false);
     }
+  };
+
+  const handlePrintProfile = () => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('Please allow popups for printing.');
+      return;
+    }
+
+    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Crew Profile - ${profile.basicInfo.firstName} ${profile.basicInfo.lastName}</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 15mm;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #1e293b;
+      line-height: 1.4;
+      font-size: 11pt;
+      background: #ffffff;
+      margin: 0;
+      padding: 0;
+    }
+    .page {
+      width: 210mm;
+      min-height: 297mm;
+      padding: 10mm 15mm;
+      box-sizing: border-box;
+      page-break-after: always;
+      background: white;
+    }
+    .page:last-child {
+      page-break-after: avoid;
+    }
+    .header-section {
+      display: flex;
+      align-items: center;
+      border-bottom: 2px solid #2563eb;
+      padding-bottom: 12px;
+      margin-bottom: 15px;
+    }
+    .avatar-box {
+      width: 70px;
+      height: 80px;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      margin-right: 15px;
+      flex-shrink: 0;
+    }
+    .avatar-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .header-info h1 {
+      font-size: 18pt;
+      font-weight: 800;
+      margin: 0 0 4px 0;
+      color: #0f172a;
+    }
+    .header-info p {
+      font-size: 11pt;
+      margin: 0;
+      color: #475569;
+      font-weight: 600;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      border: 1px solid #bfdbfe;
+      border-radius: 4px;
+      font-size: 9pt;
+      font-weight: 700;
+      margin-top: 4px;
+    }
+    .section-title {
+      font-size: 12pt;
+      font-weight: 800;
+      color: #1e3a8a;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 4px;
+      margin-top: 15px;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 15px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px 12px;
+    }
+    .field-row {
+      margin-bottom: 6px;
+    }
+    .field-label {
+      font-size: 8.5pt;
+      font-weight: 700;
+      color: #64748b;
+      text-transform: uppercase;
+      margin-bottom: 1px;
+    }
+    .field-value {
+      font-size: 10.5pt;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 5px;
+      margin-bottom: 10px;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 6px 8px;
+      font-size: 9.5pt;
+      text-align: left;
+    }
+    th {
+      background: #f8fafc;
+      color: #334155;
+      font-weight: 700;
+    }
+    .footer {
+      position: fixed;
+      bottom: 10mm;
+      left: 15mm;
+      right: 15mm;
+      display: flex;
+      justify-content: space-between;
+      font-size: 8pt;
+      color: #94a3b8;
+      border-top: 1px solid #e2e8f0;
+      padding-top: 5px;
+    }
+  </style>
+</head>
+<body>
+  <!-- PAGE 1: Basic Info, Contact, Vessel Assignment, Medical & Remarks -->
+  <div class="page">
+    <div class="header-section">
+      <div class="avatar-box">
+        ${profile.basicInfo.photo ? `<img src="${profile.basicInfo.photo}" />` : '<span style="font-size:24pt; color:#cbd5e1;">👤</span>'}
+      </div>
+      <div class="header-info">
+        <h1>${profile.basicInfo.firstName || ''} ${profile.basicInfo.middleName || ''} ${profile.basicInfo.lastName || ''}</h1>
+        <p>${profile.basicInfo.rank || 'Seafarer'} &bull; ${profile.basicInfo.nationality || 'Filipino'}</p>
+        <span class="badge">${assignedVesselObj ? assignedVesselObj.name : 'In Crew Pool / Available'}</span>
+      </div>
+    </div>
+
+    <div class="section-title">1. Basic Information</div>
+    <div class="grid-3">
+      <div class="field-row">
+        <div class="field-label">First Name</div>
+        <div class="field-value">${profile.basicInfo.firstName || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Middle Name</div>
+        <div class="field-value">${profile.basicInfo.middleName || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Last Name</div>
+        <div class="field-value">${profile.basicInfo.lastName || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Rank</div>
+        <div class="field-value">${profile.basicInfo.rank || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Nationality</div>
+        <div class="field-value">${profile.basicInfo.nationality || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Gender / Status</div>
+        <div class="field-value">${profile.basicInfo.gender || '—'} / ${profile.basicInfo.maritalStatus || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Birthdate</div>
+        <div class="field-value">${profile.basicInfo.birthdate || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Passport No.</div>
+        <div class="field-value">${profile.basicInfo.passportNo || '—'} (Exp: ${profile.basicInfo.passportExpiry || '—'})</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Seaman Book No.</div>
+        <div class="field-value">${profile.basicInfo.seamanBookNo || '—'} (Exp: ${profile.basicInfo.seamanBookExpiry || '—'})</div>
+      </div>
+    </div>
+
+    <div class="section-title">2. Contact & Address</div>
+    <div class="grid-2">
+      <div class="field-row">
+        <div class="field-label">Phone & Email</div>
+        <div class="field-value">${profile.contactInfo.phone || '—'} | ${profile.contactInfo.email || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Residential Address</div>
+        <div class="field-value">${profile.contactInfo.address?.street || ''}, ${profile.contactInfo.address?.city || ''}, ${profile.contactInfo.address?.provinceState || ''}, ${profile.contactInfo.address?.country || ''}</div>
+      </div>
+    </div>
+
+    <div class="section-title">3. Vessel Assignment & Contract</div>
+    <div class="grid-3">
+      <div class="field-row">
+        <div class="field-label">Current Vessel</div>
+        <div class="field-value">${assignedVesselObj ? assignedVesselObj.name : 'Unassigned (Pool)'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Sign-On Date</div>
+        <div class="field-value">${profile.vesselAssignment.signOnDate || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Contract Duration</div>
+        <div class="field-value">${profile.vesselAssignment.contractDuration || 6} Months (End: ${profile.vesselAssignment.contractEndDate || '—'})</div>
+      </div>
+    </div>
+
+    <div class="section-title">4. Medical & Fitness</div>
+    <div class="grid-3">
+      <div class="field-row">
+        <div class="field-label">Clinic / Hospital</div>
+        <div class="field-value">${profile.medicalCertification.clinicName || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Medical Exam Date</div>
+        <div class="field-value">${profile.medicalCertification.examDate || '—'}</div>
+      </div>
+      <div class="field-row">
+        <div class="field-label">Medical Expiry Date</div>
+        <div class="field-value">${profile.medicalCertification.expiryDate || '—'}</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span>COMOS Cleanocean Monitoring System - Confidential Crew Profile</span>
+      <span>Page 1 of 2</span>
+    </div>
+  </div>
+
+  <!-- PAGE 2: Sea Service & Certificates -->
+  <div class="page">
+    <div class="section-title">5. Sea Service Record</div>
+    ${(!profile.seaService || profile.seaService.length === 0) ? '<p style="font-size:10pt; color:#64748b; font-style:italic;">No past sea service records listed.</p>' : `
+      <table>
+        <thead>
+          <tr>
+            <th>Vessel Name</th>
+            <th>Type</th>
+            <th>Rank</th>
+            <th>Sign-On</th>
+            <th>Sign-Off</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${profile.seaService.map(s => `
+            <tr>
+              <td><strong>${s.vesselName || '—'}</strong></td>
+              <td>${s.vesselType || '—'}</td>
+              <td>${s.rank || '—'}</td>
+              <td>${s.signOnDate || '—'}</td>
+              <td>${s.signOffDate || '—'}</td>
+              <td><strong>${s.durationMonths || 6} mos</strong></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `}
+
+    <div class="section-title">6. National & Flag Licenses</div>
+    ${(!profile.nationalLicenses || profile.nationalLicenses.length === 0) ? '<p style="font-size:10pt; color:#64748b; font-style:italic;">No national licenses listed.</p>' : `
+      <table>
+        <thead>
+          <tr>
+            <th>Document Name</th>
+            <th>Number</th>
+            <th>Rank</th>
+            <th>Issued</th>
+            <th>Expires</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${profile.nationalLicenses.map(l => `
+            <tr>
+              <td><strong>${l.documentName || '—'}</strong></td>
+              <td>${l.documentNumber || '—'}</td>
+              <td>${l.rank || '—'}</td>
+              <td>${l.issuedDate || '—'}</td>
+              <td>${l.expirationDate || '—'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `}
+
+    <div class="section-title">7. Training Certificates</div>
+    ${(!profile.trainingCertificates || profile.trainingCertificates.length === 0) ? '<p style="font-size:10pt; color:#64748b; font-style:italic;">No training certificates listed.</p>' : `
+      <table>
+        <thead>
+          <tr>
+            <th>Course Name</th>
+            <th>Training Center</th>
+            <th>Completion Date</th>
+            <th>Expiry Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${(profile.trainingCertificates || []).map(t => `
+            <tr>
+              <td><strong>${t.courseMarina || '—'}</strong></td>
+              <td>${t.trainingCenter || '—'}</td>
+              <td>${t.issueDate || '—'}</td>
+              <td>${t.revalidateDate || 'No Expiry'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `}
+
+    <div class="footer">
+      <span>COMOS Cleanocean Monitoring System - Confidential Crew Profile</span>
+      <span>Page 2 of 2</span>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+      printWindow.print();
+    }, 500);
   };
 
   const handleAddComment = () => {
@@ -490,13 +878,13 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
       }));
 
       // If we have an existing crew member ID, upload directly to server as well
-      if (crewItem?.id && token) {
+      if (crewItem?.id && effectiveToken) {
         try {
-          await fetch(`/api/crew-members/${crewItem.id}/documents`, {
+          const res = await fetch(`/api/crew-members/${crewItem.id}/documents`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`
+              Authorization: `Bearer ${effectiveToken}`
             },
             body: JSON.stringify({
               docName: newDoc.documentName,
@@ -506,6 +894,15 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
               fileData: fileData
             })
           });
+          if (res.ok) {
+            const data = await res.json();
+            if (data?.docId) {
+              setProfile(prev => ({
+                ...prev,
+                documents: prev.documents.map(d => d.id === newDoc.id ? { ...d, id: data.docId } : d)
+              }));
+            }
+          }
         } catch (err) {
           console.error('Doc direct upload error:', err);
         }
@@ -521,16 +918,150 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
       documents: prev.documents.filter(d => d.id !== docId)
     }));
 
-    if (crewItem?.id && token && docId.startsWith('cdoc_')) {
+    if (crewItem?.id && effectiveToken && docId.startsWith('cdoc_')) {
       try {
         await fetch(`/api/crew-members/${crewItem.id}/documents/${docId}`, {
           method: 'DELETE',
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { Authorization: `Bearer ${effectiveToken}` }
         });
       } catch (err) {
         console.error('Doc delete error:', err);
       }
     }
+  };
+
+  const handlePreviewDoc = async (doc: any) => {
+    const title = doc.documentName || doc.fileName || 'Crew Document';
+    const fileName = doc.fileName || doc.documentName || 'document.pdf';
+
+    // If we have a local fileUrl (data URL)
+    if (doc.fileUrl && doc.fileUrl.startsWith('data:')) {
+      try {
+        const parts = doc.fileUrl.split(',');
+        const mime = parts[0].match(/:(.*?);/)?.[1] || 'application/octet-stream';
+        const bstr = atob(parts[1]);
+        let n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        while (n--) {
+          u8arr[n] = bstr.charCodeAt(n);
+        }
+        const blob = new Blob([u8arr], { type: mime });
+        const blobUrl = URL.createObjectURL(blob);
+        setPreviewModal({
+          isOpen: true,
+          title,
+          fileName,
+          fileSize: doc.fileSize,
+          fileMimetype: mime,
+          blobUrl,
+          blob,
+          loading: false,
+          error: null
+        });
+        return;
+      } catch (e) {
+        console.error('Error creating blob from data URL:', e);
+      }
+    }
+
+    if (crewItem?.id && doc.id) {
+      setPreviewModal({
+        isOpen: true,
+        title,
+        fileName,
+        fileSize: doc.fileSize,
+        loading: true,
+        error: null,
+        blobUrl: null,
+        blob: null
+      });
+
+      try {
+        const fetchUrl = `/api/crew-members/${crewItem.id}/documents/${doc.id}?token=${encodeURIComponent(effectiveToken)}`;
+        const res = await fetch(fetchUrl, {
+          headers: effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {}
+        });
+
+        if (!res.ok) {
+          let errText = `Failed to preview document (${res.status} ${res.statusText})`;
+          try {
+            const errJson = await res.json();
+            if (errJson.error) errText = errJson.error;
+          } catch (_) {}
+          throw new Error(errText);
+        }
+
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        setPreviewModal(prev => ({
+          ...prev,
+          loading: false,
+          blobUrl,
+          blob,
+          fileMimetype: blob.type
+        }));
+      } catch (err: any) {
+        console.error('Document preview error:', err);
+        setPreviewModal(prev => ({
+          ...prev,
+          loading: false,
+          error: err.message || 'Failed to load document preview'
+        }));
+      }
+    }
+  };
+
+  const handleDownloadDoc = async (doc: any) => {
+    if (doc.fileUrl && doc.fileUrl.startsWith('data:')) {
+      const a = document.createElement('a');
+      a.href = doc.fileUrl;
+      a.download = doc.fileName || 'document';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+
+    if (crewItem?.id && doc.id) {
+      try {
+        const fetchUrl = `/api/crew-members/${crewItem.id}/documents/${doc.id}?download=true&token=${encodeURIComponent(effectiveToken)}`;
+        const res = await fetch(fetchUrl, {
+          headers: effectiveToken ? { Authorization: `Bearer ${effectiveToken}` } : {}
+        });
+        if (!res.ok) throw new Error('Download failed');
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = doc.fileName || 'document';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      } catch (err) {
+        console.error('Download error:', err);
+        window.open(
+          `/api/crew-members/${crewItem.id}/documents/${doc.id}?download=true&token=${encodeURIComponent(effectiveToken)}`,
+          '_blank'
+        );
+      }
+    }
+  };
+
+  const handleClosePreview = () => {
+    if (previewModal.blobUrl && previewModal.blobUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewModal.blobUrl);
+    }
+    setPreviewModal({
+      isOpen: false,
+      title: '',
+      fileName: '',
+      loading: false,
+      error: null,
+      blobUrl: null,
+      blob: null,
+      arrayBuffer: null
+    });
   };
 
   const addTravelDocument = () => {
@@ -664,6 +1195,15 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handlePrintProfile}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer border border-slate-200"
+              title="Print profile as printable A4 PDF pages"
+            >
+              <Printer className="w-3.5 h-3.5 text-slate-500" />
+              <span>Print Profile</span>
+            </button>
             {canEdit && (
               <button
                 type="button"
@@ -1362,8 +1902,14 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
                             disabled={!canEdit}
                             value={rec.signOnDate}
                             onChange={e => {
+                              const newSignOn = e.target.value;
                               const copy = [...profile.seaService];
-                              copy[idx] = { ...copy[idx], signOnDate: e.target.value };
+                              const autoDuration = calculateServiceDurationMonths(newSignOn, copy[idx].signOffDate);
+                              copy[idx] = {
+                                ...copy[idx],
+                                signOnDate: newSignOn,
+                                ...(autoDuration > 0 ? { durationMonths: autoDuration } : {})
+                              };
                               setProfile(prev => ({ ...prev, seaService: copy }));
                             }}
                             className="w-full px-2.5 py-1.5 rounded border border-slate-200 focus:outline-none focus:border-blue-500 disabled:bg-slate-50"
@@ -1377,8 +1923,14 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
                             disabled={!canEdit}
                             value={rec.signOffDate}
                             onChange={e => {
+                              const newSignOff = e.target.value;
                               const copy = [...profile.seaService];
-                              copy[idx] = { ...copy[idx], signOffDate: e.target.value };
+                              const autoDuration = calculateServiceDurationMonths(copy[idx].signOnDate, newSignOff);
+                              copy[idx] = {
+                                ...copy[idx],
+                                signOffDate: newSignOff,
+                                ...(autoDuration > 0 ? { durationMonths: autoDuration } : {})
+                              };
                               setProfile(prev => ({ ...prev, seaService: copy }));
                             }}
                             className="w-full px-2.5 py-1.5 rounded border border-slate-200 focus:outline-none focus:border-blue-500 disabled:bg-slate-50"
@@ -1389,10 +1941,11 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
                           <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">Duration (Months)</label>
                           <input
                             type="number"
-                            min={1}
-                            max={36}
+                            min={0.1}
+                            step={0.1}
+                            max={60}
                             disabled={!canEdit}
-                            value={rec.durationMonths || 6}
+                            value={rec.durationMonths ?? 6}
                             onChange={e => {
                               const copy = [...profile.seaService];
                               copy[idx] = { ...copy[idx], durationMonths: Number(e.target.value) || 0 };
@@ -1418,6 +1971,27 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
                           />
                         </div>
                       </div>
+
+                      {/* Sign-Off Reason / Remarks - Visible only to admin, managers (team_pic), and superintendents (user) */}
+                      {['admin', 'team_pic', 'user'].includes(currentUserRole || '') && (
+                        <div className="pt-2 border-t border-slate-100 mt-2">
+                          <label className="block text-[10px] font-bold text-slate-500 uppercase mb-0.5">
+                            Sign-Off Reason / Contract Remarks
+                          </label>
+                          <input
+                            type="text"
+                            disabled={!canEdit}
+                            value={rec.reasonForSignOff || ''}
+                            onChange={e => {
+                              const copy = [...profile.seaService];
+                              copy[idx] = { ...copy[idx], reasonForSignOff: e.target.value };
+                              setProfile(prev => ({ ...prev, seaService: copy }));
+                            }}
+                            placeholder="Finished Contract, Medical repatriation, etc."
+                            className="w-full px-2.5 py-1.5 rounded border border-slate-200 focus:outline-none focus:border-blue-500 disabled:bg-slate-50 text-xs font-semibold text-slate-800"
+                          />
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -2303,34 +2877,44 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
                       </div>
 
                       <div className="flex items-center gap-1 shrink-0">
-                        {doc.fileUrl && (
-                          <a
-                            href={doc.fileUrl}
-                            download={doc.fileName}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                            title="Download document"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                          </a>
-                        )}
+                        {/* Preview document modal */}
+                        <button
+                          type="button"
+                          onClick={() => handlePreviewDoc(doc)}
+                          className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                          title="Preview document"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Open in separate tab with auth token */}
                         {crewItem?.id && doc.id.startsWith('cdoc_') && (
                           <a
-                            href={`/api/crew-members/${crewItem.id}/documents/${doc.id}`}
+                            href={`/api/crew-members/${crewItem.id}/documents/${doc.id}?token=${encodeURIComponent(effectiveToken)}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
-                            title="View document"
+                            className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors"
+                            title="Open in new browser tab"
                           >
-                            <Eye className="w-3.5 h-3.5" />
+                            <ExternalLink className="w-3.5 h-3.5" />
                           </a>
                         )}
+
+                        {/* Download document */}
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadDoc(doc)}
+                          className="p-1.5 text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 rounded transition-colors cursor-pointer"
+                          title="Download document"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+
                         {canEdit && (
                           <button
                             type="button"
                             onClick={() => removeDoc(doc.id)}
-                            className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded transition-colors"
+                            className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded transition-colors cursor-pointer"
                             title="Delete document"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -2638,6 +3222,25 @@ export const CrewProfileModal: React.FC<CrewProfileModalProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Document Inline Preview Modal */}
+      {previewModal.isOpen && (
+        <DocumentPreviewModal
+          modal={previewModal}
+          onClose={handleClosePreview}
+          onDownload={() => {
+            if (previewModal.blobUrl) {
+              const a = document.createElement('a');
+              a.href = previewModal.blobUrl;
+              a.download = previewModal.fileName || 'document.pdf';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            }
+          }}
+          token={effectiveToken}
+        />
       )}
     </div>
   );

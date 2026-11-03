@@ -27,7 +27,7 @@ import {
 } from 'lucide-react';
 import { CrewMemberItem, CrewProfile } from '../../types/crew';
 import { CrewProfileModal } from './CrewProfileModal';
-import { calculateCrewAge } from '../../utils/helpers';
+import { calculateCrewAge, calculateServiceDurationMonths, formatServiceDuration } from '../../utils/helpers';
 
 export type CrewSortField = 'rank' | 'name' | 'age' | 'nationality' | 'signOnDate' | 'contractEndDate' | 'nextMedicalExam' | 'status';
 export type CrewSortDirection = 'asc' | 'desc';
@@ -214,6 +214,7 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
   const [disembarkingCrew, setDisembarkingCrew] = useState<CrewMemberItem | null>(null);
   const [finishedContract, setFinishedContract] = useState(true);
   const [disembarkRemarks, setDisembarkRemarks] = useState('');
+  const [disembarkSignOffDate, setDisembarkSignOffDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [disembarkLoading, setDisembarkLoading] = useState(false);
   const [disembarkError, setDisembarkError] = useState<string | null>(null);
 
@@ -572,7 +573,8 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
         },
         body: JSON.stringify({
           finishedContract,
-          remarks: disembarkRemarks
+          remarks: disembarkRemarks,
+          signOffDate: disembarkSignOffDate
         })
       });
 
@@ -970,8 +972,8 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
             )}
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+          <div className="overflow-x-auto custom-scrollbar">
+            <table className="w-full min-w-[850px] text-left text-xs">
               <thead className="bg-slate-50/80 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider select-none">
                 <tr>
                   {/* Seafarer / Rank */}
@@ -1093,7 +1095,7 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
                     </button>
                   </th>
 
-                  <th className="py-3 px-4 text-right">Actions</th>
+                  <th className="py-3 px-4 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -1139,20 +1141,22 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
                         const cage = calculateCrewAge(bdate);
                         return (
                           <td className="py-3 px-4 whitespace-nowrap">
-                            {cage !== null ? (
-                              <div className="flex items-center gap-1.5">
+                            <div className="flex flex-col items-start gap-0.5">
+                              {cage !== null ? (
                                 <span className="font-bold text-slate-800 bg-slate-100 text-xs px-2 py-0.5 rounded-md border border-slate-200">
                                   {cage} yrs
                                 </span>
-                                {bdate && (
-                                  <span className="text-[10px] text-slate-400 font-mono hidden xl:inline" title={`Date of birth: ${bdate}`}>
-                                    ({bdate})
-                                  </span>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-slate-400 font-medium">—</span>
-                            )}
+                              ) : (
+                                <span className="text-slate-400 font-medium">—</span>
+                              )}
+                              {bdate ? (
+                                <span className="text-[10px] text-slate-400 font-mono tracking-tight" title={`Date of birth: ${bdate}`}>
+                                  {bdate}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-slate-300 italic">No DOB</span>
+                              )}
+                            </div>
                           </td>
                         );
                       })()}
@@ -1212,8 +1216,8 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
                       </td>
 
                       {/* Row Actions */}
-                      <td className="py-3 px-4 text-right">
-                        <div className="inline-flex items-center gap-1.5 justify-end">
+                      <td className="py-3 px-4 text-center">
+                        <div className="inline-flex items-center gap-1.5 justify-center">
                           <button
                             type="button"
                             onClick={() => handleExtendContract(c)}
@@ -1239,6 +1243,7 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
                                 setDisembarkingCrew(c);
                                 setFinishedContract(true);
                                 setDisembarkRemarks('');
+                                setDisembarkSignOffDate(new Date().toISOString().split('T')[0]);
                                 setDisembarkError(null);
                               }}
                               className="px-2.5 py-1 text-xs font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg transition-colors cursor-pointer"
@@ -1301,8 +1306,50 @@ export const CrewManagementHub: React.FC<CrewManagementHubProps> = ({
             <div className="space-y-3 text-xs">
               <p className="text-slate-600">
                 You are about to sign off <strong className="text-slate-900">{disembarkingCrew.name}</strong> ({disembarkingCrew.rank}) from this vessel.
-                This records their sea time in their service record and returns them to the global candidate pool.
+                This records their actual sea time in their service record and returns them to the global candidate pool.
               </p>
+
+              {/* Embarkation & Disembarkation Dates Comparison */}
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                    Sign-On Date
+                  </label>
+                  <div className="px-2.5 py-1.5 bg-white rounded-lg border border-slate-200 font-bold text-slate-800 text-xs">
+                    {disembarkingCrew.signOnDate || 'Not specified'}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                    Sign-Off Date *
+                  </label>
+                  <input
+                    type="date"
+                    value={disembarkSignOffDate}
+                    onChange={e => setDisembarkSignOffDate(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-white rounded-lg border border-slate-200 font-bold text-slate-800 text-xs focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Calculated Service Duration Notice */}
+              {(() => {
+                const serviceDuration = calculateServiceDurationMonths(disembarkingCrew.signOnDate, disembarkSignOffDate);
+                return (
+                  <div className="p-3 bg-blue-50/80 border border-blue-200/90 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-700">Calculated Sea Service Duration:</span>
+                      <span className="font-black text-blue-700 bg-white px-2.5 py-0.5 rounded-md border border-blue-200 shadow-2xs">
+                        {formatServiceDuration(serviceDuration)}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-normal">
+                      Length of service is calculated by comparing sign-on ({disembarkingCrew.signOnDate || '—'}) and sign-off ({disembarkSignOffDate}). Initial contract duration ({disembarkingCrew.contractDuration || 6} mos) is disregarded.
+                    </p>
+                  </div>
+                );
+              })()}
 
               <label className="flex items-center gap-2.5 p-3 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
                 <input

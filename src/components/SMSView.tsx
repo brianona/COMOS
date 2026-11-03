@@ -2587,7 +2587,7 @@ startxref
 
     triggerToast(
       editingId
-        ? `${savedForm.type === 'Checklist' ? 'Checklist' : 'Form'} ${savedForm.formCode} updated successfully.`
+        ? `${savedForm.type === 'Checklist' ? 'Checklist' : 'Form'} ${savedForm.formCode} updated successfully. Applied to all existing orders and templates.`
         : `${savedForm.type === 'Checklist' ? 'Checklist' : 'Form'} ${savedForm.formCode} added to section ${selectedCategory}.`,
       'success'
     );
@@ -2625,7 +2625,7 @@ startxref
             console.error('Quick template save error:', err);
           }
         }
-        triggerToast(`Attached template ${file.name} to ${form.formCode}`, 'success');
+        triggerToast(`Attached template ${file.name} to ${form.formCode}. Applied to all existing orders and templates.`, 'success');
         setQuickTemplateUploadingId(null);
       };
       reader.onerror = () => {

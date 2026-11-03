@@ -327,6 +327,7 @@ export type ViewType =
   | "dashboard"
   | "vessels"
   | "vessel_details"
+  | "vessel_particulars"
   | "routing"
   | "admin"
   | "slideshow"

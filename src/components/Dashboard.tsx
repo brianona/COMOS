@@ -42,6 +42,7 @@ import { FuelConsumptionView } from "./FuelConsumptionView";
 import { SlideshowView } from "./SlideshowView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { VesselRoutingUserView } from "./VesselRoutingUserView";
+import { ShipParticularsView } from "./ShipParticularsView";
 import { Logo, LogoContainer, setCustomLogoUrl } from "./Logo";
 import { NotificationToast } from "./NotificationToast";
 import { SidebarContent } from "./Sidebar";
@@ -1065,19 +1066,23 @@ export const Dashboard = ({
         formData.append('photo', editingVesselPhoto);
       }
 
-      const res = await fetch(`/api/vessels/${editingVessel.id}`, {
-        method: 'PUT',
+      const isNew = !editingVessel.id || editingVessel.id === 0;
+      const url = isNew ? '/api/vessels' : `/api/vessels/${editingVessel.id}`;
+      const method = isNew ? 'POST' : 'PUT';
+
+      const res = await fetch(url, {
+        method,
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
       });
       if (res.ok) {
-        notify('success', 'Vessel updated successfully');
+        notify('success', isNew ? 'Vessel created successfully' : 'Vessel updated successfully');
         setEditingVessel(null);
         setEditingVesselPhoto(null);
         fetchData();
       } else {
         const data = await res.json();
-        notify('error', data.error || 'Failed to update vessel');
+        notify('error', data.error || (isNew ? 'Failed to create vessel' : 'Failed to update vessel'));
       }
     } catch (err) {
       notify('error', 'Connection error occurred');
@@ -2330,7 +2335,7 @@ export const Dashboard = ({
                       className="px-4 py-2.5 bg-blue-500 hover:bg-blue-600 active:scale-95 text-white font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-lg shadow-blue-500/20"
                     >
                       <Ship className="w-3.5 h-3.5" />
-                      Manage Vessels
+                      {user.role === 'vessel' ? 'My Vessel Details' : 'Manage Vessels'}
                     </button>
                   </div>
                 </div>
@@ -2342,7 +2347,7 @@ export const Dashboard = ({
                 <div 
                   onClick={() => {
                     if (user.role === 'vessel' && user.vessel_id) {
-                      const myVessel = vessels.find(v => String(v.id) === String(user.vessel_id));
+                      const myVessel = vessels.find(v => String(v.id) === String(user.vessel_id)) || vessels[0];
                       if (myVessel) {
                         setSelectedVessel(myVessel);
                         setView('vessel_details');
@@ -2359,11 +2364,17 @@ export const Dashboard = ({
                     <div className="p-2.5 bg-blue-50 rounded-xl text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all">
                       <Ship className="w-5 h-5" />
                     </div>
-                    <span className="text-2xl font-black text-slate-800 tracking-tight">{vessels.length}</span>
+                    <span className="text-2xl font-black text-slate-800 tracking-tight">
+                      {user.role === 'vessel' ? 1 : vessels.length}
+                    </span>
                   </div>
                   <div>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Fleet Vessels</h3>
-                    <p className="text-[10px] text-slate-500 mt-0.5 font-medium">Core registered vessels</p>
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                      {user.role === 'vessel' ? 'My Vessel' : 'Fleet Vessels'}
+                    </h3>
+                    <p className="text-[10px] text-slate-500 mt-0.5 font-medium truncate">
+                      {user.role === 'vessel' ? (vessels[0]?.name || user.username || 'Assigned Vessel') : 'Core registered vessels'}
+                    </p>
                   </div>
                 </div>
 
@@ -2376,8 +2387,11 @@ export const Dashboard = ({
                   className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
                 >
                   {(() => {
-                    const expired = certs.filter(c => getStatus(c.expiration_date) === 'expired').length;
-                    const expiring = certs.filter(c => getStatus(c.expiration_date) === 'expiring soon' || getStatus(c.expiration_date) === 'expiring').length;
+                    const vesselCerts = user.role === 'vessel' && user.vessel_id
+                      ? certs.filter(c => String(c.vessel_id) === String(user.vessel_id))
+                      : certs;
+                    const expired = vesselCerts.filter(c => getStatus(c.expiration_date) === 'expired').length;
+                    const expiring = vesselCerts.filter(c => getStatus(c.expiration_date) === 'expiring soon' || getStatus(c.expiration_date) === 'expiring').length;
                     return (
                       <>
                         <div className="flex items-center justify-between mb-4">
@@ -2407,7 +2421,10 @@ export const Dashboard = ({
                   className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
                 >
                   {(() => {
-                    const activeDefects = troubleReports.filter(r => r.status !== 'Resolved').length;
+                    const vesselReports = user.role === 'vessel' && user.vessel_id
+                      ? troubleReports.filter(r => String(r.vesselId) === String(user.vessel_id))
+                      : troubleReports;
+                    const activeDefects = vesselReports.filter(r => r.status !== 'Resolved').length;
                     return (
                       <>
                         <div className="flex items-center justify-between mb-4">
@@ -2436,10 +2453,18 @@ export const Dashboard = ({
                     let criticalCount = 0;
                     let warningCount = 0;
 
+                    const accessibleVesselIds = user.role === 'vessel' && user.vessel_id
+                      ? new Set([String(user.vessel_id)])
+                      : new Set(vessels.map(v => String(v.id)));
+
                     (crewMembers || []).forEach(c => {
                       const isAssigned = c.vesselId && c.vesselId !== 'any' && c.vesselId !== 'all';
+                      if (!isAssigned) return;
+                      // Restrict contracts to user's accessible vessel(s)
+                      if (!accessibleVesselIds.has(String(c.vesselId))) return;
+
                       const hasActiveContract = c.contractEndDate && c.contractEndDate !== '';
-                      if (isAssigned && hasActiveContract) {
+                      if (hasActiveContract) {
                         const endDate = new Date(c.contractEndDate);
                         if (!isNaN(endDate.getTime())) {
                           endDate.setHours(0, 0, 0, 0);
@@ -2479,14 +2504,16 @@ export const Dashboard = ({
                   })()}
                 </div>
 
-
                 {/* 5. Pending Requisitions KPI */}
                 <div 
                   onClick={() => setView('spare_requisition_ship')}
                   className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
                 >
                   {(() => {
-                    const reqCount = spareRequisitions.filter(r => r.status === 'Pending Review' || r.status === 'Draft').length;
+                    const vesselSpares = user.role === 'vessel' && user.vessel_id
+                      ? spareRequisitions.filter(r => String(r.vesselId) === String(user.vessel_id))
+                      : spareRequisitions;
+                    const reqCount = vesselSpares.filter(r => r.status === 'Pending Review' || r.status === 'Draft').length;
                     return (
                       <>
                         <div className="flex items-center justify-between mb-4">
@@ -2510,7 +2537,10 @@ export const Dashboard = ({
                   className="bg-white p-5 rounded-2xl border border-blue-50 hover:border-blue-200 hover:shadow-md hover:scale-[1.02] cursor-pointer transition-all flex flex-col justify-between group"
                 >
                   {(() => {
-                    const pendingAudits = (auditRecords || []).filter(a => a.status === 'Scheduled' || a.status === 'In Progress' || a.status === 'Overdue').length;
+                    const vesselAudits = user.role === 'vessel' && user.vessel_id
+                      ? (auditRecords || []).filter(a => String(a.vesselId) === String(user.vessel_id))
+                      : (auditRecords || []);
+                    const pendingAudits = vesselAudits.filter(a => a.status === 'Scheduled' || a.status === 'In Progress' || a.status === 'Overdue').length;
                     return (
                       <>
                         <div className="flex items-center justify-between mb-4">
@@ -2539,9 +2569,11 @@ export const Dashboard = ({
                       <div>
                         <h2 className="font-bold text-slate-900 flex items-center gap-2">
                           <Anchor className="w-4 h-4 text-blue-500" />
-                          Fleet Dispatch & Routing Status
+                          {user.role === 'vessel' ? 'Vessel Dispatch & Routing Status' : 'Fleet Dispatch & Routing Status'}
                         </h2>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">Real-time routing logs from vessels</p>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">
+                          {user.role === 'vessel' ? 'Real-time routing logs for assigned vessel' : 'Real-time routing logs from vessels'}
+                        </p>
                       </div>
                       <button 
                         onClick={() => setView('routing')}
@@ -2563,14 +2595,20 @@ export const Dashboard = ({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-blue-50/40">
-                          {vessels.length === 0 ? (
-                            <tr>
-                              <td colSpan={5} className="px-5 py-8 text-center text-slate-400 text-xs font-medium">
-                                No vessel registration found.
-                              </td>
-                            </tr>
-                          ) : (
-                            vessels.slice(0, 10).map(v => {
+                          {(() => {
+                            const displayedVessels = user.role === 'vessel' && user.vessel_id
+                              ? vessels.filter(v => String(v.id) === String(user.vessel_id))
+                              : vessels;
+                            if (displayedVessels.length === 0) {
+                              return (
+                                <tr>
+                                  <td colSpan={5} className="px-5 py-8 text-center text-slate-400 text-xs font-medium">
+                                    No vessel registration found.
+                                  </td>
+                                </tr>
+                              );
+                            }
+                            return displayedVessels.slice(0, 10).map(v => {
                               const routeStatusColors: Record<string, string> = {
                                 'At sea': 'bg-emerald-50 text-emerald-700 border-emerald-100',
                                 'Underway': 'bg-emerald-50 text-emerald-700 border-emerald-100',
@@ -2635,8 +2673,8 @@ export const Dashboard = ({
                                   </td>
                                 </tr>
                               );
-                            })
-                          )}
+                            });
+                          })()}
                         </tbody>
                       </table>
                     </div>
@@ -2656,13 +2694,20 @@ export const Dashboard = ({
                     </div>
 
                     <div className="space-y-3">
-                      {certs.filter(c => isCertExpiringOrExpired(c.expiration_date)).length === 0 ? (
-                        <div className="bg-blue-50/30 p-4 rounded-xl text-center border border-blue-100/30">
-                          <CheckCircle2 className="w-5 h-5 text-emerald-500 mx-auto mb-2" />
-                          <p className="text-xs text-slate-500 font-semibold">All certificates are healthy and compliant</p>
-                        </div>
-                      ) : (
-                        certs.filter(c => isCertExpiringOrExpired(c.expiration_date)).slice(0, 4).map(c => {
+                      {(() => {
+                        const displayedCerts = certs.filter(c => {
+                          if (user.role === 'vessel' && user.vessel_id && String(c.vessel_id) !== String(user.vessel_id)) return false;
+                          return isCertExpiringOrExpired(c.expiration_date);
+                        });
+                        if (displayedCerts.length === 0) {
+                          return (
+                            <div className="bg-blue-50/30 p-4 rounded-xl text-center border border-blue-100/30">
+                              <CheckCircle2 className="w-5 h-5 text-emerald-500 mx-auto mb-2" />
+                              <p className="text-xs text-slate-500 font-semibold">All certificates are healthy and compliant</p>
+                            </div>
+                          );
+                        }
+                        return displayedCerts.slice(0, 4).map(c => {
                           const status = getStatus(c.expiration_date);
                           return (
                             <div 
@@ -2684,8 +2729,8 @@ export const Dashboard = ({
                               </span>
                             </div>
                           );
-                        })
-                      )}
+                        });
+                      })()}
                     </div>
                   </div>
 
@@ -2712,10 +2757,18 @@ export const Dashboard = ({
                         const now = new Date();
                         now.setHours(0, 0, 0, 0);
 
+                        const accessibleVesselIds = user.role === 'vessel' && user.vessel_id
+                          ? new Set([String(user.vessel_id)])
+                          : new Set(vessels.map(v => String(v.id)));
+
                         const expiringMembers = (crewMembers || []).filter(c => {
                           const isAssigned = c.vesselId && c.vesselId !== 'any' && c.vesselId !== 'all';
+                          if (!isAssigned) return false;
+                          // Restrict contracts to user's accessible vessel(s)
+                          if (!accessibleVesselIds.has(String(c.vesselId))) return false;
+
                           const hasActiveContract = c.contractEndDate && c.contractEndDate !== '';
-                          if (!isAssigned || !hasActiveContract) return false;
+                          if (!hasActiveContract) return false;
                           
                           const endDate = new Date(c.contractEndDate);
                           if (isNaN(endDate.getTime())) return false;
@@ -2785,10 +2838,17 @@ export const Dashboard = ({
                     </div>
 
                     <div className="space-y-3">
-                      {troubleReports.filter(r => r.status !== 'Resolved').length === 0 ? (
-                        <p className="text-slate-400 text-xs italic text-center py-2">No active defects recorded.</p>
-                      ) : (
-                        troubleReports.filter(r => r.status !== 'Resolved').slice(0, 3).map(r => (
+                      {(() => {
+                        const displayedDefects = troubleReports.filter(r => {
+                          if (user.role === 'vessel' && user.vessel_id && String(r.vesselId) !== String(user.vessel_id)) return false;
+                          return r.status !== 'Resolved';
+                        });
+                        if (displayedDefects.length === 0) {
+                          return (
+                            <p className="text-slate-400 text-xs italic text-center py-2">No active defects recorded.</p>
+                          );
+                        }
+                        return displayedDefects.slice(0, 3).map(r => (
                           <div 
                             key={r.id} 
                             onClick={() => setView('defects_5_2')}
@@ -2808,8 +2868,8 @@ export const Dashboard = ({
                               <span className="font-mono text-[8px] text-slate-400 font-normal">PMS: {r.pmsCode || 'N/A'}</span>
                             </div>
                           </div>
-                        ))
-                      )}
+                        ));
+                      })()}
                     </div>
                   </div>
 
@@ -2832,10 +2892,17 @@ export const Dashboard = ({
                     </div>
 
                     <div className="space-y-3">
-                      {spareRequisitions.filter(r => r.priority === 'High' || r.priority === 'Emergency').length === 0 ? (
-                        <p className="text-slate-400 text-xs italic text-center py-2">No urgent spare parts requests.</p>
-                      ) : (
-                        spareRequisitions.filter(r => r.priority === 'High' || r.priority === 'Emergency').slice(0, 3).map(r => (
+                      {(() => {
+                        const displayedSpares = spareRequisitions.filter(r => {
+                          if (user.role === 'vessel' && user.vessel_id && String(r.vesselId) !== String(user.vessel_id)) return false;
+                          return r.priority === 'High' || r.priority === 'Emergency';
+                        });
+                        if (displayedSpares.length === 0) {
+                          return (
+                            <p className="text-slate-400 text-xs italic text-center py-2">No urgent spare parts requests.</p>
+                          );
+                        }
+                        return displayedSpares.slice(0, 3).map(r => (
                           <div 
                             key={r.id} 
                             onClick={() => setView('spare_requisition_ship')}
@@ -2853,8 +2920,8 @@ export const Dashboard = ({
                               <span>ETA: {r.eta || 'N/A'}</span>
                             </div>
                           </div>
-                        ))
-                      )}
+                        ));
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -2897,6 +2964,7 @@ export const Dashboard = ({
                 const q = timelineSearch.toLowerCase().trim();
 
                 const filteredDeparture = departureReports.filter(r => {
+                  if (user.role === 'vessel' && user.vessel_id && String(r.vessel_id) !== String(user.vessel_id)) return false;
                   if (timelineVesselFilter && String(r.vessel_id) !== timelineVesselFilter) return false;
                   if (!isWithinTimelinePeriod(r.atd_utc || r.utc_date_time || r.created_at)) return false;
                   if (!matchesTimelineOp(r.operation_type)) return false;
@@ -2909,6 +2977,7 @@ export const Dashboard = ({
                 });
 
                 const filteredArrival = arrivalReports.filter(r => {
+                  if (user.role === 'vessel' && user.vessel_id && String(r.vessel_id) !== String(user.vessel_id)) return false;
                   if (timelineVesselFilter && String(r.vessel_id) !== timelineVesselFilter) return false;
                   if (!isWithinTimelinePeriod(r.atb_utc || r.utc_date_time || r.created_at)) return false;
                   if (!matchesTimelineOp(r.operation_type)) return false;
@@ -2921,6 +2990,7 @@ export const Dashboard = ({
                 });
 
                 const filteredNoon = noonReports.filter(r => {
+                  if (user.role === 'vessel' && user.vessel_id && String(r.vessel_id) !== String(user.vessel_id)) return false;
                   if (timelineVesselFilter && String(r.vessel_id) !== timelineVesselFilter) return false;
                   if (!isWithinTimelinePeriod(r.utc_date_time || r.created_at)) return false;
                   if (timelineNoonStatusFilter && !String(r.report_type || "").toLowerCase().includes(timelineNoonStatusFilter.toLowerCase())) return false;
@@ -2934,6 +3004,7 @@ export const Dashboard = ({
                 });
 
                 const filteredOther = otherReports.filter(r => {
+                  if (user.role === 'vessel' && user.vessel_id && String(r.vessel_id) !== String(user.vessel_id)) return false;
                   if (timelineVesselFilter && String(r.vessel_id) !== timelineVesselFilter) return false;
                   if (!isWithinTimelinePeriod(r.utc_date_time || r.created_at)) return false;
                   if (!matchesTimelineOp(r.operation_type)) return false;
@@ -3089,9 +3160,9 @@ export const Dashboard = ({
                             onChange={(e) => setTimelineVesselFilter(e.target.value)}
                             className="w-full px-3 py-1.5 bg-white border border-slate-200/90 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-2xs cursor-pointer"
                           >
-                            <option value="">All Vessels</option>
+                            <option value="">{user.role === 'vessel' ? 'My Vessel' : 'All Vessels'}</option>
                             {vessels
-                              .filter(v => user.role !== "vessel" || v.id === user.vessel_id)
+                              .filter(v => user.role !== "vessel" || String(v.id) === String(user.vessel_id))
                               .map(v => (
                                 <option key={v.id} value={String(v.id)}>{v.name}</option>
                               ))}
@@ -3942,8 +4013,8 @@ export const Dashboard = ({
 
                   {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (
                     <button 
-                      onClick={() => setView('admin')}
-                      className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 whitespace-nowrap"
+                      onClick={() => setEditingVessel({ id: 0, name: '', team_id: teams[0]?.id || 1, owner: 'Nissen', fleet_status: 'In Active Fleet', type: 'Bulk Carrier' } as any)}
+                      className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 whitespace-nowrap cursor-pointer"
                     >
                       <Plus className="w-4 h-4" /> Add Vessel
                     </button>
@@ -4151,10 +4222,24 @@ export const Dashboard = ({
                     </select>
                   </div>
 
+                  <button 
+                    onClick={() => {
+                      if (selectedVessel || vessels[0]) {
+                        setSelectedVessel(selectedVessel || vessels[0]);
+                        setView('vessel_particulars');
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer"
+                    title="View official Ship Particulars specifications"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Ship Particulars</span>
+                  </button>
+
                   {(user.role === 'admin' || user.role === 'team_pic' || user.role === 'user') && (selectedVessel || vessels[0]) && (
                     <button 
                       onClick={() => setEditingVessel(selectedVessel || vessels[0])}
-                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-blue-100 rounded-xl text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-600 transition-colors shadow-xs"
+                      className="flex items-center gap-1.5 px-3 py-2 bg-white border border-blue-100 rounded-xl text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-600 transition-colors shadow-xs cursor-pointer"
                     >
                       <Edit2 className="w-3.5 h-3.5" />
                       <span>Edit Profile</span>
@@ -5116,6 +5201,19 @@ export const Dashboard = ({
               })()}
             </div>
             </ErrorBoundary>
+          )}
+
+          {view === 'vessel_particulars' && (
+            <ShipParticularsView
+              vessel={(selectedVessel ? vessels.find(x => x.id === selectedVessel.id) : null) || selectedVessel || vessels[0]}
+              vessels={vessels}
+              onSelectVessel={setSelectedVessel}
+              onBack={() => setView('vessel_details')}
+              token={token}
+              currentUserRole={user.role}
+              onVesselUpdated={fetchData}
+              flags={flags}
+            />
           )}
 
           {view.startsWith('admin') && view !== 'admin_recycle_bin' && (
@@ -7226,7 +7324,7 @@ export const Dashboard = ({
               >
                 <div className="p-8">
                   <div className="flex items-center justify-between mb-6">
-                    <h3 className="text-xl font-bold text-slate-900">Edit Vessel</h3>
+                    <h3 className="text-xl font-bold text-slate-900">{!editingVessel.id || editingVessel.id === 0 ? 'Add New Vessel' : 'Edit Vessel'}</h3>
                     <button onClick={() => setEditingVessel(null)} className="p-2 hover:bg-slate-100 rounded-lg text-slate-400">
                       <X className="w-5 h-5" />
                     </button>
@@ -7364,9 +7462,9 @@ export const Dashboard = ({
                     </div>
                     <button 
                       onClick={handleUpdateVessel}
-                      className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100"
+                      className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-800 transition-colors shadow-lg shadow-blue-100 cursor-pointer"
                     >
-                      Update Vessel
+                      {!editingVessel.id || editingVessel.id === 0 ? 'Create Vessel' : 'Update Vessel'}
                     </button>
                   </div>
                 </div>

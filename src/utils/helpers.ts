@@ -312,3 +312,45 @@ export function calculateCrewAge(birthdate?: string | null): number | null {
   }
   return age >= 10 && age <= 110 ? age : null;
 }
+
+/**
+ * Calculates the length of service in months by comparing sign-on and sign-off dates,
+ * completely disregarding planned contract duration.
+ * Accurately calculates whole months plus fractional days (1 decimal place).
+ */
+export function calculateServiceDurationMonths(signOnDate?: string | null, signOffDate?: string | null): number {
+  if (!signOnDate || !signOffDate) return 0;
+  const start = new Date(signOnDate);
+  const end = new Date(signOffDate);
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || end < start) return 0;
+
+  let years = end.getFullYear() - start.getFullYear();
+  let months = end.getMonth() - start.getMonth();
+  let days = end.getDate() - start.getDate();
+
+  if (days < 0) {
+    months -= 1;
+    // Days in previous month
+    const prevMonthDays = new Date(end.getFullYear(), end.getMonth(), 0).getDate();
+    days += prevMonthDays;
+  }
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+
+  const totalFullMonths = years * 12 + months;
+  const fractionalMonth = days / 30.4375;
+  const totalMonths = totalFullMonths + fractionalMonth;
+
+  // Round to 1 decimal place (e.g. 6, 6.5, 8.2)
+  const rounded = Math.round(totalMonths * 10) / 10;
+  return Math.max(0.1, rounded);
+}
+
+export function formatServiceDuration(months: number): string {
+  if (!months || months <= 0) return '0 mos';
+  if (months === 1) return '1 mo';
+  if (Number.isInteger(months)) return `${months} mos`;
+  return `${months.toFixed(1)} mos`;
+}
